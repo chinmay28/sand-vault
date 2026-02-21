@@ -4,12 +4,14 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/sand-project/sand/internal/archive"
@@ -44,7 +46,7 @@ func createArchiveRequest(t *testing.T, filename string, content []byte, passwor
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 
-	fw, err := writer.CreateFormFile("file", filename)
+	fw, err := writer.CreateFormFile("files[]", filename)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,21 +74,82 @@ func TestArchiveEndpoint_Success(t *testing.T) {
 		t.Fatalf("expected application/zip, got %s", ct)
 	}
 
-	// Verify ZIP contains 3 media files
-	zipReader, err := zip.NewReader(bytes.NewReader(w.Body.Bytes()), int64(w.Body.Len()))
+	// Outer zip must contain exactly 3 inner zip files (media1.zip, media2.zip, media3.zip)
+	outerZip, err := zip.NewReader(bytes.NewReader(w.Body.Bytes()), int64(w.Body.Len()))
 	if err != nil {
-		t.Fatalf("failed to read zip: %v", err)
+		t.Fatalf("failed to read outer zip: %v", err)
+	}
+	if len(outerZip.File) != 3 {
+		t.Fatalf("expected 3 entries in outer zip, got %d", len(outerZip.File))
 	}
 
-	if len(zipReader.File) != 3 {
-		t.Fatalf("expected 3 files in zip, got %d", len(zipReader.File))
+	// Each inner zip must contain exactly 1 media file
+	for _, zf := range outerZip.File {
+		rc, err := zf.Open()
+		if err != nil {
+			t.Fatalf("failed to open inner zip %s: %v", zf.Name, err)
+		}
+		innerData, err := io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			t.Fatalf("failed to read inner zip %s: %v", zf.Name, err)
+		}
+		innerZip, err := zip.NewReader(bytes.NewReader(innerData), int64(len(innerData)))
+		if err != nil {
+			t.Fatalf("failed to parse inner zip %s: %v", zf.Name, err)
+		}
+		if len(innerZip.File) != 1 {
+			t.Fatalf("inner zip %s: expected 1 file, got %d", zf.Name, len(innerZip.File))
+		}
+	}
+}
+
+func TestArchiveEndpoint_MultipleFiles(t *testing.T) {
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	for i, content := range [][]byte{[]byte("file one"), []byte("file two")} {
+		fw, _ := writer.CreateFormFile("files[]", "test"+string(rune('1'+i))+".txt")
+		fw.Write(content)
+	}
+	writer.WriteField("password", "pw")
+	writer.Close()
+
+	req := httptest.NewRequest("POST", "/api/archive", body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	w := httptest.NewRecorder()
+	handleArchive(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	outerZip, err := zip.NewReader(bytes.NewReader(w.Body.Bytes()), int64(w.Body.Len()))
+	if err != nil {
+		t.Fatalf("failed to read outer zip: %v", err)
+	}
+	if len(outerZip.File) != 3 {
+		t.Fatalf("expected 3 inner zips, got %d", len(outerZip.File))
+	}
+
+	// Each inner zip should have 2 media files (one per input file)
+	for _, zf := range outerZip.File {
+		rc, _ := zf.Open()
+		innerData, _ := io.ReadAll(rc)
+		rc.Close()
+		innerZip, err := zip.NewReader(bytes.NewReader(innerData), int64(len(innerData)))
+		if err != nil {
+			t.Fatalf("failed to parse inner zip %s: %v", zf.Name, err)
+		}
+		if len(innerZip.File) != 2 {
+			t.Fatalf("inner zip %s: expected 2 files, got %d", zf.Name, len(innerZip.File))
+		}
 	}
 }
 
 func TestArchiveEndpoint_MissingPassword(t *testing.T) {
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
-	fw, _ := writer.CreateFormFile("file", "test.txt")
+	fw, _ := writer.CreateFormFile("files[]", "test.txt")
 	fw.Write([]byte("data"))
 	writer.Close()
 
@@ -252,6 +315,69 @@ func TestRestoreEndpoint_AllCombinations(t *testing.T) {
 		}
 		if !bytes.Equal(w.Body.Bytes(), original) {
 			t.Fatalf("combo %v: content mismatch", combo)
+		}
+	}
+}
+
+func TestArchiveEndpoint_InnerZipNames(t *testing.T) {
+	// Outer zip entries must be named exactly media1.zip, media2.zip, media3.zip.
+	req := createArchiveRequest(t, "named.txt", []byte("naming test"), "pw")
+	w := httptest.NewRecorder()
+	handleArchive(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	outer, err := zip.NewReader(bytes.NewReader(w.Body.Bytes()), int64(w.Body.Len()))
+	if err != nil {
+		t.Fatalf("failed to read outer zip: %v", err)
+	}
+
+	for i, zf := range outer.File {
+		want := fmt.Sprintf("media%d.zip", i+1)
+		if zf.Name != want {
+			t.Errorf("entry %d: got name %q, want %q", i, zf.Name, want)
+		}
+	}
+}
+
+func TestArchiveEndpoint_OuterZipContentDisposition(t *testing.T) {
+	req := createArchiveRequest(t, "any.bin", []byte("data"), "pw")
+	w := httptest.NewRecorder()
+	handleArchive(w, req)
+
+	cd := w.Header().Get("Content-Disposition")
+	if !strings.Contains(cd, "sand-archives.zip") {
+		t.Errorf("Content-Disposition should mention sand-archives.zip, got: %q", cd)
+	}
+}
+
+func TestArchiveEndpoint_InnerZipContainsMediaFiles(t *testing.T) {
+	// The media file inside each inner zip must end in .media1 / .media2 / .media3.
+	req := createArchiveRequest(t, "check.txt", []byte("checking extensions"), "pw")
+	w := httptest.NewRecorder()
+	handleArchive(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	outer, _ := zip.NewReader(bytes.NewReader(w.Body.Bytes()), int64(w.Body.Len()))
+	for i, zf := range outer.File {
+		rc, _ := zf.Open()
+		innerData, _ := io.ReadAll(rc)
+		rc.Close()
+
+		inner, err := zip.NewReader(bytes.NewReader(innerData), int64(len(innerData)))
+		if err != nil {
+			t.Fatalf("inner zip %s is not a valid zip: %v", zf.Name, err)
+		}
+		for _, entry := range inner.File {
+			want := fmt.Sprintf(".media%d", i+1)
+			if !strings.HasSuffix(entry.Name, want) {
+				t.Errorf("inner zip %s: entry %q should end in %s", zf.Name, entry.Name, want)
+			}
 		}
 	}
 }

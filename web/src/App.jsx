@@ -320,9 +320,9 @@ function DropZone({ onFiles, multiple, accept, files }) {
       <div style={styles.dropzoneLabel}>
         {hasFiles
           ? null
-          : multiple
+          : multiple && accept
             ? 'Drop 2-3 .media files or click to browse'
-            : 'Drop file here or click to browse'}
+            : 'Drop files here or click to browse'}
       </div>
       {hasFiles && files.map((f, i) => (
         <div key={i} style={styles.dropzoneFile}>
@@ -335,18 +335,20 @@ function DropZone({ onFiles, multiple, accept, files }) {
 
 /* ---- Archive Tab ---- */
 function ArchiveTab() {
-  const [file, setFile] = useState(null)
+  const [files, setFiles] = useState([])
   const [password, setPassword] = useState('')
   const [showPw, setShowPw] = useState(false)
   const [status, setStatus] = useState(null) // { type: 'progress'|'success'|'error', msg, pct? }
 
   const handleArchive = async () => {
-    if (!file || !password) return
+    if (files.length === 0 || !password) return
     setStatus({ type: 'progress', msg: 'Compressing and encrypting...', pct: 30 })
 
     try {
       const form = new FormData()
-      form.append('file', file)
+      for (const f of files) {
+        form.append('files[]', f)
+      }
       form.append('password', password)
 
       setStatus({ type: 'progress', msg: 'Uploading and processing...', pct: 60 })
@@ -358,17 +360,20 @@ function ArchiveTab() {
         throw new Error(err.error || 'Archive failed')
       }
 
-      setStatus({ type: 'progress', msg: 'Preparing download...', pct: 90 })
+      setStatus({ type: 'progress', msg: 'Preparing downloads...', pct: 90 })
 
+      // Response is sand-archives.zip containing media1.zip, media2.zip, media3.zip.
+      // Download it directly — user extracts to get the 3 distribution zips.
       const blob = await resp.blob()
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = `${file.name}.sand.zip`
+      a.download = 'sand-archives.zip'
       a.click()
       URL.revokeObjectURL(url)
 
-      setStatus({ type: 'success', msg: `Archived into 3 encrypted parts — ${file.name}.sand.zip` })
+      const label = files.length === 1 ? files[0].name : `${files.length} files`
+      setStatus({ type: 'success', msg: `Archived ${label} → sand-archives.zip (contains media1.zip, media2.zip, media3.zip)` })
     } catch (err) {
       setStatus({ type: 'error', msg: err.message })
     }
@@ -377,10 +382,29 @@ function ArchiveTab() {
   return (
     <div>
       <DropZone
-        onFiles={(files) => setFile(files[0])}
-        multiple={false}
-        files={file ? [file] : []}
+        onFiles={(newFiles) => setFiles(prev => {
+          const all = [...prev, ...newFiles]
+          const seen = new Set()
+          return all.filter(f => {
+            if (seen.has(f.name)) return false
+            seen.add(f.name)
+            return true
+          })
+        })}
+        multiple={true}
+        files={files}
       />
+
+      {files.length > 0 && (
+        <div style={{ textAlign: 'right', marginTop: '-12px', marginBottom: '16px' }}>
+          <button
+            style={{ ...styles.eyeBtn, position: 'static', fontSize: '12px', fontFamily: font.mono }}
+            onClick={() => { setFiles([]); setStatus(null) }}
+          >
+            ✕ Clear
+          </button>
+        </div>
+      )}
 
       <div style={styles.inputGroup}>
         <label style={styles.label}>Password</label>
@@ -401,8 +425,8 @@ function ArchiveTab() {
       </div>
 
       <button
-        style={styles.button(!file || !password || status?.type === 'progress')}
-        disabled={!file || !password || status?.type === 'progress'}
+        style={styles.button(files.length === 0 || !password || status?.type === 'progress')}
+        disabled={files.length === 0 || !password || status?.type === 'progress'}
         onClick={handleArchive}
       >
         ▶ Archive
