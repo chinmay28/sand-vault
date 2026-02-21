@@ -513,6 +513,206 @@ func TestRestore_DuplicatePartNumber(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// ArchiveMultiple Tests
+// ---------------------------------------------------------------------------
+
+func TestArchiveMultiple_SingleFile_MatchesArchive(t *testing.T) {
+	// ArchiveMultiple with one file should yield the same 3-file grouping as Archive.
+	inputDir, outputDir, _ := setupTestDirs(t)
+	inputPath := writeTestFile(t, inputDir, "solo.txt", []byte("solo content"))
+
+	result, err := ArchiveMultiple([]string{inputPath}, "pw", outputDir)
+	if err != nil {
+		t.Fatalf("ArchiveMultiple failed: %v", err)
+	}
+
+	for i, group := range result {
+		if len(group) != 1 {
+			t.Fatalf("part %d: expected 1 path, got %d", i+1, len(group))
+		}
+		if _, err := os.Stat(group[0]); os.IsNotExist(err) {
+			t.Fatalf("part %d file does not exist: %s", i+1, group[0])
+		}
+	}
+}
+
+func TestArchiveMultiple_PartGroupCounts(t *testing.T) {
+	// With N input files the result must have exactly N paths per part group.
+	inputDir, outputDir, _ := setupTestDirs(t)
+	files := []string{
+		writeTestFile(t, inputDir, "a.txt", []byte("alpha")),
+		writeTestFile(t, inputDir, "b.txt", []byte("beta")),
+		writeTestFile(t, inputDir, "c.txt", []byte("gamma")),
+	}
+
+	result, err := ArchiveMultiple(files, "pw", outputDir)
+	if err != nil {
+		t.Fatalf("ArchiveMultiple failed: %v", err)
+	}
+
+	for i, group := range result {
+		if len(group) != len(files) {
+			t.Fatalf("part %d: expected %d paths, got %d", i+1, len(files), len(group))
+		}
+	}
+}
+
+func TestArchiveMultiple_PartSuffixesAreCorrect(t *testing.T) {
+	// Part group 0 → .media1, group 1 → .media2, group 2 → .media3.
+	inputDir, outputDir, _ := setupTestDirs(t)
+	files := []string{
+		writeTestFile(t, inputDir, "x.bin", []byte("x")),
+		writeTestFile(t, inputDir, "y.bin", []byte("y")),
+	}
+
+	result, err := ArchiveMultiple(files, "pw", outputDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for partIdx, group := range result {
+		expectedSuffix := fmt.Sprintf(".media%d", partIdx+1)
+		for _, path := range group {
+			if !strings.HasSuffix(path, expectedSuffix) {
+				t.Fatalf("part group %d: path %s has wrong suffix (want %s)", partIdx+1, path, expectedSuffix)
+			}
+		}
+	}
+}
+
+func TestArchiveMultiple_EachFileRestoresIndependently(t *testing.T) {
+	// Parts for file A should not interfere with restoration of file B.
+	inputDir, outputDir, _ := setupTestDirs(t)
+	origA := []byte("contents of file A — lots of text to compress well")
+	origB := []byte("contents of file B — totally different data 12345")
+
+	paths := []string{
+		writeTestFile(t, inputDir, "fileA.txt", origA),
+		writeTestFile(t, inputDir, "fileB.txt", origB),
+	}
+
+	result, err := ArchiveMultiple(paths, "secret", outputDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// result[i][0] = fileA's part i+1, result[i][1] = fileB's part i+1
+	fileAMedia := []string{result[0][0], result[1][0], result[2][0]} // all 3 parts for A
+	fileBMedia := []string{result[0][1], result[1][1], result[2][1]} // all 3 parts for B
+
+	for _, tc := range []struct {
+		name     string
+		parts    []string
+		expected []byte
+	}{
+		{"fileA parts 1+2", fileAMedia[:2], origA},
+		{"fileA parts 1+3", []string{fileAMedia[0], fileAMedia[2]}, origA},
+		{"fileA parts 2+3", fileAMedia[1:], origA},
+		{"fileB parts 1+2", fileBMedia[:2], origB},
+		{"fileB parts 2+3", fileBMedia[1:], origB},
+	} {
+		rd := t.TempDir()
+		out, err := Restore(tc.parts, "secret", rd)
+		if err != nil {
+			t.Fatalf("%s: restore failed: %v", tc.name, err)
+		}
+		got, _ := os.ReadFile(out)
+		if !bytes.Equal(got, tc.expected) {
+			t.Fatalf("%s: data mismatch", tc.name)
+		}
+	}
+}
+
+func TestArchiveMultiple_IndependentArchiveIDs(t *testing.T) {
+	// Parts from different files in the same batch must have different ArchiveIDs,
+	// so they cannot be accidentally mixed during restore.
+	inputDir, outputDir, _ := setupTestDirs(t)
+	p1 := writeTestFile(t, inputDir, "one.txt", []byte("one"))
+	p2 := writeTestFile(t, inputDir, "two.txt", []byte("two"))
+
+	result, err := ArchiveMultiple([]string{p1, p2}, "pw", outputDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Mixing a part from file1 with a part from file2 should fail.
+	restoreDir := t.TempDir()
+	_, err = Restore([]string{result[0][0], result[1][1]}, "pw", restoreDir)
+	if err == nil {
+		t.Fatal("cross-file part mix should fail restore (mismatched ArchiveID)")
+	}
+}
+
+func TestArchiveMultiple_EmptyInputList(t *testing.T) {
+	outputDir := t.TempDir()
+	result, err := ArchiveMultiple([]string{}, "pw", outputDir)
+	if err != nil {
+		t.Fatalf("empty list should not error: %v", err)
+	}
+	for i, group := range result {
+		if len(group) != 0 {
+			t.Fatalf("part %d: expected 0 paths for empty input, got %d", i+1, len(group))
+		}
+	}
+}
+
+func TestArchiveMultiple_NonexistentFileReturnsError(t *testing.T) {
+	outputDir := t.TempDir()
+	_, err := ArchiveMultiple([]string{"/no/such/file.txt"}, "pw", outputDir)
+	if err == nil {
+		t.Fatal("should error on nonexistent input file")
+	}
+}
+
+func TestArchiveMultiple_ErrorMidwayLeavesNoPartialState(t *testing.T) {
+	// If the second file fails, the function returns an error.
+	inputDir, outputDir, _ := setupTestDirs(t)
+	good := writeTestFile(t, inputDir, "good.txt", []byte("good"))
+
+	_, err := ArchiveMultiple([]string{good, "/does/not/exist.bin"}, "pw", outputDir)
+	if err == nil {
+		t.Fatal("should return error when one file is missing")
+	}
+}
+
+func TestArchiveMultiple_MixedFileSizes(t *testing.T) {
+	// Verify correct round-trip with files of very different sizes (odd + even + empty).
+	inputDir, outputDir, _ := setupTestDirs(t)
+
+	contents := map[string][]byte{
+		"empty.bin": {},
+		"odd.bin":   {0x01, 0x02, 0x03},
+		"even.bin":  {0xAA, 0xBB, 0xCC, 0xDD},
+	}
+	// Build deterministic order so we can map result indices.
+	names := []string{"empty.bin", "odd.bin", "even.bin"}
+	var filePaths []string
+	for _, name := range names {
+		filePaths = append(filePaths, writeTestFile(t, inputDir, name, contents[name]))
+	}
+
+	result, err := ArchiveMultiple(filePaths, "pw", outputDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for fileIdx, name := range names {
+		expected := contents[name]
+		mediaParts := []string{result[0][fileIdx], result[1][fileIdx], result[2][fileIdx]}
+
+		rd := t.TempDir()
+		out, err := Restore(mediaParts[:2], "pw", rd) // parts 1+2
+		if err != nil {
+			t.Fatalf("%s: restore failed: %v", name, err)
+		}
+		got, _ := os.ReadFile(out)
+		if !bytes.Equal(got, expected) {
+			t.Fatalf("%s: content mismatch", name)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Varying Sizes — Stress Test
 // ---------------------------------------------------------------------------
 

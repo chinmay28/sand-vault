@@ -12,11 +12,14 @@ Ships as a **single static Go binary** with a CLI and an embedded React web GUI.
 # 1. Build (requires Go 1.22+ and Node.js 18+)
 make build
 
-# 2. Archive a file
+# 2. Archive one or more files
 ./sand archive passport.pdf --password "my-secret"
-# → passport.pdf.media1  passport.pdf.media2  passport.pdf.media3
+# → media1.zip  media2.zip  media3.zip
+#   (each zip holds the corresponding encrypted part for every archived file)
 
-# 3. Restore from any two parts
+# 3. Extract a part file from a zip and restore from any two parts
+unzip -p media1.zip passport.pdf.media1 > passport.pdf.media1
+unzip -p media3.zip passport.pdf.media3 > passport.pdf.media3
 ./sand restore --parts passport.pdf.media1,passport.pdf.media3 --password "my-secret"
 # → passport.pdf  (byte-identical to original)
 
@@ -68,33 +71,49 @@ make build            # produces sand.exe
 
 ### `sand archive`
 
-Compress, split, and encrypt a file into three media parts.
+Compress, split, and encrypt one or more files into three zip archives.
 
 ```
-sand archive <file> [flags]
+sand archive <file> [file2 ...] [flags]
 
 Flags:
-  --password  string   Encryption password (prompted securely if omitted)
-  --output-dir string  Directory to write .media files (default: same as input)
+  --password   string  Encryption password (prompted securely if omitted)
+  --output-dir string  Directory to write zip files (default: current directory)
 ```
 
-**Example**
+Each input file is archived independently (its own archive ID, nonce, and key derivation). The parts are then grouped into three zip files — one per part number — so each zip can be stored or transmitted independently.
+
+**Example — single file**
 
 ```bash
 sand archive report.pdf --password "hunter2" --output-dir ~/archive/
 # Produces:
-#   ~/archive/report.pdf.media1
-#   ~/archive/report.pdf.media2
-#   ~/archive/report.pdf.media3
+#   ~/archive/media1.zip  (contains report.pdf.media1)
+#   ~/archive/media2.zip  (contains report.pdf.media2)
+#   ~/archive/media3.zip  (contains report.pdf.media3)
+```
+
+**Example — multiple files**
+
+```bash
+sand archive photo.jpg video.mp4 notes.txt --password "hunter2"
+# Produces:
+#   media1.zip  (contains photo.jpg.media1, video.mp4.media1, notes.txt.media1)
+#   media2.zip  (contains photo.jpg.media2, video.mp4.media2, notes.txt.media2)
+#   media3.zip  (contains photo.jpg.media3, video.mp4.media3, notes.txt.media3)
 ```
 
 Output:
 ```
-Archive complete. Distribute any 2 of these 3 files to restore the original:
-  report.pdf.media1
-  report.pdf.media2
-  report.pdf.media3
+Archive complete! Generated zip files:
+  ./media1.zip (12.3 KB) — 3 file(s)
+  ./media2.zip (12.3 KB) — 3 file(s)
+  ./media3.zip (12.3 KB) — 3 file(s)
+
+Distribute the 3 zip files separately. Any 2 zips can restore all original files.
 ```
+
+**To restore**, extract the individual `.media` files from any two of the zips and pass them to `sand restore`.
 
 ---
 
@@ -160,12 +179,21 @@ The server exposes a JSON/binary REST API alongside the GUI.
 
 Multipart form:
 
-| Field      | Type | Required | Description            |
-|------------|------|----------|------------------------|
-| `file`     | file | yes      | File to archive        |
-| `password` | text | yes      | Encryption password    |
+| Field       | Type      | Required | Description                            |
+|-------------|-----------|----------|----------------------------------------|
+| `files[]`   | file (×1+)| yes      | One or more files to archive           |
+| `password`  | text      | yes      | Encryption password                    |
 
-Returns a `application/zip` stream containing three `.media` files.
+Returns `sand-archives.zip` (`application/zip`) — an outer zip containing three inner zips:
+
+```
+sand-archives.zip
+  ├── media1.zip  ← part 1 for every uploaded file
+  ├── media2.zip  ← part 2 for every uploaded file
+  └── media3.zip  ← part 3 for every uploaded file
+```
+
+Distribute the three inner zips separately. Any two of them are sufficient to restore all original files.
 
 ### `POST /api/restore`
 

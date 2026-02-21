@@ -6,7 +6,7 @@
 
 ## 1. Project Overview
 
-SAND is a file archival tool that provides **security through splitting and encryption**. Given any file, SAND compresses it, splits it into two equal parts, generates a third redundancy part via XOR, encrypts all three with AES-256-GCM using an Argon2id-derived key, and outputs three `.media` files. Any two of the three parts are sufficient to reconstruct the original file.
+SAND is a file archival tool that provides **security through splitting and encryption**. Given one or more files, SAND compresses each file independently, splits the compressed data into two equal parts, generates a third redundancy part via XOR, and encrypts all three parts with AES-256-GCM using an Argon2id-derived key. The parts are then grouped into three zip archives (`media1.zip`, `media2.zip`, `media3.zip`) — one per part number across all input files. Any two of the three zip archives are sufficient to reconstruct all original files.
 
 The tool ships as a single static Go binary with two operating modes:
 - **CLI mode** — command-line archive and restore operations
@@ -64,17 +64,22 @@ Each part is encrypted independently with AES-256-GCM:
                                                                           .media3
 ```
 
-**Steps in detail:**
+**Steps in detail (per input file — repeated for each file via `ArchiveMultiple`):**
 
-1. **Read** the input file into memory (streaming for large files — see §6)
+1. **Read** the input file into memory
 2. **Hash** the original file with SHA-256 (stored in headers for verification)
 3. **Compress** the file contents with zstd (default compression level 3)
 4. **Pad** the compressed data to even length by appending one `0x00` byte if the byte count is odd
 5. **Split** the (possibly padded) compressed data into two equal halves: `part1` and `part2`
 6. **XOR** part1 and part2 byte-by-byte to produce `part3`
-7. **Derive** AES-256 key from password + random salt via Argon2id
+7. **Derive** AES-256 key from password + random salt via Argon2id (unique salt per file)
 8. **Encrypt** each part independently (unique nonce per part) with AES-256-GCM
-9. **Write** three output files: `<filename>.media1`, `<filename>.media2`, `<filename>.media3`
+9. **Collect** the three `.media` paths (one per part number)
+
+**After processing all input files:**
+
+10. **Group** all part-1 paths into `media1.zip`, part-2 into `media2.zip`, part-3 into `media3.zip`
+11. **Write** the three zip files to the output directory
 
 ### 3.2 Restore Pipeline
 
@@ -209,14 +214,14 @@ sand/
 Uses `cobra` for command-line parsing.
 
 ```
-sand archive <file> [--password <pw>] [--output-dir <dir>]
-sand restore <file> --parts <file1>,<file2> [--password <pw>] [--output-dir <dir>]
+sand archive <file> [file2 ...] [--password <pw>] [--output-dir <dir>]
+sand restore --parts <file1>,<file2>[,file3] [--password <pw>] [--output-dir <dir>]
 sand serve [--port 8080] [--bind 127.0.0.1]
 ```
 
 - If `--password` is omitted, the CLI prompts interactively (stdin, no echo).
-- `archive` produces three `.media` files in the output directory.
-- `restore` accepts 2 or 3 `.media` files and reconstructs the original.
+- `archive` accepts one or more input files and produces three zip archives (`media1.zip`, `media2.zip`, `media3.zip`) in the output directory. Each zip contains the corresponding `.media` part for every archived file.
+- `restore` accepts 2 or 3 individual `.media` files (extracted from the zips) and reconstructs the original file.
 - `serve` starts the embedded web server.
 
 ### 6.2 `internal/crypto` — Cryptographic Operations
@@ -263,8 +268,16 @@ Handles serialization/deserialization of the binary media file format defined in
 Coordinates the full archive and restore pipelines:
 
 ```go
-func Archive(inputPath, password, outputDir string) error
-func Restore(mediaPaths []string, password, outputDir string) error
+// Archive compresses, splits, and encrypts a single file into three .media files.
+func Archive(inputPath, password, outputDir string) ([]string, error)
+
+// ArchiveMultiple archives each input file independently and returns the resulting
+// media file paths grouped by part number.
+// result[0] = all part-1 paths, result[1] = all part-2 paths, result[2] = all part-3 paths.
+func ArchiveMultiple(inputPaths []string, password, outputDir string) ([3][]string, error)
+
+// Restore reconstructs the original file from any 2 or 3 .media files.
+func Restore(mediaPaths []string, password, outputDir string) (string, error)
 ```
 
 ### 6.7 `internal/server` — HTTP Server + Embedded Frontend
@@ -293,16 +306,27 @@ POST /api/archive
 Content-Type: multipart/form-data
 
 Fields:
-  file:     <binary file>
+  files[]:  <binary file>   (repeat for each file; at least one required)
+  files[]:  <binary file>   (additional files are optional)
   password: <string>
 ```
 
-**Response:** A ZIP archive containing the three `.media` files, streamed as download.
+Each file in `files[]` is archived independently (unique archive ID, salt, and nonces).
+
+**Response:** `sand-archives.zip` — an outer zip containing three inner zip files, streamed as download.
 
 ```
 200 OK
 Content-Type: application/zip
-Content-Disposition: attachment; filename="<original>.sand.zip"
+Content-Disposition: attachment; filename="sand-archives.zip"
+```
+
+Inner zip structure:
+```
+sand-archives.zip
+  ├── media1.zip  ← contains <filename>.media1 for every uploaded file
+  ├── media2.zip  ← contains <filename>.media2 for every uploaded file
+  └── media3.zip  ← contains <filename>.media3 for every uploaded file
 ```
 
 ### 7.3 Restore Request
@@ -377,11 +401,12 @@ The React frontend is minimal, intuitive, and functional.
 ### 8.2 Key UX Decisions
 
 - **Two tabs**: Archive and Restore — the two primary actions.
-- **Drag-and-drop** file upload with click fallback.
+- **Archive tab** accepts multiple files via drag-and-drop or file picker (files are deduplicated by name). A "Clear" button resets the selection.
+- **Drag-and-drop** file upload with click fallback on both tabs.
 - **Restore tab** accepts 2 or 3 `.media` files (shows which parts are detected).
 - **Password field** with show/hide toggle; no confirmation field (we verify via GCM tag).
 - **Progress feedback** during processing (compression, encryption stages).
-- **Auto-download** of result when complete.
+- **Auto-download** of result when complete: `sand-archives.zip` (archive) or the restored file (restore).
 
 ---
 
@@ -471,7 +496,7 @@ These items are noted for architectural awareness but will not be built in the i
 
 - **Streaming / chunked processing** for files larger than available RAM
 - **Cloud provider integration** (Google Drive, Dropbox, iCloud APIs)
-- **Multiple file / directory archival**
+- **Directory archival** (recursive directory → single archive)
 - **Configurable split count** (N parts with M redundancy, Reed-Solomon)
 - **Key file support** (in addition to or instead of passwords)
 - **Progress via WebSocket** (currently REST polling is sufficient)
@@ -482,8 +507,8 @@ These items are noted for architectural awareness but will not be built in the i
 
 SAND v1 delivers a single Go binary that:
 
-1. **Archives** any file into 3 encrypted parts with XOR redundancy
-2. **Restores** the original from any 2 of 3 parts
+1. **Archives** one or more files into 3 encrypted zip archives (`media1.zip`, `media2.zip`, `media3.zip`) with XOR redundancy — each file is archived independently with its own archive ID, salt, and nonces
+2. **Restores** any individual original file from any 2 of 3 corresponding `.media` parts
 3. Operates via **CLI** or **Web GUI** (React, embedded in binary)
 4. Uses **zstd** compression, **Argon2id** key derivation, and **AES-256-GCM** encryption
 5. Builds as a fully **static binary** (no CGO, no runtime dependencies)

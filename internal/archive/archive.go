@@ -13,6 +13,23 @@ import (
 	"github.com/sand-project/sand/internal/splitter"
 )
 
+// ArchiveMultiple archives each input file independently and returns the resulting
+// media file paths grouped by part number. Index 0 holds all part-1 paths, index 1
+// all part-2 paths, and index 2 all part-3 paths.
+func ArchiveMultiple(inputPaths []string, password, outputDir string) ([3][]string, error) {
+	var result [3][]string
+	for _, inputPath := range inputPaths {
+		paths, err := Archive(inputPath, password, outputDir)
+		if err != nil {
+			return result, fmt.Errorf("archiving %s: %w", filepath.Base(inputPath), err)
+		}
+		for i, p := range paths {
+			result[i] = append(result[i], p)
+		}
+	}
+	return result, nil
+}
+
 // Archive reads the input file, compresses, splits, XORs, encrypts, and writes
 // three .media files to the output directory.
 func Archive(inputPath, password, outputDir string) ([]string, error) {

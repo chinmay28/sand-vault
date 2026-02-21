@@ -2,6 +2,7 @@ package server
 
 import (
 	"archive/zip"
+	"bytes"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -73,17 +74,10 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleArchive(w http.ResponseWriter, r *http.Request) {
-	// ParseMultipartForm also calls ParseForm internally, so FormValue works for
-	// both multipart and url-encoded requests.  Ignore parse errors here and let
-	// FormFile return MISSING_FILE if no file part was provided.
-	r.ParseMultipartForm(100 << 20) //nolint:errcheck
-
-	file, handler, err := r.FormFile("file")
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "missing file field", "MISSING_FILE")
+	if err := r.ParseMultipartForm(500 << 20); err != nil {
+		writeError(w, http.StatusBadRequest, "failed to parse form", "PARSE_ERROR")
 		return
 	}
-	defer file.Close()
 
 	password := r.FormValue("password")
 	if password == "" {
@@ -91,15 +85,19 @@ func handleArchive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create temp dirs
-	tmpInput := filepath.Join(os.TempDir(), "sand-archive-input-*")
+	// Accept files[] (one or more files)
+	uploadedFiles := r.MultipartForm.File["files[]"]
+	if len(uploadedFiles) == 0 {
+		writeError(w, http.StatusBadRequest, "missing files[] field", "MISSING_FILE")
+		return
+	}
+
 	inputDir, err := os.MkdirTemp("", "sand-archive-input-")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create temp dir", "INTERNAL_ERROR")
 		return
 	}
 	defer os.RemoveAll(inputDir)
-	_ = tmpInput
 
 	outputDir, err := os.MkdirTemp("", "sand-archive-output-")
 	if err != nil {
@@ -108,52 +106,95 @@ func handleArchive(w http.ResponseWriter, r *http.Request) {
 	}
 	defer os.RemoveAll(outputDir)
 
-	// Write uploaded file to temp
-	inputPath := filepath.Join(inputDir, handler.Filename)
-	outFile, err := os.Create(inputPath)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create temp file", "INTERNAL_ERROR")
-		return
+	// Save each uploaded file to the temp input dir
+	var inputPaths []string
+	for _, fh := range uploadedFiles {
+		f, err := fh.Open()
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "failed to read uploaded file", "READ_ERROR")
+			return
+		}
+		inputPath := filepath.Join(inputDir, fh.Filename)
+		out, err := os.Create(inputPath)
+		if err != nil {
+			f.Close()
+			writeError(w, http.StatusInternalServerError, "failed to create temp file", "INTERNAL_ERROR")
+			return
+		}
+		_, copyErr := io.Copy(out, f)
+		f.Close()
+		out.Close()
+		if copyErr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to write temp file", "INTERNAL_ERROR")
+			return
+		}
+		inputPaths = append(inputPaths, inputPath)
 	}
-	if _, err := io.Copy(outFile, file); err != nil {
-		outFile.Close()
-		writeError(w, http.StatusInternalServerError, "failed to write temp file", "INTERNAL_ERROR")
-		return
-	}
-	outFile.Close()
 
-	// Run archive
-	paths, err := archive.Archive(inputPath, password, outputDir)
+	// Archive all files; partPaths[i] holds the paths for part i+1 across all files.
+	partPaths, err := archive.ArchiveMultiple(inputPaths, password, outputDir)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("archive failed: %v", err), "ARCHIVE_ERROR")
 		return
 	}
 
-	// Create ZIP response
+	// Build media1.zip, media2.zip, media3.zip in memory.
+	innerZips := make([][]byte, 3)
+	for i := 0; i < 3; i++ {
+		data, err := buildZipBytes(partPaths[i])
+		if err != nil {
+			log.Printf("failed to build media%d.zip: %v", i+1, err)
+			writeError(w, http.StatusInternalServerError, "failed to build zip", "INTERNAL_ERROR")
+			return
+		}
+		innerZips[i] = data
+	}
+
+	// Stream an outer zip to the client containing the 3 inner zips.
 	w.Header().Set("Content-Type", "application/zip")
-	w.Header().Set("Content-Disposition",
-		fmt.Sprintf(`attachment; filename="%s.sand.zip"`, handler.Filename))
+	w.Header().Set("Content-Disposition", `attachment; filename="sand-archives.zip"`)
 
-	zipWriter := zip.NewWriter(w)
-	defer zipWriter.Close()
+	outer := zip.NewWriter(w)
+	defer outer.Close()
 
-	for _, path := range paths {
-		data, err := os.ReadFile(path)
+	for i, data := range innerZips {
+		name := fmt.Sprintf("media%d.zip", i+1)
+		entry, err := outer.Create(name)
 		if err != nil {
-			log.Printf("failed to read media file: %v", err)
+			log.Printf("failed to create outer zip entry %s: %v", name, err)
 			return
 		}
-
-		zf, err := zipWriter.Create(filepath.Base(path))
-		if err != nil {
-			log.Printf("failed to create zip entry: %v", err)
-			return
-		}
-		if _, err := zf.Write(data); err != nil {
-			log.Printf("failed to write zip entry: %v", err)
+		if _, err := entry.Write(data); err != nil {
+			log.Printf("failed to write outer zip entry %s: %v", name, err)
 			return
 		}
 	}
+}
+
+// buildZipBytes creates an in-memory zip archive containing the given files.
+func buildZipBytes(filePaths []string) ([]byte, error) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, fp := range filePaths {
+		data, err := os.ReadFile(fp)
+		if err != nil {
+			zw.Close()
+			return nil, err
+		}
+		entry, err := zw.Create(filepath.Base(fp))
+		if err != nil {
+			zw.Close()
+			return nil, err
+		}
+		if _, err := entry.Write(data); err != nil {
+			zw.Close()
+			return nil, err
+		}
+	}
+	if err := zw.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 func handleRestore(w http.ResponseWriter, r *http.Request) {
