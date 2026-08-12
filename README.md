@@ -41,7 +41,7 @@ curl -fsSL https://raw.githubusercontent.com/chinmay28/sand-vault/main/scripts/q
 
 It installs Node 22 and Go if needed (both build-time only), creates a dedicated
 `sand` system user, compiles the web client and the static server binary, and
-runs it under systemd on `http://127.0.0.1:8123`.
+runs it under systemd on `http://<host>:8123`, reachable from your network.
 
 **Or skip the build entirely** and install the prebuilt binary from the latest
 [release](https://github.com/chinmay28/sand-vault/releases) — no Node, no Go, no
@@ -77,10 +77,12 @@ Override defaults with env vars (`PORT`, `HOST`, `SAND_INSTALL`, `SAND_REF`,
 `SAND_RELEASE`, `SAND_DATA_DIR`, `SAND_PREFIX`, `SAND_USER`, …). Manage it with
 `systemctl status sand` and `journalctl -u sand -f`.
 
-> **`HOST` defaults to `127.0.0.1`, not `0.0.0.0`.** SAND's server is the one
-> component that ever holds plaintext — it rebuilds decrypted files in memory
-> and takes your vault password over the wire. Put TLS in front (Tailscale
-> Serve, or `scripts/nginx-sand.conf`) before widening it.
+> **`HOST` defaults to `0.0.0.0`** — the service is reachable from your network
+> as soon as it is installed. Know what that exposes: this server is the one
+> component that ever holds plaintext, it takes your vault password over the
+> wire, and `/api/vault/unlock` answers anyone who can reach the port. On plain
+> HTTP all of it is in the clear. Put TLS in front (Tailscale Serve, or
+> `scripts/nginx-sand.conf`), or set `HOST=127.0.0.1` to keep it on loopback.
 
 ---
 
@@ -234,7 +236,7 @@ which makes it a reasonable cron job.
 ### Server
 
 ```
-sand serve [--port 8123] [--bind 127.0.0.1] [--idle-timeout 30m] [--vault PATH]
+sand serve [--port 8123] [--bind 0.0.0.0] [--idle-timeout 30m] [--vault PATH]
 ```
 
 ### Standalone mode (no vault, no accounts)
@@ -258,7 +260,7 @@ pipe the password on stdin.
 
 ## Web UI
 
-`sand serve` puts a file browser at `http://127.0.0.1:8123`:
+`sand serve` puts a file browser at `http://<host>:8123`:
 
 - **Lock screen** — nothing can be listed or fetched until the vault is open
 - **Sidebar** — every connected account, live status, how many parts it holds,

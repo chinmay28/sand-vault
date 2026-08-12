@@ -62,17 +62,20 @@
 #   SAND_PREFIX      install prefix          (default: /opt/sand; source → $PREFIX/src)
 #   SAND_DATA_DIR    vault + backups dir     (default: /var/lib/sand)
 #   PORT             port to listen on       (default: 8123)
-#   HOST             bind address            (default: 127.0.0.1 — see the warning below)
+#   HOST             bind address            (default: 0.0.0.0 — see the warning below)
 #   INSTALL_NODE     auto | never            install Node 22 if missing/old (default: auto; build-time only)
 #   INSTALL_GO       auto | never            install Go if missing/old (default: auto; build-time only)
 #   BACKUP_KEEP      pre-upgrade backups kept (default: 10)
 #
-# A NOTE ON HOST.  This defaults to 127.0.0.1, not 0.0.0.0, and that is not
-# timidity. SAND Vault's server is the one component that ever holds plaintext: it
+# A NOTE ON HOST.  This defaults to 0.0.0.0, so the service is reachable from
+# the rest of your network as soon as it is installed. Understand what you are
+# exposing: this server is the one component that ever holds plaintext — it
 # rebuilds a decrypted file in memory to answer a download, and it takes your
-# vault password over the wire. On a bare HTTP listener both cross the network
-# in the clear. Expose it deliberately, behind TLS — a reverse proxy
-# (scripts/nginx-sand.conf) or Tailscale Serve — rather than by default.
+# vault password over the wire — and /api/vault/unlock answers anyone who can
+# reach the port. On a bare HTTP listener the password and every file you open
+# cross the network in the clear. Put TLS in front of it: a reverse proxy
+# (scripts/nginx-sand.conf) or Tailscale Serve. Set HOST=127.0.0.1 to keep it
+# on loopback until you have.
 
 set -euo pipefail
 
@@ -114,7 +117,7 @@ SVC_USER="${SAND_USER:-sand}"
 PREFIX="${SAND_PREFIX:-/opt/sand}"
 DATA_DIR="${SAND_DATA_DIR:-/var/lib/sand}"
 PORT="${PORT:-8123}"
-HOST="${HOST:-127.0.0.1}"
+HOST="${HOST:-0.0.0.0}"
 INSTALL_NODE="${INSTALL_NODE:-auto}"
 INSTALL_GO="${INSTALL_GO:-auto}"
 BACKUP_KEEP="${BACKUP_KEEP:-10}"

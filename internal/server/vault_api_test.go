@@ -468,3 +468,31 @@ func TestDefaultPort(t *testing.T) {
 			"and scripts/ alongside any deliberate change", DefaultPort)
 	}
 }
+
+func TestDefaultBind(t *testing.T) {
+	// All interfaces by default, matching the installers. This is a security
+	// relevant default — the server holds plaintext and /api/vault/unlock is
+	// unauthenticated — so it should not drift silently in either direction,
+	// and the copies in scripts/ have to move with it.
+	if DefaultBind != "0.0.0.0" {
+		t.Errorf("DefaultBind = %q, want 0.0.0.0 — update scripts/quickstart.sh, "+
+			"scripts/deploy-linux.sh and scripts/deploy-windows.ps1 alongside any "+
+			"deliberate change", DefaultBind)
+	}
+}
+
+func TestNonLoopbackBindIsWarnedAbout(t *testing.T) {
+	// The warning is the only thing standing between the new default and a
+	// user who has not thought about TLS, so assert the condition that fires it
+	// rather than trusting it stays wired up.
+	for _, bind := range []string{"127.0.0.1", "localhost", "::1"} {
+		if warnsOnBind(bind) {
+			t.Errorf("bind %q is loopback and should not warn", bind)
+		}
+	}
+	for _, bind := range []string{"0.0.0.0", "192.168.1.10", "::"} {
+		if !warnsOnBind(bind) {
+			t.Errorf("bind %q is reachable off-host and must warn", bind)
+		}
+	}
+}

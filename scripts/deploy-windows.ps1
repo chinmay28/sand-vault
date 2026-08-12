@@ -6,7 +6,7 @@
 # Defaults:
 #   Binary  = .\sand.exe
 #   Port    = 8123
-#   Bind    = 127.0.0.1
+#   Bind    = 0.0.0.0
 #
 # Requires: NSSM (Non-Sucking Service Manager) installed and on PATH.
 #   winget install nssm  — or download from https://nssm.cc
@@ -18,7 +18,7 @@
 param(
     [string]$Binary = "",
     [int]$Port      = 8123,
-    [string]$Bind   = "127.0.0.1"
+    [string]$Bind   = "0.0.0.0"
 )
 
 $ErrorActionPreference = "Stop"
@@ -85,6 +85,13 @@ Write-Host "    url    : http://${Bind}:${Port}"
 
 if ($Bind -eq "127.0.0.1") {
     Write-Host ""
-    Write-Host "    NOTE: bound to localhost only."
-    Write-Host "    To expose publicly re-run with -Bind 0.0.0.0"
+    Write-Host "    NOTE: bound to localhost only - reachable from this machine alone."
+    Write-Host "    Re-run with -Bind 0.0.0.0 to expose it, ideally behind TLS."
+} else {
+    Write-Host ""
+    Write-Host "    WARNING: bound to ${Bind} - reachable from your whole network." -ForegroundColor Yellow
+    Write-Host "    SAND Vault takes your vault password over this connection and sends" -ForegroundColor Yellow
+    Write-Host "    decrypted files back over it, and /api/vault/unlock answers anyone" -ForegroundColor Yellow
+    Write-Host "    who can reach the port. On plain HTTP all of that is in the clear." -ForegroundColor Yellow
+    Write-Host "    Put TLS in front of it. Re-run with -Bind 127.0.0.1 to close it." -ForegroundColor Yellow
 }
