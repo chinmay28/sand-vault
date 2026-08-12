@@ -5,6 +5,7 @@ import LockScreen from './components/LockScreen'
 import AccountsPanel from './components/AccountsPanel'
 import FileBrowser from './components/FileBrowser'
 import PreviewModal, { ShardInspector } from './components/PreviewModal'
+import { Brand, DevMark } from './components/Brand'
 import { Banner, Button } from './components/ui'
 
 /* SAND — a file browser over storage you do not fully trust.
@@ -111,29 +112,25 @@ export default function App() {
           display: 'flex',
           alignItems: 'center',
           gap: '14px',
-          padding: '12px 20px',
+          padding: '10px 20px',
           borderBottom: `1px solid ${COLORS.border}`,
           background: COLORS.surface,
         }}>
-          <span style={{
-            fontFamily: FONT.mono,
-            fontSize: '16px',
-            fontWeight: 700,
-            letterSpacing: '5px',
-            color: COLORS.accent,
-          }}>▣ SAND</span>
+          <Brand />
           <span style={{
             fontFamily: FONT.mono,
             fontSize: '10px',
             letterSpacing: '1.5px',
             textTransform: 'uppercase',
             color: COLORS.textMuted,
+            marginTop: '4px',
           }}>multi-cloud encrypted file store</span>
 
           <span style={{ flex: 1 }} />
 
           <Button size="sm" variant="ghost" onClick={refreshAll}>⟳ Refresh</Button>
           <Button size="sm" onClick={lock}>🔒 Lock vault</Button>
+          <DevMark />
         </header>
 
         <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
@@ -176,6 +173,24 @@ function Shell({ children }) {
     }}>
       <style>{`
         @keyframes sand-spin { to { transform: rotate(360deg); } }
+        @keyframes sand-dev-veil {
+          0% { opacity: 0; }
+          7% { opacity: 1; }
+          82% { opacity: 1; }
+          100% { opacity: 0; }
+        }
+        /* Lands with a small overshoot, then drifts out as the veil clears. */
+        @keyframes sand-dev-badge {
+          0% { transform: scale(0.82); }
+          14% { transform: scale(1.02); }
+          22% { transform: scale(1); }
+          82% { transform: scale(1); }
+          100% { transform: scale(1.06); }
+        }
+        /* The cross-fade stays — it isn't motion — but the scale doesn't. */
+        @media (prefers-reduced-motion: reduce) {
+          .sand-dev-lockup { animation: none !important; }
+        }
         * { box-sizing: border-box; }
         body { margin: 0; background: ${COLORS.bg}; }
         ::-webkit-scrollbar { width: 10px; height: 10px; }

@@ -1,6 +1,10 @@
-# Binary
-sand
-sand-*
+# Built binaries. These patterns MUST stay anchored to the repo root: a bare
+# `sand` matches any path component with that name, which silently excluded the
+# whole cmd/sand/ package — the CLI was missing from the repository for its
+# entire history because of it.
+/sand
+/sand.exe
+/dist/
 
 # Web build
 web/node_modules/

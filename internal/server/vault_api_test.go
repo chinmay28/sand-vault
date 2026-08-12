@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sand-project/sand/internal/version"
 )
 
 // testClient drives the full HTTP handler the same way a browser does,
@@ -432,5 +434,26 @@ func TestProviderSpecsAreAvailableWhileLocked(t *testing.T) {
 	specs, _ := body["specs"].([]any)
 	if len(specs) < 5 {
 		t.Errorf("expected every backend to be described, got %d", len(specs))
+	}
+}
+
+func TestHealthReportsTheBuildVersion(t *testing.T) {
+	c := newTestClient(t)
+
+	w, body := c.json(http.MethodGet, "/api/health", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("health: %d", w.Code)
+	}
+	if body["status"] != "ok" {
+		t.Errorf("status = %v, want ok", body["status"])
+	}
+
+	// One rendering of the version, from one place — the CLI, the health
+	// endpoint and the web header all read this same string.
+	if got := body["version"]; got != version.String() {
+		t.Errorf("version = %v, want %s", got, version.String())
+	}
+	if !strings.HasPrefix(version.String(), "v") {
+		t.Errorf("version %q should be v-prefixed to match the release tags", version.String())
 	}
 }

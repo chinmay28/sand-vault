@@ -95,6 +95,40 @@ class TestLockScreen:
         page.wait_for_selector("text=Wrong password", timeout=15000)
 
 
+class TestBrandAndVersion:
+    def test_header_shows_the_running_version(self, app, server):
+        import requests
+        reported = requests.get(f"{server}/api/health", timeout=10).json()["version"]
+
+        # The header, the CLI and /api/health all render the same string; a
+        # mismatch means the bundle and the binary were built from different
+        # trees, which is exactly the bug the shared version.mjs prevents.
+        assert reported.startswith("v")
+        assert app.get_by_text(reported, exact=True).count() > 0, (
+            f"header does not show {reported}"
+        )
+
+    def test_brand_lockup_is_present(self, app):
+        assert app.locator('img[src="/icon.svg"]').count() > 0
+
+    def test_developer_badge_opens_and_dismisses(self, app):
+        app.locator('button[aria-label="Show the developer badge"]').first.click()
+        app.wait_for_selector('img[alt*="CM Hegday"]', timeout=10000)
+        app.wait_for_selector("text=github.com/chinmay28", timeout=10000)
+
+        # Escape ends it early — nobody should have to wait out an animation.
+        app.keyboard.press("Escape")
+        app.wait_for_selector('img[alt*="CM Hegday"]', state="detached", timeout=10000)
+
+    def test_lock_screen_shows_the_version_too(self, page, server, unlocked):
+        import requests
+        reported = requests.get(f"{server}/api/health", timeout=10).json()["version"]
+
+        page.goto(server)
+        page.wait_for_selector("text=Vault password", timeout=15000)
+        assert page.get_by_text(reported, exact=True).count() > 0
+
+
 class TestBrowserShell:
     def test_header_and_panels_render(self, app):
         assert app.get_by_text("Connected clouds").count() > 0

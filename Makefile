@@ -1,4 +1,4 @@
-.PHONY: build build-web build-go release test test-cover test-e2e test-e2e-slow test-all clean
+.PHONY: build build-web build-go version release test test-cover test-e2e test-e2e-slow test-all clean
 
 # Build everything: frontend + Go binary
 build: build-web build-go
@@ -15,8 +15,20 @@ else
 BUILD_OUT := sand
 endif
 
+# The patch number is the repo's commit count, which only exists at build time —
+# stamp it in (see internal/version and scripts/version.mjs). A bare `go build`
+# leaves it at 0, which reads as "unstamped development build".
+VERSION_PKG := github.com/sand-project/sand/internal/version
+PATCH := $(shell node scripts/version.mjs --patch 2>/dev/null || echo 0)
+
 build-go:
-	CGO_ENABLED=0 go build -ldflags="-s -w" -o $(BUILD_OUT) ./cmd/sand
+	CGO_ENABLED=0 go build -trimpath \
+		-ldflags="-s -w -X $(VERSION_PKG).Patch=$(PATCH)" \
+		-o $(BUILD_OUT) ./cmd/sand
+
+# Print the version this tree would build as
+version:
+	@node scripts/version.mjs
 
 # Cross-compile release binaries for all platforms (requires Linux/macOS host)
 release: build-web
