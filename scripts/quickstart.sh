@@ -120,6 +120,12 @@ INSTALL_GO="${INSTALL_GO:-auto}"
 BACKUP_KEEP="${BACKUP_KEEP:-10}"
 
 SRC_DIR="$PREFIX/src"
+# The service user is created with --no-create-home, so the home directory in
+# its passwd entry does not exist and it has no way to create one. npm needs a
+# writable HOME for its cache and logs — without it the install dies with
+# `EACCES: permission denied, mkdir '/home/sand'` — and Go wants one for
+# GOCACHE. Everything run as the service user therefore gets a HOME it owns.
+BUILD_HOME="$PREFIX/.build-home"
 VAULT_PATH="$DATA_DIR/vault.sand"
 BACKUP_DIR="$DATA_DIR/backups"
 SERVICE_NAME="sand"
@@ -170,11 +176,36 @@ printf '  %-10s %s\n' "listen"   "http://$HOST:$PORT"
 # Run npm/git/go as the service user so the tree stays owned by them, and so the
 # build matches the runtime account. Falls back to plain exec before the user exists.
 as_svc() {
+  # sudo scrubs the environment, so everything the build genuinely needs has to
+  # be handed over explicitly. PATH matters because a `Defaults secure_path` in
+  # sudoers overrides --preserve-env=PATH and would hide a freshly installed Go;
+  # the proxy and CA variables matter because without them npm and go cannot
+  # reach the network at all on a host behind a corporate proxy.
+  local -a passthru=("HOME=$BUILD_HOME" "PATH=$PATH")
+  local v val
+  for v in HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy \
+           GOPROXY GOPRIVATE; do
+    val="${!v-}"
+    [ -n "$val" ] && passthru+=("$v=$val")
+  done
+
+  # A custom CA bundle is only useful if the service user can read it. Handing
+  # over a path it cannot open makes things worse than saying nothing: node
+  # warns, then fails TLS anyway, and the reason is buried.
+  if [ -n "${NODE_EXTRA_CA_CERTS-}" ]; then
+    if sudo -u "$SVC_USER" test -r "$NODE_EXTRA_CA_CERTS" 2>/dev/null; then
+      passthru+=("NODE_EXTRA_CA_CERTS=$NODE_EXTRA_CA_CERTS")
+    else
+      warn "NODE_EXTRA_CA_CERTS ($NODE_EXTRA_CA_CERTS) is not readable by $SVC_USER — ignoring it."
+      warn "If the build cannot reach the registry, make that file world-readable and re-run."
+    fi
+  fi
+
   if id -u "$SVC_USER" >/dev/null 2>&1; then
     # Build needs devDependencies → make sure NODE_ENV isn't 'production'.
-    sudo -u "$SVC_USER" --preserve-env=PATH env -u NODE_ENV "$@"
+    sudo -u "$SVC_USER" --preserve-env=PATH env -u NODE_ENV "${passthru[@]}" "$@"
   else
-    env -u NODE_ENV "$@"
+    env -u NODE_ENV "${passthru[@]}" "$@"
   fi
 }
 
@@ -243,6 +274,9 @@ else
   useradd --system --no-create-home --shell /usr/sbin/nologin "$SVC_USER"
   ok "created system user '$SVC_USER'"
 fi
+
+# Must exist before the first as_svc call (the clone in step 3 is one).
+install -d -o "$SVC_USER" -g "$SVC_USER" -m 700 "$BUILD_HOME"
 
 # Is there already a service here? That makes this run an upgrade rather than
 # a fresh install, which is what turns on snapshots and rollback.
@@ -332,20 +366,28 @@ step "[4/7] Build"
 
 build_src() {
   # Build the web client first — the Go binary embeds it, so the order matters.
-  as_svc env PATH="$PATH" npm --prefix "$SRC_DIR/web" ci
-  as_svc env PATH="$PATH" npm --prefix "$SRC_DIR/web" run build
+  #
+  # `cd` rather than `npm --prefix`: --prefix is not honoured consistently for
+  # `npm ci` across npm versions — some read package-lock.json from the working
+  # directory regardless — and the resulting EUSAGE is a baffling way to fail.
+  #
+  # node_modules is cleared first so a re-run after a failed install starts from
+  # a known state instead of a half-extracted tree.
+  #
+  # --no-audit --no-fund: an unattended installer must not fail because a
+  # non-essential advisory lookup could not reach the registry.
+  as_svc sh -c "cd '$SRC_DIR/web' && rm -rf node_modules && npm ci --no-audit --no-fund"
+  as_svc sh -c "cd '$SRC_DIR/web' && npm run build"
+
   # Stamp the version: the patch number is the commit count, which only exists
   # here at build time. `make build-go` does the same thing.
   patch="$(as_svc node "$SRC_DIR/scripts/version.mjs" --patch 2>/dev/null || echo 0)"
-  as_svc env PATH="$PATH" HOME="$SRC_DIR/.cache" \
-    go -C "$SRC_DIR" build -trimpath \
+  as_svc go -C "$SRC_DIR" build -trimpath \
       -ldflags "-s -w -X github.com/chinmay28/sand-vault/internal/version.Patch=${patch}" \
       -o "$STAGED_BIN" ./cmd/sand
 }
 
 if [ "$INSTALL_MODE" = source ]; then
-  # Cache dirs the service user can actually write to (no home directory).
-  install -d -o "$SVC_USER" -g "$SVC_USER" -m 755 "$SRC_DIR/.cache"
   chown -R "$SVC_USER":"$SVC_USER" "$SRC_DIR" 2>/dev/null || true
   # The build runs while the OLD binary keeps serving. A failure here leaves
   # the running service completely untouched.
