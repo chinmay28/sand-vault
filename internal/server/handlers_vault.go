@@ -3,7 +3,7 @@ package server
 import (
 	"net/http"
 
-	"github.com/sand-project/sand/internal/vault"
+	"github.com/chinmay28/sand-vault/internal/vault"
 )
 
 // vaultStatus is what the frontend polls to decide whether to show the lock

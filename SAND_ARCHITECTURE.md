@@ -1,12 +1,12 @@
-# SAND — Secure Archival Network Distribution
+# SAND Vault — Secure Archival Network Distribution
 
 ## Architecture Document v2.0
 
 ---
 
-## 1. What SAND Is
+## 1. What SAND Vault Is
 
-SAND is a **file browser over storage you do not fully trust**.
+SAND Vault is a **file browser over storage you do not fully trust**.
 
 You connect the cloud accounts you already have — a Google Drive, an S3 bucket,
 a Nextcloud server, a folder on an external disk. From then on SAND behaves

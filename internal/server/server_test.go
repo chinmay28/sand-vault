@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sand-project/sand/internal/archive"
+	"github.com/chinmay28/sand-vault/internal/archive"
 )
 
 // ---------------------------------------------------------------------------

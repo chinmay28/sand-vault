@@ -3,7 +3,7 @@ package vault
 import (
 	"fmt"
 
-	"github.com/sand-project/sand/internal/archive"
+	"github.com/chinmay28/sand-vault/internal/archive"
 )
 
 // Policy decides how shards are spread over the connected accounts.

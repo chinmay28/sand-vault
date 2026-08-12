@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/sand-project/sand/internal/crypto"
+	"github.com/chinmay28/sand-vault/internal/crypto"
 )
 
 func makeTestHeader(partNum uint8, filename string) *Header {

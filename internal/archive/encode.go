@@ -4,11 +4,11 @@ import (
 	"crypto/sha256"
 	"fmt"
 
+	"github.com/chinmay28/sand-vault/internal/compress"
+	"github.com/chinmay28/sand-vault/internal/crypto"
+	"github.com/chinmay28/sand-vault/internal/mediafile"
+	"github.com/chinmay28/sand-vault/internal/splitter"
 	"github.com/google/uuid"
-	"github.com/sand-project/sand/internal/compress"
-	"github.com/sand-project/sand/internal/crypto"
-	"github.com/sand-project/sand/internal/mediafile"
-	"github.com/sand-project/sand/internal/splitter"
 )
 
 // PartCount is the number of media parts produced for every archived file.

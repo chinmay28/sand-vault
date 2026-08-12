@@ -11,8 +11,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/sand-project/sand/internal/crypto"
-	"github.com/sand-project/sand/internal/provider"
+	"github.com/chinmay28/sand-vault/internal/crypto"
+	"github.com/chinmay28/sand-vault/internal/provider"
 )
 
 // StoreVersion is the on-disk vault format version.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# deploy-linux.sh — Install an ALREADY-BUILT SAND binary as a systemd service.
+# deploy-linux.sh — Install an ALREADY-BUILT SAND Vault binary as a systemd service.
 #
 # For a one-command install that also fetches, builds, upgrades and rolls back,
 # use scripts/quickstart.sh instead. This script is the small path: you have a
@@ -48,7 +48,7 @@ if [[ -z "${BINARY}" || ! -f "${BINARY}" ]]; then
     exit 1
 fi
 
-echo "==> Deploying SAND"
+echo "==> Deploying SAND Vault"
 echo "    binary : ${BINARY}"
 echo "    port   : ${PORT}"
 echo "    bind   : ${BIND}"
@@ -72,7 +72,7 @@ echo "    data dir → ${DATA_DIR}"
 # ── Write systemd unit ───────────────────────────────────────────────────────
 cat > /etc/systemd/system/sand.service <<EOF
 [Unit]
-Description=SAND — Secure Archival Network Distribution
+Description=SAND Vault — Secure Archival Network Distribution
 After=network.target
 
 [Service]
@@ -107,7 +107,7 @@ systemctl enable sand
 systemctl restart sand
 
 echo ""
-echo "==> SAND is running!"
+echo "==> SAND Vault is running!"
 echo "    status : systemctl status sand"
 echo "    logs   : journalctl -u sand -f"
 echo "    url    : http://${BIND}:${PORT}"
@@ -121,7 +121,7 @@ echo "    BACK UP ${VAULT_PATH} — it is the only record of which account holds
 echo "    which part of which file, and the only copy of your cloud credentials."
 if [[ "${BIND}" == "127.0.0.1" ]]; then
     echo ""
-    echo "    NOTE: bound to localhost only. SAND takes your vault password over"
+    echo "    NOTE: bound to localhost only. SAND Vault takes your vault password"
     echo "    this connection and sends decrypted files back over it, so put TLS"
     echo "    in front before exposing it:"
     echo "      - place a reverse proxy (nginx/caddy) in front, then"

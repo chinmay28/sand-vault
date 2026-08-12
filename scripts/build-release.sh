@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# build-release.sh — Build SAND release binaries for all platforms.
+# build-release.sh — Build SAND Vault release binaries for all platforms.
 #
 # Usage:
 #   ./scripts/build-release.sh [version]
@@ -21,14 +21,14 @@ set -euo pipefail
 VERSION="${1:-$(node "$(dirname "$0")/version.mjs")}"
 PATCH="$(node "$(dirname "$0")/version.mjs" --patch)"
 DIST="dist"
-LDFLAGS="-s -w -X github.com/sand-project/sand/internal/version.Patch=${PATCH}"
+LDFLAGS="-s -w -X github.com/chinmay28/sand-vault/internal/version.Patch=${PATCH}"
 
 if [[ "${PATCH}" == "0" ]]; then
     echo "warn: patch number is 0 — this is an unstamped build, not a release." >&2
     echo "      A shallow clone does this; fetch --unshallow for the real count." >&2
 fi
 
-echo "==> SAND release build  version=${VERSION}"
+echo "==> SAND Vault release build  version=${VERSION}"
 
 # ── 1. Frontend ──────────────────────────────────────────────────────────────
 echo "==> Building React frontend…"

@@ -9,8 +9,8 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
-	"github.com/sand-project/sand/internal/server"
-	"github.com/sand-project/sand/internal/vault"
+	"github.com/chinmay28/sand-vault/internal/server"
+	"github.com/chinmay28/sand-vault/internal/vault"
 )
 
 // vaultPath resolves the vault location from the --vault flag, the SAND_VAULT

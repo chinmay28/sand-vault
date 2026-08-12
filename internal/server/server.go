@@ -1,4 +1,4 @@
-// Package server exposes the SAND vault over HTTP and serves the embedded
+// Package server exposes the SAND Vault index over HTTP and serves the embedded
 // file-browser frontend.
 //
 // The server is the only component that ever holds plaintext: it decodes an
@@ -22,8 +22,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sand-project/sand/internal/vault"
-	"github.com/sand-project/sand/internal/version"
+	"github.com/chinmay28/sand-vault/internal/vault"
+	"github.com/chinmay28/sand-vault/internal/version"
 )
 
 //go:embed all:dist
@@ -180,7 +180,7 @@ func (s *Server) Start() error {
 
 	addr := net.JoinHostPort(s.Bind, fmt.Sprint(s.Port))
 	v, _ := s.Vault()
-	log.Printf("SAND %s starting on http://%s (vault: %s)", version.String(), addr, v.Path())
+	log.Printf("SAND Vault %s starting on http://%s (vault: %s)", version.String(), addr, v.Path())
 	if s.Bind != "127.0.0.1" && s.Bind != "localhost" && s.Bind != "::1" {
 		log.Printf("WARNING: bound to %s — the vault password and decrypted files "+
 			"will cross the network in the clear unless you put TLS in front of it", s.Bind)

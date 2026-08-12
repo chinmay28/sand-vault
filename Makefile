@@ -18,7 +18,7 @@ endif
 # The patch number is the repo's commit count, which only exists at build time —
 # stamp it in (see internal/version and scripts/version.mjs). A bare `go build`
 # leaves it at 0, which reads as "unstamped development build".
-VERSION_PKG := github.com/sand-project/sand/internal/version
+VERSION_PKG := github.com/chinmay28/sand-vault/internal/version
 PATCH := $(shell node scripts/version.mjs --patch 2>/dev/null || echo 0)
 
 build-go:

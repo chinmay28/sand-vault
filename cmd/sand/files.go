@@ -10,7 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/sand-project/sand/internal/vault"
+	"github.com/chinmay28/sand-vault/internal/vault"
 )
 
 func lsCmd() *cobra.Command {

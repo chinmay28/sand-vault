@@ -1,19 +1,19 @@
-# Contributing to SAND
+# Contributing to SAND Vault
 
 Thanks for wanting to contribute! Please read this before opening a pull
 request.
 
 ## License and the CLA
 
-SAND is licensed under the **GNU Affero General Public License v3.0**
+SAND Vault is licensed under the **GNU Affero General Public License v3.0**
 (`AGPL-3.0-only`). See [`LICENSE`](./LICENSE).
 
 By contributing, you agree to the [Contributor License Agreement](./CLA.md). In
 short: you keep ownership of your work, but you grant the maintainer a broad
 license — including the right to relicense your contribution under other terms
 (such as a future commercial/dual license). This is what keeps it possible to
-offer a commercial edition of SAND down the line. If you are contributing on
-behalf of an employer, make sure you have the right to do so.
+offer a commercial edition of SAND Vault down the line. If you are contributing
+on behalf of an employer, make sure you have the right to do so.
 
 ## Signing off your commits (DCO)
 

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sand-project/sand/internal/provider"
+	"github.com/chinmay28/sand-vault/internal/provider"
 )
 
 const testPassword = "correct horse battery staple"
