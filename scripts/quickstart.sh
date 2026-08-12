@@ -30,6 +30,11 @@
 #
 #   * Idempotent. Re-running only swaps in newer code; it never re-initialises
 #     a vault or touches stored files.
+#   * "Newer code" means whatever $SAND_REF points at — EXCEPT when you run
+#     this from inside a checkout, where it builds that checkout exactly as it
+#     stands and never pulls. That is deliberate: it is how you deploy work in
+#     progress. It also means a tree cloned once and never pulled reinstalls
+#     the same commit forever, so re-running says how far behind it is.
 #   * The vault lives at a stable path OUTSIDE the source tree ($DATA_DIR), so
 #     cloning, rebuilding, or pulling can never clobber it.
 #   * Every upgrade STOPS the service and snapshots the vault file BEFORE
@@ -300,6 +305,38 @@ release_arch() {
   esac
 }
 
+# git in someone else's checkout, run as root. Without this, git refuses to
+# touch a tree it does not own and every read below fails identically to "no
+# repository here", which is the one answer that must not be guessed at.
+src_git() { git -C "$SRC_DIR" -c safe.directory="$SRC_DIR" "$@"; }
+
+# What the build is about to be made from, appended to the line announcing it.
+describe_head() {
+  [ -d "$SRC_DIR/.git" ] || return 0
+  sha="$(src_git rev-parse --short HEAD 2>/dev/null)" || return 0
+  printf ' (%s)' "$sha"
+}
+
+# Building a checkout in place is the whole point of this mode — it is how you
+# deploy something you are still working on. But it also means a tree that was
+# cloned once and never pulled rebuilds the same commit forever, and the only
+# outward sign is a version number that will not move: the deploy succeeds, the
+# service restarts, and nothing whatsoever changes. Say it out loud instead.
+warn_if_behind() {
+  [ -d "$SRC_DIR/.git" ] || return 0
+  # Offline, or a repo with no origin — nothing to compare against, so this
+  # tells us nothing either way and stays quiet.
+  src_git fetch --quiet --prune origin 2>/dev/null || return 0
+  src_git rev-parse --verify --quiet "origin/$SAND_REF" >/dev/null 2>&1 || return 0
+
+  behind="$(src_git rev-list --count "HEAD..origin/$SAND_REF" 2>/dev/null || echo 0)"
+  [ "${behind:-0}" -gt 0 ] || return 0
+
+  warn "this checkout is $behind commit(s) behind origin/$SAND_REF."
+  warn "quickstart builds what is here, so none of them will be installed."
+  warn "to deploy them:  git -C '$SRC_DIR' pull --ff-only   (then re-run this)"
+}
+
 RELEASE_VERSION=""
 if [ "$INSTALL_MODE" = release ]; then
   arch="$(release_arch)"
@@ -342,8 +379,9 @@ if [ "$INSTALL_MODE" = release ]; then
   ok "staged $RELEASE_VERSION → $STAGED_BIN"
 else
   if [ -n "$LOCAL_CHECKOUT" ]; then
-    ok "building the checkout at $SRC_DIR"
-    [ -d "$SRC_DIR/.git" ] && PREV_SHA="$(git -C "$SRC_DIR" rev-parse HEAD 2>/dev/null || true)"
+    ok "building the checkout at $SRC_DIR$(describe_head)"
+    [ -d "$SRC_DIR/.git" ] && PREV_SHA="$(src_git rev-parse HEAD 2>/dev/null || true)"
+    warn_if_behind
   elif [ -d "$SRC_DIR/.git" ]; then
     PREV_SHA="$(as_svc git -C "$SRC_DIR" rev-parse HEAD)"
     log "updating $SRC_DIR to $SAND_REF…"
