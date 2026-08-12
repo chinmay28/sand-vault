@@ -277,6 +277,11 @@ pipe the password on stdin.
 The UI loads no external fonts, scripts or styles. Opening your vault makes zero
 third-party requests.
 
+Asset filenames carry a content hash and are cached for a year; `index.html`,
+which names the current bundle, revalidates on every load against an ETag. An
+upgrade therefore reaches a browser the next time it is opened, without the page
+paying for a re-download when nothing has changed.
+
 ### On a phone
 
 A vault you reach over Tailscale or a reverse proxy gets opened from a phone as

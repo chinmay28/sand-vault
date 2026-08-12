@@ -7,7 +7,9 @@
 package server
 
 import (
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -166,6 +168,10 @@ func (s *Server) Handler() (http.Handler, error) {
 		return nil, fmt.Errorf("failed to get embedded filesystem: %w", err)
 	}
 	fileServer := http.FileServer(http.FS(distFS))
+	etags, err := buildETags(distFS)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fingerprint embedded assets: %w", err)
+	}
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/") {
@@ -176,10 +182,69 @@ func (s *Server) Handler() (http.Handler, error) {
 		if r.URL.Path != "/" && !strings.Contains(filepath.Base(r.URL.Path), ".") {
 			r.URL.Path = "/"
 		}
+		setAssetCaching(w, r.URL.Path, etags)
 		fileServer.ServeHTTP(w, r)
 	})
 
 	return s.withSameOriginGuard(mux), nil
+}
+
+// buildETags fingerprints every embedded frontend file by content.
+//
+// The assets are baked into the binary, so a hash of the bytes is fixed for the
+// life of the process and changes only when the build does — which is exactly
+// what a validator is supposed to mean. Computed once here rather than per
+// request; the whole frontend is a few hundred kilobytes.
+func buildETags(distFS fs.FS) (map[string]string, error) {
+	tags := make(map[string]string)
+
+	err := fs.WalkDir(distFS, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		body, readErr := fs.ReadFile(distFS, p)
+		if readErr != nil {
+			return readErr
+		}
+		sum := sha256.Sum256(body)
+		tag := `"` + hex.EncodeToString(sum[:8]) + `"`
+		tags["/"+p] = tag
+		// The SPA rewrite turns every app route into a request for "/".
+		if p == "index.html" {
+			tags["/"] = tag
+		}
+		return nil
+	})
+
+	return tags, err
+}
+
+// setAssetCaching tells the browser how long it may keep each part of the
+// frontend.
+//
+// Without this the response carries no Cache-Control, no ETag and no
+// Last-Modified — the embed filesystem reports a zero modification time, so
+// net/http omits that too. A cache handed no expiry information at all is
+// allowed to invent one (RFC 9111 §4.2.2), and mobile browsers invent
+// generously. index.html is the file that names the current bundle, so a
+// browser holding a stale copy pins the entire app to the build it first
+// loaded: a phone that has opened the vault once keeps serving itself that
+// frontend through any number of deploys, which is exactly what happened.
+//
+// Vite fingerprints everything under /assets/, so those may be kept forever —
+// a rebuild changes the filename rather than the bytes behind one. Everything
+// else revalidates on every load, which the ETag settles in a 304.
+func setAssetCaching(w http.ResponseWriter, path string, etags map[string]string) {
+	if tag, ok := etags[path]; ok {
+		// Set before serving: net/http answers If-None-Match off this header.
+		w.Header().Set("ETag", tag)
+	}
+
+	if strings.HasPrefix(path, "/assets/") {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-cache")
 }
 
 // Start initializes routes and starts the HTTP server.
