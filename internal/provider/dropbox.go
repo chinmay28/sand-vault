@@ -13,15 +13,35 @@ func init() {
 	Register(Spec{
 		Kind:  KindDropbox,
 		Label: "Dropbox",
-		Description: "A Dropbox account. Supply an app key/secret plus a refresh token for " +
-			"long-lived access, or paste a short-lived access token to try it out.",
+		Description: "A Dropbox account. Sign in and SAND stores its parts in one folder; " +
+			"an app key, secret and refresh token can also be pasted in by hand.",
 		DocsURL: "https://www.dropbox.com/developers/documentation/http/documentation",
+		Order:   12,
 		Fields: []FieldSpec{
-			{Key: "app_key", Label: "App key", Help: "Required when using a refresh token."},
-			{Key: "app_secret", Label: "App secret", Secret: true},
-			{Key: "refresh_token", Label: "Refresh token", Secret: true},
-			{Key: "access_token", Label: "Access token", Secret: true, Help: "Alternative to a refresh token; expires after a few hours."},
+			{Key: "app_key", Label: "App key", Help: "Required when using a refresh token.", Advanced: true},
+			{Key: "app_secret", Label: "App secret", Secret: true, Advanced: true},
+			{Key: "refresh_token", Label: "Refresh token", Secret: true, Advanced: true},
+			{Key: "access_token", Label: "Access token", Secret: true, Advanced: true, Help: "Alternative to a refresh token; expires after a few hours."},
 			{Key: "prefix", Label: "Folder", Default: "sand", Help: "Folder inside the app or account root."},
+		},
+		OAuth: &OAuthSpec{
+			SignInLabel:       "Continue with Dropbox",
+			AuthURL:           "https://www.dropbox.com/oauth2/authorize",
+			TokenURL:          dropboxTokenURL,
+			SecretRequired:    true,
+			ClientIDField:     "app_key",
+			ClientSecretField: "app_secret",
+			RefreshTokenField: "refresh_token",
+			ClientIDEnv:       "SAND_DROPBOX_APP_KEY",
+			ClientSecretEnv:   "SAND_DROPBOX_APP_SECRET",
+			ConsoleURL:        "https://www.dropbox.com/developers/apps",
+			ConsoleHelp: "Create an app with scoped access to its own app folder, tick " +
+				"files.content.read and files.content.write, and add the redirect URI below.",
+			AuthParams: map[string]string{
+				// Dropbox hands out a refresh token only when the request says
+				// it wants offline access.
+				"token_access_type": "offline",
+			},
 		},
 	}, newDropboxProvider)
 }
@@ -34,8 +54,7 @@ const (
 
 // dropboxProvider stores each shard as a file under a folder in the account.
 type dropboxProvider struct {
-	base
-	tokens *tokenSource
+	oauthBase
 	prefix string
 }
 
@@ -46,13 +65,16 @@ func newDropboxProvider(cfg Config) (Provider, error) {
 	}
 
 	return &dropboxProvider{
-		base: base{cfg: cfg},
-		tokens: &tokenSource{
-			tokenURL:     dropboxTokenURL,
-			clientID:     cfg.Option("app_key"),
-			clientSecret: cfg.Option("app_secret"),
-			refreshToken: strings.TrimSpace(cfg.Option("refresh_token")),
-			staticToken:  strings.TrimSpace(cfg.Option("access_token")),
+		oauthBase: oauthBase{
+			base: base{cfg: cfg},
+			tokens: &tokenSource{
+				tokenURL:     dropboxTokenURL,
+				clientID:     cfg.Option("app_key"),
+				clientSecret: cfg.Option("app_secret"),
+				refreshToken: strings.TrimSpace(cfg.Option("refresh_token")),
+				staticToken:  strings.TrimSpace(cfg.Option("access_token")),
+			},
+			refreshField: "refresh_token",
 		},
 		prefix: strings.Trim(strings.TrimSpace(cfg.Option("prefix")), "/"),
 	}, nil
@@ -274,6 +296,27 @@ func (p *dropboxProvider) Ping(ctx context.Context) error {
 		return httpError("dropbox check", resp)
 	}
 	return nil
+}
+
+// Account reports the signed-in Dropbox account, used to label the connection.
+func (p *dropboxProvider) Account(ctx context.Context) (string, error) {
+	body, _, err := p.rpc(ctx, "/users/get_current_account", nil)
+	if err != nil {
+		return "", err
+	}
+	var payload struct {
+		Email string `json:"email"`
+		Name  struct {
+			DisplayName string `json:"display_name"`
+		} `json:"name"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "", err
+	}
+	if payload.Email != "" {
+		return payload.Email, nil
+	}
+	return payload.Name.DisplayName, nil
 }
 
 func (p *dropboxProvider) Usage(ctx context.Context) (Usage, error) {

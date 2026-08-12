@@ -17,17 +17,40 @@ func init() {
 	Register(Spec{
 		Kind:  KindGDrive,
 		Label: "Google Drive",
-		Description: "A Google account's Drive storage. SAND needs an OAuth client and a " +
-			"refresh token with the drive.file scope; it can only see the files it creates.",
+		Description: "A Google account's Drive storage. Sign in and SAND gets the drive.file " +
+			"scope, which can only see the files it creates — nothing already in the account.",
 		DocsURL: "https://developers.google.com/drive/api/quickstart/go",
+		Order:   10,
 		Fields: []FieldSpec{
-			{Key: "client_id", Label: "OAuth client ID", Required: true},
-			{Key: "client_secret", Label: "OAuth client secret", Secret: true, Required: true},
-			{Key: "refresh_token", Label: "Refresh token", Secret: true, Required: true},
+			{Key: "client_id", Label: "OAuth client ID", Required: true, Advanced: true},
+			{Key: "client_secret", Label: "OAuth client secret", Secret: true, Required: true, Advanced: true},
+			{Key: "refresh_token", Label: "Refresh token", Secret: true, Required: true, Advanced: true},
 			{
 				Key:   "folder_id",
 				Label: "Folder ID",
 				Help:  "Optional Drive folder to store shards in. Blank uses the account root.",
+			},
+		},
+		OAuth: &OAuthSpec{
+			SignInLabel:       "Continue with Google",
+			AuthURL:           "https://accounts.google.com/o/oauth2/v2/auth",
+			TokenURL:          googleTokenURL,
+			Scopes:            []string{"https://www.googleapis.com/auth/drive.file"},
+			PKCE:              true,
+			SecretRequired:    true,
+			ClientIDField:     "client_id",
+			ClientSecretField: "client_secret",
+			RefreshTokenField: "refresh_token",
+			ClientIDEnv:       "SAND_GOOGLE_CLIENT_ID",
+			ClientSecretEnv:   "SAND_GOOGLE_CLIENT_SECRET",
+			ConsoleURL:        "https://console.cloud.google.com/apis/credentials",
+			ConsoleHelp: "Enable the Google Drive API, then create an OAuth client ID of type " +
+				"“Web application” and add the redirect URI below to it.",
+			AuthParams: map[string]string{
+				// Google only parts with a refresh token when asked, and only
+				// re-issues one on a fresh consent.
+				"access_type": "offline",
+				"prompt":      "consent",
 			},
 		},
 	}, newGDriveProvider)
@@ -43,8 +66,7 @@ const (
 // so the SAND object key is recorded in the file's appProperties and used as
 // the lookup index.
 type gdriveProvider struct {
-	base
-	tokens   *tokenSource
+	oauthBase
 	folderID string
 
 	// idCache memoizes key -> Drive file ID so repeated reads of the same
@@ -55,13 +77,16 @@ type gdriveProvider struct {
 
 func newGDriveProvider(cfg Config) (Provider, error) {
 	return &gdriveProvider{
-		base: base{cfg: cfg},
-		tokens: &tokenSource{
-			tokenURL:     googleTokenURL,
-			clientID:     cfg.Option("client_id"),
-			clientSecret: cfg.Option("client_secret"),
-			refreshToken: cfg.Option("refresh_token"),
-			staticToken:  cfg.Option("access_token"),
+		oauthBase: oauthBase{
+			base: base{cfg: cfg},
+			tokens: &tokenSource{
+				tokenURL:     googleTokenURL,
+				clientID:     cfg.Option("client_id"),
+				clientSecret: cfg.Option("client_secret"),
+				refreshToken: cfg.Option("refresh_token"),
+				staticToken:  cfg.Option("access_token"),
+			},
+			refreshField: "refresh_token",
 		},
 		folderID: strings.TrimSpace(cfg.Option("folder_id")),
 		idCache:  map[string]string{},
@@ -369,6 +394,36 @@ func (p *gdriveProvider) Ping(ctx context.Context) error {
 		return httpError("google drive check", resp)
 	}
 	return nil
+}
+
+// Account reports the signed-in Google account, used to label the connection.
+func (p *gdriveProvider) Account(ctx context.Context) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		gdriveAPI+"/about?fields=user(emailAddress)", nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := p.do(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	defer drainAndClose(resp)
+	if !isSuccess(resp.StatusCode) {
+		return "", httpError("google drive account", resp)
+	}
+	body, err := readAllBody(resp)
+	if err != nil {
+		return "", err
+	}
+	var payload struct {
+		User struct {
+			EmailAddress string `json:"emailAddress"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "", err
+	}
+	return payload.User.EmailAddress, nil
 }
 
 func (p *gdriveProvider) Usage(ctx context.Context) (Usage, error) {

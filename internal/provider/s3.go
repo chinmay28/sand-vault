@@ -21,6 +21,33 @@ func init() {
 		Label: "S3-compatible storage",
 		Description: "Amazon S3, Cloudflare R2, Backblaze B2, Wasabi, MinIO, or any other " +
 			"service speaking the S3 API. Leave the endpoint blank for Amazon S3.",
+		Order: 20,
+		Presets: []Preset{
+			{Key: "aws", Label: "Amazon S3", Values: map[string]string{"endpoint": ""}},
+			{
+				Key:    "r2",
+				Label:  "Cloudflare R2",
+				Help:   "Replace <account> with your Cloudflare account ID.",
+				Values: map[string]string{"endpoint": "https://<account>.r2.cloudflarestorage.com", "region": "auto"},
+			},
+			{
+				Key:    "b2",
+				Label:  "Backblaze B2",
+				Help:   "Use the S3-compatible endpoint for your bucket's region.",
+				Values: map[string]string{"endpoint": "https://s3.us-west-004.backblazeb2.com", "region": "us-west-004"},
+			},
+			{
+				Key:    "wasabi",
+				Label:  "Wasabi",
+				Values: map[string]string{"endpoint": "https://s3.us-east-1.wasabisys.com", "region": "us-east-1"},
+			},
+			{
+				Key:    "minio",
+				Label:  "MinIO",
+				Help:   "Point the endpoint at your own server.",
+				Values: map[string]string{"endpoint": "http://localhost:9000", "region": "us-east-1"},
+			},
+		},
 		Fields: []FieldSpec{
 			{Key: "bucket", Label: "Bucket", Placeholder: "my-sand-shards", Required: true},
 			{Key: "region", Label: "Region", Placeholder: "us-east-1", Default: "us-east-1", Required: true},

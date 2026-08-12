@@ -1,7 +1,8 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { COLORS, FONT, KIND_ICONS, accountColor, formatBytes } from '../theme'
 import { api } from '../api'
-import { Banner, Button, Input, Modal, PasswordInput, Spinner } from './ui'
+import { Banner, Button, Spinner } from './ui'
+import ConnectCloud, { pendingOAuthFlow } from './ConnectCloud'
 import { DevMark } from './Brand'
 
 /* The sidebar: every cloud account SAND is wired into, whether it is answering,
@@ -11,7 +12,9 @@ import { DevMark } from './Brand'
 export default function AccountsPanel({
   providers, loading, stats, mobile, open, onClose, onRefresh, onChanged,
 }) {
-  const [connecting, setConnecting] = useState(false)
+  // A sign-in that took over the tab is still in flight when the app reloads:
+  // reopen the dialog on it rather than making the user start again.
+  const [connecting, setConnecting] = useState(() => Boolean(pendingOAuthFlow()))
   const [error, setError] = useState(null)
 
   useEffect(() => {
@@ -170,7 +173,7 @@ export default function AccountsPanel({
       </div>
 
       {connecting && (
-        <ConnectModal
+        <ConnectCloud
           onClose={() => setConnecting(false)}
           onConnected={() => { setConnecting(false); onChanged() }}
         />
@@ -279,143 +282,5 @@ function AccountCard({ provider, onRemove }) {
           style={{ color: COLORS.error }}>Disconnect</Button>
       </div>
     </div>
-  )
-}
-
-/* The connect form is generated from the backend's own field specs, so a new
-   provider kind appears here without any frontend change. */
-function ConnectModal({ onClose, onConnected }) {
-  const [specs, setSpecs] = useState([])
-  const [kind, setKind] = useState(null)
-  const [name, setName] = useState('')
-  const [values, setValues] = useState({})
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState(null)
-
-  useEffect(() => {
-    api.providerSpecs()
-      .then((resp) => setSpecs(resp.specs || []))
-      .catch((err) => setError(err.message))
-  }, [])
-
-  const spec = useMemo(() => specs.find((s) => s.kind === kind), [specs, kind])
-
-  const choose = (nextSpec) => {
-    setKind(nextSpec.kind)
-    setName(nextSpec.label)
-    setError(null)
-    const defaults = {}
-    for (const field of nextSpec.fields) {
-      if (field.default) defaults[field.key] = field.default
-    }
-    setValues(defaults)
-  }
-
-  const submit = async (e) => {
-    e.preventDefault()
-    setBusy(true)
-    setError(null)
-    try {
-      await api.addProvider(kind, name, values)
-      onConnected()
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  if (!spec) {
-    return (
-      <Modal
-        title="Connect a cloud account"
-        subtitle="Pick where SAND should put one of the parts. Each account holds an encrypted fragment that is useless on its own."
-        onClose={onClose}
-      >
-        {error && <Banner tone="error">{error}</Banner>}
-        {specs.length === 0 && !error && <Spinner />}
-        {specs.map((option) => (
-          <button
-            key={option.kind}
-            onClick={() => choose(option)}
-            style={{
-              display: 'block',
-              width: '100%',
-              textAlign: 'left',
-              padding: '13px 14px',
-              marginBottom: '9px',
-              background: COLORS.bg,
-              border: `1px solid ${COLORS.border}`,
-              borderRadius: '7px',
-              cursor: 'pointer',
-              color: COLORS.text,
-            }}
-          >
-            <div style={{
-              display: 'flex', alignItems: 'center', gap: '9px',
-              fontFamily: FONT.mono, fontSize: '13px', marginBottom: '5px',
-            }}>
-              <span>{KIND_ICONS[option.kind] || '☁'}</span>{option.label}
-            </div>
-            <div style={{
-              fontFamily: FONT.sans, fontSize: '11.5px',
-              color: COLORS.textMuted, lineHeight: 1.55,
-            }}>{option.description}</div>
-          </button>
-        ))}
-      </Modal>
-    )
-  }
-
-  return (
-    <Modal
-      title={`Connect ${spec.label}`}
-      subtitle={spec.description}
-      onClose={onClose}
-    >
-      <form onSubmit={submit}>
-        {error && <Banner tone="error" onDismiss={() => setError(null)}>{error}</Banner>}
-
-        <Input
-          label="Display name"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="How this account appears in the sidebar"
-        />
-
-        {spec.fields.map((field) => {
-          const Control = field.secret ? PasswordInput : Input
-          return (
-            <Control
-              key={field.key}
-              label={field.label + (field.required ? ' *' : '')}
-              help={field.help}
-              placeholder={field.placeholder}
-              value={values[field.key] || ''}
-              onChange={(e) => setValues({ ...values, [field.key]: e.target.value })}
-            />
-          )
-        })}
-
-        {spec.docs_url && (
-          <p style={{
-            fontFamily: FONT.sans, fontSize: '11px',
-            color: COLORS.textMuted, marginBottom: '14px',
-          }}>
-            Need credentials?{' '}
-            <a href={spec.docs_url} target="_blank" rel="noreferrer"
-              style={{ color: COLORS.accent }}>Provider documentation ↗</a>
-          </p>
-        )}
-
-        <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
-          <Button type="button" variant="ghost" onClick={() => setKind(null)}>← Back</Button>
-          <Button type="submit" variant="primary" disabled={busy}>
-            {busy ? <Spinner size={12} color={COLORS.bg} /> : null}
-            {busy ? 'Testing connection…' : 'Connect'}
-          </Button>
-        </div>
-      </form>
-    </Modal>
   )
 }

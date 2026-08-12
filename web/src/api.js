@@ -54,6 +54,22 @@ export const api = {
   addProvider: (kind, name, options) =>
     request('/api/providers', { method: 'POST', body: { kind, name, options } }),
   testProvider: (id) => request(`/api/providers/${encodeURIComponent(id)}/test`, { method: 'POST' }),
+
+  /* Browser sign-in. The server holds the tokens; all the app ever sees is
+     where to send the user and how far along the flow is. */
+  oauthStart: (kind, { clientId = '', clientSecret = '', redirectUri = '' } = {}) =>
+    request('/api/providers/oauth/start', {
+      method: 'POST',
+      body: { kind, client_id: clientId, client_secret: clientSecret, redirect_uri: redirectUri },
+    }),
+  oauthStatus: (flowId) => request(`/api/providers/oauth/${encodeURIComponent(flowId)}`),
+  oauthExchange: (flowId, url) =>
+    request('/api/providers/oauth/exchange', { method: 'POST', body: { flow_id: flowId, url } }),
+  oauthComplete: (flowId, name, options) =>
+    request('/api/providers/oauth/complete', {
+      method: 'POST',
+      body: { flow_id: flowId, name, options },
+    }),
   removeProvider: (id, force) =>
     request(`/api/providers/${encodeURIComponent(id)}${force ? '?force=1' : ''}`, { method: 'DELETE' }),
 

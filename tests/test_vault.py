@@ -12,6 +12,7 @@ would, so these tests exercise the whole path without needing credentials.
 import hashlib
 import os
 import subprocess
+import urllib.parse
 
 import pytest
 import requests
@@ -91,10 +92,87 @@ class TestVaultLifecycle:
     def test_provider_specs_describe_every_backend(self, server):
         specs = requests.get(f"{server}/api/providers/specs", timeout=10).json()["specs"]
         kinds = {s["kind"] for s in specs}
-        assert {"local", "s3", "webdav", "gdrive", "dropbox"} <= kinds
+        assert {"local", "s3", "webdav", "gdrive", "dropbox",
+                "onedrive", "box", "proton"} <= kinds
         for spec in specs:
             assert spec["label"] and spec["description"]
             assert isinstance(spec["fields"], list)
+
+    def test_specs_say_which_backends_are_connected_by_signing_in(self, server):
+        specs = requests.get(f"{server}/api/providers/specs", timeout=10).json()["specs"]
+        by_kind = {s["kind"]: s for s in specs}
+
+        for kind in ("gdrive", "onedrive", "dropbox", "box"):
+            oauth = by_kind[kind].get("oauth")
+            assert oauth, f"{kind} should offer a sign-in"
+            assert oauth["sign_in_label"]
+            # No client credentials are configured for the test server, so the
+            # dialog has to collect one.
+            assert oauth["configured"] is False
+
+        assert by_kind["local"].get("oauth") is None
+        assert by_kind["proton"].get("oauth") is None
+
+        # The token endpoints and app credentials stay on the server.
+        raw = requests.get(f"{server}/api/providers/specs", timeout=10).text
+        assert "oauth2.googleapis.com" not in raw
+        assert "client_secret_env" not in raw
+
+    def test_sign_in_needs_a_session_and_a_backend_that_supports_it(self, server, unlocked):
+        anonymous = requests.post(f"{server}/api/providers/oauth/start",
+                                  json={"kind": "gdrive"}, timeout=10)
+        assert anonymous.status_code == 401
+
+        wrong_kind = unlocked.post(f"{server}/api/providers/oauth/start",
+                                   json={"kind": "local"}, timeout=10)
+        assert wrong_kind.status_code == 400
+        assert "signing in" in wrong_kind.json()["error"]
+
+        no_app = unlocked.post(f"{server}/api/providers/oauth/start",
+                               json={"kind": "gdrive"}, timeout=10)
+        assert no_app.status_code == 400
+        assert no_app.json()["code"] == "OAUTH_NO_CLIENT"
+
+    def test_sign_in_hands_back_a_consent_url_and_a_flow(self, server, unlocked):
+        started = unlocked.post(f"{server}/api/providers/oauth/start", timeout=10, json={
+            "kind": "gdrive",
+            "client_id": "test-client.apps.googleusercontent.com",
+            "client_secret": "test-secret",
+            "redirect_uri": f"{server}/api/providers/oauth/callback",
+        })
+        assert started.status_code == 200, started.text
+        body = started.json()
+
+        auth = urllib.parse.urlparse(body["auth_url"])
+        query = urllib.parse.parse_qs(auth.query)
+        assert auth.netloc == "accounts.google.com"
+        assert query["client_id"] == ["test-client.apps.googleusercontent.com"]
+        assert query["redirect_uri"] == [f"{server}/api/providers/oauth/callback"]
+        # Google only issues a refresh token when asked for offline access.
+        assert query["access_type"] == ["offline"]
+        assert query["code_challenge_method"] == ["S256"]
+
+        status = unlocked.get(f"{server}/api/providers/oauth/{body['flow_id']}", timeout=10)
+        assert status.json()["status"] == "pending"
+
+        # A redirect carrying someone else's state is not ours to act on.
+        forged = requests.get(f"{server}/api/providers/oauth/callback",
+                              params={"code": "x", "state": "forged"}, timeout=10)
+        assert forged.status_code == 400
+        assert "expired" in forged.text
+
+        # The provider declining is reported against the flow rather than lost.
+        denied = requests.get(f"{server}/api/providers/oauth/callback", timeout=10, params={
+            "state": query["state"][0],
+            "error": "access_denied",
+            "error_description": "the account holder said no",
+        })
+        assert denied.status_code == 200
+        assert "SIGN-IN FAILED" in denied.text
+
+        status = unlocked.get(f"{server}/api/providers/oauth/{body['flow_id']}", timeout=10).json()
+        assert status["status"] == "error"
+        assert "said no" in status["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -407,5 +485,6 @@ class TestCLI:
 
     def test_remote_kinds_documents_every_backend(self, sand_bin, vault_dir):
         result = cli(sand_bin, vault_dir, "remote", "kinds")
-        for kind in ("local", "s3", "webdav", "gdrive", "dropbox"):
+        for kind in ("local", "s3", "webdav", "gdrive", "dropbox",
+                     "onedrive", "box", "proton"):
             assert kind in result.stdout

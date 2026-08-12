@@ -119,6 +119,10 @@ make build
 
 Run `./sand remote kinds` to see every backend and the settings it needs.
 
+Google Drive, OneDrive, Dropbox and Box are quicker from the browser: **+
+Connect a cloud** signs you in on the provider's own page and stores the tokens
+itself — see [Connecting an Account by Signing In](#connecting-an-account-by-signing-in).
+
 ---
 
 ## How It Works
@@ -157,20 +161,84 @@ Reads are a race, so a slow or offline account costs you nothing — it just los
 
 ## Supported Backends
 
-| Kind | Works with | What you need |
+| Kind | Works with | How you connect it |
 |---|---|---|
-| `local` | Any directory — external disk, NAS mount, sync folder | A path |
+| `gdrive` | Google Drive | **Sign in** |
+| `onedrive` | OneDrive, personal or work | **Sign in** |
+| `dropbox` | Dropbox | **Sign in** |
+| `box` | Box | **Sign in** |
 | `s3` | Amazon S3, Cloudflare R2, Backblaze B2, Wasabi, MinIO | Bucket, keys, endpoint for non-AWS |
-| `webdav` | Nextcloud, ownCloud, Box, Koofr, Fastmail | URL, username, app password |
-| `gdrive` | Google Drive | OAuth client ID/secret + refresh token |
-| `dropbox` | Dropbox | App key/secret + refresh token (or an access token) |
+| `webdav` | Nextcloud, ownCloud, pCloud, Koofr, Fastmail, anything behind `rclone serve webdav` | URL, username, app password |
+| `proton` | Proton Drive, through the folder its desktop app syncs | A path |
+| `local` | Any directory — external disk, NAS mount, sync folder | A path |
 
-All five are built on the standard library — no cloud SDKs, no CGO, still one
-static binary.
+All of them are built on the standard library — SigV4 signing, OAuth and
+Microsoft Graph's chunked uploads included — so there are no cloud SDKs, no
+CGO, and the artifact is still one static binary.
 
-> **Google Drive and Dropbox** take a refresh token you obtain yourself; SAND
-> does not ship registered OAuth app credentials. The connect dialog links to
-> each provider's documentation.
+> **Proton Drive** publishes no API. SAND writes its parts into the folder the
+> Proton Drive desktop app syncs, which is the same arrangement as any other
+> account: the parts are encrypted before Proton ever sees them. On a headless
+> box, run rclone's Proton Drive backend behind `rclone serve webdav` and
+> connect that as `webdav`.
+
+---
+
+## Connecting an Account by Signing In
+
+Google Drive, OneDrive, Dropbox and Box are connected from inside the app:
+press **+ Connect a cloud**, pick the provider, and approve the request on its
+own consent screen. SAND exchanges the code for tokens **on the server**, names
+the account after whoever signed in, and stores the credentials in the
+encrypted vault. The browser never touches a token, and nothing is pasted by
+hand.
+
+Two things are worth knowing about how this works on a self-hosted app.
+
+**SAND ships no registered OAuth apps.** There is no SAND cloud to register
+them against, and an app credential baked into a public binary is not a secret.
+So the first connection to a provider asks for a client ID from your own app
+registration — the dialog links straight to the console, tells you what to
+create, and shows you the exact redirect URI to paste into it. Every later
+account on that provider reuses it.
+
+To skip that step entirely, hand the app credentials to the service once and
+every connection becomes a single button:
+
+```bash
+SAND_GOOGLE_CLIENT_ID=…      SAND_GOOGLE_CLIENT_SECRET=…
+SAND_MICROSOFT_CLIENT_ID=…   SAND_MICROSOFT_CLIENT_SECRET=…   # secret optional
+SAND_DROPBOX_APP_KEY=…       SAND_DROPBOX_APP_SECRET=…
+SAND_BOX_CLIENT_ID=…         SAND_BOX_CLIENT_SECRET=…
+```
+
+**The redirect URI has to be one the provider will accept.** It defaults to the
+address you are using the app from — `http://<host>:8123/api/providers/oauth/callback`
+— and providers are picky about non-loopback plain HTTP. Register the URI the
+dialog shows you, and if this instance sits behind a proxy or has to use one
+fixed URI, pin it:
+
+```bash
+SAND_OAUTH_REDIRECT=https://sand.example.com/api/providers/oauth/callback
+```
+
+If a redirect cannot reach the server at all — signing in from a phone against
+a vault bound to `127.0.0.1`, say — the dialog takes the URL the browser was
+left on and finishes the exchange from there.
+
+The CLI still takes credentials directly, which is also the way to move an
+account between machines:
+
+```bash
+./sand remote add onedrive --name onedrive-personal \
+    --set client_id=… --set refresh_token=… --set folder=sand
+```
+
+> Sign-in state lives only in memory and lasts 15 minutes. The redirect is
+> matched to it by an unguessable `state` parameter, because the session cookie
+> is `SameSite=Strict` and deliberately does not survive a cross-site
+> navigation. Box and Microsoft retire a refresh token as it is spent; SAND
+> writes the replacement back into the vault as it goes.
 
 ---
 
@@ -486,12 +554,14 @@ sand/
 │   ├── compress/                # zstd
 │   ├── splitter/                # split, XOR, reconstruct
 │   ├── mediafile/               # binary .media part format
-│   ├── provider/                # local, s3 (SigV4), webdav, gdrive, dropbox
+│   ├── provider/                # local, s3 (SigV4), webdav, gdrive, dropbox,
+│   │                            #   onedrive, box, proton + the OAuth sign-in flow
 │   ├── vault/                   # encrypted store, manifest, placement, scatter/gather
-│   └── server/                  # sessions, handlers, embedded SPA
+│   └── server/                  # sessions, OAuth flows, handlers, embedded SPA
 ├── web/src/                     # React file browser
 │   ├── api.js  theme.js  App.jsx
-│   └── components/              # LockScreen, AccountsPanel, FileBrowser, PreviewModal, ui
+│   └── components/              # LockScreen, AccountsPanel, ConnectCloud,
+│                                #   FileBrowser, PreviewModal, ui
 │   ├── public/                  # app icon + developer badge
 │   └── build-version.js         # feeds the version into the bundle
 ├── internal/version/            # MAJOR/MINOR; PATCH stamped at link time

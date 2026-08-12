@@ -46,6 +46,9 @@ export const KIND_ICONS = {
   webdav: '🌐',
   gdrive: '▲',
   dropbox: '◈',
+  onedrive: '⬡',
+  box: '▣',
+  proton: '◉',
 }
 
 export function formatBytes(bytes) {

@@ -25,16 +25,46 @@ written by v2 still restore with the v1 command.
 
 ### Connected cloud accounts
 
-Five backends behind one small object-store interface: **local folder**,
-**S3-compatible** (Amazon S3, Cloudflare R2, Backblaze B2, Wasabi, MinIO),
-**WebDAV** (Nextcloud, ownCloud, Box, Koofr, Fastmail), **Google Drive** and
-**Dropbox**.
+Eight backends behind one small object-store interface: **Google Drive**,
+**OneDrive**, **Dropbox**, **Box**, **S3-compatible** (Amazon S3, Cloudflare
+R2, Backblaze B2, Wasabi, MinIO), **WebDAV** (Nextcloud, ownCloud, pCloud,
+Koofr, Fastmail, or anything behind `rclone serve webdav`), **Proton Drive**
+through the folder its desktop app syncs, and a plain **local folder**.
 
-All of it is written on the standard library — SigV4 request signing included —
-so there are no cloud SDKs, no CGO, and the deployable artifact is still one
-static binary. Each backend declares the fields it needs, and the browser's
-connect form is generated from that declaration, so adding a backend needs no
-frontend change.
+All of it is written on the standard library — SigV4 request signing, OAuth and
+Microsoft Graph's chunked upload sessions included — so there are no cloud
+SDKs, no CGO, and the deployable artifact is still one static binary. Each
+backend declares the fields it needs, and the browser's connect form is
+generated from that declaration, so adding a backend needs no frontend change.
+
+### Connecting an account without leaving the app
+
+The four OAuth backends are connected by signing in. Pick the provider, approve
+the request on its own consent screen, and the account is connected: the code
+is exchanged for tokens **on the server**, the connection names itself after
+whoever signed in, and the credentials go straight into the encrypted vault.
+The browser never handles a token, and nothing is copied by hand.
+
+The redirect comes back as a cross-site navigation, which the `SameSite=Strict`
+session cookie deliberately does not survive, so it is matched to the sign-in
+that started it by an unguessable `state` parameter instead — bound to a flow
+that lives in memory for fifteen minutes and is retired the moment it is spent.
+Blocked popups fall back to taking over the tab and resuming on return, and a
+redirect that cannot reach the server at all — a phone signing into a vault
+bound to loopback — can be finished by pasting the URL the browser was left on.
+
+SAND registers no OAuth apps of its own; a credential baked into a public
+binary is not a secret. The first connection to a provider collects a client ID
+from your own app registration, with a link to the console and the exact
+redirect URI to paste into it, and every later account reuses it. Hand the
+service `SAND_GOOGLE_CLIENT_ID`, `SAND_MICROSOFT_CLIENT_ID`,
+`SAND_DROPBOX_APP_KEY` or `SAND_BOX_CLIENT_ID` (with secrets where the provider
+demands one) and that step disappears entirely. `SAND_OAUTH_REDIRECT` pins the
+redirect URI for instances behind a proxy.
+
+Box and Microsoft retire a refresh token as it is spent. SAND writes the
+replacement back into the vault as it goes, so an account connected once keeps
+answering.
 
 ### The vault
 

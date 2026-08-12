@@ -14,6 +14,7 @@ func init() {
 		Kind:        KindLocal,
 		Label:       "Local folder",
 		Description: "A directory on this machine or a mounted network/removable drive. Useful as an offline third leg alongside two cloud accounts.",
+		Order:       31,
 		Fields: []FieldSpec{
 			{
 				Key:         "path",
@@ -23,14 +24,36 @@ func init() {
 				Required:    true,
 			},
 		},
-	}, func(cfg Config) (Provider, error) {
-		root := cfg.Option("path")
-		abs, err := filepath.Abs(root)
-		if err != nil {
-			return nil, fmt.Errorf("resolving %q: %w", root, err)
-		}
-		return &localProvider{base: base{cfg: cfg}, root: abs}, nil
-	})
+	}, newLocalProvider)
+}
+
+// newLocalProvider builds a directory-backed provider. Shared with the sync
+// folder backends, which are the same thing pointed at a folder some desktop
+// client keeps in step with a cloud account.
+func newLocalProvider(cfg Config) (Provider, error) {
+	root := expandHome(cfg.Option("path"))
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return nil, fmt.Errorf("resolving %q: %w", root, err)
+	}
+	return &localProvider{base: base{cfg: cfg}, root: abs}, nil
+}
+
+// expandHome resolves a leading ~ so a path copied out of documentation works
+// as typed.
+func expandHome(path string) string {
+	path = strings.TrimSpace(path)
+	if path != "~" && !strings.HasPrefix(path, "~/") && !strings.HasPrefix(path, `~\`) {
+		return path
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return path
+	}
+	if path == "~" {
+		return home
+	}
+	return filepath.Join(home, path[2:])
 }
 
 // localProvider stores shards as files under a root directory.
