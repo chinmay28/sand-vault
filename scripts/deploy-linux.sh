@@ -12,7 +12,7 @@
 # Defaults:
 #   binary  = ./sand  (or sand.exe will be tried)
 #   port    = 8123
-#   bind    = 127.0.0.1   (see the note at the end before changing this)
+#   bind    = 0.0.0.0     (all interfaces — see the note at the end)
 #
 # After running:
 #   systemctl status sand
@@ -22,7 +22,7 @@ set -euo pipefail
 
 BINARY="${1:-}"
 PORT="${2:-8123}"
-BIND="${3:-127.0.0.1}"
+BIND="${3:-0.0.0.0}"
 # The vault holds cloud credentials and the map of every stored file, so it
 # lives in a stable directory the service can actually write to. The service
 # user has no home and the unit sets ProtectHome, so the default
@@ -121,9 +121,14 @@ echo "    BACK UP ${VAULT_PATH} — it is the only record of which account holds
 echo "    which part of which file, and the only copy of your cloud credentials."
 if [[ "${BIND}" == "127.0.0.1" ]]; then
     echo ""
-    echo "    NOTE: bound to localhost only. SAND Vault takes your vault password"
-    echo "    this connection and sends decrypted files back over it, so put TLS"
-    echo "    in front before exposing it:"
-    echo "      - place a reverse proxy (nginx/caddy) in front, then"
-    echo "      - re-run with bind=0.0.0.0"
+    echo "    NOTE: bound to localhost only — reachable from this machine alone."
+    echo "    Re-run with bind=0.0.0.0 to expose it, ideally behind TLS."
+else
+    echo ""
+    echo "    WARNING: bound to ${BIND} — reachable from your whole network."
+    echo "    SAND Vault takes your vault password over this connection and sends"
+    echo "    decrypted files back over it, and /api/vault/unlock answers anyone"
+    echo "    who can reach the port. On plain HTTP all of that is in the clear."
+    echo "    Put TLS in front of it: see scripts/nginx-sand.conf, or Tailscale"
+    echo "    Serve. Re-run with bind=127.0.0.1 to close it again."
 fi

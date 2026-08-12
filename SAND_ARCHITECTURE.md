@@ -494,11 +494,16 @@ The same endpoints back the API (`POST /api/archive`, `POST /api/restore`).
 - **Traffic analysis.** A provider sees when you upload and how large each part
   is.
 
-### 11.3 Binding to a non-loopback address
+### 11.3 Binding
 
-`--bind` accepts anything, but off loopback the password and rebuilt plaintext
-cross the network unencrypted. The server logs a warning; put TLS in front of it
-(`scripts/nginx-sand.conf`).
+`--bind` defaults to `0.0.0.0`, so an install is reachable from the network
+without a second step. That is a deliberate usability choice with a real cost:
+off loopback the vault password and every rebuilt file cross the network
+unencrypted, and `/api/vault/unlock` is reachable unauthenticated with no rate
+limiting — only Argon2id's cost stands between an attacker on your network and
+a guessing loop. The server logs a warning on every non-loopback bind. Put TLS
+in front of it (`scripts/nginx-sand.conf`, or Tailscale Serve), or set
+`--bind 127.0.0.1` to close it.
 
 ---
 

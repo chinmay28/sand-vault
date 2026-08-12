@@ -94,6 +94,19 @@ binary and the web bundle, so the header, `sand version` and `/api/health` can
 never disagree. A patch of `0` marks an unstamped build — including one made
 from a shallow clone, which is detected rather than guessed around.
 
+### Reachable by default
+
+`--bind` and the installers' `HOST` default to `0.0.0.0`, so a fresh install is
+reachable from your network without a second step.
+
+Understand what that exposes. This server is the one component that ever holds
+plaintext: it takes your vault password over the wire and sends rebuilt,
+decrypted files back, and `/api/vault/unlock` answers anyone who can reach the
+port, with no rate limiting behind it. On plain HTTP all of that is in the
+clear. Put TLS in front of it — Tailscale Serve, or `scripts/nginx-sand.conf` —
+or set `HOST=127.0.0.1` to keep it on loopback. The server warns on every
+non-loopback bind.
+
 ### Also
 
 - `cmd/sand` is present. The Makefile and the e2e suite both referenced it, but

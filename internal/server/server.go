@@ -50,6 +50,16 @@ type Server struct {
 // DefaultPort is the port `sand serve` binds unless told otherwise.
 const DefaultPort = 8123
 
+// DefaultBind is the address `sand serve` binds unless told otherwise.
+//
+// All interfaces, so a freshly installed service is reachable from the other
+// machines on your network without a second step. Note what that means: this
+// server takes the vault password over the wire and sends rebuilt, decrypted
+// files back, so on a bare HTTP listener both are in the clear to anyone on
+// the network, and /api/vault/unlock is reachable unauthenticated. Start()
+// warns on every non-loopback bind for that reason. Put TLS in front of it.
+const DefaultBind = "0.0.0.0"
+
 // DefaultMaxUploadSize is the ceiling for one upload request.
 const DefaultMaxUploadSize = 2 << 30 // 2 GiB
 
@@ -184,7 +194,7 @@ func (s *Server) Start() error {
 	addr := net.JoinHostPort(s.Bind, fmt.Sprint(s.Port))
 	v, _ := s.Vault()
 	log.Printf("SAND Vault %s starting on http://%s (vault: %s)", version.String(), addr, v.Path())
-	if s.Bind != "127.0.0.1" && s.Bind != "localhost" && s.Bind != "::1" {
+	if warnsOnBind(s.Bind) {
 		log.Printf("WARNING: bound to %s — the vault password and decrypted files "+
 			"will cross the network in the clear unless you put TLS in front of it", s.Bind)
 	}
@@ -195,6 +205,16 @@ func (s *Server) Start() error {
 		ReadHeaderTimeout: 20 * time.Second,
 	}
 	return server.ListenAndServe()
+}
+
+// warnsOnBind reports whether an address is reachable from off this machine,
+// and so deserves the plaintext warning.
+func warnsOnBind(bind string) bool {
+	switch bind {
+	case "127.0.0.1", "localhost", "::1":
+		return false
+	}
+	return true
 }
 
 // autoLockLoop locks the vault once every session has gone idle.
