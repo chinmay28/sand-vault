@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { COLORS, FONT } from '../theme'
 import { APP_VERSION } from '../version'
 
@@ -31,12 +32,16 @@ export function Brand({ size = 'md' }) {
       <span style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.15 }}>
         {/* Two-tone wordmark: SAND carries the accent it has always had, VAULT
             sits back in the text colour so the pair reads as one name rather
-            than two competing words. */}
+            than two competing words.
+
+            The wordmark never wraps, so on a narrow screen it is the thing
+            that decides how wide the header has to be — size and tracking come
+            down with the viewport rather than pushing everything else off. */}
         <span style={{
           fontFamily: FONT.mono,
-          fontSize: large ? '26px' : '17px',
+          fontSize: large ? 'clamp(20px, 6.4vw, 26px)' : 'clamp(15px, 4.4vw, 17px)',
           fontWeight: 700,
-          letterSpacing: large ? '7px' : '4px',
+          letterSpacing: large ? 'clamp(4px, 1.7vw, 7px)' : 'clamp(2.5px, 1vw, 4px)',
           whiteSpace: 'nowrap',
         }}>
           <span style={{ color: COLORS.accent }}>SAND</span>
@@ -136,9 +141,13 @@ export function DevMark({ bare = false }) {
 }
 
 /* The badge thrown up full screen for a beat. Everything here is on one clock:
-   the veil fades, the lockup lands with a small overshoot and drifts out. */
+   the veil fades, the lockup lands with a small overshoot and drifts out.
+
+   Portalled to the body so "full screen" stays true when the mark is tapped
+   from inside the accounts drawer, whose transform would otherwise become what
+   this measures itself against. */
 function DevFlash({ onDismiss }) {
-  return (
+  return createPortal(
     <div
       onClick={onDismiss}
       className="sand-dev-veil"
@@ -187,6 +196,7 @@ function DevFlash({ onDismiss }) {
           color: COLORS.textMuted,
         }}>github.com/chinmay28</span>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }

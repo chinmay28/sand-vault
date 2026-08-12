@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
 import { COLORS, FONT } from '../theme'
+import { useIsMobile } from '../hooks'
 import { api } from '../api'
 import { Banner, Button, PasswordInput, Spinner } from './ui'
 import { Brand, DevMark } from './Brand'
@@ -8,6 +9,7 @@ import { Brand, DevMark } from './Brand'
    cannot decrypt the index, so there is nothing to show and nothing to fetch. */
 export default function LockScreen({ status, onUnlocked }) {
   const creating = !status.initialized
+  const mobile = useIsMobile()
 
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
@@ -42,11 +44,11 @@ export default function LockScreen({ status, onUnlocked }) {
 
   return (
     <div style={{
-      minHeight: '100vh',
+      minHeight: 'var(--app-height)',
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
-      padding: '24px',
+      padding: mobile ? '20px 14px' : '24px',
     }}>
       <form onSubmit={submit} style={{ width: '100%', maxWidth: '420px' }}>
         <div style={{
@@ -54,15 +56,19 @@ export default function LockScreen({ status, onUnlocked }) {
           flexDirection: 'column',
           alignItems: 'center',
           gap: '10px',
-          marginBottom: '30px',
+          marginBottom: mobile ? '22px' : '30px',
         }}>
           <Brand size="lg" />
+          {/* Tracked-out and 36 characters long: on a phone this is two lines,
+              so it has to be centred rather than left to ragged out. */}
           <div style={{
             fontFamily: FONT.mono,
             fontSize: '10px',
             letterSpacing: '2.5px',
             textTransform: 'uppercase',
             color: COLORS.textMuted,
+            textAlign: 'center',
+            lineHeight: 1.6,
           }}>Secure Archival Network Distribution</div>
         </div>
 
@@ -70,7 +76,7 @@ export default function LockScreen({ status, onUnlocked }) {
           background: COLORS.surface,
           border: `1px solid ${COLORS.border}`,
           borderRadius: '10px',
-          padding: '24px',
+          padding: mobile ? '18px 16px' : '24px',
         }}>
           <h1 style={{
             margin: '0 0 6px',
@@ -157,9 +163,9 @@ export default function LockScreen({ status, onUnlocked }) {
                       value={option.value}
                       checked={policy === option.value}
                       onChange={() => setPolicy(option.value)}
-                      style={{ marginTop: '3px', accentColor: COLORS.accent }}
+                      style={{ marginTop: '3px', flexShrink: 0, accentColor: COLORS.accent }}
                     />
-                    <span>
+                    <span style={{ minWidth: 0 }}>
                       <span style={{
                         display: 'block',
                         fontFamily: FONT.mono,

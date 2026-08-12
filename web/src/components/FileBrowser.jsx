@@ -3,8 +3,12 @@ import { COLORS, FONT, accountColor, fileIcon, formatBytes, formatDate } from '.
 import { api, joinPath } from '../api'
 import { Banner, Button, Empty, Modal, Spinner } from './ui'
 
+/* Name, size, modified, parts, actions. The four fixed columns come to nearly
+   500px, which is why the phone layout stacks instead of shrinking them. */
+const COLUMNS = 'minmax(0,1fr) 92px 150px 132px 108px'
+
 export default function FileBrowser({
-  path, listing, loading, error, providers,
+  path, listing, loading, error, providers, mobile,
   onNavigate, onRefresh, onPreview, onInspect, onError,
 }) {
   const [dragging, setDragging] = useState(false)
@@ -78,13 +82,15 @@ export default function FileBrowser({
       <div style={{
         display: 'flex',
         alignItems: 'center',
-        gap: '10px',
-        padding: '14px 20px',
+        gap: mobile ? '8px' : '10px',
+        padding: mobile ? '10px 12px' : '14px 20px',
         borderBottom: `1px solid ${COLORS.border}`,
         flexWrap: 'wrap',
       }}>
+        {/* On a phone the trail takes a row of its own and the two actions
+            split the one below it, rather than all three fighting for it. */}
         <nav style={{
-          flex: 1, minWidth: '180px', display: 'flex', alignItems: 'center',
+          flex: 1, minWidth: mobile ? '100%' : '180px', display: 'flex', alignItems: 'center',
           gap: '5px', fontFamily: FONT.mono, fontSize: '12px', flexWrap: 'wrap',
         }}>
           <Crumb label="▣ /" onClick={() => onNavigate('/')} active={path === '/'} />
@@ -99,8 +105,10 @@ export default function FileBrowser({
           })}
         </nav>
 
-        <Button size="sm" onClick={() => setCreatingFolder(true)}>+ Folder</Button>
-        <Button size="sm" variant="primary" onClick={() => fileInput.current?.click()} disabled={!canUpload}>
+        <Button size="sm" onClick={() => setCreatingFolder(true)}
+          style={mobile ? { flex: 1, justifyContent: 'center' } : null}>+ Folder</Button>
+        <Button size="sm" variant="primary" onClick={() => fileInput.current?.click()} disabled={!canUpload}
+          style={mobile ? { flex: 1, justifyContent: 'center' } : null}>
           ↑ Upload
         </Button>
         <input
@@ -112,7 +120,7 @@ export default function FileBrowser({
         />
       </div>
 
-      <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px 40px' }}>
+      <div style={{ flex: 1, overflowY: 'auto', padding: mobile ? '12px 12px 32px' : '16px 20px 40px' }}>
         {error && <Banner tone="error">{error}</Banner>}
         {warnings.length > 0 && (
           <Banner tone="warn" onDismiss={() => setWarnings([])}>
@@ -157,6 +165,7 @@ export default function FileBrowser({
             path={path}
             listing={listing}
             canUpload={canUpload}
+            mobile={mobile}
             onNavigate={onNavigate}
             onPreview={onPreview}
             onInspect={onInspect}
@@ -180,9 +189,11 @@ export default function FileBrowser({
           pointerEvents: 'none',
           zIndex: 20,
         }}>
-          <div style={{ textAlign: 'center', fontFamily: FONT.mono, color: COLORS.accentBright }}>
+          <div style={{ textAlign: 'center', padding: '0 20px', fontFamily: FONT.mono, color: COLORS.accentBright }}>
             <div style={{ fontSize: '30px', marginBottom: '10px' }}>↓</div>
-            <div style={{ fontSize: '13px' }}>Drop to split, encrypt and scatter into {path}</div>
+            <div style={{ fontSize: '13px', wordBreak: 'break-word' }}>
+              Drop to split, encrypt and scatter into {path}
+            </div>
           </div>
         </div>
       )}
@@ -216,7 +227,7 @@ function Crumb({ label, onClick, active }) {
   )
 }
 
-function FileTable({ path, listing, canUpload, onNavigate, onPreview, onInspect, onRefresh, onError, onPickFiles }) {
+function FileTable({ path, listing, canUpload, mobile, onNavigate, onPreview, onInspect, onRefresh, onError, onPickFiles }) {
   const folders = listing?.folders || []
   const files = listing?.files || []
 
@@ -242,44 +253,48 @@ function FileTable({ path, listing, canUpload, onNavigate, onPreview, onInspect,
       overflow: 'hidden',
       background: COLORS.surface,
     }}>
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: 'minmax(0,1fr) 92px 150px 132px 108px',
-        gap: '12px',
-        padding: '9px 14px',
-        borderBottom: `1px solid ${COLORS.border}`,
-        fontFamily: FONT.mono,
-        fontSize: '9.5px',
-        fontWeight: 700,
-        letterSpacing: '1.2px',
-        textTransform: 'uppercase',
-        color: COLORS.textMuted,
-      }}>
-        <span>Name</span>
-        <span>Size</span>
-        <span>Modified</span>
-        <span title="Which account holds each of the three parts">Parts</span>
-        <span />
-      </div>
+      {/* Column headings only make sense over columns. */}
+      {!mobile && (
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: COLUMNS,
+          gap: '12px',
+          padding: '9px 14px',
+          borderBottom: `1px solid ${COLORS.border}`,
+          fontFamily: FONT.mono,
+          fontSize: '9.5px',
+          fontWeight: 700,
+          letterSpacing: '1.2px',
+          textTransform: 'uppercase',
+          color: COLORS.textMuted,
+        }}>
+          <span>Name</span>
+          <span>Size</span>
+          <span>Modified</span>
+          <span title="Which account holds each of the three parts">Parts</span>
+          <span />
+        </div>
+      )}
 
       {folders.map((folder) => (
-        <Row key={`dir:${folder}`}>
+        <Row key={`dir:${folder}`} mobile={mobile}>
           <button
             onClick={() => onNavigate(joinPath(path, folder))}
             style={{
               display: 'flex', alignItems: 'center', gap: '9px',
+              flex: 1, minWidth: 0,
               background: 'none', border: 'none', padding: 0, cursor: 'pointer',
               fontFamily: FONT.mono, fontSize: '12.5px', color: COLORS.text,
               overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              textAlign: 'left',
             }}
           >
             <span style={{ color: COLORS.accent }}>▸</span>
             <span>📁</span>
             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{folder}</span>
           </button>
-          <span />
-          <span />
-          <span />
+          {/* The three empty middle cells only exist to fill the grid. */}
+          {!mobile && <><span /><span /><span /></>}
           <FolderActions path={joinPath(path, folder)} onRefresh={onRefresh} onError={onError} />
         </Row>
       ))}
@@ -288,6 +303,7 @@ function FileTable({ path, listing, canUpload, onNavigate, onPreview, onInspect,
         <FileRow
           key={file.id}
           file={file}
+          mobile={mobile}
           onPreview={() => onPreview(file)}
           onInspect={() => onInspect(file)}
           onRefresh={onRefresh}
@@ -298,18 +314,20 @@ function FileTable({ path, listing, canUpload, onNavigate, onPreview, onInspect,
   )
 }
 
-function Row({ children }) {
+function Row({ children, mobile }) {
   const [hover, setHover] = useState(false)
   return (
     <div
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       style={{
-        display: 'grid',
-        gridTemplateColumns: 'minmax(0,1fr) 92px 150px 132px 108px',
-        gap: '12px',
+        // Too narrow for columns, so the row becomes a strip: name on the
+        // left, actions on the right, and everything else on a second line.
+        ...(mobile
+          ? { display: 'flex', flexWrap: 'wrap', rowGap: '6px', columnGap: '8px' }
+          : { display: 'grid', gridTemplateColumns: COLUMNS, gap: '12px' }),
         alignItems: 'center',
-        padding: '9px 14px',
+        padding: mobile ? '8px 12px' : '9px 14px',
         borderBottom: `1px solid ${COLORS.border}22`,
         background: hover ? COLORS.surfaceHover : 'transparent',
         fontFamily: FONT.mono,
@@ -321,7 +339,7 @@ function Row({ children }) {
   )
 }
 
-function FileRow({ file, onPreview, onInspect, onRefresh, onError }) {
+function FileRow({ file, mobile, onPreview, onInspect, onRefresh, onError }) {
   const [busy, setBusy] = useState(false)
   const degraded = file.shards.length < 3
   const dead = file.shards.length < 2
@@ -340,77 +358,118 @@ function FileRow({ file, onPreview, onInspect, onRefresh, onError }) {
     }
   }
 
+  const name = (
+    <button
+      onClick={onPreview}
+      title={dead ? 'Too few parts remain to rebuild this file' : 'Open'}
+      style={{
+        display: 'flex', alignItems: 'center', gap: '9px',
+        flex: 1, minWidth: 0,
+        background: 'none', border: 'none', padding: 0,
+        cursor: dead ? 'not-allowed' : 'pointer',
+        fontFamily: FONT.mono, fontSize: '12.5px',
+        color: dead ? COLORS.error : COLORS.text,
+        overflow: 'hidden', textAlign: 'left',
+      }}
+      disabled={dead}
+    >
+      {/* Lines the name up under the folder rows' ▸ chevron. */}
+      {!mobile && <span style={{ width: '12px' }} />}
+      <span>{fileIcon(file.mime, file.name)}</span>
+      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span>
+    </button>
+  )
+
+  const parts = (
+    <button
+      onClick={onInspect}
+      title="Where the parts live"
+      aria-label="Where the parts live"
+      style={{ display: 'flex', alignItems: 'center', gap: '3px', background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}
+    >
+      {[1, 2, 3].map((part) => {
+        const shard = file.shards.find((s) => s.part === part)
+        return (
+          <span
+            key={part}
+            title={shard ? `Part ${part} on ${shard.provider_name}` : `Part ${part} not stored`}
+            style={{
+              width: '19px',
+              height: '15px',
+              borderRadius: '3px',
+              fontFamily: FONT.mono,
+              fontSize: '8.5px',
+              fontWeight: 700,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0,
+              color: shard ? COLORS.bg : COLORS.textMuted,
+              background: shard ? accountColor(shard.provider_id) : 'transparent',
+              border: shard ? 'none' : `1px dashed ${COLORS.border}`,
+            }}
+          >{part}</span>
+        )
+      })}
+      {degraded && (
+        <span style={{ marginLeft: '3px', color: dead ? COLORS.error : COLORS.warn, fontSize: '11px' }}>
+          {dead ? '✗' : '!'}
+        </span>
+      )}
+    </button>
+  )
+
+  const actions = (
+    <span style={{ display: 'flex', gap: '4px', justifyContent: 'flex-end', flexShrink: 0 }}>
+      <a
+        href={api.contentURL(file.id, { download: true })}
+        title="Download the rebuilt, decrypted file"
+        aria-label="Download the rebuilt, decrypted file"
+        style={{
+          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+          color: COLORS.textDim, textDecoration: 'none', fontSize: '13px', padding: '2px 5px',
+        }}
+      >↓</a>
+      <button
+        onClick={remove}
+        disabled={busy}
+        title="Delete everywhere"
+        aria-label="Delete everywhere"
+        style={{ background: 'none', border: 'none', color: COLORS.textMuted, cursor: 'pointer', fontSize: '12px', padding: '2px 5px' }}
+      >{busy ? '…' : '✕'}</button>
+    </span>
+  )
+
+  if (mobile) {
+    return (
+      <Row mobile>
+        {name}
+        {actions}
+        {/* Size, date and the part badges share the second line — the columns
+            they came from are gone, so they carry their own separators. */}
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: '8px',
+          width: '100%', fontSize: '10.5px', color: COLORS.textMuted,
+        }}>
+          <span style={{ whiteSpace: 'nowrap' }}>{formatBytes(file.size)}</span>
+          <span>·</span>
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {formatDate(file.modified_at)}
+          </span>
+          <span style={{ flex: 1 }} />
+          {parts}
+        </div>
+      </Row>
+    )
+  }
+
   return (
     <Row>
-      <button
-        onClick={onPreview}
-        title={dead ? 'Too few parts remain to rebuild this file' : 'Open'}
-        style={{
-          display: 'flex', alignItems: 'center', gap: '9px',
-          background: 'none', border: 'none', padding: 0,
-          cursor: dead ? 'not-allowed' : 'pointer',
-          fontFamily: FONT.mono, fontSize: '12.5px',
-          color: dead ? COLORS.error : COLORS.text,
-          overflow: 'hidden', textAlign: 'left',
-        }}
-        disabled={dead}
-      >
-        <span style={{ width: '12px' }} />
-        <span>{fileIcon(file.mime, file.name)}</span>
-        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span>
-      </button>
-
+      {name}
       <span>{formatBytes(file.size)}</span>
       <span>{formatDate(file.modified_at)}</span>
-
-      <button
-        onClick={onInspect}
-        title="Where the parts live"
-        style={{ display: 'flex', gap: '3px', background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}
-      >
-        {[1, 2, 3].map((part) => {
-          const shard = file.shards.find((s) => s.part === part)
-          return (
-            <span
-              key={part}
-              title={shard ? `Part ${part} on ${shard.provider_name}` : `Part ${part} not stored`}
-              style={{
-                width: '19px',
-                height: '15px',
-                borderRadius: '3px',
-                fontFamily: FONT.mono,
-                fontSize: '8.5px',
-                fontWeight: 700,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                color: shard ? COLORS.bg : COLORS.textMuted,
-                background: shard ? accountColor(shard.provider_id) : 'transparent',
-                border: shard ? 'none' : `1px dashed ${COLORS.border}`,
-              }}
-            >{part}</span>
-          )
-        })}
-        {degraded && (
-          <span style={{ marginLeft: '3px', color: dead ? COLORS.error : COLORS.warn, fontSize: '11px' }}>
-            {dead ? '✗' : '!'}
-          </span>
-        )}
-      </button>
-
-      <span style={{ display: 'flex', gap: '4px', justifyContent: 'flex-end' }}>
-        <a
-          href={api.contentURL(file.id, { download: true })}
-          title="Download the rebuilt, decrypted file"
-          style={{ color: COLORS.textDim, textDecoration: 'none', fontSize: '13px', padding: '2px 5px' }}
-        >↓</a>
-        <button
-          onClick={remove}
-          disabled={busy}
-          title="Delete everywhere"
-          style={{ background: 'none', border: 'none', color: COLORS.textMuted, cursor: 'pointer', fontSize: '12px', padding: '2px 5px' }}
-        >{busy ? '…' : '✕'}</button>
-      </span>
+      {parts}
+      {actions}
     </Row>
   )
 }

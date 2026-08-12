@@ -1,7 +1,12 @@
 import React, { useEffect, useState } from 'react'
 import { COLORS, FONT, formatBytes, previewKind } from '../theme'
+import { useIsMobile } from '../hooks'
 import { api } from '../api'
 import { Banner, Button, Modal, Spinner } from './ui'
+
+/* How much of the visible viewport a preview may take before the modal's own
+   chrome and the buttons under it start being pushed off. */
+const PREVIEW_MAX = 'calc(var(--app-height) * 0.62)'
 
 /* Opening a file here is the whole point of the design: the server gathers two
    of its three parts from separate accounts, rebuilds the plaintext in memory
@@ -9,6 +14,7 @@ import { Banner, Button, Modal, Spinner } from './ui'
 export default function PreviewModal({ file, onClose }) {
   const kind = previewKind(file.mime, file.name)
   const url = api.contentURL(file.id)
+  const mobile = useIsMobile()
 
   const [text, setText] = useState(null)
   const [error, setError] = useState(null)
@@ -55,26 +61,42 @@ export default function PreviewModal({ file, onClose }) {
           <img
             src={url}
             alt={file.name}
-            style={{ maxWidth: '100%', maxHeight: '62vh', display: 'block' }}
+            style={{ maxWidth: '100%', maxHeight: PREVIEW_MAX, display: 'block' }}
             onError={() => setError('This file could not be rebuilt or is not a readable image.')}
           />
         )}
 
         {!error && kind === 'video' && (
-          <video src={url} controls style={{ maxWidth: '100%', maxHeight: '62vh' }} />
+          <video src={url} controls playsInline style={{ maxWidth: '100%', maxHeight: PREVIEW_MAX }} />
         )}
 
         {!error && kind === 'audio' && (
           <audio src={url} controls style={{ width: '90%', margin: '32px 0' }} />
         )}
 
-        {!error && kind === 'pdf' && (
+        {/* Mobile browsers — iOS Safari in particular — render a framed PDF as
+            a blank box or a single unscrollable page, so offer the file itself
+            rather than a preview that does not work. */}
+        {!error && kind === 'pdf' && (mobile ? (
+          <div style={{
+            padding: '40px 20px',
+            textAlign: 'center',
+            fontFamily: FONT.sans,
+            fontSize: '13px',
+            color: COLORS.textMuted,
+            lineHeight: 1.6,
+          }}>
+            <div style={{ fontSize: '30px', marginBottom: '10px', opacity: 0.5 }}>📕</div>
+            PDFs do not preview reliably on a phone.<br />
+            Open it below to read it with your own viewer.
+          </div>
+        ) : (
           <iframe
             src={url}
             title={file.name}
-            style={{ width: '100%', height: '68vh', border: 'none', background: '#fff' }}
+            style={{ width: '100%', height: 'calc(var(--app-height) * 0.68)', border: 'none', background: '#fff' }}
           />
-        )}
+        ))}
 
         {!error && kind === 'text' && (
           loading ? <div style={{ padding: '40px' }}><Spinner size={20} /></div> : (
@@ -82,7 +104,7 @@ export default function PreviewModal({ file, onClose }) {
               margin: 0,
               padding: '16px',
               width: '100%',
-              maxHeight: '62vh',
+              maxHeight: PREVIEW_MAX,
               overflow: 'auto',
               fontFamily: FONT.mono,
               fontSize: '12px',
@@ -111,12 +133,14 @@ export default function PreviewModal({ file, onClose }) {
         )}
       </div>
 
-      <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
-        <Button variant="ghost" onClick={onClose}>Close</Button>
+      <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+        <Button variant="ghost" onClick={onClose}
+          style={mobile ? { flex: 1, justifyContent: 'center' } : null}>Close</Button>
         <Button
           variant="primary"
           as="a"
           onClick={() => { window.location.href = api.contentURL(file.id, { download: true }) }}
+          style={mobile ? { flex: 2, justifyContent: 'center' } : null}
         >↓ Download decrypted</Button>
       </div>
     </Modal>
@@ -189,7 +213,7 @@ export function ShardInspector({ file, onClose }) {
                 </div>
               </span>
 
-              <span style={{ color: COLORS.textDim }}>
+              <span style={{ color: COLORS.textDim, flexShrink: 0, whiteSpace: 'nowrap' }}>
                 {shard.present ? formatBytes(shard.observed_size) : '—'}
               </span>
             </div>

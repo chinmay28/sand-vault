@@ -203,6 +203,99 @@ class TestFolders:
         app.wait_for_selector("text=gui-folder", timeout=10000)
 
 
+PHONE = {"width": 390, "height": 844}
+NARROW_PHONE = {"width": 320, "height": 640}
+
+
+def horizontal_overflow(page):
+    """Elements sticking out past the right edge of the viewport, if any.
+
+    A page that scrolls sideways on a phone is the whole failure mode this
+    guards against, so the assertion names the offenders rather than just the
+    two numbers.
+    """
+    return page.evaluate(
+        """() => {
+            const doc = document.documentElement
+            if (doc.scrollWidth <= doc.clientWidth) return []
+            return [...document.querySelectorAll('*')]
+              .filter((el) => el.getBoundingClientRect().right > doc.clientWidth + 1)
+              .slice(0, 5)
+              .map((el) => `<${el.tagName}> "${(el.textContent || '').trim().slice(0, 40)}"`)
+        }"""
+    )
+
+
+class TestMobileLayout:
+    """The app has to be usable on a phone, not just narrower.
+
+    Below 860px the two-pane layout folds: the accounts sidebar becomes a
+    drawer and the file table's fixed columns stack.
+    """
+
+    @pytest.mark.parametrize("size", [PHONE, NARROW_PHONE])
+    def test_lock_screen_does_not_scroll_sideways(self, page, server, size):
+        page.set_viewport_size(size)
+        page.goto(server)
+        page.wait_for_selector("text=Vault password", timeout=15000)
+
+        assert not horizontal_overflow(page)
+
+    @pytest.mark.parametrize("size", [PHONE, NARROW_PHONE])
+    def test_file_browser_does_not_scroll_sideways(self, app, tmp_path, size):
+        source = tmp_path / "a-file-with-a-fairly-long-name-indeed.txt"
+        source.write_text("narrow")
+        upload_and_settle(app, source)
+
+        app.set_viewport_size(size)
+        app.wait_for_timeout(300)
+
+        assert not horizontal_overflow(app)
+
+    def test_accounts_sit_behind_a_drawer_on_a_phone(self, app):
+        app.set_viewport_size(PHONE)
+        app.wait_for_timeout(300)
+
+        heading = app.get_by_text("Connected clouds")
+        assert not heading.is_visible(), "the sidebar should be closed on a phone"
+
+        app.locator('button[aria-label="Connected clouds"]').click()
+        app.wait_for_timeout(400)
+        assert heading.is_visible()
+
+        # Escape closes it again, the same as every other layer in the app.
+        app.keyboard.press("Escape")
+        app.wait_for_timeout(400)
+        assert not heading.is_visible()
+
+    def test_sidebar_is_always_open_on_a_wide_screen(self, app):
+        assert app.get_by_text("Connected clouds").is_visible()
+        assert app.locator('button[aria-label="Connected clouds"]').count() == 0
+
+    def test_modal_opened_from_the_drawer_covers_the_viewport(self, app):
+        """The drawer slides in on a transform, which makes it — not the
+        viewport — what a `position: fixed` child measures itself against. A
+        modal opened from inside it has to escape that, or it ends up boxed
+        into the drawer's 320px."""
+        app.set_viewport_size(PHONE)
+        app.wait_for_timeout(300)
+        app.locator('button[aria-label="Connected clouds"]').click()
+        app.wait_for_timeout(400)
+
+        app.get_by_text("+ Connect a cloud").click()
+        app.wait_for_selector("text=Local folder", timeout=15000)
+
+        layer = app.evaluate(
+            """() => {
+                const el = [...document.body.children].find((n) => n.id !== 'root')
+                const r = el.getBoundingClientRect()
+                return { left: r.left, width: r.width, viewport: window.innerWidth }
+            }"""
+        )
+        assert layer["left"] == 0
+        assert layer["width"] == layer["viewport"]
+
+
 class TestNoConsoleErrors:
     def test_app_loads_without_console_errors(self, page, server):
         errors = []
