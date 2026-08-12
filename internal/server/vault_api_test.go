@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -495,4 +496,106 @@ func TestNonLoopbackBindIsWarnedAbout(t *testing.T) {
 			t.Errorf("bind %q is reachable off-host and must warn", bind)
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Frontend caching
+// ---------------------------------------------------------------------------
+
+// A browser handed no expiry information at all is free to invent one, and
+// mobile browsers invent generously. index.html names the current bundle, so a
+// stale copy pins the whole app to the build it was cached from — deploys stop
+// reaching the device entirely. These assert the headers that prevent it.
+
+func TestIndexRevalidatesOnEveryLoad(t *testing.T) {
+	c := newTestClient(t)
+
+	for _, path := range []string{"/", "/some/app/route"} {
+		w := c.do("GET", path, nil, "")
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: expected 200, got %d", path, w.Code)
+		}
+		if got := w.Header().Get("Cache-Control"); got != "no-cache" {
+			t.Errorf("%s: Cache-Control = %q, want %q", path, got, "no-cache")
+		}
+		if w.Header().Get("ETag") == "" {
+			t.Errorf("%s: no ETag, so revalidating costs a full re-download", path)
+		}
+	}
+}
+
+func TestFingerprintedAssetsAreCachedForever(t *testing.T) {
+	c := newTestClient(t)
+
+	// Whatever this build emitted — the name carries a content hash, so the
+	// test cannot spell it out.
+	entries, err := fs.Glob(webAssets, "dist/assets/*.js")
+	if err != nil || len(entries) == 0 {
+		t.Skipf("no built frontend to serve (%v)", err)
+	}
+	path := strings.TrimPrefix(entries[0], "dist")
+
+	w := c.do("GET", path, nil, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for %s, got %d", path, w.Code)
+	}
+	got := w.Header().Get("Cache-Control")
+	if !strings.Contains(got, "immutable") || !strings.Contains(got, "max-age=") {
+		t.Errorf("Cache-Control = %q, want a long-lived immutable directive", got)
+	}
+}
+
+func TestUnchangedIndexAnswers304(t *testing.T) {
+	c := newTestClient(t)
+
+	first := c.do("GET", "/", nil, "")
+	tag := first.Header().Get("ETag")
+	if tag == "" {
+		t.Fatal("no ETag on the first response")
+	}
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Host = "example.test"
+	req.Header.Set("If-None-Match", tag)
+	w := httptest.NewRecorder()
+	c.handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotModified {
+		t.Fatalf("expected 304 for a matching ETag, got %d", w.Code)
+	}
+	if w.Body.Len() != 0 {
+		t.Errorf("304 carried %d bytes of body", w.Body.Len())
+	}
+}
+
+func TestETagChangesWithContent(t *testing.T) {
+	// Two different files must not share a validator, or a browser will hold
+	// one while believing it has the other.
+	tags, err := buildETags(mustDistFS(t))
+	if err != nil {
+		t.Fatalf("buildETags: %v", err)
+	}
+	if len(tags) < 2 {
+		t.Skip("frontend not built")
+	}
+
+	seen := make(map[string]string)
+	for path, tag := range tags {
+		if path == "/" {
+			continue // deliberately shares index.html's tag
+		}
+		if other, dup := seen[tag]; dup {
+			t.Errorf("%s and %s share the ETag %s", path, other, tag)
+		}
+		seen[tag] = path
+	}
+}
+
+func mustDistFS(t *testing.T) fs.FS {
+	t.Helper()
+	sub, err := fs.Sub(webAssets, "dist")
+	if err != nil {
+		t.Fatalf("fs.Sub: %v", err)
+	}
+	return sub
 }

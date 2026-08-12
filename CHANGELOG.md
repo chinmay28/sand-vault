@@ -73,6 +73,9 @@ images, video, audio, PDF and text — each one rebuilt on demand.
 It loads no external fonts, scripts or styles: opening your vault makes zero
 third-party requests.
 
+Hashed assets are cached for a year and `index.html` revalidates against an
+ETag, so an upgrade actually reaches a browser that has opened the vault before.
+
 The layout folds on a phone rather than shrinking: under 860px the accounts
 sidebar becomes a drawer, the file table's columns give way to stacked rows, and
 controls take touch-sized targets. Heights track the visible viewport, so a
