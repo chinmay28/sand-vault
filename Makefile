@@ -24,20 +24,23 @@ release: build-web
 
 # Run all Go unit tests
 test:
-	go test -v -count=1 ./internal/...
+	go test -v -count=1 ./...
 
 # Run Go tests with coverage report
 test-cover:
-	go test -v -count=1 -coverprofile=coverage.out ./internal/...
+	go test -v -count=1 -coverprofile=coverage.out ./...
 	go tool cover -html=coverage.out -o coverage.html
 
 # Run Python e2e tests (CLI + API + browser)
-# Skips slow tests (large files) and GUI tests if React frontend is not built
-test-e2e: build-go
+# Needs the frontend built so the browser tests have a real app to drive.
+# Skips slow tests (large files).
+# If Playwright cannot launch its bundled Chromium, point it at one you have:
+#   PLAYWRIGHT_CHROMIUM_EXECUTABLE=/path/to/chrome make test-e2e
+test-e2e: build
 	cd tests && python -m pytest -v -m "not slow"
 
 # Run all e2e tests including slow ones
-test-e2e-slow: build-go
+test-e2e-slow: build
 	cd tests && python -m pytest -v
 
 # Run everything: Go unit tests + e2e tests

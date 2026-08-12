@@ -18,3 +18,11 @@ Thumbs.db
 # Test artifacts
 *.test
 coverage.out
+coverage.html
+tests/__pycache__/
+.pytest_cache/
+
+# Vaults and shard directories — these hold cloud credentials and encrypted
+# file parts and must never be committed.
+*.sand
+.sand/

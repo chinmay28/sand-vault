@@ -1,0 +1,85 @@
+package server
+
+import (
+	"net/http"
+	"time"
+
+	"github.com/sand-project/sand/internal/provider"
+)
+
+// handleProviderSpecs describes every backend SAND can connect to, including
+// the fields each one needs. The connect form in the browser is generated from
+// this, so a new backend shows up in the UI without frontend changes.
+func (s *Server) handleProviderSpecs(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"specs": provider.Specs()})
+}
+
+func (s *Server) handleProvidersList(w http.ResponseWriter, r *http.Request) {
+	v, _ := s.Vault()
+
+	ctx, cancel := contextWithTimeout(r, 30*time.Second)
+	defer cancel()
+
+	statuses, err := v.ProviderStatuses(ctx)
+	if err != nil {
+		vaultErrorResponse(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"providers": statuses})
+}
+
+type addProviderRequest struct {
+	Kind    provider.Kind     `json:"kind"`
+	Name    string            `json:"name"`
+	Options map[string]string `json:"options"`
+}
+
+func (s *Server) handleProviderAdd(w http.ResponseWriter, r *http.Request) {
+	var req addProviderRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
+		return
+	}
+	if req.Kind == "" {
+		writeError(w, http.StatusBadRequest, "missing provider kind", "BAD_REQUEST")
+		return
+	}
+
+	ctx, cancel := contextWithTimeout(r, 60*time.Second)
+	defer cancel()
+
+	v, _ := s.Vault()
+	cfg, err := v.AddProvider(ctx, provider.Config{
+		Kind:    req.Kind,
+		Name:    req.Name,
+		Options: req.Options,
+	})
+	if err != nil {
+		vaultErrorResponse(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"provider": cfg})
+}
+
+func (s *Server) handleProviderTest(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := contextWithTimeout(r, 60*time.Second)
+	defer cancel()
+
+	v, _ := s.Vault()
+	if err := v.TestProvider(ctx, r.PathValue("id")); err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"online": false, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"online": true})
+}
+
+func (s *Server) handleProviderRemove(w http.ResponseWriter, r *http.Request) {
+	force := r.URL.Query().Get("force") == "1" || r.URL.Query().Get("force") == "true"
+
+	v, _ := s.Vault()
+	if err := v.RemoveProvider(r.PathValue("id"), force); err != nil {
+		vaultErrorResponse(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
+}

@@ -1,0 +1,121 @@
+/* Thin wrapper over the SAND HTTP API.
+   Every call goes to the local server, which is the only thing that ever sees
+   plaintext — the browser never touches encryption keys. */
+
+class ApiError extends Error {
+  constructor(message, code, status) {
+    super(message)
+    this.code = code
+    this.status = status
+  }
+}
+
+async function request(path, { method = 'GET', body, formData, signal } = {}) {
+  const init = { method, signal, credentials: 'same-origin', headers: {} }
+
+  if (formData) {
+    init.body = formData
+  } else if (body !== undefined) {
+    init.headers['Content-Type'] = 'application/json'
+    init.body = JSON.stringify(body)
+  }
+
+  const resp = await fetch(path, init)
+  const contentType = resp.headers.get('Content-Type') || ''
+
+  if (!contentType.includes('application/json')) {
+    if (!resp.ok) throw new ApiError(`${resp.status} ${resp.statusText}`, 'HTTP_ERROR', resp.status)
+    return null
+  }
+
+  const payload = await resp.json()
+  if (!resp.ok) {
+    throw new ApiError(payload.error || 'request failed', payload.code, resp.status)
+  }
+  return payload
+}
+
+export const api = {
+  ApiError,
+
+  vaultStatus: () => request('/api/vault'),
+  initVault: (password, policy) => request('/api/vault/init', { method: 'POST', body: { password, policy } }),
+  unlock: (password) => request('/api/vault/unlock', { method: 'POST', body: { password } }),
+  lock: () => request('/api/vault/lock', { method: 'POST' }),
+  setPolicy: (policy) => request('/api/vault/policy', { method: 'POST', body: { policy } }),
+  changePassword: (oldPassword, newPassword) =>
+    request('/api/vault/password', {
+      method: 'POST',
+      body: { old_password: oldPassword, new_password: newPassword },
+    }),
+
+  providerSpecs: () => request('/api/providers/specs'),
+  providers: () => request('/api/providers'),
+  addProvider: (kind, name, options) =>
+    request('/api/providers', { method: 'POST', body: { kind, name, options } }),
+  testProvider: (id) => request(`/api/providers/${encodeURIComponent(id)}/test`, { method: 'POST' }),
+  removeProvider: (id, force) =>
+    request(`/api/providers/${encodeURIComponent(id)}${force ? '?force=1' : ''}`, { method: 'DELETE' }),
+
+  list: (path) => request(`/api/files?path=${encodeURIComponent(path)}`),
+  fileMeta: (id) => request(`/api/files/${encodeURIComponent(id)}`),
+  fileHealth: (id) => request(`/api/files/${encodeURIComponent(id)}/health`),
+  deleteFile: (id) => request(`/api/files/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  moveFile: (id, dir, name) =>
+    request(`/api/files/${encodeURIComponent(id)}/move`, { method: 'POST', body: { dir, name } }),
+
+  createFolder: (path) => request('/api/folders', { method: 'POST', body: { path } }),
+  deleteFolder: (path, recursive) =>
+    request(`/api/folders?path=${encodeURIComponent(path)}${recursive ? '&recursive=1' : ''}`,
+      { method: 'DELETE' }),
+
+  contentURL: (id, { download = false } = {}) =>
+    `/api/files/${encodeURIComponent(id)}/content${download ? '?download=1' : ''}`,
+
+  /* Uploads go through XMLHttpRequest rather than fetch so the UI can show
+     real progress while a large file is being split and scattered. */
+  upload(files, path, { overwrite = false, onProgress } = {}) {
+    return new Promise((resolve, reject) => {
+      const form = new FormData()
+      for (const file of files) form.append('files[]', file)
+      form.append('path', path)
+      form.append('overwrite', String(overwrite))
+
+      const xhr = new XMLHttpRequest()
+      xhr.open('POST', '/api/files')
+      xhr.withCredentials = true
+
+      if (onProgress) {
+        xhr.upload.addEventListener('progress', (e) => {
+          if (e.lengthComputable) onProgress(e.loaded / e.total)
+        })
+      }
+
+      xhr.addEventListener('load', () => {
+        let payload
+        try {
+          payload = JSON.parse(xhr.responseText)
+        } catch {
+          reject(new ApiError(`upload failed (${xhr.status})`, 'HTTP_ERROR', xhr.status))
+          return
+        }
+        if (xhr.status >= 200 && xhr.status < 300) resolve(payload)
+        else reject(new ApiError(payload.error || 'upload failed', payload.code, xhr.status))
+      })
+      xhr.addEventListener('error', () => reject(new ApiError('network error during upload', 'NETWORK')))
+      xhr.addEventListener('abort', () => reject(new ApiError('upload cancelled', 'ABORTED')))
+
+      xhr.send(form)
+    })
+  },
+}
+
+export function joinPath(dir, name) {
+  return dir === '/' ? `/${name}` : `${dir}/${name}`
+}
+
+export function parentPath(dir) {
+  if (dir === '/' ) return '/'
+  const idx = dir.lastIndexOf('/')
+  return idx <= 0 ? '/' : dir.slice(0, idx)
+}
