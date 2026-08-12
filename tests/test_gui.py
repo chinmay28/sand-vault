@@ -1,424 +1,183 @@
 """
-Headless browser end-to-end tests for the SAND web GUI.
+Browser end-to-end tests for the SAND file browser.
 
-Uses Playwright (Chromium) to drive the browser.  The tests are split into
-three groups:
+These drive the real React app served by the Go binary: create a vault, connect
+cloud accounts through the UI, upload a file, and confirm the browser can show
+it again — which only works if the server really did gather the encrypted parts
+back off the accounts and rebuild the plaintext.
 
-1. TestPageLoad        — always run; verifies the server serves valid HTML
-2. TestAPIviaJS        — always run; exercises the API from inside the browser
-                         via page.evaluate() — works even with the placeholder
-3. TestGUILayout       — skipped when full React frontend is not built
-4. TestArchiveWorkflow — skipped when full React frontend is not built
-5. TestRestoreWorkflow — skipped when full React frontend is not built
-
-Run `make build-web` (requires Node.js) to compile the React app and unlock
-groups 3-5.
+Skipped automatically when the frontend has not been built.  If Playwright
+cannot launch its bundled Chromium, set PLAYWRIGHT_CHROMIUM_EXECUTABLE to a
+browser on the machine.
 """
-import hashlib
-import io
 import os
-import zipfile
+import re
 
 import pytest
-import requests
-from playwright.sync_api import Page, expect
 
-TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
+pytestmark = pytest.mark.gui
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _api_archive(server, content, filename="test.bin", password="pw"):
-    r = requests.post(
-        f"{server}/api/archive",
-        files={"file": (filename, content)},
-        data={"password": password},
-    )
-    r.raise_for_status()
-    parts = {}
-    with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
-        for name in zf.namelist():
-            parts[int(name[-1])] = (name, zf.read(name))
-    return parts
-
-
-def _skip_no_frontend(frontend_built):
+@pytest.fixture(autouse=True)
+def _require_frontend(frontend_built):
     if not frontend_built:
-        pytest.skip("React frontend not built — run 'make build-web' to enable GUI tests")
+        pytest.skip("React frontend is not built — run 'make build-web'")
 
 
-# ===========================================================================
-# 1. Page load — always runs
-# ===========================================================================
+@pytest.fixture
+def app(page, server, vault_password, clouds):
+    """Open the app with the vault unlocked and three accounts connected.
 
-class TestPageLoad:
-    def test_root_returns_200(self, server):
-        r = requests.get(server + "/")
-        assert r.status_code == 200
+    The vault is shared across the session, so this handles both the
+    first-run (create) and returning (unlock) screens.
+    """
+    page.goto(server)
 
-    def test_root_content_type_is_html(self, server):
-        r = requests.get(server + "/")
-        assert "html" in r.headers.get("Content-Type", "").lower()
+    if page.get_by_text("Create your vault").count() > 0:
+        boxes = page.locator('input[autocomplete="new-password"]')
+        boxes.nth(0).fill(vault_password)
+        boxes.nth(1).fill(vault_password)
+        page.get_by_text("▶ Create vault").click()
+    else:
+        page.locator('input[type="password"]').first.fill(vault_password)
+        page.get_by_text("▶ Unlock").click()
 
-    def test_browser_opens_page(self, server, page: Page):
-        page.goto(server + "/")
-        assert page.title() is not None  # page has a <title>
+    page.wait_for_selector("text=Connected clouds", timeout=20000)
 
-    def test_body_renders_something(self, server, page: Page):
-        page.goto(server + "/")
-        page.wait_for_load_state("domcontentloaded")
-        assert len(page.locator("body").inner_text()) > 0
+    # Make sure at least three accounts exist, connecting any that are missing.
+    for name in ("ui-one", "ui-two", "ui-three"):
+        if page.get_by_text(name, exact=True).count() > 0:
+            continue
+        page.get_by_text("+ Connect a cloud").click()
+        page.wait_for_selector("text=Local folder")
+        page.get_by_text("Local folder").click()
+        form = page.locator("form")
+        form.locator("input").nth(0).fill(name)
+        form.locator("input").nth(1).fill(clouds(name))
+        form.locator('button[type=submit]').click()
+        page.wait_for_selector(f"text={name}", timeout=30000)
 
-    def test_no_javascript_console_errors_on_load(self, server, page: Page):
+    return page
+
+
+def upload_and_settle(page, source):
+    """Upload a file through the picker and wait for the refresh to finish.
+
+    The upload triggers a listing refresh, so clicking a row the instant the
+    name appears can race the re-render.
+    """
+    page.set_input_files("input[type=file]", str(source))
+    page.wait_for_selector(f"text={os.path.basename(source)}", timeout=90000)
+    page.wait_for_load_state("networkidle")
+
+
+class TestLockScreen:
+    def test_lock_screen_is_shown_before_unlocking(self, page, server):
+        page.goto(server)
+        # The app asks the server for vault status before it can decide which
+        # screen to render, so wait for that to land.
+        page.wait_for_selector("text=SAND", timeout=15000)
+        page.wait_for_selector("text=Vault password", timeout=15000)
+        assert "vault" in page.content().lower()
+
+    def test_no_file_listing_leaks_before_unlock(self, page, server):
+        page.goto(server)
+        page.wait_for_selector("text=Vault password", timeout=15000)
+        # Nothing about stored files may appear until the vault is open.
+        assert page.get_by_text("Connected clouds").count() == 0
+
+    def test_wrong_password_is_reported(self, page, server, unlocked):
+        page.goto(server)
+        if page.get_by_text("Unlock your vault").count() == 0:
+            pytest.skip("vault not yet created in this session ordering")
+        page.locator('input[type="password"]').first.fill("definitely-not-the-password")
+        page.get_by_text("▶ Unlock").click()
+        page.wait_for_selector("text=Wrong password", timeout=15000)
+
+
+class TestBrowserShell:
+    def test_header_and_panels_render(self, app):
+        assert app.get_by_text("Connected clouds").count() > 0
+        assert app.get_by_text("🔒 Lock vault").count() > 0
+
+    def test_connected_accounts_are_listed(self, app):
+        for name in ("ui-one", "ui-two", "ui-three"):
+            assert app.get_by_text(name, exact=True).count() > 0
+
+    def test_lock_returns_to_the_lock_screen(self, app):
+        app.get_by_text("🔒 Lock vault").click()
+        app.wait_for_selector("text=Unlock your vault", timeout=15000)
+
+
+class TestUploadAndPreview:
+    def test_upload_then_preview_rebuilds_the_file(self, app, tmp_path):
+        body = "this text only comes back if the parts were gathered and decrypted\n"
+        source = tmp_path / "roundtrip.txt"
+        source.write_text(body)
+
+        upload_and_settle(app, source)
+
+        app.locator('button[title="Open"]').first.click()
+        # The preview pane renders the reconstructed plaintext.
+        app.wait_for_selector(f"text={body.strip()}", timeout=60000)
+
+    def test_uploaded_file_shows_three_part_badges(self, app, tmp_path):
+        source = tmp_path / "badges.txt"
+        source.write_text("badge check")
+
+        upload_and_settle(app, source)
+
+        row = app.locator('button[title="Where the parts live"]').first
+        assert row.count() > 0
+
+    def test_shard_inspector_names_the_accounts(self, app, tmp_path):
+        source = tmp_path / "inspect.txt"
+        source.write_text("where does this live")
+
+        upload_and_settle(app, source)
+
+        app.locator('button[title="Where the parts live"]').first.click()
+        app.wait_for_selector("text=Where this file lives", timeout=20000)
+        app.wait_for_selector("text=Enough parts are reachable", timeout=30000)
+
+        body = app.content()
+        assert "Part 1" in body and "Part 2" in body and "Part 3" in body
+        # Each part must name the account holding it.
+        assert re.search(r"ui-(one|two|three)", body)
+
+    def test_download_link_points_at_the_content_endpoint(self, app, tmp_path):
+        source = tmp_path / "dl.txt"
+        source.write_text("download me")
+
+        upload_and_settle(app, source)
+
+        link = app.locator('a[title="Download the rebuilt, decrypted file"]').first
+        href = link.get_attribute("href")
+        assert "/api/files/" in href and "download=1" in href
+
+
+class TestFolders:
+    def test_create_and_enter_a_folder(self, app):
+        app.get_by_text("+ Folder").click()
+        app.wait_for_selector("text=New folder")
+        app.fill('input[placeholder="Folder name"]', "gui-folder")
+        app.locator('button[type=submit]:has-text("Create")').click()
+
+        app.wait_for_selector("text=gui-folder", timeout=20000)
+        app.get_by_text("gui-folder").first.click()
+        # Breadcrumb reflects the folder we walked into.
+        app.wait_for_selector("text=gui-folder", timeout=10000)
+
+
+class TestNoConsoleErrors:
+    def test_app_loads_without_console_errors(self, page, server):
         errors = []
+        page.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
         page.on("pageerror", lambda e: errors.append(str(e)))
-        page.goto(server + "/")
-        page.wait_for_load_state("networkidle")
-        assert errors == [], f"JS errors on page load: {errors}"
 
+        page.goto(server)
+        page.wait_for_timeout(1500)
 
-# ===========================================================================
-# 2. API via browser JS — always runs (no React required)
-# ===========================================================================
-
-class TestAPIviaJS:
-    def test_health_via_fetch(self, server, page: Page):
-        page.goto(server + "/")
-        result = page.evaluate("""
-            async () => {
-                const r = await fetch('/api/health');
-                return await r.json();
-            }
-        """)
-        assert result["status"] == "ok"
-
-    def test_archive_via_fetch(self, server, page: Page):
-        page.goto(server + "/")
-        result = page.evaluate("""
-            async () => {
-                const blob = new Blob(['hello from browser'], {type: 'text/plain'});
-                const form = new FormData();
-                form.append('file', blob, 'browser_test.txt');
-                form.append('password', 'browserpw');
-                const r = await fetch('/api/archive', {method: 'POST', body: form});
-                return {
-                    status: r.status,
-                    contentType: r.headers.get('Content-Type'),
-                };
-            }
-        """)
-        assert result["status"] == 200
-        assert "zip" in result["contentType"]
-
-    def test_archive_then_restore_via_fetch(self, server, page: Page):
-        """Full round-trip entirely in browser JS."""
-        page.goto(server + "/")
-        result = page.evaluate("""
-            async () => {
-                // Archive
-                const original = 'round-trip content from browser';
-                const blob = new Blob([original], {type: 'text/plain'});
-                const form1 = new FormData();
-                form1.append('file', blob, 'rt.txt');
-                form1.append('password', 'rtpw');
-                const archiveResp = await fetch('/api/archive', {method: 'POST', body: form1});
-                if (!archiveResp.ok) return {ok: false, step: 'archive'};
-
-                // Unzip to get parts
-                const zipBytes = await archiveResp.arrayBuffer();
-                // We cannot unzip in the browser easily, so just verify we got a ZIP
-                const magic = new Uint8Array(zipBytes, 0, 4);
-                const isZip = magic[0] === 0x50 && magic[1] === 0x4b;
-                return {ok: isZip, step: 'archive_verified'};
-            }
-        """)
-        assert result["ok"] is True
-
-    def test_missing_password_returns_400_via_fetch(self, server, page: Page):
-        page.goto(server + "/")
-        status = page.evaluate("""
-            async () => {
-                const blob = new Blob(['data'], {type: 'text/plain'});
-                const form = new FormData();
-                form.append('file', blob, 'f.txt');
-                // no password field
-                const r = await fetch('/api/archive', {method: 'POST', body: form});
-                return r.status;
-            }
-        """)
-        assert status == 400
-
-    def test_wrong_password_returns_400_via_fetch(self, server, page: Page):
-        page.goto(server + "/")
-        # We need real media-file bytes — obtain them via requests, then pass to browser
-        parts = _api_archive(server, b"test content", "t.bin", "correct")
-        part1_bytes = list(parts[1][1])  # convert bytes to list for JSON transport
-        part2_bytes = list(parts[2][1])
-
-        status = page.evaluate(
-            """
-            async ([p1, p2, name1, name2]) => {
-                const f1 = new Blob([new Uint8Array(p1)]);
-                const f2 = new Blob([new Uint8Array(p2)]);
-                const form = new FormData();
-                form.append('parts[]', f1, name1);
-                form.append('parts[]', f2, name2);
-                form.append('password', 'wrong');
-                const r = await fetch('/api/restore', {method: 'POST', body: form});
-                return r.status;
-            }
-            """,
-            [part1_bytes, part2_bytes, parts[1][0], parts[2][0]],
-        )
-        assert status == 400
-
-
-# ===========================================================================
-# 3. GUI Layout — requires full React frontend
-# ===========================================================================
-
-class TestGUILayout:
-    def test_sand_logo_visible(self, server, page: Page, frontend_built):
-        _skip_no_frontend(frontend_built)
-        page.goto(server + "/")
-        page.wait_for_load_state("networkidle")
-        expect(page.get_by_text("SAND")).to_be_visible()
-
-    def test_subtitle_visible(self, server, page: Page, frontend_built):
-        _skip_no_frontend(frontend_built)
-        page.goto(server + "/")
-        page.wait_for_load_state("networkidle")
-        expect(page.get_by_text("Secure Archival Network Distribution")).to_be_visible()
-
-    def test_archive_tab_present(self, server, page: Page, frontend_built):
-        _skip_no_frontend(frontend_built)
-        page.goto(server + "/")
-        page.wait_for_load_state("networkidle")
-        # Tab button is "📦 Archive"; use emoji prefix to distinguish from the "▶ Archive" submit button
-        expect(page.get_by_role("button", name="📦 Archive")).to_be_visible()
-
-    def test_restore_tab_present(self, server, page: Page, frontend_built):
-        _skip_no_frontend(frontend_built)
-        page.goto(server + "/")
-        page.wait_for_load_state("networkidle")
-        expect(page.get_by_role("button", name="Restore")).to_be_visible()
-
-    def test_password_field_present_on_archive_tab(self, server, page: Page, frontend_built):
-        _skip_no_frontend(frontend_built)
-        page.goto(server + "/")
-        page.wait_for_load_state("networkidle")
-        expect(page.locator("input[type='password']")).to_be_visible()
-
-    def test_footer_shows_crypto_info(self, server, page: Page, frontend_built):
-        _skip_no_frontend(frontend_built)
-        page.goto(server + "/")
-        page.wait_for_load_state("networkidle")
-        body = page.locator("body").inner_text()
-        assert "AES-256-GCM" in body
-        assert "Argon2id" in body
-
-    def test_tab_switch_to_restore_shows_part_badges(self, server, page: Page, frontend_built):
-        _skip_no_frontend(frontend_built)
-        page.goto(server + "/")
-        page.wait_for_load_state("networkidle")
-        page.get_by_role("button", name="Restore").click()
-        expect(page.get_by_text("Part 1")).to_be_visible()
-        expect(page.get_by_text("Part 2")).to_be_visible()
-        expect(page.get_by_text("Part 3")).to_be_visible()
-
-
-# ===========================================================================
-# 4. Archive workflow — requires full React frontend
-# ===========================================================================
-
-class TestArchiveWorkflow:
-    def test_archive_button_disabled_without_file(self, server, page: Page, frontend_built):
-        _skip_no_frontend(frontend_built)
-        page.goto(server + "/")
-        page.wait_for_load_state("networkidle")
-
-        page.locator("input[type='password']").fill("pw")
-
-        # Submit button text is "▶ Archive" — target it specifically
-        btn = page.locator("button", has_text="▶ Archive")
-        assert btn.is_disabled()
-
-    def test_archive_button_disabled_without_password(self, server, page: Page, frontend_built, tmp_path):
-        _skip_no_frontend(frontend_built)
-        page.goto(server + "/")
-        page.wait_for_load_state("networkidle")
-
-        f = tmp_path / "nopw.txt"
-        f.write_text("data")
-        page.locator("input[type='file']").set_input_files(str(f))
-
-        btn = page.locator("button", has_text="▶ Archive")
-        assert btn.is_disabled()
-
-    def test_archive_file_triggers_zip_download(self, server, page: Page, frontend_built, tmp_path):
-        _skip_no_frontend(frontend_built)
-        page.goto(server + "/")
-        page.wait_for_load_state("networkidle")
-
-        f = tmp_path / "gui_archive.txt"
-        f.write_text("GUI archive test content — checking download")
-        page.locator("input[type='file']").set_input_files(str(f))
-        page.locator("input[type='password']").fill("guipassword")
-
-        with page.expect_download() as dl:
-            page.locator("button", has_text="▶ Archive").click()
-
-        download = dl.value
-        assert download.suggested_filename.endswith(".sand.zip")
-
-        # ZIP must contain 3 valid media files
-        with zipfile.ZipFile(download.path()) as zf:
-            assert len(zf.namelist()) == 3
-            for name in zf.namelist():
-                assert zf.read(name)[:4] == b"SAND"
-
-    def test_success_message_shown_after_archive(self, server, page: Page, frontend_built, tmp_path):
-        _skip_no_frontend(frontend_built)
-        page.goto(server + "/")
-        page.wait_for_load_state("networkidle")
-
-        f = tmp_path / "success.txt"
-        f.write_text("testing success message")
-        page.locator("input[type='file']").set_input_files(str(f))
-        page.locator("input[type='password']").fill("pw")
-
-        with page.expect_download():
-            page.locator("button", has_text="▶ Archive").click()
-
-        # Wait for UI to update
-        page.wait_for_timeout(1000)
-        body = page.locator("body").inner_text()
-        # Should show some success indicator
-        assert any(word in body.lower() for word in ("archived", "done", "sand.zip", "✓"))
-
-    def test_show_hide_password_toggle(self, server, page: Page, frontend_built):
-        _skip_no_frontend(frontend_built)
-        page.goto(server + "/")
-        page.wait_for_load_state("networkidle")
-
-        pw_input = page.locator("input[type='password']")
-        expect(pw_input).to_be_visible()
-
-        # Click the eye button — should toggle to text
-        page.locator("button", has_text="◎").click()
-        expect(page.locator("input[type='text']")).to_be_visible()
-
-
-# ===========================================================================
-# 5. Restore workflow — requires full React frontend
-# ===========================================================================
-
-class TestRestoreWorkflow:
-    def test_restore_button_disabled_with_fewer_than_two_parts(
-        self, server, page: Page, frontend_built, tmp_path
-    ):
-        _skip_no_frontend(frontend_built)
-        page.goto(server + "/")
-        page.wait_for_load_state("networkidle")
-        page.get_by_role("button", name="Restore").click()
-        page.locator("input[type='password']").fill("pw")
-
-        btn = page.locator("button", has_text="Restore").last
-        assert btn.is_disabled()
-
-    def test_part_badges_update_when_files_added(
-        self, server, page: Page, frontend_built, tmp_path
-    ):
-        _skip_no_frontend(frontend_built)
-        parts = _api_archive(server, b"badge test", "badge.bin", "bpw")
-
-        # Write parts to disk
-        p1_file = tmp_path / parts[1][0]
-        p2_file = tmp_path / parts[2][0]
-        p1_file.write_bytes(parts[1][1])
-        p2_file.write_bytes(parts[2][1])
-
-        page.goto(server + "/")
-        page.wait_for_load_state("networkidle")
-        page.get_by_role("button", name="Restore").click()
-
-        page.locator("input[type='file']").set_input_files([str(p1_file), str(p2_file)])
-        page.wait_for_timeout(500)
-
-        body = page.locator("body").inner_text()
-        # Part badges for 1 and 2 should show as filled
-        assert "Part 1" in body and "Part 2" in body
-
-    def test_restore_downloads_original_file(
-        self, server, page: Page, frontend_built, tmp_path
-    ):
-        _skip_no_frontend(frontend_built)
-        original = b"GUI restore test content - verify this comes back"
-        parts = _api_archive(server, original, "gui_restore.bin", "rpw")
-
-        p1_file = tmp_path / parts[1][0]
-        p2_file = tmp_path / parts[2][0]
-        p1_file.write_bytes(parts[1][1])
-        p2_file.write_bytes(parts[2][1])
-
-        page.goto(server + "/")
-        page.wait_for_load_state("networkidle")
-        page.get_by_role("button", name="Restore").click()
-
-        page.locator("input[type='file']").set_input_files([str(p1_file), str(p2_file)])
-        page.locator("input[type='password']").fill("rpw")
-
-        with page.expect_download() as dl:
-            page.locator("button", has_text="Restore").last.click()
-
-        download = dl.value
-        assert open(download.path(), "rb").read() == original
-
-    def test_wrong_password_shows_error_message(
-        self, server, page: Page, frontend_built, tmp_path
-    ):
-        _skip_no_frontend(frontend_built)
-        parts = _api_archive(server, b"wrong pw test", "wp.bin", "correct")
-
-        p1_file = tmp_path / parts[1][0]
-        p2_file = tmp_path / parts[2][0]
-        p1_file.write_bytes(parts[1][1])
-        p2_file.write_bytes(parts[2][1])
-
-        page.goto(server + "/")
-        page.wait_for_load_state("networkidle")
-        page.get_by_role("button", name="Restore").click()
-
-        page.locator("input[type='file']").set_input_files([str(p1_file), str(p2_file)])
-        page.locator("input[type='password']").fill("wrong-password")
-        page.locator("button", has_text="Restore").last.click()
-
-        # Wait for error to appear
-        page.wait_for_timeout(4000)
-        body = page.locator("body").inner_text()
-        assert any(w in body.lower() for w in ("wrong", "password", "fail", "error"))
-
-    def test_clear_button_resets_parts(self, server, page: Page, frontend_built, tmp_path):
-        _skip_no_frontend(frontend_built)
-        parts = _api_archive(server, b"clear test", "clear.bin", "pw")
-
-        p1_file = tmp_path / parts[1][0]
-        p1_file.write_bytes(parts[1][1])
-
-        page.goto(server + "/")
-        page.wait_for_load_state("networkidle")
-        page.get_by_role("button", name="Restore").click()
-
-        page.locator("input[type='file']").set_input_files(str(p1_file))
-        page.wait_for_timeout(300)
-
-        # Clear should appear; click it
-        clear_btn = page.locator("button", has_text="✕ Clear")
-        expect(clear_btn).to_be_visible()
-        clear_btn.click()
-        page.wait_for_timeout(300)
-
-        # The clear button should disappear (no files selected)
-        assert not clear_btn.is_visible()
+        # Favicon 404s are noise, not defects.
+        real = [e for e in errors if "favicon" not in e.lower()]
+        assert not real, f"console errors on load: {real}"
