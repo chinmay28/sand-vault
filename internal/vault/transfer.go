@@ -10,9 +10,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chinmay28/sand-vault/internal/archive"
+	"github.com/chinmay28/sand-vault/internal/provider"
 	"github.com/google/uuid"
-	"github.com/sand-project/sand/internal/archive"
-	"github.com/sand-project/sand/internal/provider"
 )
 
 // Upload encodes data into encrypted parts, scatters them across the

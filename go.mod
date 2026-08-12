@@ -1,4 +1,4 @@
-module github.com/sand-project/sand
+module github.com/chinmay28/sand-vault
 
 go 1.22
 

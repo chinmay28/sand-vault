@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/sand-project/sand/internal/archive"
+	"github.com/chinmay28/sand-vault/internal/archive"
 )
 
 // This file keeps SAND's original standalone mode alive alongside the

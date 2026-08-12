@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sand-project/sand/internal/version"
+	"github.com/chinmay28/sand-vault/internal/version"
 )
 
 // testClient drives the full HTTP handler the same way a browser does,

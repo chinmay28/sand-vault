@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/sand-project/sand/internal/provider"
+	"github.com/chinmay28/sand-vault/internal/provider"
 )
 
 // handleProviderSpecs describes every backend SAND can connect to, including

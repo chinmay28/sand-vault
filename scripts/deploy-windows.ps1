@@ -1,4 +1,4 @@
-# deploy-windows.ps1 — Install SAND on Windows as a background service.
+# deploy-windows.ps1 — Install SAND Vault on Windows as a background service.
 #
 # Usage (run in an elevated PowerShell window):
 #   .\scripts\deploy-windows.ps1 [-Binary <path>] [-Port <int>] [-Bind <ip>]
@@ -37,7 +37,7 @@ if (-not $Binary -or -not (Test-Path $Binary)) {
 }
 
 $BinaryFull = (Resolve-Path $Binary).Path
-Write-Host "==> Deploying SAND"
+Write-Host "==> Deploying SAND Vault"
 Write-Host "    binary : $BinaryFull"
 Write-Host "    port   : $Port"
 Write-Host "    bind   : $Bind"
@@ -65,8 +65,8 @@ if ($existing) {
 # ── Install service ───────────────────────────────────────────────────────────
 nssm install $ServiceName $BinaryFull
 nssm set    $ServiceName AppParameters "serve --port $Port --bind $Bind"
-nssm set    $ServiceName DisplayName   "SAND Secure Archival"
-nssm set    $ServiceName Description   "SAND file archival server (AES-256-GCM + Argon2id)"
+nssm set    $ServiceName DisplayName   "SAND Vault"
+nssm set    $ServiceName Description   "SAND Vault — split, encrypt and scatter files across cloud accounts"
 nssm set    $ServiceName Start         SERVICE_AUTO_START
 nssm set    $ServiceName AppStdout     "$env:ProgramData\sand\sand.log"
 nssm set    $ServiceName AppStderr     "$env:ProgramData\sand\sand-error.log"
@@ -78,7 +78,7 @@ New-Item -ItemType Directory -Force -Path "$env:ProgramData\sand" | Out-Null
 nssm start $ServiceName
 
 Write-Host ""
-Write-Host "==> SAND is running!"
+Write-Host "==> SAND Vault is running!"
 Write-Host "    status : Get-Service sand"
 Write-Host "    logs   : $env:ProgramData\sand\sand.log"
 Write-Host "    url    : http://${Bind}:${Port}"

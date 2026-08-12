@@ -1,6 +1,10 @@
-// Command sand is the CLI and local server for SAND, a file store that
+// Command sand is the CLI and local server for SAND Vault, a file store that
 // splits, encrypts and scatters your files across the cloud accounts you
 // connect to it.
+//
+// The product is "SAND Vault"; the command stays `sand`, the way Visual Studio
+// Code ships as `code`. The service name, data directory and vault filename
+// stay on `sand` too, so an existing install upgrades without migration.
 package main
 
 import (
@@ -9,7 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/sand-project/sand/internal/version"
+	"github.com/chinmay28/sand-vault/internal/version"
 )
 
 func main() {
@@ -23,7 +27,7 @@ func rootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "sand",
 		Short: "Split, encrypt and scatter files across your cloud accounts",
-		Long: `SAND stores files as three encrypted parts spread over separate cloud
+		Long: `SAND Vault stores files as three encrypted parts spread over separate cloud
 accounts. Any two parts rebuild the original; any one part on its own is
 useless. The browser at "sand serve" reassembles files on demand.
 
@@ -62,7 +66,7 @@ func versionCmd() *cobra.Command {
 		Short: "Print the version and exit",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Printf("sand %s\n", version.String())
+			fmt.Printf("SAND Vault %s\n", version.String())
 			return nil
 		},
 	}

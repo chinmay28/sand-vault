@@ -10,8 +10,8 @@ tag that shouldn't be published.
 
 ## v2.0 — the multi-cloud file browser
 
-SAND stops being a batch tool and becomes a file browser over storage you don't
-fully trust.
+The project is now **SAND Vault**, and it stops being a batch tool: it becomes
+a file browser over storage you don't fully trust.
 
 Before, you fed it files and got three zip archives back, then carried them to
 three places yourself. Now you connect your cloud accounts once and it does the
@@ -79,7 +79,7 @@ One command installs SAND as a hardened systemd service, building from source
 or installing a prebuilt binary:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/chinmay28/sand/main/scripts/quickstart.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/chinmay28/sand-vault/main/scripts/quickstart.sh | sudo bash
 ```
 
 Re-run it to upgrade. It snapshots the vault before swapping code in, builds

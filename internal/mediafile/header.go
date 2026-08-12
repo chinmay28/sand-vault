@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/sand-project/sand/internal/crypto"
+	"github.com/chinmay28/sand-vault/internal/crypto"
 )
 
 // Magic bytes identifying a SAND media file.

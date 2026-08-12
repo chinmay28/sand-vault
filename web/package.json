@@ -2,7 +2,7 @@
   "name": "sand-web",
   "private": true,
   "version": "0.0.0",
-  "description": "SAND web client — a file browser over storage you do not fully trust.",
+  "description": "SAND Vault web client — a file browser over storage you do not fully trust.",
   "license": "AGPL-3.0-only",
   "author": "Chinmay Manjunath",
   "type": "module",

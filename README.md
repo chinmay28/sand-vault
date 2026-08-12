@@ -1,12 +1,12 @@
-# SAND — Secure Archival Network Distribution
+# SAND Vault — Secure Archival Network Distribution
 
 **A file browser over storage you don't fully trust.**
 
-Connect the cloud accounts you already have. SAND compresses every file you add,
-splits it into three parts, encrypts them, and puts each part on a **different**
-account. Any two parts rebuild the original; any one on its own is noise. Open a
-file in the browser and SAND fetches the parts back, reassembles them in memory,
-and shows you the file.
+Connect the cloud accounts you already have. SAND Vault compresses every file
+you add, splits it into three parts, encrypts them, and puts each part on a
+**different** account. Any two parts rebuild the original; any one on its own
+is noise. Open a file in the browser and SAND fetches the parts back,
+reassembles them in memory, and shows you the file.
 
 No single provider ever holds your data — only a fragment that means nothing
 without a fragment held by someone else, plus a key that never leaves your
@@ -15,7 +15,7 @@ machine.
 Ships as a **single static Go binary** with a CLI and an embedded web UI.
 
 ```
-┌ SAND ─────────────────────────────────────────────────────────────────┐
+┌ SAND VAULT ───────────────────────────────────────────────────────────┐
 │ CONNECTED CLOUDS  │  ▣ / photos                        [+ Folder] [↑] │
 │ ● drive-personal  ├───────────────────────────────────────────────────┤
 │   gdrive · 41 pts │  NAME              SIZE      MODIFIED      PARTS  │
@@ -31,10 +31,10 @@ Ships as a **single static Go binary** with a CLI and an embedded web UI.
 
 ## Quick start on Linux (Ubuntu / Raspberry Pi)
 
-Install SAND as a hardened **systemd service** with one command:
+Install SAND Vault as a hardened **systemd service** with one command:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/chinmay28/sand/main/scripts/quickstart.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/chinmay28/sand-vault/main/scripts/quickstart.sh | sudo bash
 ```
 
 (or, from a checkout: `sudo ./scripts/quickstart.sh`)
@@ -44,11 +44,11 @@ It installs Node 22 and Go if needed (both build-time only), creates a dedicated
 runs it under systemd on `http://127.0.0.1:8080`.
 
 **Or skip the build entirely** and install the prebuilt binary from the latest
-[release](https://github.com/chinmay28/sand/releases) — no Node, no Go, no
+[release](https://github.com/chinmay28/sand-vault/releases) — no Node, no Go, no
 source tree, seconds instead of minutes on a Raspberry Pi:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/chinmay28/sand/main/scripts/quickstart.sh \
+curl -fsSL https://raw.githubusercontent.com/chinmay28/sand-vault/main/scripts/quickstart.sh \
   | sudo SAND_INSTALL=release bash
 ```
 

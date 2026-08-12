@@ -6,7 +6,7 @@
 // bumped by hand; the patch number can only come from git, which a compiled
 // binary has no access to, so it is stamped at link time instead:
 //
-//	go build -ldflags "-X github.com/sand-project/sand/internal/version.Patch=$(git rev-list --count HEAD)"
+//	go build -ldflags "-X github.com/chinmay28/sand-vault/internal/version.Patch=$(git rev-list --count HEAD)"
 //
 // `make build` (and `build-go`) does this for you via scripts/version.mjs,
 // which is also what the web client's build reads Major/Minor from — keep the

@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 #
-# SAND — Linux quick-start installer (Ubuntu / Debian / Raspberry Pi OS).
+# SAND Vault — Linux quick-start installer (Ubuntu / Debian / Raspberry Pi OS).
 #
-# One command, run as root, installs SAND as a hardened systemd service:
+# One command, run as root, installs SAND Vault as a hardened systemd service:
 #
-#   curl -fsSL https://raw.githubusercontent.com/chinmay28/sand/main/scripts/quickstart.sh | sudo bash
+# The product is "SAND Vault"; the service, user, install prefix, data directory
+# and SAND_* variables all stay on `sand` so an existing install keeps upgrading
+# in place rather than needing a migration.
+#
+#   curl -fsSL https://raw.githubusercontent.com/chinmay28/sand-vault/main/scripts/quickstart.sh | sudo bash
 #
 # Two ways to get the binary — SAND_INSTALL picks one:
 #
@@ -51,7 +55,7 @@
 # Configure via environment variables (all optional):
 #
 #   SAND_INSTALL     source | release        where the binary comes from (default: source)
-#   SAND_REPO        git URL to clone        (default: https://github.com/chinmay28/sand.git)
+#   SAND_REPO        git URL to clone        (default: https://github.com/chinmay28/sand-vault.git)
 #   SAND_REF         branch/tag/commit       (default: main; source mode)
 #   SAND_RELEASE     latest | <tag>          release to install (default: latest; release mode)
 #   SAND_USER        service system user     (default: sand)
@@ -64,7 +68,7 @@
 #   BACKUP_KEEP      pre-upgrade backups kept (default: 10)
 #
 # A NOTE ON HOST.  This defaults to 127.0.0.1, not 0.0.0.0, and that is not
-# timidity. SAND's server is the one component that ever holds plaintext: it
+# timidity. SAND Vault's server is the one component that ever holds plaintext: it
 # rebuilds a decrypted file in memory to answer a download, and it takes your
 # vault password over the wire. On a bare HTTP listener both cross the network
 # in the clear. Expose it deliberately, behind TLS — a reverse proxy
@@ -103,7 +107,7 @@ case "$INSTALL_MODE" in
   source | release) ;;
   *) die "SAND_INSTALL must be 'source' or 'release' (got '$INSTALL_MODE')." ;;
 esac
-SAND_REPO="${SAND_REPO:-https://github.com/chinmay28/sand.git}"
+SAND_REPO="${SAND_REPO:-https://github.com/chinmay28/sand-vault.git}"
 SAND_REF="${SAND_REF:-main}"
 RELEASE_TAG="${SAND_RELEASE:-latest}"
 SVC_USER="${SAND_USER:-sand}"
@@ -133,7 +137,7 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 && pwd)"
 LOCAL_CHECKOUT=""
 if [ "$INSTALL_MODE" = source ] && git -C "$SELF_DIR" rev-parse --show-toplevel >/dev/null 2>&1; then
   top="$(git -C "$SELF_DIR" rev-parse --show-toplevel)"
-  if [ -f "$top/go.mod" ] && grep -q 'module github.com/sand-project/sand' "$top/go.mod" 2>/dev/null; then
+  if [ -f "$top/go.mod" ] && grep -q 'module github.com/chinmay28/sand-vault' "$top/go.mod" 2>/dev/null; then
     LOCAL_CHECKOUT="$top"
     SRC_DIR="$top"   # build & serve from where the user already cloned
   fi
@@ -151,7 +155,7 @@ fi
 PREV_BIN="${SERVER_BIN}.prev"
 STAGED_BIN="${SERVER_BIN}.new"
 
-log "SAND quick start"
+log "SAND Vault quick start"
 printf '  %-10s %s\n' "install"  "$INSTALL_MODE$( [ "$INSTALL_MODE" = release ] && echo " ($RELEASE_TAG)" )"
 if [ "$INSTALL_MODE" = release ]; then
   printf '  %-10s %s\n' "binary"  "$SERVER_BIN"
@@ -262,7 +266,7 @@ release_arch() {
 RELEASE_VERSION=""
 if [ "$INSTALL_MODE" = release ]; then
   arch="$(release_arch)"
-  api="https://api.github.com/repos/chinmay28/sand/releases"
+  api="https://api.github.com/repos/chinmay28/sand-vault/releases"
   if [ "$RELEASE_TAG" = latest ]; then
     api="$api/latest"
   else
@@ -274,7 +278,7 @@ if [ "$INSTALL_MODE" = release ]; then
   [ -n "$RELEASE_VERSION" ] || die "could not determine the release tag."
 
   asset="sand-${RELEASE_VERSION}-linux-${arch}"
-  base="https://github.com/chinmay28/sand/releases/download/${RELEASE_VERSION}"
+  base="https://github.com/chinmay28/sand-vault/releases/download/${RELEASE_VERSION}"
 
   tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
   log "downloading $asset ($RELEASE_VERSION)…"
@@ -335,7 +339,7 @@ build_src() {
   patch="$(as_svc node "$SRC_DIR/scripts/version.mjs" --patch 2>/dev/null || echo 0)"
   as_svc env PATH="$PATH" HOME="$SRC_DIR/.cache" \
     go -C "$SRC_DIR" build -trimpath \
-      -ldflags "-s -w -X github.com/sand-project/sand/internal/version.Patch=${patch}" \
+      -ldflags "-s -w -X github.com/chinmay28/sand-vault/internal/version.Patch=${patch}" \
       -o "$STAGED_BIN" ./cmd/sand
 }
 
@@ -400,7 +404,7 @@ install_staged
 write_unit() {
   cat > "$UNIT_PATH" <<UNIT
 [Unit]
-Description=SAND — split, encrypt and scatter files across cloud accounts
+Description=SAND Vault — split, encrypt and scatter files across cloud accounts
 Documentation=https://github.com/chinmay28/sand
 After=network-online.target
 Wants=network-online.target
@@ -518,7 +522,7 @@ fi
 
 cat <<DONE
 
-${C_GREEN}SAND $verb and running.${C_OFF}
+${C_GREEN}SAND Vault $verb and running.${C_OFF}
 
   $reach_line
   Vault:       $VAULT_PATH
@@ -543,7 +547,7 @@ DONE
 
 if [ "$HOST" = "127.0.0.1" ]; then
   cat <<NOTE
-  Bound to loopback. SAND takes your vault password over this connection and
+  Bound to loopback. SAND Vault takes your vault password over this connection and
   sends rebuilt, decrypted files back over it, so put TLS in front before
   exposing it — Tailscale Serve, or a reverse proxy (scripts/nginx-sand.conf).
   Then re-run with HOST=0.0.0.0.${C_OFF}

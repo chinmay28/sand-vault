@@ -29,13 +29,19 @@ export function Brand({ size = 'md' }) {
         }}
       />
       <span style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.15 }}>
+        {/* Two-tone wordmark: SAND carries the accent it has always had, VAULT
+            sits back in the text colour so the pair reads as one name rather
+            than two competing words. */}
         <span style={{
           fontFamily: FONT.mono,
           fontSize: large ? '26px' : '17px',
           fontWeight: 700,
           letterSpacing: large ? '7px' : '4px',
-          color: COLORS.accent,
-        }}>SAND</span>
+          whiteSpace: 'nowrap',
+        }}>
+          <span style={{ color: COLORS.accent }}>SAND</span>
+          <span style={{ color: COLORS.textDim, marginLeft: large ? '7px' : '4px' }}>VAULT</span>
+        </span>
         <span style={{
           fontFamily: FONT.mono,
           // Tabular figures so the number doesn't shimmy as the patch count

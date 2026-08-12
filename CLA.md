@@ -1,6 +1,6 @@
-# SAND Contributor License Agreement (CLA)
+# SAND Vault Contributor License Agreement (CLA)
 
-Thank you for your interest in contributing to SAND ("the Project"),
+Thank you for your interest in contributing to SAND Vault ("the Project"),
 maintained by Chinmay Manjunath ("the Maintainer").
 
 This Contributor License Agreement ("Agreement") clarifies the intellectual
@@ -81,9 +81,9 @@ You represent that:
 
 ## 5. Cryptography
 
-SAND is a security tool, so Contributions touching cryptography, key handling,
-shard placement or the vault format carry an extra representation: You confirm
-that You are not knowingly introducing a weakness, backdoor, or deliberate
+SAND Vault is a security tool, so Contributions touching cryptography, key
+handling, shard placement or the vault format carry an extra representation:
+You confirm that You are not knowingly introducing a weakness, backdoor, or deliberate
 reduction in the security properties described in
 [`SAND_ARCHITECTURE.md`](./SAND_ARCHITECTURE.md), and that any such Contribution
 is Yours to submit under applicable export and encryption law in Your

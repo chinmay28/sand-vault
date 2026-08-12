@@ -9,7 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/sand-project/sand/internal/archive"
+	"github.com/chinmay28/sand-vault/internal/archive"
 )
 
 // The standalone commands below predate the cloud-connected vault and are kept

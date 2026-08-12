@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sand-project/sand/internal/vault"
+	"github.com/chinmay28/sand-vault/internal/vault"
 )
 
 // contextWithTimeout derives a request-scoped context so a hung provider
