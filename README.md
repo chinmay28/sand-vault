@@ -487,6 +487,9 @@ sand/
 │   └── nginx-sand.conf          # reverse-proxy template
 ├── CHANGELOG.md                 # release notes, one section per tag
 ├── SAND_ARCHITECTURE.md         # the full design document
+├── CONTRIBUTING.md              # how to contribute + the DCO sign-off
+├── CLA.md                       # contributor license agreement
+├── LICENSE                      # AGPL-3.0-only
 └── Makefile
 ```
 
@@ -515,3 +518,27 @@ touch your real vault.
 | `sand/<archive-id>/pN.media` | How parts appear on each account. The ID is random and reveals nothing. |
 
 Override the vault location with `--vault` or `SAND_VAULT`.
+
+---
+
+## License
+
+SAND is free software licensed under the **GNU Affero General Public License
+v3.0** (`AGPL-3.0-only`). See [LICENSE](./LICENSE) for the full text.
+
+The AGPL is a strong copyleft license: anyone who distributes SAND — or **runs a
+modified version as a network service** — must make the complete corresponding
+source available under the same license. Copyright in the project is held by
+Chinmay Manjunath, who may also offer SAND under separate commercial terms.
+
+> **Note for operators (AGPL §13):** if you run a modified SAND server that
+> other people interact with over a network, you must offer those users the
+> corresponding source of your modified version. Running an unmodified build
+> for yourself — the normal case — carries no such obligation.
+
+## Contributing
+
+Contributions are welcome — see [CONTRIBUTING.md](./CONTRIBUTING.md). By
+contributing you agree to the [Contributor License Agreement](./CLA.md), which
+lets the project be offered under both the AGPL and possible future commercial
+terms. Sign off your commits with `git commit -s`.
