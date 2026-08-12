@@ -1,0 +1,71 @@
+name: DCO / CLA sign-off
+
+# Enforces the Contributor License Agreement (CLA.md): every commit in a pull
+# request must carry a `Signed-off-by` trailer matching its author, which is how
+# contributors accept the CLA / Developer Certificate of Origin. See
+# CONTRIBUTING.md. Contributors add it automatically with `git commit -s`.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  dco-check:
+    name: Verify Signed-off-by on every commit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out PR commits
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Verify sign-off
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          fail=0
+          checked=0
+
+          for sha in $(git rev-list "$BASE_SHA".."$HEAD_SHA"); do
+            # Skip merge commits (more than one parent) — they aren't authored content.
+            parents=$(git rev-list --parents -n 1 "$sha" | wc -w)
+            if [ "$parents" -gt 2 ]; then
+              echo "::notice::skipping merge commit $sha"
+              continue
+            fi
+
+            checked=$((checked + 1))
+            author_name=$(git show -s --format='%an' "$sha")
+            author_email=$(git show -s --format='%ae' "$sha")
+            expected="Signed-off-by: ${author_name} <${author_email}>"
+
+            if git show -s --format='%B' "$sha" | grep -qiF "$expected"; then
+              echo "  ok        $sha  ${author_name} <${author_email}>"
+            else
+              echo "::error::commit $sha is missing a matching DCO sign-off"
+              echo "    author:   ${author_name} <${author_email}>"
+              echo "    expected: ${expected}"
+              fail=1
+            fi
+          done
+
+          if [ "$fail" -ne 0 ]; then
+            echo ""
+            echo "One or more commits are not signed off. By contributing you accept the"
+            echo "CLA (see CLA.md); sign-off is how you do that. To fix:"
+            echo ""
+            echo "    git rebase --signoff ${BASE_SHA}"
+            echo "    git push --force-with-lease"
+            echo ""
+            echo "Going forward, commit with: git commit -s"
+            exit 1
+          fi
+
+          echo ""
+          echo "All ${checked} commit(s) are signed off. ✔"
