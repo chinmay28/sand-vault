@@ -31,7 +31,10 @@ func serveCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().IntVar(&port, "port", 8080, "port to listen on")
+	// 8123 rather than 8080: 8080 is the most contested port on a developer
+	// machine, and a vault that silently fails to bind — or worse, that you
+	// reach and find is somebody else's service — is a bad first experience.
+	cmd.Flags().IntVar(&port, "port", server.DefaultPort, "port to listen on")
 	cmd.Flags().StringVar(&bind, "bind", "127.0.0.1", "address to bind to")
 	cmd.Flags().DurationVar(&idleTimeout, "idle-timeout", server.DefaultIdleTimeout,
 		"re-lock the vault after this much inactivity")

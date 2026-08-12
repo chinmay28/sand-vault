@@ -47,6 +47,9 @@ type Server struct {
 	sessions *sessionStore
 }
 
+// DefaultPort is the port `sand serve` binds unless told otherwise.
+const DefaultPort = 8123
+
 // DefaultMaxUploadSize is the ceiling for one upload request.
 const DefaultMaxUploadSize = 2 << 30 // 2 GiB
 

@@ -11,7 +11,7 @@
 #
 # Defaults:
 #   binary  = ./sand  (or sand.exe will be tried)
-#   port    = 8080
+#   port    = 8123
 #   bind    = 127.0.0.1   (see the note at the end before changing this)
 #
 # After running:
@@ -21,7 +21,7 @@
 set -euo pipefail
 
 BINARY="${1:-}"
-PORT="${2:-8080}"
+PORT="${2:-8123}"
 BIND="${3:-127.0.0.1}"
 # The vault holds cloud credentials and the map of every stored file, so it
 # lives in a stable directory the service can actually write to. The service

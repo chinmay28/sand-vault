@@ -71,4 +71,4 @@ clean:
 
 # Quick development (build Go only, assumes web is already built)
 dev: build-go
-	./$(BUILD_OUT) serve --port 8080
+	./$(BUILD_OUT) serve --port 8123
