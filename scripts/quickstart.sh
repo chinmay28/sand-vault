@@ -30,11 +30,13 @@
 #
 #   * Idempotent. Re-running only swaps in newer code; it never re-initialises
 #     a vault or touches stored files.
-#   * "Newer code" means whatever $SAND_REF points at — EXCEPT when you run
-#     this from inside a checkout, where it builds that checkout exactly as it
-#     stands and never pulls. That is deliberate: it is how you deploy work in
-#     progress. It also means a tree cloned once and never pulled reinstalls
-#     the same commit forever, so re-running says how far behind it is.
+#   * "Newer code" means origin/$SAND_REF — main unless you say otherwise. The
+#     command at the top of this file deploys main from whatever directory you
+#     happen to be standing in, including a clone of this repo.
+#   * The one exception is EXECUTING this file from a checkout (sudo ./scripts/
+#     quickstart.sh), which builds that checkout exactly as it stands and never
+#     pulls — that is how you deploy work in progress. Every run prints which
+#     of the two it is doing, and says so if the checkout is behind.
 #   * The vault lives at a stable path OUTSIDE the source tree ($DATA_DIR), so
 #     cloning, rebuilding, or pulling can never clobber it.
 #   * Every upgrade STOPS the service and snapshots the vault file BEFORE
@@ -144,14 +146,25 @@ GO_MIN_MINOR=22
 GO_INSTALL_VERSION="1.25.0"
 NODE_MIN_MAJOR=18
 
-# If this script is being run from inside an existing checkout (sudo ./scripts/
-# quickstart.sh) rather than piped from curl, build that checkout in place.
+# Executed from inside a checkout (sudo ./scripts/quickstart.sh), build that
+# checkout in place; piped from curl, deploy $SAND_REF like any other install.
 # Release mode never builds, so it ignores the surrounding checkout entirely.
-SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 && pwd)"
+#
+# Which of the two is happening has to be read off BASH_SOURCE, not $0. Piped,
+# bash sets $0 to "bash" and leaves BASH_SOURCE unset, so the old
+# `dirname ${BASH_SOURCE[0]:-$0}` collapsed to "." — the CURRENT DIRECTORY. It
+# was not detecting "ran from a checkout" at all, only "stood in one", so
+# curl … | sudo bash issued from a clone quietly built that clone instead of
+# main, and kept reinstalling it long after the clone went stale. BASH_SOURCE
+# is only a readable file when bash was given a script to run, which is exactly
+# the distinction being drawn.
+SELF_FILE="${BASH_SOURCE[0]:-}"
 LOCAL_CHECKOUT=""
-if [ "$INSTALL_MODE" = source ] && git -C "$SELF_DIR" rev-parse --show-toplevel >/dev/null 2>&1; then
-  top="$(git -C "$SELF_DIR" rev-parse --show-toplevel)"
-  if [ -f "$top/go.mod" ] && grep -q 'module github.com/chinmay28/sand-vault' "$top/go.mod" 2>/dev/null; then
+if [ "$INSTALL_MODE" = source ] && [ -f "$SELF_FILE" ]; then
+  SELF_DIR="$(cd "$(dirname "$SELF_FILE")" >/dev/null 2>&1 && pwd)"
+  if top="$(git -C "$SELF_DIR" rev-parse --show-toplevel 2>/dev/null)" \
+     && [ -f "$top/go.mod" ] \
+     && grep -q 'module github.com/chinmay28/sand-vault' "$top/go.mod" 2>/dev/null; then
     LOCAL_CHECKOUT="$top"
     SRC_DIR="$top"   # build & serve from where the user already cloned
   fi
@@ -175,6 +188,14 @@ if [ "$INSTALL_MODE" = release ]; then
   printf '  %-10s %s\n' "binary"  "$SERVER_BIN"
 else
   printf '  %-10s %s\n' "source"  "$SRC_DIR"
+  # What is about to be built, stated before anything is built. "Nothing
+  # changed after a deploy" is a much harder thing to sit and wonder about
+  # than a line saying which commit the deploy was made from.
+  if [ -n "$LOCAL_CHECKOUT" ]; then
+    printf '  %-10s %s\n' "ref"    "this checkout, built as it stands (not updated)"
+  else
+    printf '  %-10s %s\n' "ref"    "origin/$SAND_REF"
+  fi
 fi
 printf '  %-10s %s\n' "data"     "$DATA_DIR"
 printf '  %-10s %s\n' "vault"    "$VAULT_PATH"
@@ -337,6 +358,37 @@ warn_if_behind() {
   warn "to deploy them:  git -C '$SRC_DIR' pull --ff-only   (then re-run this)"
 }
 
+# Move the managed clone onto a commit, whatever the last build left lying in
+# it.
+#
+# `git checkout` is the wrong verb here and would fail outright: the web build
+# writes into internal/server/dist, which is TRACKED, so the second and every
+# later deploy meets
+#
+#   error: Your local changes to the following files would be overwritten by
+#   checkout: internal/server/dist/index.html
+#
+# and set -e ends the run — including the rollback path, where the whole point
+# is to get back to something that works. This tree is a build artifact the
+# script owns, not a working copy anyone edits, so a reset is honest about it.
+#
+# The clean is scoped to the build's output directory rather than the tree,
+# because the running binary, the staged one and the rollback copy all sit in
+# $SRC_DIR too, and a blanket `git clean -fd` would take the rollback copy with
+# it. Stale hashed assets are worth removing: nothing references them, but
+# go:embed puts every one of them in the binary.
+deploy_to() {
+  target="$1"
+  as_svc git -C "$SRC_DIR" rev-parse --verify --quiet "${target}^{commit}" >/dev/null 2>&1 || return 1
+
+  # Get onto the deploy branch without moving the tree — that always succeeds —
+  # then move branch and tree together. This is the step `checkout -B deploy
+  # <target>` was doing, minus its refusal to tread on the last build.
+  as_svc git -C "$SRC_DIR" checkout -q -B deploy
+  as_svc git -C "$SRC_DIR" reset -q --hard "$target"
+  as_svc git -C "$SRC_DIR" clean -qfd -- internal/server/dist
+}
+
 RELEASE_VERSION=""
 if [ "$INSTALL_MODE" = release ]; then
   arch="$(release_arch)"
@@ -386,8 +438,7 @@ else
     PREV_SHA="$(as_svc git -C "$SRC_DIR" rev-parse HEAD)"
     log "updating $SRC_DIR to $SAND_REF…"
     as_svc git -C "$SRC_DIR" fetch --prune origin
-    as_svc git -C "$SRC_DIR" checkout -q -B deploy "origin/$SAND_REF" 2>/dev/null \
-      || as_svc git -C "$SRC_DIR" checkout -q -B deploy "$SAND_REF"
+    deploy_to "origin/$SAND_REF" || deploy_to "$SAND_REF"
     ok "at $(as_svc git -C "$SRC_DIR" rev-parse --short HEAD)"
   else
     install -d -o "$SVC_USER" -g "$SVC_USER" -m 755 "$PREFIX"
@@ -571,7 +622,7 @@ else
     warn "rolling back to ${PREV_SHA:0:12} and restoring the pre-upgrade vault…"
     stop_service
     restore_snapshot
-    as_svc git -C "$SRC_DIR" checkout -q -B deploy "$PREV_SHA"
+    deploy_to "$PREV_SHA"
     build_src
     install_staged
     start_service
