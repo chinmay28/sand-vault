@@ -61,7 +61,7 @@
 #   SAND_USER        service system user     (default: sand)
 #   SAND_PREFIX      install prefix          (default: /opt/sand; source → $PREFIX/src)
 #   SAND_DATA_DIR    vault + backups dir     (default: /var/lib/sand)
-#   PORT             port to listen on       (default: 8080)
+#   PORT             port to listen on       (default: 8123)
 #   HOST             bind address            (default: 127.0.0.1 — see the warning below)
 #   INSTALL_NODE     auto | never            install Node 22 if missing/old (default: auto; build-time only)
 #   INSTALL_GO       auto | never            install Go if missing/old (default: auto; build-time only)
@@ -113,7 +113,7 @@ RELEASE_TAG="${SAND_RELEASE:-latest}"
 SVC_USER="${SAND_USER:-sand}"
 PREFIX="${SAND_PREFIX:-/opt/sand}"
 DATA_DIR="${SAND_DATA_DIR:-/var/lib/sand}"
-PORT="${PORT:-8080}"
+PORT="${PORT:-8123}"
 HOST="${HOST:-127.0.0.1}"
 INSTALL_NODE="${INSTALL_NODE:-auto}"
 INSTALL_GO="${INSTALL_GO:-auto}"

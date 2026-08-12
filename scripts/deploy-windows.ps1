@@ -5,7 +5,7 @@
 #
 # Defaults:
 #   Binary  = .\sand.exe
-#   Port    = 8080
+#   Port    = 8123
 #   Bind    = 127.0.0.1
 #
 # Requires: NSSM (Non-Sucking Service Manager) installed and on PATH.
@@ -17,7 +17,7 @@
 
 param(
     [string]$Binary = "",
-    [int]$Port      = 8080,
+    [int]$Port      = 8123,
     [string]$Bind   = "127.0.0.1"
 )
 

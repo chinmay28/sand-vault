@@ -457,3 +457,14 @@ func TestHealthReportsTheBuildVersion(t *testing.T) {
 		t.Errorf("version %q should be v-prefixed to match the release tags", version.String())
 	}
 }
+
+func TestDefaultPort(t *testing.T) {
+	// The default is duplicated into the Makefile, the Vite dev proxy, the
+	// install scripts and the nginx template, so a silent change here desyncs
+	// all of them — most visibly `npm run dev`, whose proxy would then point at
+	// nothing.
+	if DefaultPort != 8123 {
+		t.Errorf("DefaultPort = %d, want 8123 — update the Makefile, web/vite.config.js "+
+			"and scripts/ alongside any deliberate change", DefaultPort)
+	}
+}

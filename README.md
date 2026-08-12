@@ -41,7 +41,7 @@ curl -fsSL https://raw.githubusercontent.com/chinmay28/sand-vault/main/scripts/q
 
 It installs Node 22 and Go if needed (both build-time only), creates a dedicated
 `sand` system user, compiles the web client and the static server binary, and
-runs it under systemd on `http://127.0.0.1:8080`.
+runs it under systemd on `http://127.0.0.1:8123`.
 
 **Or skip the build entirely** and install the prebuilt binary from the latest
 [release](https://github.com/chinmay28/sand-vault/releases) — no Node, no Go, no
@@ -111,8 +111,8 @@ make build
 ./sand get /passport.pdf -o ./restored.pdf
 
 # 5. Or use the browser
-./sand serve --port 8080
-# → http://127.0.0.1:8080
+./sand serve --port 8123
+# → http://127.0.0.1:8123
 ```
 
 Run `./sand remote kinds` to see every backend and the settings it needs.
@@ -234,7 +234,7 @@ which makes it a reasonable cron job.
 ### Server
 
 ```
-sand serve [--port 8080] [--bind 127.0.0.1] [--idle-timeout 30m] [--vault PATH]
+sand serve [--port 8123] [--bind 127.0.0.1] [--idle-timeout 30m] [--vault PATH]
 ```
 
 ### Standalone mode (no vault, no accounts)
@@ -258,7 +258,7 @@ pipe the password on stdin.
 
 ## Web UI
 
-`sand serve` puts a file browser at `http://127.0.0.1:8080`:
+`sand serve` puts a file browser at `http://127.0.0.1:8123`:
 
 - **Lock screen** — nothing can be listed or fetched until the vault is open
 - **Sidebar** — every connected account, live status, how many parts it holds,
@@ -425,7 +425,7 @@ If you already have a binary and only want it running,
 
 ```bash
 make build
-sudo ./scripts/deploy-linux.sh ./sand 8080 127.0.0.1
+sudo ./scripts/deploy-linux.sh ./sand 8123 127.0.0.1
 systemctl status sand && journalctl -u sand -f
 ```
 
@@ -437,7 +437,7 @@ Both write the same unit and use the same data directory
 ```powershell
 winget install nssm
 make build
-.\scripts\deploy-windows.ps1 -Binary .\sand.exe -Port 8080 -Bind 127.0.0.1
+.\scripts\deploy-windows.ps1 -Binary .\sand.exe -Port 8123 -Bind 127.0.0.1
 Get-Service sand
 ```
 
@@ -499,9 +499,9 @@ sand/
 
 ```bash
 # Terminal 1 — Go server
-make build-go && ./sand serve --port 8080
+make build-go && ./sand serve --port 8123
 
-# Terminal 2 — hot-reload frontend (proxies /api/* to :8080)
+# Terminal 2 — hot-reload frontend (proxies /api/* to :8123)
 cd web && npm run dev     # → http://localhost:5173
 ```
 
