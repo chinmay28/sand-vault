@@ -2,6 +2,7 @@ import React, { useState } from 'react'
 import { COLORS, FONT } from '../theme'
 import { api } from '../api'
 import { Banner, Button, PasswordInput, Spinner } from './ui'
+import { Brand, DevMark } from './Brand'
 
 /* The gate in front of everything: without the vault password the server
    cannot decrypt the index, so there is nothing to show and nothing to fetch. */
@@ -48,15 +49,14 @@ export default function LockScreen({ status, onUnlocked }) {
       padding: '24px',
     }}>
       <form onSubmit={submit} style={{ width: '100%', maxWidth: '420px' }}>
-        <div style={{ textAlign: 'center', marginBottom: '32px' }}>
-          <div style={{
-            fontFamily: FONT.mono,
-            fontSize: '32px',
-            fontWeight: 700,
-            letterSpacing: '10px',
-            color: COLORS.accent,
-            marginBottom: '8px',
-          }}>▣ SAND</div>
+        <div style={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: '10px',
+          marginBottom: '30px',
+        }}>
+          <Brand size="lg" />
           <div style={{
             fontFamily: FONT.mono,
             fontSize: '10px',
@@ -191,16 +191,24 @@ export default function LockScreen({ status, onUnlocked }) {
           </Button>
         </div>
 
-        <p style={{
-          marginTop: '18px',
-          textAlign: 'center',
-          fontFamily: FONT.mono,
-          fontSize: '10px',
-          color: COLORS.textMuted,
-          lineHeight: 1.8,
+        {/* The crypto line wants the full width; the developer mark sits under
+            it on its own row rather than squeezing the text into a wrap. */}
+        <div style={{
+          marginTop: '20px',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: '12px',
         }}>
-          AES-256-GCM · Argon2id · zstd · any 2 of 3 parts rebuild a file
-        </p>
+          <span style={{
+            fontFamily: FONT.mono,
+            fontSize: '10px',
+            color: COLORS.textMuted,
+            textAlign: 'center',
+          }}>AES-256-GCM · Argon2id · zstd · any 2 of 3 parts rebuild a file</span>
+          {/* No divider to hang off down here, so drop the hairline. */}
+          <DevMark bare />
+        </div>
       </form>
     </div>
   )

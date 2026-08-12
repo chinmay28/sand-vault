@@ -29,7 +29,62 @@ Ships as a **single static Go binary** with a CLI and an embedded web UI.
 
 ---
 
-## Quick Start
+## Quick start on Linux (Ubuntu / Raspberry Pi)
+
+Install SAND as a hardened **systemd service** with one command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/chinmay28/sand/main/scripts/quickstart.sh | sudo bash
+```
+
+(or, from a checkout: `sudo ./scripts/quickstart.sh`)
+
+It installs Node 22 and Go if needed (both build-time only), creates a dedicated
+`sand` system user, compiles the web client and the static server binary, and
+runs it under systemd on `http://127.0.0.1:8080`.
+
+**Or skip the build entirely** and install the prebuilt binary from the latest
+[release](https://github.com/chinmay28/sand/releases) — no Node, no Go, no
+source tree, seconds instead of minutes on a Raspberry Pi:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/chinmay28/sand/main/scripts/quickstart.sh \
+  | sudo SAND_INSTALL=release bash
+```
+
+The download's checksum is verified before anything is swapped in, and
+`SAND_RELEASE=v2.0.42` pins a specific release instead of the latest. Releases
+publish **`linux/amd64`** and **`linux/arm64`**; anything else builds from
+source (the default), which works everywhere. Both modes install the same thing
+— one static binary with the web client embedded, under the same unit and the
+same data directory — so you can switch between them by re-running with a
+different `SAND_INSTALL`.
+
+**Re-run it any time to upgrade — installs and upgrades are non-disruptive and
+never lose data:**
+
+- The vault lives at a stable path **outside** the source tree
+  (`/var/lib/sand/`), so rebuilding or pulling can't clobber it.
+- Each upgrade quiesces the service, **snapshots the vault** to a timestamped
+  backup, then swaps code in. The new build compiles while the old version
+  keeps serving, so a failed build leaves the running app untouched.
+- After restart it polls `/api/health`; if the new version is unhealthy it
+  **rolls back** — to the previous commit when it built from source, to the
+  previous binary when it installed a release — and **restores the pre-upgrade
+  vault snapshot**.
+
+Override defaults with env vars (`PORT`, `HOST`, `SAND_INSTALL`, `SAND_REF`,
+`SAND_RELEASE`, `SAND_DATA_DIR`, `SAND_PREFIX`, `SAND_USER`, …). Manage it with
+`systemctl status sand` and `journalctl -u sand -f`.
+
+> **`HOST` defaults to `127.0.0.1`, not `0.0.0.0`.** SAND's server is the one
+> component that ever holds plaintext — it rebuilds decrypted files in memory
+> and takes your vault password over the wire. Put TLS in front (Tailscale
+> Serve, or `scripts/nginx-sand.conf`) before widening it.
+
+---
+
+## Quick start from source
 
 ```bash
 # 1. Build (requires Go 1.22+ and Node.js 18+)
@@ -308,10 +363,31 @@ network in the clear. The server warns you. Put TLS in front of it
 make build        # frontend + binary
 make build-web    # frontend only → internal/server/dist/
 make build-go     # binary only
+make version      # print the version this tree would build as
 make release      # cross-compile all platforms → dist/
 ```
 
 Output is `sand` on Linux/macOS, `sand.exe` on Windows.
+
+### Versioning
+
+`vMAJOR.MINOR.PATCH`, where **the patch number is the repository's commit
+count** — every commit is a patch release, so `v2.0.311` is the 311th commit on
+the 2.0 line.
+
+- `MAJOR`/`MINOR` are source constants in
+  [`internal/version/version.go`](./internal/version/version.go). Bump them by
+  hand.
+- `PATCH` only exists at build time, so it is stamped in: `-ldflags -X` for the
+  Go binary, Vite's `define` for the web bundle. Both read
+  [`scripts/version.mjs`](./scripts/version.mjs), so the header, `sand version`
+  and `/api/health` can never disagree.
+
+A patch of `0` means an unstamped build — no git, or a **shallow clone**, which
+`version.mjs` detects and refuses to guess around rather than shipping a build
+that quietly calls itself `v2.0.1`. Anything building a release needs the full
+commit graph (`fetch-depth: 0`, or `--filter=blob:none` rather than
+`--depth 1`).
 
 ---
 
@@ -341,14 +417,20 @@ PLAYWRIGHT_CHROMIUM_EXECUTABLE=/path/to/chrome make test-e2e
 
 ### Linux — systemd
 
+Use [`scripts/quickstart.sh`](#quick-start-on-linux-ubuntu--raspberry-pi): it
+fetches or builds, installs, upgrades in place, and rolls back a bad upgrade.
+
+If you already have a binary and only want it running,
+`scripts/deploy-linux.sh` is the small path:
+
 ```bash
 make build
 sudo ./scripts/deploy-linux.sh ./sand 8080 127.0.0.1
 systemctl status sand && journalctl -u sand -f
 ```
 
-Creates a `sand` system user, installs to `/usr/local/bin/sand`, registers a
-hardened unit.
+Both write the same unit and use the same data directory
+(`/var/lib/sand`), so they can be used interchangeably on one host.
 
 ### Windows — NSSM
 
@@ -393,8 +475,17 @@ sand/
 ├── web/src/                     # React file browser
 │   ├── api.js  theme.js  App.jsx
 │   └── components/              # LockScreen, AccountsPanel, FileBrowser, PreviewModal, ui
+│   ├── public/                  # app icon + developer badge
+│   └── build-version.js         # feeds the version into the bundle
+├── internal/version/            # MAJOR/MINOR; PATCH stamped at link time
 ├── tests/                       # pytest e2e: CLI, API, vault flow, browser
-├── scripts/                     # release + deployment
+├── scripts/
+│   ├── quickstart.sh            # one-command systemd install / upgrade / rollback
+│   ├── version.mjs              # the one place the version is assembled
+│   ├── build-release.sh         # cross-compile all platforms
+│   ├── deploy-linux.sh          # install an already-built binary
+│   └── nginx-sand.conf          # reverse-proxy template
+├── CHANGELOG.md                 # release notes, one section per tag
 ├── SAND_ARCHITECTURE.md         # the full design document
 └── Makefile
 ```

@@ -15,9 +15,18 @@
 
 set -euo pipefail
 
-VERSION="${1:-$(git describe --tags --always --dirty 2>/dev/null || echo "dev")}"
+# vMAJOR.MINOR.PATCH with PATCH = the repo's commit count; scripts/version.mjs
+# is the single place that is assembled, so the binary, the embedded web client
+# and the release filenames can never disagree. Pass a version to override.
+VERSION="${1:-$(node "$(dirname "$0")/version.mjs")}"
+PATCH="$(node "$(dirname "$0")/version.mjs" --patch)"
 DIST="dist"
-LDFLAGS="-s -w -X main.version=${VERSION}"
+LDFLAGS="-s -w -X github.com/sand-project/sand/internal/version.Patch=${PATCH}"
+
+if [[ "${PATCH}" == "0" ]]; then
+    echo "warn: patch number is 0 — this is an unstamped build, not a release." >&2
+    echo "      A shallow clone does this; fetch --unshallow for the real count." >&2
+fi
 
 echo "==> SAND release build  version=${VERSION}"
 
@@ -38,7 +47,7 @@ build() {
 
     echo "    compiling ${GOOS}/${GOARCH}…"
     CGO_ENABLED=0 GOOS="${GOOS}" GOARCH="${GOARCH}" \
-        go build -ldflags="${LDFLAGS}" -o "${OUT}" ./cmd/sand
+        go build -trimpath -ldflags="${LDFLAGS}" -o "${OUT}" ./cmd/sand
 }
 
 build linux   amd64

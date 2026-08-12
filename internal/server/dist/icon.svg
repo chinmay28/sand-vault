@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="SAND">
+  <!--
+    One file, three parts. The outer square is the file; the three bars inside
+    are the encrypted parts scattered across separate accounts. The third is
+    dimmed because any two of them are enough to rebuild the whole.
+
+    Drawn on a 64px grid but sized down to 24px in the header, so everything is
+    kept to thick strokes and wide gaps — thin detail turns to mud at that size.
+  -->
+  <rect width="64" height="64" rx="14" fill="#0a0e17"/>
+  <rect x="8.5" y="8.5" width="47" height="47" rx="9" fill="none" stroke="#1e2d3d" stroke-width="3"/>
+  <g fill="#d97706">
+    <rect x="17" y="18" width="30" height="8" rx="3"/>
+    <rect x="17" y="30" width="30" height="8" rx="3"/>
+    <rect x="17" y="42" width="30" height="8" rx="3" opacity="0.42"/>
+  </g>
+</svg>

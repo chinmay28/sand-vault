@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/sand-project/sand/internal/vault"
+	"github.com/sand-project/sand/internal/version"
 )
 
 //go:embed all:dist
@@ -179,7 +180,7 @@ func (s *Server) Start() error {
 
 	addr := net.JoinHostPort(s.Bind, fmt.Sprint(s.Port))
 	v, _ := s.Vault()
-	log.Printf("SAND server starting on http://%s (vault: %s)", addr, v.Path())
+	log.Printf("SAND %s starting on http://%s (vault: %s)", version.String(), addr, v.Path())
 	if s.Bind != "127.0.0.1" && s.Bind != "localhost" && s.Bind != "::1" {
 		log.Printf("WARNING: bound to %s — the vault password and decrypted files "+
 			"will cross the network in the clear unless you put TLS in front of it", s.Bind)
@@ -313,5 +314,5 @@ func vaultErrorResponse(w http.ResponseWriter, err error) {
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "version": "2.0.0"})
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "version": version.String()})
 }
