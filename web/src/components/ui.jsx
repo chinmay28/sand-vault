@@ -1,5 +1,7 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useId, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { COLORS, FONT } from '../theme'
+import { useIsMobile } from '../hooks'
 
 export function Button({ variant = 'default', size = 'md', style, disabled, ...props }) {
   const [hover, setHover] = useState(false)
@@ -43,13 +45,21 @@ export function Button({ variant = 'default', size = 'md', style, disabled, ...p
   )
 }
 
-export function Input({ label, help, style, ...props }) {
+/* `trailing` is painted over the right-hand end of the field itself, so it
+   stays put whatever the field's height turns out to be — which varies, since
+   touch screens get a taller box and a bigger type size. */
+export function Input({ label, help, trailing, id, style, ...props }) {
   const [focused, setFocused] = useState(false)
+  // The label points at the field rather than wrapping it: `trailing` holds a
+  // button, and a button inside a label ends up in the field's spoken name.
+  const generated = useId()
+  const fieldId = id || generated
+  const helpId = `${fieldId}-help`
 
   return (
-    <label style={{ display: 'block', marginBottom: '14px' }}>
+    <div style={{ marginBottom: '14px' }}>
       {label && (
-        <span style={{
+        <label htmlFor={fieldId} style={{
           display: 'block',
           fontFamily: FONT.mono,
           fontSize: '10px',
@@ -58,29 +68,34 @@ export function Input({ label, help, style, ...props }) {
           textTransform: 'uppercase',
           color: COLORS.textMuted,
           marginBottom: '6px',
-        }}>{label}</span>
+        }}>{label}</label>
       )}
-      <input
-        {...props}
-        onFocus={(e) => { setFocused(true); props.onFocus?.(e) }}
-        onBlur={(e) => { setFocused(false); props.onBlur?.(e) }}
-        style={{
-          width: '100%',
-          padding: '10px 12px',
-          background: COLORS.bg,
-          border: `1px solid ${focused ? COLORS.accent : COLORS.border}`,
-          borderRadius: '6px',
-          color: COLORS.text,
-          fontFamily: FONT.mono,
-          fontSize: '13px',
-          outline: 'none',
-          boxSizing: 'border-box',
-          transition: 'border-color 0.15s ease',
-          ...style,
-        }}
-      />
+      <div style={{ position: 'relative' }}>
+        <input
+          {...props}
+          id={fieldId}
+          aria-describedby={help ? helpId : undefined}
+          onFocus={(e) => { setFocused(true); props.onFocus?.(e) }}
+          onBlur={(e) => { setFocused(false); props.onBlur?.(e) }}
+          style={{
+            width: '100%',
+            padding: '10px 12px',
+            background: COLORS.bg,
+            border: `1px solid ${focused ? COLORS.accent : COLORS.border}`,
+            borderRadius: '6px',
+            color: COLORS.text,
+            fontFamily: FONT.mono,
+            fontSize: '13px',
+            outline: 'none',
+            boxSizing: 'border-box',
+            transition: 'border-color 0.15s ease',
+            ...style,
+          }}
+        />
+        {trailing}
+      </div>
       {help && (
-        <span style={{
+        <span id={helpId} style={{
           display: 'block',
           marginTop: '5px',
           fontFamily: FONT.sans,
@@ -89,7 +104,7 @@ export function Input({ label, help, style, ...props }) {
           lineHeight: 1.45,
         }}>{help}</span>
       )}
-    </label>
+    </div>
   )
 }
 
@@ -97,44 +112,55 @@ export function PasswordInput({ label, help, value, onChange, ...props }) {
   const [reveal, setReveal] = useState(false)
 
   return (
-    <div style={{ position: 'relative' }}>
-      <Input
-        {...props}
-        label={label}
-        help={help}
-        type={reveal ? 'text' : 'password'}
-        value={value}
-        onChange={onChange}
-        style={{ paddingRight: '42px' }}
-      />
-      <button
-        type="button"
-        onClick={() => setReveal(!reveal)}
-        aria-label={reveal ? 'Hide password' : 'Show password'}
-        style={{
-          position: 'absolute',
-          right: '10px',
-          top: label ? '30px' : '9px',
-          background: 'none',
-          border: 'none',
-          color: COLORS.textMuted,
-          cursor: 'pointer',
-          fontSize: '14px',
-          padding: '4px',
-        }}
-      >{reveal ? '◉' : '◎'}</button>
-    </div>
+    <Input
+      {...props}
+      label={label}
+      help={help}
+      type={reveal ? 'text' : 'password'}
+      value={value}
+      onChange={onChange}
+      style={{ paddingRight: '42px' }}
+      trailing={
+        <button
+          type="button"
+          onClick={() => setReveal(!reveal)}
+          aria-label={reveal ? 'Hide password' : 'Show password'}
+          style={{
+            position: 'absolute',
+            top: 0,
+            bottom: 0,
+            right: '4px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            width: '34px',
+            background: 'none',
+            border: 'none',
+            color: COLORS.textMuted,
+            cursor: 'pointer',
+            fontSize: '14px',
+            padding: 0,
+          }}
+        >{reveal ? '◉' : '◎'}</button>
+      }
+    />
   )
 }
 
 export function Modal({ title, subtitle, onClose, children, width = 520 }) {
+  const mobile = useIsMobile()
+
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose?.() }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
 
-  return (
+  /* Rendered at the end of the document rather than where it was written: a
+     modal opened from inside the accounts drawer would otherwise be trapped by
+     the drawer's transform, which makes that element — not the viewport — what
+     `position: fixed` measures against. */
+  return createPortal(
     <div
       onClick={onClose}
       style={{
@@ -145,7 +171,7 @@ export function Modal({ title, subtitle, onClose, children, width = 520 }) {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        padding: '24px',
+        padding: mobile ? '12px' : '24px',
         zIndex: 100,
       }}
     >
@@ -154,7 +180,9 @@ export function Modal({ title, subtitle, onClose, children, width = 520 }) {
         style={{
           width: '100%',
           maxWidth: `${width}px`,
-          maxHeight: '90vh',
+          // Measured against the visible viewport, not the one the address bar
+          // is still counted in.
+          maxHeight: `calc(var(--app-height) - ${mobile ? 24 : 48}px)`,
           overflowY: 'auto',
           background: COLORS.surface,
           border: `1px solid ${COLORS.borderBright}`,
@@ -166,11 +194,11 @@ export function Modal({ title, subtitle, onClose, children, width = 520 }) {
           display: 'flex',
           alignItems: 'flex-start',
           justifyContent: 'space-between',
-          gap: '16px',
-          padding: '18px 20px',
+          gap: mobile ? '10px' : '16px',
+          padding: mobile ? '14px 14px 12px' : '18px 20px',
           borderBottom: `1px solid ${COLORS.border}`,
         }}>
-          <div>
+          <div style={{ minWidth: 0 }}>
             <h2 style={{
               margin: 0,
               fontFamily: FONT.mono,
@@ -178,6 +206,7 @@ export function Modal({ title, subtitle, onClose, children, width = 520 }) {
               fontWeight: 700,
               letterSpacing: '1px',
               color: COLORS.text,
+              wordBreak: 'break-word',
             }}>{title}</h2>
             {subtitle && (
               <p style={{
@@ -199,12 +228,15 @@ export function Modal({ title, subtitle, onClose, children, width = 520 }) {
               fontSize: '18px',
               cursor: 'pointer',
               lineHeight: 1,
+              flexShrink: 0,
+              padding: '0 4px',
             }}
           >✕</button>
         </div>
-        <div style={{ padding: '20px' }}>{children}</div>
+        <div style={{ padding: mobile ? '16px 14px' : '20px' }}>{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
 
@@ -256,9 +288,11 @@ export function Spinner({ size = 16, color = COLORS.accent }) {
 }
 
 export function Empty({ icon, title, children }) {
+  const mobile = useIsMobile()
+
   return (
     <div style={{
-      padding: '56px 24px',
+      padding: mobile ? '40px 16px' : '56px 24px',
       textAlign: 'center',
       color: COLORS.textMuted,
       fontFamily: FONT.sans,

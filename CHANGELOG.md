@@ -73,6 +73,11 @@ images, video, audio, PDF and text — each one rebuilt on demand.
 It loads no external fonts, scripts or styles: opening your vault makes zero
 third-party requests.
 
+The layout folds on a phone rather than shrinking: under 860px the accounts
+sidebar becomes a drawer, the file table's columns give way to stacked rows, and
+controls take touch-sized targets. Heights track the visible viewport, so a
+collapsing address bar never sits over the last row of files.
+
 ### Quick start
 
 One command installs SAND as a hardened systemd service, building from source

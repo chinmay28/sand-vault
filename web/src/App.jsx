@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import { COLORS, FONT } from './theme'
+import { useIsMobile } from './hooks'
 import { api } from './api'
 import LockScreen from './components/LockScreen'
 import AccountsPanel from './components/AccountsPanel'
@@ -21,8 +22,14 @@ export default function App() {
   const [error, setError] = useState(null)
   const [preview, setPreview] = useState(null)
   const [inspecting, setInspecting] = useState(null)
+  const [accountsOpen, setAccountsOpen] = useState(false)
 
+  const mobile = useIsMobile()
   const unlocked = !!status?.unlocked
+
+  // On a phone the accounts panel is a drawer over the browser; once there is
+  // room for both panes again it is simply always there, so drop the flag.
+  useEffect(() => { if (!mobile) setAccountsOpen(false) }, [mobile])
 
   useEffect(() => {
     api.vaultStatus().then(setStatus).catch((err) => {
@@ -87,11 +94,12 @@ export default function App() {
     setProviders([])
     setPreview(null)
     setInspecting(null)
+    setAccountsOpen(false)
     setPath('/')
   }
 
   if (!status) {
-    return <Shell><div style={{ padding: '80px', textAlign: 'center', color: COLORS.textMuted }}>Loading…</div></Shell>
+    return <Shell><div style={{ padding: '80px 24px', textAlign: 'center', color: COLORS.textMuted }}>Loading…</div></Shell>
   }
 
   if (!unlocked) {
@@ -107,37 +115,64 @@ export default function App() {
 
   return (
     <Shell>
-      <div style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
+      {/* dvh rather than vh: a phone's collapsing address bar counts towards
+          100vh, which would leave the last row of files under the browser UI. */}
+      <div style={{ height: 'var(--app-height)', display: 'flex', flexDirection: 'column' }}>
         <header style={{
           display: 'flex',
           alignItems: 'center',
-          gap: '14px',
-          padding: '10px 20px',
+          gap: mobile ? '8px' : '14px',
+          padding: mobile ? '8px 12px' : '10px 20px',
           borderBottom: `1px solid ${COLORS.border}`,
           background: COLORS.surface,
+          flexShrink: 0,
         }}>
+          {mobile && (
+            <Button
+              size="sm"
+              variant="ghost"
+              aria-label="Connected clouds"
+              onClick={() => setAccountsOpen(true)}
+              style={{ fontSize: '15px', padding: '4px 8px' }}
+            >☰</Button>
+          )}
+
           <Brand />
-          <span style={{
-            fontFamily: FONT.mono,
-            fontSize: '10px',
-            letterSpacing: '1.5px',
-            textTransform: 'uppercase',
-            color: COLORS.textMuted,
-            marginTop: '4px',
-          }}>multi-cloud encrypted file store</span>
+
+          {/* The tagline is the first thing to go: on a phone it can only wrap
+              into a column beside the wordmark. */}
+          {!mobile && (
+            <span style={{
+              fontFamily: FONT.mono,
+              fontSize: '10px',
+              letterSpacing: '1.5px',
+              textTransform: 'uppercase',
+              color: COLORS.textMuted,
+              marginTop: '4px',
+            }}>multi-cloud encrypted file store</span>
+          )}
 
           <span style={{ flex: 1 }} />
 
-          <Button size="sm" variant="ghost" onClick={refreshAll}>⟳ Refresh</Button>
-          <Button size="sm" onClick={lock}>🔒 Lock vault</Button>
-          <DevMark />
+          {/* Narrow enough and the labels are dropped; the glyphs carry the
+              meaning and the accessible name comes off aria-label. */}
+          <Button size="sm" variant="ghost" onClick={refreshAll}
+            title="Refresh" aria-label="Refresh">⟳{mobile ? '' : ' Refresh'}</Button>
+          <Button size="sm" onClick={lock}
+            title="Lock vault" aria-label="Lock vault">🔒{mobile ? '' : ' Lock vault'}</Button>
+          {/* No room for the developer mark up here on a phone — it moves to
+              the foot of the accounts drawer instead. */}
+          {!mobile && <DevMark />}
         </header>
 
-        <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
+        <div style={{ flex: 1, display: 'flex', minHeight: 0, position: 'relative' }}>
           <AccountsPanel
             providers={providers}
             loading={loadingProviders}
             stats={status.stats}
+            mobile={mobile}
+            open={accountsOpen}
+            onClose={() => setAccountsOpen(false)}
             onRefresh={refreshProviders}
             onChanged={refreshAll}
           />
@@ -148,6 +183,7 @@ export default function App() {
             loading={loadingList}
             error={error}
             providers={providers}
+            mobile={mobile}
             onNavigate={setPath}
             onRefresh={refreshAll}
             onPreview={setPreview}
@@ -192,7 +228,31 @@ function Shell({ children }) {
           .sand-dev-lockup { animation: none !important; }
         }
         * { box-sizing: border-box; }
+        :root {
+          color-scheme: dark;
+          /* The visible height of the viewport. Mobile browsers include their
+             collapsing address bar in 100vh, so anything sized to fill the
+             screen ends up taller than the screen; dvh tracks what is actually
+             on show. Kept behind a variable so the vh fallback survives on
+             browsers that never learned the unit. */
+          --app-height: 100vh;
+        }
+        @supports (height: 100dvh) { :root { --app-height: 100dvh; } }
+        html { -webkit-text-size-adjust: 100%; }
         body { margin: 0; background: ${COLORS.bg}; }
+        /* iOS zooms the whole page in when it focuses a field smaller than
+           16px. Every input here is styled inline, so this is one of the few
+           places that has to shout to win. */
+        @media (max-width: 860px) {
+          input, textarea, select { font-size: 16px !important; }
+        }
+        /* A fingertip is a far blunter instrument than a mouse pointer, so
+           give every control a real target on touch screens. */
+        @media (pointer: coarse) {
+          button,
+          a[href],
+          input:not([type="radio"]):not([type="checkbox"]) { min-height: 40px; }
+        }
         ::-webkit-scrollbar { width: 10px; height: 10px; }
         ::-webkit-scrollbar-track { background: ${COLORS.bg}; }
         ::-webkit-scrollbar-thumb { background: ${COLORS.border}; border-radius: 5px; }

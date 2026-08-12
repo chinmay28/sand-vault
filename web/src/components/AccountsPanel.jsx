@@ -2,12 +2,24 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { COLORS, FONT, KIND_ICONS, accountColor, formatBytes } from '../theme'
 import { api } from '../api'
 import { Banner, Button, Input, Modal, PasswordInput, Spinner } from './ui'
+import { DevMark } from './Brand'
 
 /* The sidebar: every cloud account SAND is wired into, whether it is answering,
-   and how much of the vault it is carrying. */
-export default function AccountsPanel({ providers, loading, stats, onRefresh, onChanged }) {
+   and how much of the vault it is carrying. Below the two-pane breakpoint the
+   same panel becomes a drawer over the file browser — the file list is what you
+   came for on a phone, and the accounts are a place you visit. */
+export default function AccountsPanel({
+  providers, loading, stats, mobile, open, onClose, onRefresh, onChanged,
+}) {
   const [connecting, setConnecting] = useState(false)
   const [error, setError] = useState(null)
+
+  useEffect(() => {
+    if (!mobile || !open) return
+    const onKey = (e) => { if (e.key === 'Escape') onClose?.() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [mobile, open, onClose])
 
   const remove = async (provider) => {
     const confirmed = window.confirm(
@@ -37,21 +49,37 @@ export default function AccountsPanel({ providers, loading, stats, onRefresh, on
 
   const enough = providers.length >= 2
 
-  return (
+  const panel = (
     <aside style={{
-      width: '286px',
+      width: mobile ? 'min(320px, 86vw)' : '286px',
       flexShrink: 0,
       borderRight: `1px solid ${COLORS.border}`,
       background: COLORS.surface,
       display: 'flex',
       flexDirection: 'column',
       overflow: 'hidden',
+      ...(mobile ? {
+        position: 'fixed',
+        top: 0,
+        bottom: 0,
+        left: 0,
+        zIndex: 90,
+        transform: open ? 'translateX(0)' : 'translateX(-100%)',
+        // Hidden rather than merely off-screen, so nothing in here is
+        // reachable by tab while the drawer is shut. visibility holds its old
+        // value for the whole transition, so the panel still slides out.
+        visibility: open ? 'visible' : 'hidden',
+        transition: 'transform 200ms ease, visibility 200ms',
+        boxShadow: '0 0 40px rgba(0,0,0,0.5)',
+      } : null),
     }}>
       <div style={{
         display: 'flex',
         alignItems: 'center',
+        gap: '8px',
         justifyContent: 'space-between',
-        padding: '16px 16px 12px',
+        padding: mobile ? '10px 12px 10px 16px' : '16px 16px 12px',
+        borderBottom: mobile ? `1px solid ${COLORS.border}` : 'none',
       }}>
         <span style={{
           fontFamily: FONT.mono,
@@ -61,13 +89,24 @@ export default function AccountsPanel({ providers, loading, stats, onRefresh, on
           textTransform: 'uppercase',
           color: COLORS.textMuted,
         }}>Connected clouds</span>
-        {loading ? <Spinner size={12} /> : (
-          <button
-            onClick={onRefresh}
-            title="Re-check every account"
-            style={{ background: 'none', border: 'none', color: COLORS.textMuted, cursor: 'pointer', fontSize: '13px' }}
-          >⟳</button>
-        )}
+
+        <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+          {loading ? <Spinner size={12} /> : (
+            <button
+              onClick={onRefresh}
+              title="Re-check every account"
+              aria-label="Re-check every account"
+              style={{ background: 'none', border: 'none', color: COLORS.textMuted, cursor: 'pointer', fontSize: '13px', padding: '0 6px' }}
+            >⟳</button>
+          )}
+          {mobile && (
+            <button
+              onClick={onClose}
+              aria-label="Close"
+              style={{ background: 'none', border: 'none', color: COLORS.textMuted, cursor: 'pointer', fontSize: '15px', padding: '0 6px' }}
+            >✕</button>
+          )}
+        </span>
       </div>
 
       <div style={{ flex: 1, overflowY: 'auto', padding: '0 12px' }}>
@@ -121,6 +160,13 @@ export default function AccountsPanel({ providers, loading, stats, onRefresh, on
             )}
           </div>
         )}
+
+        {/* Turned out of the header on a phone, it lands here. */}
+        {mobile && (
+          <div style={{ display: 'flex', justifyContent: 'center', marginTop: '14px' }}>
+            <DevMark bare />
+          </div>
+        )}
       </div>
 
       {connecting && (
@@ -130,6 +176,27 @@ export default function AccountsPanel({ providers, loading, stats, onRefresh, on
         />
       )}
     </aside>
+  )
+
+  if (!mobile) return panel
+
+  return (
+    <>
+      <div
+        onClick={onClose}
+        aria-hidden="true"
+        style={{
+          position: 'fixed',
+          inset: 0,
+          zIndex: 85,
+          background: 'rgba(3, 6, 12, 0.66)',
+          opacity: open ? 1 : 0,
+          visibility: open ? 'visible' : 'hidden',
+          transition: 'opacity 200ms ease, visibility 200ms',
+        }}
+      />
+      {panel}
+    </>
   )
 }
 

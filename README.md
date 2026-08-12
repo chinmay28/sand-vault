@@ -277,6 +277,16 @@ pipe the password on stdin.
 The UI loads no external fonts, scripts or styles. Opening your vault makes zero
 third-party requests.
 
+### On a phone
+
+A vault you reach over Tailscale or a reverse proxy gets opened from a phone as
+often as from a desk, so the layout folds rather than shrinks. Under 860px wide
+the sidebar becomes a drawer behind `☰`, the file table drops its columns for
+stacked rows — name and actions on one line, size, date and part badges on the
+next — and the toolbar gives the breadcrumb trail a row of its own. Controls get
+touch-sized targets, and heights are measured against the visible viewport so a
+phone's collapsing address bar never hides the last row.
+
 ---
 
 ## HTTP API
