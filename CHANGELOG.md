@@ -111,6 +111,13 @@ sidebar becomes a drawer, the file table's columns give way to stacked rows, and
 controls take touch-sized targets. Heights track the visible viewport, so a
 collapsing address bar never sits over the last row of files.
 
+Added to a home screen it goes on as an app: the SAND mark instead of a
+screenshot of the page, and a launch without browser chrome. The mark ships in
+every form the two platforms ask for — `apple-touch-icon` for iOS, a web app
+manifest with 192px, 512px and maskable icons for Android — all rendered from
+the one `icon.svg` by `scripts/make-icons.mjs`, and all served from the binary,
+like everything else the browser loads.
+
 ### Quick start
 
 One command installs SAND as a hardened systemd service, building from source
