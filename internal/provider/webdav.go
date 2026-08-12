@@ -14,9 +14,42 @@ func init() {
 	Register(Spec{
 		Kind:  KindWebDAV,
 		Label: "WebDAV / Nextcloud",
-		Description: "Nextcloud, ownCloud, Box, Koofr, Fastmail Files, or any WebDAV server. " +
-			"Use an app password rather than your account password where the provider offers one.",
+		Description: "Nextcloud, ownCloud, pCloud, Koofr, Fastmail Files, Mega via rclone, or " +
+			"any other WebDAV server. Use an app password where the provider offers one.",
 		DocsURL: "https://docs.nextcloud.com/server/latest/user_manual/en/files/access_webdav.html",
+		Order:   21,
+		Presets: []Preset{
+			{
+				Key:    "nextcloud",
+				Label:  "Nextcloud / ownCloud",
+				Help:   "Swap in your server and username. Settings → Security → Create app password.",
+				Values: map[string]string{"url": "https://cloud.example.com/remote.php/dav/files/alice"},
+			},
+			{
+				Key:    "pcloud",
+				Label:  "pCloud",
+				Help:   "Use eapi.pcloud.com instead if your account lives in the EU region.",
+				Values: map[string]string{"url": "https://webdav.pcloud.com"},
+			},
+			{
+				Key:    "koofr",
+				Label:  "Koofr",
+				Help:   "Generate an app password under Preferences → Password.",
+				Values: map[string]string{"url": "https://app.koofr.net/dav/Koofr"},
+			},
+			{
+				Key:    "fastmail",
+				Label:  "Fastmail Files",
+				Help:   "Username is your Fastmail address; create an app password with Files access.",
+				Values: map[string]string{"url": "https://webdav.fastmail.com/"},
+			},
+			{
+				Key:    "rclone",
+				Label:  "rclone serve webdav",
+				Help:   "Anything rclone speaks — Mega, Proton Drive, Jottacloud — fronted on your own machine.",
+				Values: map[string]string{"url": "http://127.0.0.1:8080"},
+			},
+		},
 		Fields: []FieldSpec{
 			{
 				Key:         "url",

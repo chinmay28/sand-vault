@@ -30,6 +30,14 @@ func remoteKindsCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			for _, spec := range provider.Specs() {
 				fmt.Printf("%s (%s)\n  %s\n", spec.Label, spec.Kind, spec.Description)
+				if spec.OAuth != nil {
+					fmt.Printf("  Easiest from the browser: 'sand serve', then Connect a cloud → %s.\n",
+						spec.Label)
+					if !spec.OAuth.Configured {
+						fmt.Printf("  Set %s (and its secret) to skip registering an app each time.\n",
+							spec.OAuth.ClientIDEnv)
+					}
+				}
 				for _, f := range spec.Fields {
 					flags := []string{}
 					if f.Required {

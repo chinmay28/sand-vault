@@ -143,6 +143,66 @@ class TestBrowserShell:
         app.wait_for_selector("text=Unlock your vault", timeout=15000)
 
 
+class TestConnectingAnAccount:
+    """The connect dialog: sign-in for the OAuth backends, a form for the rest.
+
+    Nothing here talks to a real provider — it stops at the point where the
+    browser would be handed over to one.
+    """
+
+    def test_picker_offers_sign_in_and_credential_backends(self, app):
+        app.get_by_text("+ Connect a cloud").click()
+        app.wait_for_selector("text=Sign in with your account")
+
+        for label in ("Google Drive", "OneDrive", "Dropbox", "Box"):
+            assert app.get_by_text(label, exact=True).count() > 0, label
+        for label in ("S3-compatible storage", "Proton Drive", "Local folder"):
+            assert app.get_by_text(label, exact=True).count() > 0, label
+
+        app.keyboard.press("Escape")
+
+    def test_signing_in_asks_for_an_app_and_shows_the_redirect_to_register(self, app, server):
+        app.get_by_text("+ Connect a cloud").click()
+        app.wait_for_selector("text=Sign in with your account")
+        app.get_by_text("Google Drive", exact=True).click()
+
+        app.wait_for_selector("text=Continue with Google")
+        # No OAuth app is configured for the test server, so the dialog has to
+        # collect one — and tell the user exactly what to register.
+        redirect = app.locator("input[readonly]").first.input_value()
+        assert redirect == f"{server}/api/providers/oauth/callback"
+
+        # The button stays out of reach until there is an app to sign in with.
+        button = app.get_by_role("button", name="Continue with Google")
+        assert button.is_disabled()
+
+        app.keyboard.press("Escape")
+
+    def test_credentials_can_still_be_pasted_by_hand(self, app):
+        app.get_by_text("+ Connect a cloud").click()
+        app.wait_for_selector("text=Sign in with your account")
+        app.get_by_text("Dropbox", exact=True).click()
+
+        app.get_by_text("Paste tokens manually instead").click()
+        app.wait_for_selector("text=Refresh token")
+        assert app.get_by_text("Sign in instead").count() > 0
+
+        app.keyboard.press("Escape")
+
+    def test_a_webdav_preset_fills_the_form_in(self, app):
+        app.get_by_text("+ Connect a cloud").click()
+        app.wait_for_selector("text=Sign in with your account")
+        app.get_by_text("WebDAV / Nextcloud", exact=True).click()
+
+        app.wait_for_selector("text=Start from")
+        app.get_by_role("button", name="pCloud").click()
+
+        form = app.locator("form")
+        assert form.locator("input").nth(1).input_value() == "https://webdav.pcloud.com"
+
+        app.keyboard.press("Escape")
+
+
 class TestUploadAndPreview:
     def test_upload_then_preview_rebuilds_the_file(self, app, tmp_path):
         body = "this text only comes back if the parts were gathered and decrypted\n"

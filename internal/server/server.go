@@ -45,8 +45,9 @@ type Server struct {
 	// MaxUploadSize caps a single multipart upload request.
 	MaxUploadSize int64
 
-	vault    *vault.Vault
-	sessions *sessionStore
+	vault      *vault.Vault
+	sessions   *sessionStore
+	oauthFlows *oauthFlowStore
 }
 
 // DefaultPort is the port `sand serve` binds unless told otherwise.
@@ -122,6 +123,9 @@ func (s *Server) Handler() (http.Handler, error) {
 	if s.sessions == nil {
 		s.sessions = newSessionStore(s.IdleTimeout)
 	}
+	if s.oauthFlows == nil {
+		s.oauthFlows = newOAuthFlowStore()
+	}
 
 	mux := http.NewServeMux()
 
@@ -131,6 +135,12 @@ func (s *Server) Handler() (http.Handler, error) {
 	mux.HandleFunc("POST /api/vault/init", s.handleVaultInit)
 	mux.HandleFunc("POST /api/vault/unlock", s.handleVaultUnlock)
 	mux.HandleFunc("GET /api/providers/specs", s.handleProviderSpecs)
+
+	// The provider sends the browser back here after the account holder has
+	// signed in. It arrives as a cross-site navigation, which the session
+	// cookie deliberately does not survive, so the flow's state parameter is
+	// what authenticates it.
+	mux.HandleFunc("GET "+oauthCallbackPath, s.handleOAuthCallback)
 
 	// --- Standalone mode: no vault, no accounts, just files in and out ----
 	mux.HandleFunc("POST /api/archive", handleArchive)
@@ -146,6 +156,11 @@ func (s *Server) Handler() (http.Handler, error) {
 		"POST /api/providers":           s.handleProviderAdd,
 		"POST /api/providers/{id}/test": s.handleProviderTest,
 		"DELETE /api/providers/{id}":    s.handleProviderRemove,
+
+		"POST /api/providers/oauth/start":    s.handleOAuthStart,
+		"POST /api/providers/oauth/exchange": s.handleOAuthExchange,
+		"POST /api/providers/oauth/complete": s.handleOAuthComplete,
+		"GET /api/providers/oauth/{id}":      s.handleOAuthStatus,
 
 		"GET /api/files":              s.handleFilesList,
 		"POST /api/files":             s.handleFilesUpload,

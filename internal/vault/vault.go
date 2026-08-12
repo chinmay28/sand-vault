@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -324,12 +325,75 @@ func (v *Vault) buildProvider(cfg provider.Config) (provider.Provider, error) {
 	if p, ok := v.live[cfg.ID]; ok {
 		return p, nil
 	}
-	p, err := provider.New(cfg)
+	p, err := v.newLiveProvider(cfg)
 	if err != nil {
 		return nil, err
 	}
 	v.live[cfg.ID] = p
 	return p, nil
+}
+
+// newLiveProvider constructs a backend and connects it to the vault, so
+// credentials it rotates while running are written back rather than lost.
+func (v *Vault) newLiveProvider(cfg provider.Config) (provider.Provider, error) {
+	p, err := provider.New(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if rotator, ok := p.(provider.CredentialRotator); ok {
+		id, name := cfg.ID, cfg.Name
+		rotator.OnCredentialChange(func(updates map[string]string) {
+			// On a goroutine of our own: the sink runs inline inside whatever
+			// call was talking to the backend, and that call may already be
+			// holding the lock this write needs.
+			go func() {
+				if err := v.updateProviderOptions(id, updates); err != nil {
+					log.Printf("could not store %s's renewed credentials: %v", name, err)
+				}
+			}()
+		})
+	}
+	return p, nil
+}
+
+// updateProviderOptions merges option changes into a connected account and
+// writes the vault back out.
+//
+// This is how a rotated refresh token survives a restart. It is called from
+// whatever goroutine happened to be refreshing, so it takes the lock itself
+// and shrugs at an account that has been disconnected in the meantime.
+func (v *Vault) updateProviderOptions(id string, updates map[string]string) error {
+	if len(updates) == 0 {
+		return nil
+	}
+
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	if v.dataKey == nil {
+		return ErrLocked
+	}
+	for i := range v.providers {
+		if v.providers[i].ID != id {
+			continue
+		}
+		if v.providers[i].Options == nil {
+			v.providers[i].Options = map[string]string{}
+		}
+		changed := false
+		for key, value := range updates {
+			if v.providers[i].Options[key] == value {
+				continue
+			}
+			v.providers[i].Options[key] = value
+			changed = true
+		}
+		if !changed {
+			return nil
+		}
+		return v.persistLocked()
+	}
+	return nil
 }
 
 // resetLiveCache drops every constructed provider.
@@ -367,10 +431,14 @@ func (v *Vault) AddProvider(ctx context.Context, cfg provider.Config) (provider.
 		}
 	}
 
+	// Store the backend's defaults alongside what the user supplied, so an
+	// account keeps the folder it was connected with even if a later release
+	// changes what a fresh connection would pick.
+	cfg = provider.WithDefaults(cfg)
 	cfg.ID = uuid.NewString()
 	cfg.AddedAt = time.Now().UTC()
 
-	live, err := provider.New(cfg)
+	live, err := v.newLiveProvider(cfg)
 	if err != nil {
 		return provider.Config{}, err
 	}

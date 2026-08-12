@@ -35,7 +35,7 @@ product.
 | Interface | Archive / Restore forms | A file browser with folders and previews |
 | State | None — every run standalone | An encrypted index of what is stored where |
 | Retrieval | Find the right zips, extract, restore | Click the file |
-| Providers | — | Local disk, S3-compatible, WebDAV, Google Drive, Dropbox |
+| Providers | — | Google Drive, OneDrive, Dropbox, Box, S3-compatible, WebDAV, Proton Drive, local disk |
 | Failure handling | Manual | Reads route around an account that is down |
 
 ---
@@ -58,13 +58,13 @@ product.
 ├───────────────────────────┬──────────────────────────────────────────┤
 │  internal/archive         │  internal/provider                       │
 │  compress → split → XOR   │  one tiny object-store interface,        │
-│  → encrypt (and back)     │  five backends behind it                 │
+│  → encrypt (and back)     │  eight backends behind it                │
 └───────────────────────────┴──────────────┬───────────────────────────┘
                                            │
         ┌──────────────┬───────────────┬───┴──────────┬───────────────┐
         ▼              ▼               ▼              ▼               ▼
-   Google Drive    S3 / R2 / B2     WebDAV        Dropbox      Local folder
-      part 1          part 2         part 3           …              …
+   Google Drive    S3 / R2 / B2     WebDAV      OneDrive / Box   Local folder
+      part 1          part 2         part 3           …          Proton Drive
 ```
 
 The layering rule that keeps this honest: **`internal/provider` never sees
@@ -331,7 +331,11 @@ type Provider interface {
 }
 ```
 
-Optional: `UsageReporter` for backends that can report quota.
+Optional, and each one is a capability the layers above check for rather than
+assume: `UsageReporter` for backends that can report quota, `Identifier` for
+backends that can name the account they are pointed at, and
+`CredentialRotator` for backends whose stored credentials change as they are
+used.
 
 ### 8.2 Backends
 
@@ -339,13 +343,22 @@ Optional: `UsageReporter` for backends that can report quota.
 |---|---|---|
 | `local` | Any directory: external disk, NAS mount, sync folder | Filesystem, atomic writes |
 | `s3` | Amazon S3, Cloudflare R2, Backblaze B2, Wasabi, MinIO | SigV4, hand-rolled on the stdlib |
-| `webdav` | Nextcloud, ownCloud, Box, Koofr, Fastmail | PUT/GET/HEAD/DELETE/MKCOL/PROPFIND |
+| `webdav` | Nextcloud, ownCloud, pCloud, Koofr, Fastmail, rclone | PUT/GET/HEAD/DELETE/MKCOL/PROPFIND |
 | `gdrive` | Google Drive | Drive v3 REST, OAuth refresh grant |
+| `onedrive` | OneDrive, personal or work | Microsoft Graph, chunked upload sessions |
 | `dropbox` | Dropbox | API v2, OAuth refresh grant |
+| `box` | Box | API 2.0, OAuth with rotating refresh tokens |
+| `proton` | Proton Drive, via the folder its desktop app syncs | Filesystem, atomic writes |
 
 Everything is built on `net/http` and the standard library. No cloud SDKs — the
 dependency footprint stays at five modules and `CGO_ENABLED=0` still yields a
 fully static binary.
+
+Proton Drive is the odd one out: it publishes no API, so the backend is the
+local one pointed at the folder Proton's desktop client syncs. That is not a
+compromise of the threat model — parts are encrypted long before the sync
+client sees them — but it does mean the account is only as live as the machine
+running the client.
 
 ### 8.3 Self-describing configuration
 
@@ -368,7 +381,45 @@ Register(Spec{
 form from them. **Adding a backend requires no frontend change**, and the
 `secret` flag is what drives redaction everywhere a config is returned.
 
-### 8.4 Google Drive has no paths
+### 8.4 Signing in instead of pasting tokens
+
+A backend that speaks OAuth adds an `OAuthSpec` to its registration: the
+authorize and token endpoints, the scopes, whether to use PKCE, and which
+option keys the exchanged tokens are written to. That is the whole of what the
+server needs to run a sign-in, so a new OAuth backend costs one struct literal.
+
+```
+browser                    server                        provider
+   │  POST oauth/start        │                              │
+   │─────────────────────────►│  mint state + PKCE verifier  │
+   │  ◄── auth_url, flow_id ──│  hold them in memory (15m)   │
+   │                          │                              │
+   │  window.open(auth_url) ─────────────────────────────────►│
+   │                          │  GET oauth/callback?code&state (no cookie)
+   │                          │◄─────────────────────────────│
+   │                          │  exchange code ─────────────►│
+   │                          │  ask the account its name ──►│
+   │  ◄── poll oauth/{flow} ──│  tokens held against the flow│
+   │  POST oauth/complete ───►│  AddProvider → encrypted vault
+```
+
+The redirect arrives as a cross-site navigation, which the `SameSite=Strict`
+session cookie deliberately does not survive. So the callback authenticates on
+the 256-bit `state` alone, and the calls that turn a finished flow into an
+account — status and complete — are the ones bound to the session that started
+it. A state is retired as soon as it is spent, so a replayed redirect exchanges
+nothing.
+
+Tokens never reach the browser. The flow's status reports only how far along it
+is and which account signed in; the credentials go from the token endpoint into
+the vault without passing through the page.
+
+`CredentialRotator` closes the loop for Box and Microsoft, which retire a
+refresh token as it is spent: the vault installs a sink on every live provider
+it builds, and a rotated token is written back — asynchronously, because the
+refresh may well be happening inside a call that already holds the vault lock.
+
+### 8.5 Google Drive has no paths
 
 Drive is not a path-addressed store, so the SAND object key is written into the
 file's `appProperties` and looked up by query, with a per-provider ID cache so
@@ -396,6 +447,11 @@ reveals only whether a vault exists.
 | GET | `/api/providers/specs` | Backend descriptions for the connect form |
 | GET | `/api/providers` | Connected accounts: online, parts held, quota |
 | POST | `/api/providers` | Connect an account (pings before saving) |
+| POST | `/api/providers/oauth/start` | Begin a sign-in; returns the consent URL |
+| GET | `/api/providers/oauth/callback` | Where the provider sends the browser back (public; matched on `state`) |
+| GET | `/api/providers/oauth/{id}` | How far along a sign-in is |
+| POST | `/api/providers/oauth/exchange` | Finish a sign-in from a pasted redirect URL |
+| POST | `/api/providers/oauth/complete` | Turn a finished sign-in into an account |
 | POST | `/api/providers/{id}/test` | Re-check one account |
 | DELETE | `/api/providers/{id}` | Disconnect (`?force=1` to override the guard) |
 | GET | `/api/files?path=` | List a folder |
