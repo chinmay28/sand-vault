@@ -14,6 +14,29 @@
       avoid. Typography falls back to whatever the system provides.
     -->
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+
+    <!--
+      Added to a phone's home screen, the vault gets its own icon and opens
+      without browser chrome, like the app it behaves as. The two platforms ask
+      for that in different dialects and neither reads the other's, so both are
+      declared here.
+
+      Android reads the manifest — named .json rather than .webmanifest so the
+      Go file server answers with a JSON content type from its built-in table
+      instead of whatever the host's mime.types happens to know.
+
+      iOS reads none of it: it takes the icon from apple-touch-icon (a raster
+      image only — it will not take the SVG above), the home-screen label from
+      apple-mobile-web-app-title, and standalone launch from the -capable flag.
+      The black status bar style is the one that keeps white text over a dark
+      app without moving content up under the clock.
+    -->
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-title" content="SAND Vault" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
   </head>
   <body>
     <div id="root"></div>

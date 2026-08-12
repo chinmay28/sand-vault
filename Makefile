@@ -1,4 +1,4 @@
-.PHONY: build build-web build-go version release test test-cover test-e2e test-e2e-slow test-all clean
+.PHONY: build build-web build-go icons icons-check version release test test-cover test-e2e test-e2e-slow test-all clean
 
 # Build everything: frontend + Go binary
 build: build-web build-go
@@ -6,6 +6,15 @@ build: build-web build-go
 # Build React frontend
 build-web:
 	cd web && npm ci && npm run build
+
+# Redraw the home-screen icon PNGs from web/public/icon.svg. The PNGs are
+# committed, so run this whenever the SVG changes and commit the result.
+icons:
+	node scripts/make-icons.mjs
+
+# Fail if a committed PNG no longer matches the SVG it is drawn from.
+icons-check:
+	node scripts/make-icons.mjs --check
 
 # Build Go binary (static, no CGO)
 # On Windows the output is sand.exe; on Unix it is sand.

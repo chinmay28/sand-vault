@@ -360,6 +360,20 @@ next — and the toolbar gives the breadcrumb trail a row of its own. Controls g
 touch-sized targets, and heights are measured against the visible viewport so a
 phone's collapsing address bar never hides the last row.
 
+**Add to Home Screen** puts the vault on the home screen under the SAND mark
+rather than a screenshot of the page, and — on iOS always, on Android wherever
+the browser honours the manifest — opens it without browser chrome. The mark is
+served from the binary in every form the two platforms ask for — iOS reads
+`apple-touch-icon.png`, Android reads `manifest.json` and its 192/512px icons,
+including a maskable one so an adaptive launcher crops the background and not
+the logo. All of it is drawn from a single [`icon.svg`](./web/public/icon.svg)
+by [`scripts/make-icons.mjs`](./scripts/make-icons.mjs); change the SVG, run
+`make icons`, and commit the PNGs that fall out.
+
+The shortcut still opens a locked vault — it is a link to your server, not a
+copy of anything. Nothing is cached offline, so a stolen phone with the icon on
+its home screen gets the password prompt like any other browser would.
+
 ---
 
 ## HTTP API
@@ -562,13 +576,15 @@ sand/
 │   ├── api.js  theme.js  App.jsx
 │   └── components/              # LockScreen, AccountsPanel, ConnectCloud,
 │                                #   FileBrowser, PreviewModal, ui
-│   ├── public/                  # app icon + developer badge
+│   ├── public/                  # app icon, home-screen icons + manifest,
+│   │                            #   developer badge
 │   └── build-version.js         # feeds the version into the bundle
 ├── internal/version/            # MAJOR/MINOR; PATCH stamped at link time
 ├── tests/                       # pytest e2e: CLI, API, vault flow, browser
 ├── scripts/
 │   ├── quickstart.sh            # one-command systemd install / upgrade / rollback
 │   ├── version.mjs              # the one place the version is assembled
+│   ├── make-icons.mjs           # redraws the home-screen PNGs from icon.svg
 │   ├── build-release.sh         # cross-compile all platforms
 │   ├── deploy-linux.sh          # install an already-built binary
 │   └── nginx-sand.conf          # reverse-proxy template

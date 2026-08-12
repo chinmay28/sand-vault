@@ -1,0 +1,16 @@
+{
+  "id": "/",
+  "name": "SAND Vault",
+  "short_name": "SAND",
+  "description": "A file browser over storage you do not fully trust: every file is encrypted, split into three parts and scattered across separate cloud accounts.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0a0e17",
+  "theme_color": "#0a0e17",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

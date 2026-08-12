@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"image/png"
 	"io"
 	"io/fs"
 	"mime/multipart"
@@ -598,4 +599,155 @@ func mustDistFS(t *testing.T) fs.FS {
 		t.Fatalf("fs.Sub: %v", err)
 	}
 	return sub
+}
+
+// ---------------------------------------------------------------------------
+// Home-screen install
+// ---------------------------------------------------------------------------
+
+// Adding the vault to a phone's home screen is served entirely out of the
+// binary: the manifest, the icons it names, and the tags in index.html that
+// point at them. A phone asks for these once, when the shortcut is created,
+// and silently substitutes a screenshot of the page if anything is missing —
+// so nothing here fails loudly in a browser, and these have to.
+
+// webManifest is the shape the app declares to a phone. Only the fields the
+// install prompt actually reads are modelled.
+type webManifest struct {
+	Name            string `json:"name"`
+	ShortName       string `json:"short_name"`
+	StartURL        string `json:"start_url"`
+	Display         string `json:"display"`
+	ThemeColor      string `json:"theme_color"`
+	BackgroundColor string `json:"background_color"`
+	Icons           []struct {
+		Src     string `json:"src"`
+		Sizes   string `json:"sizes"`
+		Type    string `json:"type"`
+		Purpose string `json:"purpose"`
+	} `json:"icons"`
+}
+
+func fetchManifest(t *testing.T, c *testClient) webManifest {
+	t.Helper()
+
+	w := c.do("GET", "/manifest.json", nil, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /manifest.json: %d", w.Code)
+	}
+	// A manifest served as anything but JSON is a manifest a browser may
+	// refuse to parse, which is the whole install gone.
+	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "json") {
+		t.Errorf("Content-Type = %q, want a JSON type", ct)
+	}
+
+	var m webManifest
+	if err := json.Unmarshal(w.Body.Bytes(), &m); err != nil {
+		t.Fatalf("manifest is not valid JSON: %v", err)
+	}
+	return m
+}
+
+func TestManifestDescribesTheInstalledApp(t *testing.T) {
+	c := newTestClient(t)
+	m := fetchManifest(t, c)
+
+	if m.Name == "" || m.ShortName == "" {
+		t.Errorf("name/short_name = %q/%q, both are shown under the icon", m.Name, m.ShortName)
+	}
+	if m.StartURL != "/" {
+		t.Errorf("start_url = %q, want / — the shortcut must open the app root", m.StartURL)
+	}
+	if m.Display != "standalone" {
+		t.Errorf("display = %q, want standalone", m.Display)
+	}
+	// The splash screen is drawn from these before a single byte of the app
+	// has run; left unset it is white, which flashes against a dark app.
+	if m.BackgroundColor == "" || m.ThemeColor == "" {
+		t.Errorf("background_color/theme_color = %q/%q, both must be set",
+			m.BackgroundColor, m.ThemeColor)
+	}
+}
+
+// TestManifestIconsAreServedAtTheirDeclaredSize resolves every icon the
+// manifest names. A manifest pointing at an icon that has moved, or that
+// claims a size the file does not have, is dropped by the installer without
+// complaint — so both are checked against the bytes actually served.
+func TestManifestIconsAreServedAtTheirDeclaredSize(t *testing.T) {
+	c := newTestClient(t)
+	m := fetchManifest(t, c)
+
+	if len(m.Icons) == 0 {
+		t.Fatal("manifest declares no icons")
+	}
+
+	var maskable, largest int
+	for _, icon := range m.Icons {
+		w := c.do("GET", icon.Src, nil, "")
+		if w.Code != http.StatusOK {
+			t.Errorf("GET %s: %d — the manifest names an icon that is not served",
+				icon.Src, w.Code)
+			continue
+		}
+
+		cfg, err := png.DecodeConfig(bytes.NewReader(w.Body.Bytes()))
+		if err != nil {
+			t.Errorf("%s: not a decodable PNG: %v", icon.Src, err)
+			continue
+		}
+		if want := fmt.Sprintf("%dx%d", cfg.Width, cfg.Height); want != icon.Sizes {
+			t.Errorf("%s: declared %q but is %s", icon.Src, icon.Sizes, want)
+		}
+		if cfg.Width > largest {
+			largest = cfg.Width
+		}
+		if strings.Contains(icon.Purpose, "maskable") {
+			maskable++
+		}
+	}
+
+	// Android's install prompt wants a 512px icon, and an adaptive launcher
+	// crops any icon not marked maskable to fit its own shape.
+	if largest < 512 {
+		t.Errorf("largest icon is %dpx, want at least 512", largest)
+	}
+	if maskable == 0 {
+		t.Error("no maskable icon — Android launchers will crop the mark")
+	}
+}
+
+func TestIndexPointsPhonesAtTheHomeScreenIcon(t *testing.T) {
+	c := newTestClient(t)
+
+	w := c.do("GET", "/", nil, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /: %d", w.Code)
+	}
+	head := w.Body.String()
+
+	// iOS reads none of the manifest: without these tags it puts a screenshot
+	// of the page on the home screen instead of the mark.
+	for _, want := range []string{
+		`rel="manifest"`,
+		`rel="apple-touch-icon"`,
+		`name="apple-mobile-web-app-title"`,
+	} {
+		if !strings.Contains(head, want) {
+			t.Errorf("index.html is missing %s", want)
+		}
+	}
+
+	touch := c.do("GET", "/apple-touch-icon.png", nil, "")
+	if touch.Code != http.StatusOK {
+		t.Fatalf("GET /apple-touch-icon.png: %d", touch.Code)
+	}
+	cfg, err := png.DecodeConfig(bytes.NewReader(touch.Body.Bytes()))
+	if err != nil {
+		t.Fatalf("apple-touch-icon is not a decodable PNG: %v", err)
+	}
+	// 180px is what iOS asks for at 3x; anything smaller is upscaled on the
+	// home screen.
+	if cfg.Width != 180 || cfg.Height != 180 {
+		t.Errorf("apple-touch-icon is %dx%d, want 180x180", cfg.Width, cfg.Height)
+	}
 }
