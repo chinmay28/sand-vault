@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/chinmay28/sand-vault/internal/archive"
+	"github.com/chinmay28/sand-vault/internal/vault"
 )
 
 // The standalone commands below predate the cloud-connected vault and are kept
@@ -106,14 +107,24 @@ func writeZip(zipPath string, filePaths []string) error {
 
 func restoreCmd() *cobra.Command {
 	var (
-		parts     string
-		password  string
-		outputDir string
+		parts        string
+		password     string
+		outputDir    string
+		manifestPath string
+		preserveTree bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "restore --parts <file1>,<file2>[,file3]",
 		Short: "Rebuild an original file from any two of its parts",
+		Long: `Rebuild a file from any two of its three parts.
+
+Parts written by 'sand archive' are encrypted under the password you typed, so
+those need nothing else. Parts pulled out of your cloud accounts are encrypted
+under the vault's own random key, so for those, pass --manifest pointing at the
+` + vault.BackupKey + ` file from any of your accounts: it carries that key, and
+your vault password opens it. That combination — enough parts, the manifest,
+and the password — rebuilds a file with no vault and no network.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var partPaths []string
 			for _, p := range strings.Split(parts, ",") {
@@ -124,24 +135,38 @@ func restoreCmd() *cobra.Command {
 			if len(partPaths) < archive.MinPartsToRestore {
 				return fmt.Errorf("need at least %d parts, got %d", archive.MinPartsToRestore, len(partPaths))
 			}
+			if err := os.MkdirAll(outputDir, 0700); err != nil {
+				return fmt.Errorf("creating output directory: %w", err)
+			}
 
-			if password == "" {
+			dir := outputDir
+			vaultPath := ""
+			if manifestPath != "" {
+				if password != "" {
+					return fmt.Errorf("--password is the vault password when --manifest is used; it is prompted for")
+				}
+				var err error
+				password, dir, vaultPath, err = restoreWithManifest(manifestPath, partPaths, preserveTree, outputDir)
+				if err != nil {
+					return err
+				}
+			} else if password == "" {
 				var err error
 				password, err = readPassword("Decryption password: ")
 				if err != nil {
 					return err
 				}
 			}
-			if err := os.MkdirAll(outputDir, 0700); err != nil {
-				return fmt.Errorf("creating output directory: %w", err)
-			}
 
-			outputPath, err := archive.Restore(partPaths, password, outputDir)
+			outputPath, err := archive.Restore(partPaths, password, dir)
 			if err != nil {
 				return err
 			}
 
 			fmt.Printf("Restored %s\n", outputPath)
+			if vaultPath != "" {
+				fmt.Printf("  it was stored in the vault at %s\n", vaultPath)
+			}
 			return nil
 		},
 	}
@@ -149,6 +174,10 @@ func restoreCmd() *cobra.Command {
 	cmd.Flags().StringVar(&parts, "parts", "", "comma-separated .sand part files (2 or 3)")
 	cmd.Flags().StringVar(&password, "password", "", "decryption password (prompted if omitted)")
 	cmd.Flags().StringVar(&outputDir, "output-dir", ".", "where to write the restored file")
+	cmd.Flags().StringVar(&manifestPath, "manifest", "",
+		"a "+vault.BackupKey+" file from one of your accounts, holding the key these parts were stored under")
+	cmd.Flags().BoolVar(&preserveTree, "preserve-tree", false,
+		"with --manifest, recreate the folders the file sat in inside the output directory")
 	cmd.MarkFlagRequired("parts")
 	return cmd
 }

@@ -140,6 +140,10 @@ An upload commits once **at least two** parts have landed — the minimum that c
 still be rebuilt. If fewer than two succeed, the ones that did land are deleted
 rather than left as orphans.
 
+Each account also receives `manifest.sand`, an encrypted copy of the index, so
+that losing your vault file is survivable. See
+[Losing the vault file](#losing-the-vault-file).
+
 ### Retrieving
 
 ```
@@ -276,6 +280,85 @@ enough to rebuild.
 
 ---
 
+## Losing the vault file
+
+Parts are encrypted under a random 256-bit key that lives inside your vault
+file. Lose that file and your password buys you nothing: every part in every
+account is permanently opaque.
+
+So SAND keeps a copy of the index with the data. Every connected account gets
+`manifest.sand` — the file tree, the map of which account holds which part, and
+the key those parts are encrypted under — encrypted under your vault password
+and carrying its own key-derivation parameters, so **your password alone opens
+it**. It is rewritten whenever the index changes. It never contains the
+credentials for any account.
+
+There are three ways back, depending on what survived:
+
+**You have a `manifest.sand` and your password** — read the tree, and see where
+every part went:
+
+```bash
+sand manifest ls manifest.sand --long
+```
+```
+Backup written 2026-08-13 05:20 — 2 file(s), 3 account(s), strict placement
+
+/finance/2026/ledger.csv                   263.8 KB
+    part 1  cloud-a              7d4206c8…-p1.sand
+    part 2  cloud-b              7d4206c8…-p2.sand
+    part 3  cloud-c              7d4206c8…-p3.sand
+```
+
+**You also have two of a file's parts** — rebuild it with no vault, no accounts
+and no network:
+
+```bash
+sand restore --parts 7d4206c8…-p1.sand,7d4206c8…-p3.sand \
+             --manifest manifest.sand --preserve-tree --output-dir ./rescued
+```
+
+**Your accounts are still reachable** — rebuild the whole vault. Start a fresh
+vault (a new password is fine), reconnect the accounts, and recover:
+
+```bash
+sand vault init
+sand remote add gdrive --name work …          # reconnect each account
+sand vault recover --dry-run                  # see what would come back
+sand vault recover
+```
+
+Reconnecting an account gives it a new internal id, so recovery asks each
+account what it actually holds and re-points the index at whichever one answers.
+Accounts you have not reconnected are reported as unreachable parts — connect
+them and run it again.
+
+### The tradeoff, stated plainly
+
+A copy of this file sits in every account, and every copy is one password away
+from the data key. If an account is compromised **and** your password is
+guessed, the attacker gets your file tree, the placement map, and — because each
+part is separately encrypted under that key — whatever plaintext that account's
+own parts hold, which for a large file is roughly half of it. Rebuilding a whole
+file still requires breaking into a second account, so the two-of-three split
+remains a genuine second factor.
+
+One configuration removes that factor: the `redundant` policy with fewer than
+three accounts, where a single account can already hold enough parts to rebuild
+a file. SAND refuses to write a backup there, and erases any copies it had
+already written.
+
+If you would rather have neither the backup nor its risk:
+
+```bash
+sand vault backup --disable    # erases every copy from every account
+```
+
+Then back up `~/.sand/vault.sand` yourself, and understand that losing it loses
+everything.
+
+---
+
 ## CLI Reference
 
 ### Vault
@@ -285,6 +368,15 @@ sand vault init [--policy strict|redundant]   Create the vault
 sand vault status                             What's stored, where, how much
 sand vault passwd                             Change password (nothing re-uploads)
 sand vault policy [strict|redundant]          Show or set placement policy
+sand vault backup [--disable|--enable]        Write the encrypted index to every account
+sand vault recover [--from ACCOUNT]           Rebuild a lost vault from an account's copy
+```
+
+### Recovery
+
+```
+sand manifest ls <manifest.sand> [--long]     Print the tree a backup records
+sand restore --parts A,B --manifest M         Rebuild a file offline from loose parts
 ```
 
 ### Accounts
@@ -429,11 +521,13 @@ another site in your browser can't drive the local API.
 
 | Threat | Mitigation |
 |---|---|
-| One cloud account compromised | Attacker holds one encrypted part — useless. Guaranteed by `strict` placement. |
-| Two accounts compromised | Still needs the vault file *and* your password |
+| One cloud account compromised | Attacker holds one encrypted part and a manifest they cannot open — useless. One part per file is guaranteed by `strict` placement. |
+| One account compromised **and** your password guessed | The manifest opens: the tree, the placement map, and about half of each large file that account holds a part of. A whole file still needs a second account. |
+| Two accounts compromised | Still needs the key — the vault file, or a manifest backup *and* your password |
 | Vault file stolen | Every section AES-256-GCM sealed under an Argon2id key — yields neither credentials nor filenames |
 | Provider tampers with a part | GCM tag fails; the other two rebuild the file |
-| Part swapping between files | Header bound as GCM associated data |
+| Part swapping between files | Cleartext header bound as GCM associated data |
+| A provider reading your filenames | Names, hashes and sizes are sealed inside each part, not in its header |
 | Silent bit rot | Whole-file SHA-256 verified on every rebuild |
 | An account disappears | Any two parts suffice; `sand check --all` finds damage early |
 | Another site in your browser | `SameSite=Strict` + `Origin` checks |
@@ -454,7 +548,12 @@ weak password.
 - **Two providers *and* your password** — that's the recovery path, and also the
   attack. Use genuinely independent accounts; two buckets in one AWS account is
   not distribution.
-- **Losing your password.** There is no recovery.
+- **Losing your password.** There is no recovery — not from the vault, and not
+  from a manifest backup.
+- **The manifest backup itself.** Replicating the index is what makes a lost
+  vault survivable, and it is also a new thing to steal. `sand vault backup
+  --disable` erases every copy — and puts you back to losing everything if you
+  lose the vault file.
 
 ⚠️ **`--bind` off loopback** sends your password and rebuilt plaintext over the
 network in the clear. The server warns you. Put TLS in front of it
@@ -646,7 +745,8 @@ sudo nginx -t && sudo systemctl reload nginx
 
 ```
 sand/
-├── cmd/sand/                    # CLI: serve, vault, remote, ls/put/get/rm, archive/restore
+├── cmd/sand/                    # CLI: serve, vault, remote, ls/put/get/rm, archive/restore,
+│                                #   manifest ls, vault backup/recover
 ├── internal/
 │   ├── archive/                 # encode.go — the in-memory pipeline both modes share
 │   ├── crypto/                  # Argon2id + AES-256-GCM
@@ -655,7 +755,8 @@ sand/
 │   ├── sandfile/                # binary .sand part format
 │   ├── provider/                # local, s3 (SigV4), webdav, gdrive, dropbox,
 │   │                            #   onedrive, box, proton + the OAuth sign-in flow
-│   ├── vault/                   # encrypted store, manifest, placement, scatter/gather
+│   ├── vault/                   # encrypted store, manifest, placement, scatter/gather,
+│   │                            #   the replicated manifest backup and recovery
 │   └── server/                  # sessions, OAuth flows, handlers, embedded SPA
 ├── web/src/                     # React file browser
 │   ├── api.js  theme.js  App.jsx
@@ -703,8 +804,9 @@ touch your real vault.
 
 | Path | What |
 |---|---|
-| `~/.sand/vault.sand` | Encrypted index + cloud credentials. **Back this up.** Without it, the parts scattered across your accounts are unrecoverable. |
+| `~/.sand/vault.sand` | Encrypted index + cloud credentials. Back this up — though since every account also carries a `manifest.sand`, losing it is recoverable with your password. |
 | `<archive-id>-pN.sand` | How parts appear on each account, inside whatever folder or prefix that account is configured with. The ID is random and reveals nothing. |
+| `manifest.sand` | An encrypted copy of the index, on every account. Opens with your vault password alone. |
 
 Override the vault location with `--vault` or `SAND_VAULT`.
 

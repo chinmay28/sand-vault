@@ -41,12 +41,31 @@ type Vault struct {
 	// always taken last, so cache warming can happen while mu is held.
 	liveMu sync.Mutex
 	live   map[string]provider.Provider
+
+	// backupMu guards the manifest backup syncer's state. Also a leaf lock:
+	// scheduling a push happens while mu is held, and the push itself runs on
+	// its own goroutine after mu is released.
+	backupMu      sync.Mutex
+	backupIdle    sync.Cond
+	backupRunning bool
+	backupPending bool
+	backupForce   bool
+
+	// backupChecked remembers the accounts already known to hold this vault's
+	// own backup, so the guard against clobbering another vault's copy costs
+	// one read per account per unlock rather than one per push.
+	backupChecked map[string]bool
+
+	// backupWarned remembers the accounts already reported as holding another
+	// vault's backup, so the warning is said once rather than on every change.
+	backupWarned map[string]bool
 }
 
 // Open returns a handle to the vault at path. The vault starts locked; if no
 // file exists yet, Initialized reports false and Init can create one.
 func Open(path string) (*Vault, error) {
 	v := &Vault{path: path, live: map[string]provider.Provider{}}
+	v.backupIdle.L = &v.backupMu
 
 	sf, err := readStore(path)
 	if err != nil && !errors.Is(err, ErrNotInitialized) {
@@ -159,6 +178,11 @@ func (v *Vault) Unlock(password string) error {
 	v.providers = providers
 	v.manifest = manifest
 	v.resetLiveCache()
+
+	// Anything that changed while an account was unreachable — or while the
+	// vault was locked mid-push — is repaired here rather than staying stale
+	// until the next upload.
+	v.scheduleBackup(false)
 	return nil
 }
 
@@ -236,6 +260,10 @@ func (v *Vault) ChangePassword(oldPassword, newPassword string) error {
 	v.dataKey = dataKey
 	v.providers = providers
 	v.manifest = manifest
+
+	// The backup is sealed under the password, so the copies on the accounts
+	// still answer to the old one until they are replaced.
+	v.scheduleBackup(true)
 	return nil
 }
 
@@ -243,7 +271,13 @@ func (v *Vault) ChangePassword(oldPassword, newPassword string) error {
 // of the vault's random data key, so part encryption never depends on the
 // strength of what the user typed.
 func (v *Vault) shardPasswordLocked() string {
-	return hex.EncodeToString(v.dataKey)
+	return shardPasswordFor(v.dataKey)
+}
+
+// shardPasswordFor derives the part secret from a data key. Recovery needs the
+// same derivation from a key that came out of a backup rather than a vault.
+func shardPasswordFor(dataKey []byte) string {
+	return hex.EncodeToString(dataKey)
 }
 
 // persistLocked re-seals the mutable sections and writes the vault file. The
@@ -266,7 +300,15 @@ func (v *Vault) persistLocked() error {
 
 	v.store.Providers = providers
 	v.store.Manifest = manifest
-	return writeStore(v.path, v.store)
+	if err := writeStore(v.path, v.store); err != nil {
+		return err
+	}
+
+	// The index on disk just changed, so the copies on the accounts are now
+	// stale. Pushing happens on its own goroutine: this runs under the write
+	// lock, and network round-trips must not block browsing.
+	v.scheduleBackup(false)
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -396,11 +438,18 @@ func (v *Vault) updateProviderOptions(id string, updates map[string]string) erro
 	return nil
 }
 
-// resetLiveCache drops every constructed provider.
+// resetLiveCache drops every constructed provider, and with it the record of
+// which accounts have already been checked for a foreign backup: the set of
+// connected accounts may be entirely different after an unlock.
 func (v *Vault) resetLiveCache() {
 	v.liveMu.Lock()
 	v.live = map[string]provider.Provider{}
 	v.liveMu.Unlock()
+
+	v.backupMu.Lock()
+	v.backupChecked = map[string]bool{}
+	v.backupWarned = map[string]bool{}
+	v.backupMu.Unlock()
 }
 
 // forgetProvider drops one account from the live cache.

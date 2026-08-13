@@ -134,6 +134,76 @@ directory plus `fsync` and `rename`. An interrupted write cannot corrupt the
 index that maps your files to their parts — the one piece of state whose loss
 would strand everything.
 
+### 3.5 The manifest backup
+
+Losing the vault file used to be unrecoverable, and not by a small margin: parts
+are encrypted under the random `data_key`, which existed in exactly one place.
+Password in hand, every part in every account was permanently opaque.
+
+So a copy of the index travels with the data. Each connected account receives
+`manifest.sand`, rewritten whenever the index changes:
+
+```json
+{
+  "magic":   "SAND-MANIFEST",
+  "version": 1,
+  "kdf":     { "salt": "…", "time": 3, "memory": 65536, "threads": 4 },
+  "check":   { "nonce": "…", "ciphertext": "…" },
+  "payload": { "nonce": "…", "ciphertext": "…" }
+}
+```
+
+It carries its **own** KDF parameters rather than referencing the vault's,
+because the vault is precisely what the reader has lost. A password alone
+derives the key and opens the payload:
+
+| Field | Holds |
+|---|---|
+| `data_key` | The 32 random bytes every stored part is encrypted under |
+| `manifest` | The file tree, and which account holds which part under which key |
+| `accounts` | Account id, kind, name, and when it was connected — **never credentials** |
+| `policy` | The placement policy in force |
+
+Credentials are excluded deliberately. A copy of this file sits in every
+account, so including them would make one compromised account a master key to
+all the others.
+
+**What it costs.** Every copy is a password away from the data key, so a single
+compromised account plus a cracked password yields the tree, the placement map,
+and — since each part is separately encrypted under that key — whatever the
+breached account's own parts contain, which for a large file is about half of
+it. Rebuilding a whole file still needs a second account, so the two-of-three
+split remains a real second factor. Argon2id at 64 MB is what stands between the
+envelope and a guessed password.
+
+**The one configuration where that breaks down** is the redundant policy with
+fewer than three accounts, where a single account can already hold enough parts
+to rebuild a file on its own. Adding the data key there would leave the password
+as the only protection, so the backup refuses to write, and erases any copies it
+had already written.
+
+The write is guarded in one more way: an account already holding a backup this
+vault cannot open is left alone, because that is a *different* vault's recovery
+data and connecting an account to a second vault must not destroy it.
+
+### 3.6 Recovery
+
+Three routes back, in increasing order of how much has survived:
+
+| You have | Command | You get |
+|---|---|---|
+| `manifest.sand` + password | `sand manifest ls` | The file tree and the placement map |
+| Enough parts + `manifest.sand` + password | `sand restore --manifest` | The complete file, offline, no accounts |
+| The accounts + password | `sand vault recover` | The whole vault, files openable again |
+
+`sand vault recover` runs against a fresh vault with the accounts reconnected.
+Reconnecting gives every account a new internal id, so rather than trusting the
+remembered ids it asks each account what it actually holds and re-points every
+shard record at whichever account answers with that key. Accounts that were not
+reconnected show up as unreachable parts. The recovered vault adopts the old
+data key, so new uploads join the existing files instead of starting a second
+key, and it rewrites the backups under its own password.
+
 ---
 
 ## 4. The Data Pipeline
@@ -248,6 +318,12 @@ Derived only from a random ID. Someone with full access to one account learns
 how many objects you store and how big each part is — nothing about names,
 types, or folder structure.
 
+Until format version 2 that last sentence was not true: the part header carried
+the original filename, its plaintext SHA-256 and its size in the clear, so a
+single account could read the name of every file it held a part of. Version 2
+moved all of it inside the ciphertext (§7). Version 1 parts are still readable,
+and still say what they always said — re-upload anything whose name matters.
+
 The key is a flat filename with no directory components. Every backend already
 scopes SAND to somewhere of its own — a folder on Dropbox, Box and OneDrive, a
 prefix on S3 and WebDAV, the chosen directory for a local or sync folder — so
@@ -275,9 +351,10 @@ Unchanged from v1, and deliberately so.
 ### 6.2 Encryption — AES-256-GCM
 
 - 12-byte random nonce, unique per part
-- The serialized part header is passed as **associated data**, binding each
+- The cleartext part header is passed as **associated data**, binding each
   ciphertext to its own part number and archive ID — a part cannot be swapped
-  for another file's part without the tag failing
+  for another file's part, or re-labelled as a different part number, without
+  the tag failing
 - 16-byte authentication tag
 
 ### 6.3 Integrity
@@ -285,7 +362,8 @@ Unchanged from v1, and deliberately so.
 | Layer | Mechanism | Catches |
 |---|---|---|
 | Per part | GCM tag | Tampering, truncation, bit rot |
-| Per part | Header as associated data | Part swapping, metadata edits |
+| Per part | Cleartext header as associated data | Part swapping, re-labelling |
+| Per part | Metadata sealed with the data | Edits to the name, hash or sizes |
 | Whole file | SHA-256 recorded at upload, checked after rebuild | Any corruption that slipped through |
 | Vault | GCM tag on every section | A modified or truncated index |
 
@@ -293,33 +371,42 @@ Unchanged from v1, and deliberately so.
 
 ## 7. Part File Format
 
-Each stored object is a self-describing `.sand` blob. Unchanged from v1, which
-means **parts written by v2 can still be restored by the standalone `sand
-restore` command** given the right secret.
+Each stored object is a self-describing `.sand` blob: everything needed to
+derive its key sits in the clear at the front, and everything that would
+describe the file it came from sits inside the ciphertext.
 
 ```
-Offset  Size   Field
-──────────────────────────────────────────────────────────
+Offset  Size   Field                          Cleartext header, also GCM
+──────────────────────────────────────────────  associated data
 0x00    4      Magic "SAND"
-0x04    1      Version
+0x04    1      Version (2)
 0x05    1      PartNumber (1..3)
 0x06    16     ArchiveID
-0x16    32     OriginalHash (SHA-256)
-0x36    8      OriginalSize
-0x3E    8      CompressedSize
-0x46    1      WasPadded
-0x47    2      FilenameLength
-0x49    var    Filename
-var     16     Argon2id salt
-var     4      Argon2 time
-var     4      Argon2 memory (KB)
-var     1      Argon2 threads
-var     12     AES-GCM nonce
-var     4      PayloadSize
-var     N      Ciphertext + 16-byte tag
+0x16    16     Argon2id salt
+0x26    4      Argon2 time
+0x2A    4      Argon2 memory (KB)
+0x2E    1      Argon2 threads
+0x2F    12     AES-GCM nonce
+──────────────────────────────────────────────
+0x3B    4      PayloadSize
+0x3F    N      Ciphertext + 16-byte tag
+                 └─ 32   OriginalHash (SHA-256)   sealed metadata
+                    8    OriginalSize
+                    8    CompressedSize
+                    1    WasPadded
+                    2    FilenameLength
+                    var  Filename
+                    var  this part's share of the compressed stream
 ```
 
-Every part carries the full metadata, so any two are self-sufficient.
+Every part carries the full metadata, so any two are self-sufficient — and a
+part on its own tells an observer only that it is a SAND part, which archive it
+belongs to, and how big it is.
+
+**Version 1**, whose header held the metadata in the clear, is still read: parts
+written by older builds restore unchanged. Nothing writes version 1 any more, so
+the standalone `sand restore` from a v1 binary can no longer open parts written
+today — restore with a current build instead.
 
 ---
 
@@ -530,8 +617,9 @@ The same endpoints back the API (`POST /api/archive`, `POST /api/restore`).
 
 | Threat | Mitigation |
 |---|---|
-| **One cloud account compromised** | Attacker holds one part: ciphertext derived from half the compressed bytes. Useless. Under `strict` this is guaranteed by placement. |
-| **Two accounts compromised** | Attacker holds enough parts but not the key. Still needs the vault file *and* the password. |
+| **One cloud account compromised** | Attacker holds one part: ciphertext derived from half the compressed bytes, plus a `manifest.sand` they cannot open. Under `strict` one part per file is guaranteed by placement. |
+| **One account compromised *and* the password guessed** | The manifest opens: tree, placement map, data key, and roughly half of each large file that account holds a part of. A whole file still needs a second account. See §3.5. |
+| **Two accounts compromised** | Attacker holds enough parts but not the key — which needs the vault file, or a manifest backup *and* the password. |
 | **Vault file stolen** | Every section is AES-256-GCM sealed under an Argon2id key. Yields neither cloud credentials nor filenames. |
 | **Provider tampers with a part** | GCM tag fails; the other two parts still rebuild the file |
 | **Part swapping between files** | Header bound as associated data |
@@ -542,7 +630,7 @@ The same endpoints back the API (`POST /api/archive`, `POST /api/restore`).
 | **Stored HTML/SVG executing in the app** | Risky types forced to `attachment`, `X-Content-Type-Options: nosniff`, restrictive CSP |
 | **Plaintext cached by a proxy** | `Cache-Control: private, no-store` on rebuilt content |
 | **Walking away from the machine** | Idle timeout re-locks the vault |
-| **Metadata leaking to a provider** | Object keys derived only from a random ID |
+| **Metadata leaking to a provider** | Object keys derived only from a random ID; filenames, hashes and sizes sealed inside the part since format v2 |
 | **Third-party tracking** | The UI loads no external fonts, scripts or styles — opening the vault makes zero third-party requests |
 
 ### 11.2 What SAND does not protect against
@@ -553,8 +641,14 @@ The same endpoints back the API (`POST /api/archive`, `POST /api/restore`).
 - **Two providers *and* your password.** That is the documented recovery path;
   it is also the attack. SAND's model assumes the accounts are independent —
   don't use two buckets in the same AWS account and call it distribution.
-- **Losing the password.** There is no recovery. The index cannot be decrypted,
-  and the parts scattered across your accounts stay meaningless.
+- **Losing the password.** There is no recovery. Neither the vault nor any
+  manifest backup can be decrypted, and the parts scattered across your accounts
+  stay meaningless.
+- **A manifest backup plus a guessed password.** Replicating the index is what
+  makes a lost vault survivable, and it is also an attack surface that did not
+  exist before. `sand vault backup --disable` erases every copy and takes the
+  vault back to "the vault file is the only way in" — along with everything that
+  implies if you lose it.
 - **Traffic analysis.** A provider sees when you upload and how large each part
   is.
 
@@ -575,7 +669,8 @@ in front of it (`scripts/nginx-sand.conf`, or Tailscale Serve), or set
 
 ```
 sand/
-├── cmd/sand/                  # CLI: serve, vault, remote, ls/put/get/rm, archive/restore
+├── cmd/sand/                  # CLI: serve, vault, remote, ls/put/get/rm, archive/restore,
+│                              #   manifest ls, vault backup/recover
 ├── internal/
 │   ├── archive/               # encode.go — the in-memory pipeline both modes use
 │   ├── compress/              # zstd
@@ -583,7 +678,7 @@ sand/
 │   ├── splitter/              # split, XOR, reconstruct
 │   ├── sandfile/              # binary .sand part format
 │   ├── provider/              # provider.go, local, s3, webdav, gdrive, dropbox
-│   ├── vault/                 # store (encrypted file), manifest, placement, transfer
+│   ├── vault/                 # store (encrypted file), manifest, placement, transfer, backup
 │   └── server/                # sessions, handlers, embedded SPA
 ├── web/src/                   # React file browser
 │   ├── api.js  theme.js  App.jsx

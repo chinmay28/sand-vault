@@ -28,6 +28,9 @@ func newTestVault(t *testing.T, accounts int) (*Vault, []string) {
 	if err := v.Init(testPassword, PolicyStrict); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
+	// The manifest backup is pushed in the background, so let it finish before
+	// the temporary directories it writes into are cleaned up.
+	t.Cleanup(v.AwaitBackupSync)
 
 	roots := make([]string, accounts)
 	for i := 0; i < accounts; i++ {

@@ -54,6 +54,7 @@ vault involved.`,
 		checkCmd(),
 		archiveCmd(),
 		restoreCmd(),
+		manifestCmd(),
 	)
 	return root
 }
