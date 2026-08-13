@@ -488,3 +488,142 @@ class TestCLI:
         for kind in ("local", "s3", "webdav", "gdrive", "dropbox",
                      "onedrive", "box", "proton"):
             assert kind in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Losing the vault file
+# ---------------------------------------------------------------------------
+
+class TestDisasterRecovery:
+    """The vault file is gone and all that is left is the accounts and a password.
+
+    These drive the real binary end to end: a vault is built in its own
+    directory, the vault file is deleted outright, and everything is rebuilt
+    from what the accounts are holding.
+    """
+
+    def build_vault(self, sand_bin, root, password="dr-passphrase"):
+        """Create a vault with three accounts and two files in a folder."""
+        vault = os.path.join(root, "cli-vault.sand")
+        env_pw = {"password": password}
+
+        cli(sand_bin, root, "vault", "init", **env_pw)
+        clouds = []
+        for name in ("dr-a", "dr-b", "dr-c"):
+            path = os.path.join(root, "dr-clouds", name)
+            clouds.append(path)
+            cli(sand_bin, root, "remote", "add", "local",
+                "--name", name, "--set", f"path={path}", **env_pw)
+
+        payload = os.urandom(120_000)
+        source = os.path.join(root, "ledger.bin")
+        with open(source, "wb") as f:
+            f.write(payload)
+        notes = os.path.join(root, "notes.txt")
+        with open(notes, "w") as f:
+            f.write("board minutes")
+
+        cli(sand_bin, root, "mkdir", "/finance", **env_pw)
+        cli(sand_bin, root, "put", source, "--path", "/finance", **env_pw)
+        cli(sand_bin, root, "put", notes, **env_pw)
+        cli(sand_bin, root, "vault", "backup", **env_pw)
+        return vault, clouds, payload
+
+    def test_every_account_holds_a_manifest(self, sand_bin, tmp_path):
+        root = str(tmp_path / "case1")
+        os.makedirs(root)
+        _, clouds, _ = self.build_vault(sand_bin, root)
+
+        for cloud in clouds:
+            manifest = os.path.join(cloud, "manifest.sand")
+            assert os.path.exists(manifest), f"{cloud} holds no manifest backup"
+            # It is an encrypted envelope, not a readable index.
+            blob = open(manifest, "rb").read()
+            assert b"SAND-MANIFEST" in blob
+            assert b"ledger.bin" not in blob
+            assert b"finance" not in blob
+
+    def test_manifest_ls_rebuilds_the_tree_without_a_vault(self, sand_bin, tmp_path):
+        root = str(tmp_path / "case2")
+        os.makedirs(root)
+        vault, clouds, _ = self.build_vault(sand_bin, root)
+        os.remove(vault)
+
+        env = dict(os.environ)
+        env["SAND_PASSWORD"] = "dr-passphrase"
+        result = subprocess.run(
+            [sand_bin, "manifest", "ls", os.path.join(clouds[0], "manifest.sand"), "--long"],
+            capture_output=True, text=True, env=env,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "/finance/ledger.bin" in result.stdout
+        assert "/notes.txt" in result.stdout
+        assert "part 1" in result.stdout and "part 3" in result.stdout
+
+    def test_parts_plus_manifest_and_password_rebuild_a_file(self, sand_bin, tmp_path):
+        root = str(tmp_path / "case3")
+        os.makedirs(root)
+        vault, clouds, payload = self.build_vault(sand_bin, root)
+        os.remove(vault)
+
+        # Collect the parts of the larger file the way someone would after
+        # downloading what their accounts hold.
+        parts = []
+        for cloud in clouds:
+            for name in sorted(os.listdir(cloud)):
+                if name == "manifest.sand":
+                    continue
+                path = os.path.join(cloud, name)
+                if os.path.getsize(path) > 10_000:  # the 120KB file, not the note
+                    parts.append(path)
+        assert len(parts) >= 2
+
+        out = str(tmp_path / "rescued")
+        env = dict(os.environ)
+        env["SAND_PASSWORD"] = "dr-passphrase"
+        result = subprocess.run(
+            [sand_bin, "restore",
+             "--parts", ",".join(parts[:2]),
+             "--manifest", os.path.join(clouds[0], "manifest.sand"),
+             "--preserve-tree", "--output-dir", out],
+            capture_output=True, text=True, env=env,
+        )
+        assert result.returncode == 0, result.stderr
+        rebuilt = os.path.join(out, "finance", "ledger.bin")
+        assert open(rebuilt, "rb").read() == payload
+
+    def test_a_fresh_vault_recovers_the_whole_index(self, sand_bin, tmp_path):
+        root = str(tmp_path / "case4")
+        os.makedirs(root)
+        vault, clouds, payload = self.build_vault(sand_bin, root)
+        os.remove(vault)
+
+        # A new machine: new vault, new password, same accounts reconnected.
+        new_root = str(tmp_path / "case4-new")
+        os.makedirs(new_root)
+        cli(sand_bin, new_root, "vault", "init", password="a-different-password")
+        for i, cloud in enumerate(clouds):
+            cli(sand_bin, new_root, "remote", "add", "local",
+                "--name", f"back-{i}", "--set", f"path={cloud}",
+                password="a-different-password")
+
+        env = dict(os.environ)
+        env["SAND_PASSWORD"] = "a-different-password"
+        env["SAND_BACKUP_PASSWORD"] = "dr-passphrase"
+        recover = subprocess.run(
+            [sand_bin, "--vault", os.path.join(new_root, "cli-vault.sand"),
+             "vault", "recover", "--from", "back-0"],
+            capture_output=True, text=True, env=env,
+        )
+        assert recover.returncode == 0, recover.stderr
+        assert "Recovered 2 file(s)" in recover.stdout
+
+        # The tree is back...
+        result = cli(sand_bin, new_root, "ls", "/finance", password="a-different-password")
+        assert "ledger.bin" in result.stdout
+
+        # ...and so are the contents, under the new vault's password.
+        out = str(tmp_path / "case4-out.bin")
+        cli(sand_bin, new_root, "get", "/finance/ledger.bin", "-o", out,
+            password="a-different-password")
+        assert open(out, "rb").read() == payload

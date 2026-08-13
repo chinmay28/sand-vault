@@ -79,6 +79,16 @@ func EncodeBytes(data []byte, filename, password string) (*Encoded, error) {
 	archiveUUID := uuid.New()
 	copy(enc.ArchiveID[:], archiveUUID[:])
 
+	// Every part of a file carries the same metadata block, sealed alongside
+	// its own share of the data. Nothing here is written in the clear.
+	meta := &sandfile.Metadata{
+		Filename:       filename,
+		OriginalHash:   enc.OriginalHash,
+		OriginalSize:   enc.OriginalSize,
+		CompressedSize: enc.CompressedSize,
+		WasPadded:      wasPadded,
+	}
+
 	parts := [PartCount][]byte{part1, part2, part3}
 	for i, partData := range parts {
 		partNum := uint8(i + 1)
@@ -89,34 +99,17 @@ func EncodeBytes(data []byte, filename, password string) (*Encoded, error) {
 		}
 
 		header := &sandfile.Header{
-			Version:        sandfile.FormatVersion,
-			PartNumber:     partNum,
-			ArchiveID:      enc.ArchiveID,
-			OriginalHash:   enc.OriginalHash,
-			OriginalSize:   enc.OriginalSize,
-			CompressedSize: enc.CompressedSize,
-			WasPadded:      wasPadded,
-			Filename:       filename,
-			Salt:           salt,
-			Argon2Time:     argonParams.Time,
-			Argon2Memory:   argonParams.Memory,
-			Argon2Threads:  argonParams.Threads,
-			Nonce:          nonce,
+			Version:       sandfile.FormatVersion,
+			PartNumber:    partNum,
+			ArchiveID:     enc.ArchiveID,
+			Salt:          salt,
+			Argon2Time:    argonParams.Time,
+			Argon2Memory:  argonParams.Memory,
+			Argon2Threads: argonParams.Threads,
+			Nonce:         nonce,
 		}
 
-		// The marshaled header doubles as GCM associated data, binding the
-		// ciphertext to its own metadata and part number.
-		headerBytes, err := sandfile.MarshalHeader(header)
-		if err != nil {
-			return nil, fmt.Errorf("marshaling header for part %d: %w", partNum, err)
-		}
-
-		encryptedPayload, err := crypto.Encrypt(key, nonce, partData, headerBytes)
-		if err != nil {
-			return nil, fmt.Errorf("encrypting part %d: %w", partNum, err)
-		}
-
-		blob, err := sandfile.WritePart(header, encryptedPayload)
+		blob, err := sandfile.Seal(header, meta, partData, key)
 		if err != nil {
 			return nil, fmt.Errorf("writing part file for part %d: %w", partNum, err)
 		}
@@ -135,38 +128,30 @@ func DecodeBytes(blobs [][]byte, password string) (*Decoded, error) {
 			MinPartsToRestore, PartCount, len(blobs))
 	}
 
-	type parsedPart struct {
-		header    *sandfile.Header
-		headerAD  []byte
-		encrypted []byte
-	}
-
-	parsed := make(map[int]*parsedPart, len(blobs))
+	parsed := make(map[int]*sandfile.Part, len(blobs))
 	for i, blob := range blobs {
-		header, headerBytes, encPayload, err := sandfile.ReadPart(blob)
+		part, err := sandfile.ReadPart(blob)
 		if err != nil {
 			return nil, fmt.Errorf("parsing part %d: %w", i+1, err)
 		}
 
-		pn := int(header.PartNumber)
+		pn := int(part.Header.PartNumber)
 		if _, exists := parsed[pn]; exists {
 			return nil, fmt.Errorf("duplicate part number %d", pn)
 		}
-		parsed[pn] = &parsedPart{header: header, headerAD: headerBytes, encrypted: encPayload}
+		parsed[pn] = part
 	}
 
-	// All parts must come from the same archive before we try to combine them.
+	// The archive ID is the only thing readable before decryption, so it is
+	// what tells us up front that these parts belong together.
 	var refHeader *sandfile.Header
 	for _, p := range parsed {
 		if refHeader == nil {
-			refHeader = p.header
+			refHeader = p.Header
 			continue
 		}
-		if p.header.ArchiveID != refHeader.ArchiveID {
+		if p.Header.ArchiveID != refHeader.ArchiveID {
 			return nil, fmt.Errorf("archive ID mismatch: parts belong to different archives")
-		}
-		if p.header.OriginalHash != refHeader.OriginalHash {
-			return nil, fmt.Errorf("original hash mismatch: parts belong to different archives")
 		}
 	}
 
@@ -181,23 +166,27 @@ func DecodeBytes(blobs [][]byte, password string) (*Decoded, error) {
 	key := crypto.DeriveKey(password, refHeader.Salt, argonParams)
 	defer crypto.ZeroBytes(key)
 
+	var refMeta *sandfile.Metadata
 	decryptedParts := make(map[int][]byte, len(parsed))
 	used := make([]int, 0, len(parsed))
 	for pn, p := range parsed {
-		plaintext, err := crypto.Decrypt(key, p.header.Nonce, p.encrypted, p.headerAD)
+		meta, partData, err := p.Open(key)
 		if err != nil {
 			return nil, fmt.Errorf("decrypting part %d: %w", pn, err)
 		}
-		// gcm.Open returns nil (not []byte{}) for empty plaintext; normalize to empty slice
-		// so that Reconstruct's nil checks correctly detect the part as present.
-		if plaintext == nil {
-			plaintext = []byte{}
+		// Each part carries its own copy of the file's metadata; they have to
+		// agree, or these are parts of two different files that happen to share
+		// an archive ID.
+		if refMeta == nil {
+			refMeta = meta
+		} else if meta.OriginalHash != refMeta.OriginalHash {
+			return nil, fmt.Errorf("original hash mismatch: parts belong to different archives")
 		}
-		decryptedParts[pn] = plaintext
+		decryptedParts[pn] = partData
 		used = append(used, pn)
 	}
 
-	compressed, err := splitter.Reconstruct(decryptedParts, refHeader.WasPadded)
+	compressed, err := splitter.Reconstruct(decryptedParts, refMeta.WasPadded)
 	if err != nil {
 		return nil, fmt.Errorf("reconstructing data: %w", err)
 	}
@@ -207,32 +196,33 @@ func DecodeBytes(blobs [][]byte, password string) (*Decoded, error) {
 		return nil, fmt.Errorf("decompressing: %w", err)
 	}
 
-	if hash := sha256.Sum256(decompressed); hash != refHeader.OriginalHash {
+	if hash := sha256.Sum256(decompressed); hash != refMeta.OriginalHash {
 		return nil, fmt.Errorf("integrity check failed: SHA-256 hash mismatch")
 	}
-	if uint64(len(decompressed)) != refHeader.OriginalSize {
+	if uint64(len(decompressed)) != refMeta.OriginalSize {
 		return nil, fmt.Errorf("size mismatch: expected %d, got %d",
-			refHeader.OriginalSize, len(decompressed))
+			refMeta.OriginalSize, len(decompressed))
 	}
 
 	sortInts(used)
 	return &Decoded{
 		Data:      decompressed,
-		Filename:  refHeader.Filename,
+		Filename:  refMeta.Filename,
 		ArchiveID: refHeader.ArchiveID,
-		Size:      refHeader.OriginalSize,
+		Size:      refMeta.OriginalSize,
 		PartsUsed: used,
 	}, nil
 }
 
-// PeekFilename returns the original filename recorded in a part blob's
-// header without decrypting the payload.
-func PeekFilename(blob []byte) (string, error) {
-	header, _, err := sandfile.UnmarshalHeader(blob)
+// ArchiveIDOf reports the archive ID a part belongs to. It is the one thing a
+// part says about itself without a key, and it is what lets a caller group
+// loose parts by file, or look one up in a manifest.
+func ArchiveIDOf(blob []byte) ([16]byte, error) {
+	part, err := sandfile.ReadPart(blob)
 	if err != nil {
-		return "", err
+		return [16]byte{}, err
 	}
-	return header.Filename, nil
+	return part.Header.ArchiveID, nil
 }
 
 // sortInts is a tiny insertion sort; PartsUsed never holds more than 3 items.

@@ -20,8 +20,8 @@ and scattered across **separate** accounts. Opening a file gathers the parts
 back and rebuilds it in memory. No single provider ever holds your data.
 
 The old workflow is still there — `sand archive` and `sand restore` need no
-vault and no accounts — and the part format itself is unchanged, so parts
-written by v2 still restore with the v1 command.
+vault and no accounts — and v1 parts still restore, though the part format has
+moved on (see below).
 
 Parts are named `.sand` rather than `.media`, and land as a flat
 `<archive-id>-pN.sand` inside whatever folder or prefix an account is
@@ -34,6 +34,61 @@ else. Standalone mode follows the same scheme: `sand archive` writes
 `<filename>.pN.sand` per input file. Files already in a vault keep working —
 each part's key is recorded in the manifest when it is written, so parts stored
 under the old layout are still found where they are.
+
+### The part format no longer says what it holds
+
+Until now a part's header carried the original filename, the plaintext SHA-256
+and the original size **in the clear**. A provider — or anyone who got hold of a
+single part — could read the name of every file it had a part of, which is not
+what the design claimed. Format version 2 moves all of it inside the AES-GCM
+payload. What remains in the clear is only what a reader needs to derive the key
+and open the part: magic, version, part number, the random archive ID, the
+Argon2id parameters and the nonce.
+
+Version 1 parts are still read, so nothing already stored has to be re-uploaded
+— but they still carry their names, so re-upload anything whose *filename* is
+itself sensitive. Nothing writes version 1 any more, which means a part written
+today cannot be opened by a v1 binary.
+
+### Losing the vault file is survivable
+
+Parts are encrypted under a random key that existed in exactly one place: the
+vault file. Lose it and your password bought you nothing — every part in every
+account stayed permanently opaque.
+
+Now every connected account carries `manifest.sand`: the file tree, the map of
+which account holds which part, and the key those parts are encrypted under,
+sealed under your vault password. It carries its own key-derivation parameters
+rather than the vault's, because the vault is exactly what a reader in this
+situation has lost, so **the password alone opens it**. It never contains the
+credentials for any account — a copy sits in every account, and including them
+would make one break-in a master key to the rest.
+
+Three ways back:
+
+- `sand manifest ls manifest.sand --long` prints the tree and every part's
+  location, from the file alone.
+- `sand restore --parts A,B --manifest manifest.sand` rebuilds a complete file
+  offline — no vault, no accounts, no network.
+- `sand vault recover` rebuilds the whole vault into a fresh one. Reconnected
+  accounts get new internal ids, so it asks each account what it actually holds
+  and re-points every shard record at whichever one answers.
+
+The backup is on by default and rewritten whenever the index changes, in the
+background so it never delays an upload. `sand vault backup --disable` erases
+every copy.
+
+**What it costs, plainly.** Every copy is one password away from the data key.
+An attacker who compromises one account *and* guesses your password gets the
+tree, the placement map, and — because each part is separately encrypted under
+that key — whatever plaintext that account's own parts hold, which for a large
+file is about half of it. Rebuilding a whole file still needs a second account,
+so the two-of-three split is still a real second factor. The exception is the
+redundant policy with fewer than three accounts, where one account can already
+rebuild a file on its own; SAND refuses to write a backup there at all. An
+account already holding a *different* vault's backup is also left alone, so
+connecting an account to a second vault cannot destroy the first one's way
+back.
 
 ### Connected cloud accounts
 
@@ -89,9 +144,10 @@ File parts are encrypted under a random 256-bit data key that is itself wrapped
 by your password. Changing your password re-wraps 32 bytes instead of
 re-uploading everything, and part encryption doesn't inherit a weak password.
 
-**Back this file up.** It is the only record of which account holds which part
-of which file. The parts scattered across your providers cannot be rebuilt
-without it.
+**Back this file up** — though it is no longer the only record: every connected
+account carries an encrypted copy of the index, so a lost vault can be rebuilt
+from any one of them with your password. See "Losing the vault file is
+survivable" above.
 
 ### Placement is a security decision
 

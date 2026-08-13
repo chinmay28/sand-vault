@@ -77,6 +77,12 @@ type storeFile struct {
 	Providers sealed    `json:"providers"`
 	Manifest  sealed    `json:"manifest"`
 	Policy    Policy    `json:"policy"`
+
+	// ManifestBackupDisabled turns off replicating the manifest to the
+	// connected accounts. Stored as the negative so that the absence of the
+	// field — an older vault, or one written by a build that predates the
+	// feature — means the backup is on, which is the default.
+	ManifestBackupDisabled bool `json:"manifest_backup_disabled,omitempty"`
 }
 
 // seal encrypts plaintext under key with a fresh random nonce.

@@ -45,7 +45,14 @@ func openVault(cmd *cobra.Command) (*vault.Vault, error) {
 
 // readPassword reads a password from SAND_PASSWORD, or prompts without echo.
 func readPassword(prompt string) (string, error) {
-	if pw := os.Getenv("SAND_PASSWORD"); pw != "" {
+	return readPasswordFrom("SAND_PASSWORD", prompt)
+}
+
+// readPasswordFrom is readPassword against a named environment variable.
+// Recovery needs two different passwords in one command — the vault being
+// opened and the backup being read — so each needs its own way in for scripts.
+func readPasswordFrom(env, prompt string) (string, error) {
+	if pw := os.Getenv(env); pw != "" {
 		return pw, nil
 	}
 	if !term.IsTerminal(int(os.Stdin.Fd())) {

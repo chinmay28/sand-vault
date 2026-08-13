@@ -46,7 +46,8 @@ func vaultCmd() *cobra.Command {
 		Use:   "vault",
 		Short: "Create and manage the vault",
 	}
-	cmd.AddCommand(vaultInitCmd(), vaultStatusCmd(), vaultPasswdCmd(), vaultPolicyCmd())
+	cmd.AddCommand(vaultInitCmd(), vaultStatusCmd(), vaultPasswdCmd(), vaultPolicyCmd(),
+		vaultBackupCmd(), vaultRecoverCmd())
 	return cmd
 }
 
