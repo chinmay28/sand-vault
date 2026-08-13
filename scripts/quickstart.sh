@@ -68,6 +68,10 @@
 #   SAND_USER        service system user     (default: sand)
 #   SAND_PREFIX      install prefix          (default: /opt/sand; source → $PREFIX/src)
 #   SAND_DATA_DIR    vault + backups dir     (default: /var/lib/sand)
+#   SAND_LOCAL_PATHS dirs a Local folder account may use, colon-separated. The
+#                    unit is sandboxed (ProtectSystem=strict), so an external
+#                    disk is read-only to the service until it is listed here
+#                    or granted later with scripts/allow-local-path.sh.
 #   PORT             port to listen on       (default: 8123)
 #   HOST             bind address            (default: 0.0.0.0 — see the warning below)
 #   INSTALL_NODE     auto | never            install Node 22 if missing/old (default: auto; build-time only)
@@ -572,6 +576,29 @@ WantedBy=multi-user.target
 UNIT
 }
 write_unit
+
+# ProtectSystem=strict above makes every path outside $DATA_DIR read-only to
+# the service, so a "Local folder" account on an external disk cannot connect
+# ("read-only file system") until its directory is granted too. SAND_LOCAL_PATHS
+# grants them here, colon-separated; scripts/allow-local-path.sh does the same
+# later. Both write this one drop-in, and neither installer touches it on a
+# re-run, so grants survive upgrades.
+DROPIN_DIR="${UNIT_PATH}.d"
+if [ -n "${SAND_LOCAL_PATHS:-}" ]; then
+  mkdir -p "$DROPIN_DIR"
+  {
+    echo "# Paths a Local folder account may use. Also managed by"
+    echo "# scripts/allow-local-path.sh. A leading '-' lets the service start"
+    echo "# when the drive is not plugged in."
+    echo "[Service]"
+    printf '%s:' "$SAND_LOCAL_PATHS" | tr ':' '\n' | while IFS= read -r entry; do
+      [ -n "$entry" ] || continue
+      printf 'ReadWritePaths=-"%s"\n' "${entry%/}"
+    done
+  } > "$DROPIN_DIR/10-local-paths.conf"
+  ok "local paths granted → $DROPIN_DIR/10-local-paths.conf"
+fi
+
 systemctl daemon-reload
 systemctl enable "${SERVICE_NAME}.service" >/dev/null 2>&1 || true
 start_service

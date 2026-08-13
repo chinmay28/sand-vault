@@ -131,6 +131,21 @@ Re-run it to upgrade. It snapshots the vault before swapping code in, builds
 the new version while the old one keeps serving, and rolls back — code *and*
 vault — if the new one fails its health check.
 
+### Local folders under the sandbox
+
+The unit's `ProtectSystem=strict` makes everything outside `/var/lib/sand`
+read-only to the service, so connecting a **Local folder** on an external disk
+failed with a bare `read-only file system` — a true statement about a drive
+that was mounted read-write and perfectly healthy.
+
+The three ways a local folder actually fails now say which one it is, and what
+to do about it: a sandboxed service (`INVOCATION_ID` is set), a folder owned by
+another user, or a genuinely read-only mount (checked against
+`/proc/self/mounts` rather than guessed). `scripts/allow-local-path.sh` grants
+a path to the service through a drop-in that upgrades do not touch, warns when
+ownership or the mount would defeat the grant anyway, and `SAND_LOCAL_PATHS`
+does the same at install time in both installers.
+
 ### Versioning
 
 The patch number is now the repository's commit count, assembled in one place
