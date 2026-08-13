@@ -6,12 +6,12 @@ import (
 
 	"github.com/chinmay28/sand-vault/internal/compress"
 	"github.com/chinmay28/sand-vault/internal/crypto"
-	"github.com/chinmay28/sand-vault/internal/mediafile"
+	"github.com/chinmay28/sand-vault/internal/sandfile"
 	"github.com/chinmay28/sand-vault/internal/splitter"
 	"github.com/google/uuid"
 )
 
-// PartCount is the number of media parts produced for every archived file.
+// PartCount is the number of parts produced for every archived file.
 const PartCount = 3
 
 // MinPartsToRestore is how many of the PartCount parts are required to
@@ -19,7 +19,7 @@ const PartCount = 3
 const MinPartsToRestore = 2
 
 // Encoded is the in-memory result of encoding a single file: three
-// self-describing media blobs plus the metadata shared by all of them.
+// self-describing part blobs plus the metadata shared by all of them.
 type Encoded struct {
 	ArchiveID      [16]byte
 	Filename       string
@@ -27,7 +27,7 @@ type Encoded struct {
 	OriginalSize   uint64
 	CompressedSize uint64
 
-	// Parts holds the serialized media files indexed by part number - 1,
+	// Parts holds the serialized part files indexed by part number - 1,
 	// so Parts[0] is part 1, Parts[1] is part 2 and Parts[2] is part 3.
 	Parts [PartCount][]byte
 }
@@ -88,8 +88,8 @@ func EncodeBytes(data []byte, filename, password string) (*Encoded, error) {
 			return nil, fmt.Errorf("generating nonce for part %d: %w", partNum, err)
 		}
 
-		header := &mediafile.Header{
-			Version:        mediafile.FormatVersion,
+		header := &sandfile.Header{
+			Version:        sandfile.FormatVersion,
 			PartNumber:     partNum,
 			ArchiveID:      enc.ArchiveID,
 			OriginalHash:   enc.OriginalHash,
@@ -106,7 +106,7 @@ func EncodeBytes(data []byte, filename, password string) (*Encoded, error) {
 
 		// The marshaled header doubles as GCM associated data, binding the
 		// ciphertext to its own metadata and part number.
-		headerBytes, err := mediafile.MarshalHeader(header)
+		headerBytes, err := sandfile.MarshalHeader(header)
 		if err != nil {
 			return nil, fmt.Errorf("marshaling header for part %d: %w", partNum, err)
 		}
@@ -116,9 +116,9 @@ func EncodeBytes(data []byte, filename, password string) (*Encoded, error) {
 			return nil, fmt.Errorf("encrypting part %d: %w", partNum, err)
 		}
 
-		blob, err := mediafile.WriteMediaFile(header, encryptedPayload)
+		blob, err := sandfile.WritePart(header, encryptedPayload)
 		if err != nil {
-			return nil, fmt.Errorf("writing media file for part %d: %w", partNum, err)
+			return nil, fmt.Errorf("writing part file for part %d: %w", partNum, err)
 		}
 
 		enc.Parts[i] = blob
@@ -127,25 +127,25 @@ func EncodeBytes(data []byte, filename, password string) (*Encoded, error) {
 	return enc, nil
 }
 
-// DecodeBytes reconstructs the original data from any 2 or 3 media blobs.
+// DecodeBytes reconstructs the original data from any 2 or 3 part blobs.
 // The blobs may arrive in any order and carry their own part numbers.
 func DecodeBytes(blobs [][]byte, password string) (*Decoded, error) {
 	if len(blobs) < MinPartsToRestore || len(blobs) > PartCount {
-		return nil, fmt.Errorf("need %d or %d media parts, got %d",
+		return nil, fmt.Errorf("need %d or %d parts, got %d",
 			MinPartsToRestore, PartCount, len(blobs))
 	}
 
 	type parsedPart struct {
-		header    *mediafile.Header
+		header    *sandfile.Header
 		headerAD  []byte
 		encrypted []byte
 	}
 
 	parsed := make(map[int]*parsedPart, len(blobs))
 	for i, blob := range blobs {
-		header, headerBytes, encPayload, err := mediafile.ReadMediaFile(blob)
+		header, headerBytes, encPayload, err := sandfile.ReadPart(blob)
 		if err != nil {
-			return nil, fmt.Errorf("parsing media part %d: %w", i+1, err)
+			return nil, fmt.Errorf("parsing part %d: %w", i+1, err)
 		}
 
 		pn := int(header.PartNumber)
@@ -156,7 +156,7 @@ func DecodeBytes(blobs [][]byte, password string) (*Decoded, error) {
 	}
 
 	// All parts must come from the same archive before we try to combine them.
-	var refHeader *mediafile.Header
+	var refHeader *sandfile.Header
 	for _, p := range parsed {
 		if refHeader == nil {
 			refHeader = p.header
@@ -225,10 +225,10 @@ func DecodeBytes(blobs [][]byte, password string) (*Decoded, error) {
 	}, nil
 }
 
-// PeekFilename returns the original filename recorded in a media blob's
+// PeekFilename returns the original filename recorded in a part blob's
 // header without decrypting the payload.
 func PeekFilename(blob []byte) (string, error) {
-	header, _, err := mediafile.UnmarshalHeader(blob)
+	header, _, err := sandfile.UnmarshalHeader(blob)
 	if err != nil {
 		return "", err
 	}

@@ -161,7 +161,7 @@ would strand everything.
                           ┌─────────────────────────┼─────────────────────┐
                           ▼                         ▼                     ▼
                      account A                 account B             account C
-                  sand/<id>/p1.media       sand/<id>/p2.media    sand/<id>/p3.media
+                  <id>-p1.sand             <id>-p2.sand          <id>-p3.sand
 ```
 
 The three PUTs run in parallel. The upload commits if **at least two** parts
@@ -241,12 +241,20 @@ Without this every part 1 would pile onto the first-connected account.
 ### 5.4 Object keys leak nothing
 
 ```
-sand/<128-bit random archive id>/p<N>.media
+<128-bit random archive id>-p<N>.sand
 ```
 
 Derived only from a random ID. Someone with full access to one account learns
 how many objects you store and how big each part is — nothing about names,
 types, or folder structure.
+
+The key is a flat filename with no directory components. Every backend already
+scopes SAND to somewhere of its own — a folder on Dropbox, Box and OneDrive, a
+prefix on S3 and WebDAV, the chosen directory for a local or sync folder — so
+nesting a further `sand/<id>/` inside that only buried each part two levels
+deeper for no gain. Staying flat also makes Google Drive, which has no paths
+and stores each part as a plain file, land on exactly the same part names as
+everywhere else.
 
 ---
 
@@ -267,7 +275,7 @@ Unchanged from v1, and deliberately so.
 ### 6.2 Encryption — AES-256-GCM
 
 - 12-byte random nonce, unique per part
-- The serialized media header is passed as **associated data**, binding each
+- The serialized part header is passed as **associated data**, binding each
   ciphertext to its own part number and archive ID — a part cannot be swapped
   for another file's part without the tag failing
 - 16-byte authentication tag
@@ -283,9 +291,9 @@ Unchanged from v1, and deliberately so.
 
 ---
 
-## 7. Media File Format
+## 7. Part File Format
 
-Each stored object is a self-describing `.media` blob. Unchanged from v1, which
+Each stored object is a self-describing `.sand` blob. Unchanged from v1, which
 means **parts written by v2 can still be restored by the standalone `sand
 restore` command** given the right secret.
 
@@ -506,9 +514,9 @@ SAND before.
 
 ```
 sand archive report.pdf photos.zip --output-dir ./out
-  → media1.zip  media2.zip  media3.zip     (put each somewhere different)
+  → sand-p1.zip  sand-p2.zip  sand-p3.zip     (put each somewhere different)
 
-sand restore --parts a.media1,a.media3 --output-dir .
+sand restore --parts a.p1.sand,a.p3.sand --output-dir .
   → the original file
 ```
 
@@ -573,7 +581,7 @@ sand/
 │   ├── compress/              # zstd
 │   ├── crypto/                # Argon2id + AES-256-GCM
 │   ├── splitter/              # split, XOR, reconstruct
-│   ├── mediafile/             # binary part format
+│   ├── sandfile/              # binary .sand part format
 │   ├── provider/              # provider.go, local, s3, webdav, gdrive, dropbox
 │   ├── vault/                 # store (encrypted file), manifest, placement, transfer
 │   └── server/                # sessions, handlers, embedded SPA

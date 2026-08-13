@@ -6,16 +6,16 @@ import (
 	"path/filepath"
 )
 
-// Restore reads 2 or 3 media files, decrypts, reconstructs, decompresses,
+// Restore reads 2 or 3 part files, decrypts, reconstructs, decompresses,
 // verifies integrity, and writes the original file to the output directory.
-func Restore(mediaPaths []string, password, outputDir string) (string, error) {
-	if len(mediaPaths) < MinPartsToRestore || len(mediaPaths) > PartCount {
-		return "", fmt.Errorf("need %d or %d media files, got %d",
-			MinPartsToRestore, PartCount, len(mediaPaths))
+func Restore(partPaths []string, password, outputDir string) (string, error) {
+	if len(partPaths) < MinPartsToRestore || len(partPaths) > PartCount {
+		return "", fmt.Errorf("need %d or %d part files, got %d",
+			MinPartsToRestore, PartCount, len(partPaths))
 	}
 
-	blobs := make([][]byte, 0, len(mediaPaths))
-	for _, path := range mediaPaths {
+	blobs := make([][]byte, 0, len(partPaths))
+	for _, path := range partPaths {
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return "", fmt.Errorf("reading %s: %w", path, err)

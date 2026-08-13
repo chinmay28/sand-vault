@@ -1,4 +1,4 @@
-package mediafile
+package sandfile
 
 import (
 	"bytes"
@@ -257,16 +257,16 @@ func TestUnmarshal_UnsupportedVersion(t *testing.T) {
 // Full Media File Write/Read
 // ---------------------------------------------------------------------------
 
-func TestWriteReadMediaFile_RoundTrip(t *testing.T) {
+func TestWriteReadPart_RoundTrip(t *testing.T) {
 	h := makeTestHeader(2, "secret.docx")
 	payload := []byte("encrypted-payload-bytes-here")
 
-	fileData, err := WriteMediaFile(h, payload)
+	fileData, err := WritePart(h, payload)
 	if err != nil {
 		t.Fatalf("write failed: %v", err)
 	}
 
-	h2, headerBytes, payload2, err := ReadMediaFile(fileData)
+	h2, headerBytes, payload2, err := ReadPart(fileData)
 	if err != nil {
 		t.Fatalf("read failed: %v", err)
 	}
@@ -291,14 +291,14 @@ func TestWriteReadMediaFile_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestWriteReadMediaFile_EmptyPayload(t *testing.T) {
+func TestWriteReadPart_EmptyPayload(t *testing.T) {
 	h := makeTestHeader(3, "empty.bin")
-	fileData, err := WriteMediaFile(h, []byte{})
+	fileData, err := WritePart(h, []byte{})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	_, _, payload, err := ReadMediaFile(fileData)
+	_, _, payload, err := ReadPart(fileData)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,36 +307,36 @@ func TestWriteReadMediaFile_EmptyPayload(t *testing.T) {
 	}
 }
 
-func TestReadMediaFile_Truncated(t *testing.T) {
+func TestReadPart_Truncated(t *testing.T) {
 	h := makeTestHeader(1, "test.bin")
 	payload := bytes.Repeat([]byte{0xAA}, 100)
-	fileData, _ := WriteMediaFile(h, payload)
+	fileData, _ := WritePart(h, payload)
 
 	// Truncate the file
 	truncated := fileData[:len(fileData)-50]
-	_, _, _, err := ReadMediaFile(truncated)
+	_, _, _, err := ReadPart(truncated)
 	if err == nil {
 		t.Fatal("should fail on truncated file")
 	}
 }
 
-func TestReadMediaFile_GarbageData(t *testing.T) {
-	_, _, _, err := ReadMediaFile([]byte("this is not a SAND file"))
+func TestReadPart_GarbageData(t *testing.T) {
+	_, _, _, err := ReadPart([]byte("this is not a SAND file"))
 	if err == nil {
 		t.Fatal("should fail on garbage data")
 	}
 }
 
-func TestWriteReadMediaFile_LargePayload(t *testing.T) {
+func TestWriteReadPart_LargePayload(t *testing.T) {
 	h := makeTestHeader(1, "big.zip")
 	payload := bytes.Repeat([]byte{0xBB}, 1<<20) // 1MB
 
-	fileData, err := WriteMediaFile(h, payload)
+	fileData, err := WritePart(h, payload)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	_, _, payload2, err := ReadMediaFile(fileData)
+	_, _, payload2, err := ReadPart(fileData)
 	if err != nil {
 		t.Fatal(err)
 	}

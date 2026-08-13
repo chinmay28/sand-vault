@@ -24,11 +24,11 @@ func TestLocalProviderRoundTrip(t *testing.T) {
 	}
 
 	payload := []byte("encrypted shard bytes")
-	if err := p.Put(ctx, "sand/abc123/p1.media", payload); err != nil {
+	if err := p.Put(ctx, "abc123-p1.sand", payload); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
-	got, err := p.Get(ctx, "sand/abc123/p1.media")
+	got, err := p.Get(ctx, "abc123-p1.sand")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -36,7 +36,7 @@ func TestLocalProviderRoundTrip(t *testing.T) {
 		t.Errorf("Get returned %q, want %q", got, payload)
 	}
 
-	info, err := p.Stat(ctx, "sand/abc123/p1.media")
+	info, err := p.Stat(ctx, "abc123-p1.sand")
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
 	}
@@ -44,23 +44,23 @@ func TestLocalProviderRoundTrip(t *testing.T) {
 		t.Errorf("Stat size = %d, want %d", info.Size, len(payload))
 	}
 
-	objects, err := p.List(ctx, "sand/")
+	objects, err := p.List(ctx, "abc")
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(objects) != 1 || objects[0].Key != "sand/abc123/p1.media" {
+	if len(objects) != 1 || objects[0].Key != "abc123-p1.sand" {
 		t.Errorf("List = %+v, want one shard key", objects)
 	}
 
-	if err := p.Delete(ctx, "sand/abc123/p1.media"); err != nil {
+	if err := p.Delete(ctx, "abc123-p1.sand"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if _, err := p.Get(ctx, "sand/abc123/p1.media"); !errors.Is(err, ErrNotFound) {
+	if _, err := p.Get(ctx, "abc123-p1.sand"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("Get after Delete = %v, want ErrNotFound", err)
 	}
 	// Deleting twice is a no-op, not an error: shard cleanup runs on paths
 	// that may already be gone.
-	if err := p.Delete(ctx, "sand/abc123/p1.media"); err != nil {
+	if err := p.Delete(ctx, "abc123-p1.sand"); err != nil {
 		t.Errorf("second Delete: %v", err)
 	}
 }
@@ -79,17 +79,17 @@ func TestLocalProviderContainsEscapingKeys(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	for _, key := range []string{"../../escaped.media", "/../../escaped.media", "a/../../../escaped.media"} {
+	for _, key := range []string{"../../escaped.sand", "/../../escaped.sand", "a/../../../escaped.sand"} {
 		if err := p.Put(ctx, key, []byte("nope")); err != nil {
 			continue // rejecting outright is fine too
 		}
-		if _, err := os.Stat(filepath.Join(parent, "escaped.media")); err == nil {
+		if _, err := os.Stat(filepath.Join(parent, "escaped.sand")); err == nil {
 			t.Fatalf("key %q wrote a file outside the provider root", key)
 		}
 	}
 
 	// The write should have landed inside the root instead.
-	if _, err := os.Stat(filepath.Join(root, "escaped.media")); err != nil {
+	if _, err := os.Stat(filepath.Join(root, "escaped.sand")); err != nil {
 		t.Errorf("expected the escaping key to be rewritten inside the root: %v", err)
 	}
 }
@@ -99,14 +99,14 @@ func TestLocalProviderWriteIsAtomic(t *testing.T) {
 	p, _ := New(Config{Kind: KindLocal, Options: map[string]string{"path": root}})
 	ctx := context.Background()
 
-	if err := p.Put(ctx, "shard.media", []byte("first")); err != nil {
+	if err := p.Put(ctx, "shard.sand", []byte("first")); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	if err := p.Put(ctx, "shard.media", []byte("second")); err != nil {
+	if err := p.Put(ctx, "shard.sand", []byte("second")); err != nil {
 		t.Fatalf("overwrite Put: %v", err)
 	}
 
-	got, _ := p.Get(ctx, "shard.media")
+	got, _ := p.Get(ctx, "shard.sand")
 	if string(got) != "second" {
 		t.Errorf("content = %q, want second", got)
 	}
@@ -202,7 +202,7 @@ func TestS3SigV4AgainstStubEndpoint(t *testing.T) {
 				w.Header().Set("Content-Type", "application/xml")
 				w.Write([]byte(`<?xml version="1.0"?><ListBucketResult>` +
 					`<IsTruncated>false</IsTruncated>` +
-					`<Contents><Key>sand/abc/p1.media</Key><Size>42</Size></Contents>` +
+					`<Contents><Key>abc-p1.sand</Key><Size>42</Size></Contents>` +
 					`</ListBucketResult>`))
 				return
 			}
@@ -233,7 +233,7 @@ func TestS3SigV4AgainstStubEndpoint(t *testing.T) {
 
 	ctx := context.Background()
 	payload := []byte("shard contents")
-	if err := p.Put(ctx, "sand/abc/p1.media", payload); err != nil {
+	if err := p.Put(ctx, "abc-p1.sand", payload); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
@@ -241,8 +241,8 @@ func TestS3SigV4AgainstStubEndpoint(t *testing.T) {
 		t.Errorf("method = %s", gotMethod)
 	}
 	// Custom endpoints use path style, so the bucket and prefix are in the path.
-	if gotPath != "/shards/vault/sand/abc/p1.media" {
-		t.Errorf("path = %q, want /shards/vault/sand/abc/p1.media", gotPath)
+	if gotPath != "/shards/vault/abc-p1.sand" {
+		t.Errorf("path = %q, want /shards/vault/abc-p1.sand", gotPath)
 	}
 	if !strings.HasPrefix(gotAuth, "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/") {
 		t.Errorf("Authorization header = %q", gotAuth)
@@ -257,7 +257,7 @@ func TestS3SigV4AgainstStubEndpoint(t *testing.T) {
 		t.Errorf("X-Amz-Date = %q, want ISO8601 basic format", gotDate)
 	}
 
-	got, err := p.Get(ctx, "sand/abc/p1.media")
+	got, err := p.Get(ctx, "abc-p1.sand")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -265,19 +265,19 @@ func TestS3SigV4AgainstStubEndpoint(t *testing.T) {
 		t.Errorf("Get returned %q, want %q", got, payload)
 	}
 
-	if _, err := p.Get(ctx, "sand/missing/p1.media"); !errors.Is(err, ErrNotFound) {
+	if _, err := p.Get(ctx, "missing-p1.sand"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("Get on a missing key = %v, want ErrNotFound", err)
 	}
 
-	objects, err := p.List(ctx, "sand/")
+	objects, err := p.List(ctx, "abc")
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(objects) != 1 || objects[0].Key != "sand/abc/p1.media" || objects[0].Size != 42 {
+	if len(objects) != 1 || objects[0].Key != "abc-p1.sand" || objects[0].Size != 42 {
 		t.Errorf("List = %+v", objects)
 	}
 
-	if err := p.Delete(ctx, "sand/abc/p1.media"); err != nil {
+	if err := p.Delete(ctx, "abc-p1.sand"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 }
@@ -294,8 +294,8 @@ func TestS3AmazonEndpointUsesVirtualHostStyle(t *testing.T) {
 	}
 
 	s3p := p.(*s3Provider)
-	got := s3p.objectURL("sand/x/p1.media").String()
-	want := "https://my-bucket.s3.eu-west-2.amazonaws.com/sand/x/p1.media"
+	got := s3p.objectURL("x-p1.sand").String()
+	want := "https://my-bucket.s3.eu-west-2.amazonaws.com/x-p1.sand"
 	if got != want {
 		t.Errorf("objectURL = %q, want %q", got, want)
 	}
@@ -379,14 +379,14 @@ func TestWebDAVRoundTrip(t *testing.T) {
 	}
 
 	payload := []byte("shard contents")
-	if err := p.Put(ctx, "sand/abc/p2.media", payload); err != nil {
+	if err := p.Put(ctx, "abc-p2.sand", payload); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	if _, ok := stored["/remote.php/dav/files/alice/sand/sand/abc/p2.media"]; !ok {
+	if _, ok := stored["/remote.php/dav/files/alice/sand/abc-p2.sand"]; !ok {
 		t.Errorf("stored under unexpected path; have %v", keysOf(stored))
 	}
 
-	got, err := p.Get(ctx, "sand/abc/p2.media")
+	got, err := p.Get(ctx, "abc-p2.sand")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -394,10 +394,10 @@ func TestWebDAVRoundTrip(t *testing.T) {
 		t.Errorf("Get returned %q", got)
 	}
 
-	if _, err := p.Get(ctx, "sand/missing.media"); !errors.Is(err, ErrNotFound) {
+	if _, err := p.Get(ctx, "missing.sand"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("Get on a missing key = %v, want ErrNotFound", err)
 	}
-	if err := p.Delete(ctx, "sand/abc/p2.media"); err != nil {
+	if err := p.Delete(ctx, "abc-p2.sand"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 }

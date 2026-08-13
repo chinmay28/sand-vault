@@ -602,3 +602,28 @@ func TestBuildPlanRotatesAcrossAccounts(t *testing.T) {
 		}
 	}
 }
+
+func TestShardKeyIsFlat(t *testing.T) {
+	key := ShardKey("6f1b8c2a3d4e5f60718293a4b5c6d7e8", 2)
+	if want := "6f1b8c2a3d4e5f60718293a4b5c6d7e8-p2.sand"; key != want {
+		t.Errorf("ShardKey = %q, want %q", key, want)
+	}
+	// A key with no directory components is what keeps the layout identical on
+	// backends that have folders and on Google Drive, which does not.
+	if strings.Contains(key, "/") {
+		t.Errorf("ShardKey %q should not nest directories", key)
+	}
+}
+
+func TestUploadedShardKeysMatchShardKey(t *testing.T) {
+	v, _ := newTestVault(t, 3)
+	entry, _, err := v.Upload(context.Background(), "/", "notes.txt", []byte("hello"), false)
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	for _, shard := range entry.Shards {
+		if want := ShardKey(entry.ArchiveID, shard.Part); shard.Key != want {
+			t.Errorf("part %d stored under %q, want %q", shard.Part, shard.Key, want)
+		}
+	}
+}

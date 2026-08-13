@@ -20,8 +20,20 @@ and scattered across **separate** accounts. Opening a file gathers the parts
 back and rebuilds it in memory. No single provider ever holds your data.
 
 The old workflow is still there — `sand archive` and `sand restore` need no
-vault and no accounts — and the `.media` part format is unchanged, so parts
+vault and no accounts — and the part format itself is unchanged, so parts
 written by v2 still restore with the v1 command.
+
+Parts are named `.sand` rather than `.media`, and land as a flat
+`<archive-id>-pN.sand` inside whatever folder or prefix an account is
+configured with, instead of a nested `sand/<archive-id>/pN.media`. Every
+backend already scopes SAND to a place of its own, so the extra folder only
+buried each part two levels deeper — and going flat means Google Drive, which
+has no paths at all, ends up with exactly the same part names as everywhere
+else. Standalone mode follows the same scheme: `sand archive` writes
+`sand-p1.zip`, `sand-p2.zip` and `sand-p3.zip`, holding one
+`<filename>.pN.sand` per input file. Files already in a vault keep working —
+each part's key is recorded in the manifest when it is written, so parts stored
+under the old layout are still found where they are.
 
 ### Connected cloud accounts
 
