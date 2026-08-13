@@ -25,7 +25,7 @@ func archiveCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "archive <file> [file...]",
 		Short: "Split and encrypt files into three zip archives (no accounts needed)",
-		Long: `Archive one or more files into media1.zip, media2.zip and media3.zip.
+		Long: `Archive one or more files into sand-p1.zip, sand-p2.zip and sand-p3.zip.
 
 Each input file is compressed, split in two, given a third XOR redundancy part,
 and encrypted. Every zip holds one part per input file, so distributing the
@@ -50,11 +50,11 @@ recovery the connected-cloud mode automates.`,
 			}
 
 			for i := 0; i < archive.PartCount; i++ {
-				zipPath := filepath.Join(outputDir, fmt.Sprintf("media%d.zip", i+1))
+				zipPath := filepath.Join(outputDir, fmt.Sprintf("sand-p%d.zip", i+1))
 				if err := writeZip(zipPath, partPaths[i]); err != nil {
 					return err
 				}
-				// The loose .media parts only existed to build the zips.
+				// The loose .sand parts only existed to build the zips.
 				for _, p := range partPaths[i] {
 					os.Remove(p)
 				}
@@ -146,7 +146,7 @@ func restoreCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&parts, "parts", "", "comma-separated .media files (2 or 3)")
+	cmd.Flags().StringVar(&parts, "parts", "", "comma-separated .sand part files (2 or 3)")
 	cmd.Flags().StringVar(&password, "password", "", "decryption password (prompted if omitted)")
 	cmd.Flags().StringVar(&outputDir, "output-dir", ".", "where to write the restored file")
 	cmd.MarkFlagRequired("parts")

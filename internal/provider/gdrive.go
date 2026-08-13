@@ -468,7 +468,8 @@ func (p *gdriveProvider) forget(key string) {
 }
 
 // driveSafeName flattens an object key into a single Drive filename, since
-// Drive has no directories in the path sense.
+// Drive has no directories in the path sense. Shard keys are already flat, so
+// this only bites for a key that came from somewhere else.
 func driveSafeName(key string) string {
 	return strings.ReplaceAll(strings.TrimPrefix(key, "/"), "/", "_")
 }

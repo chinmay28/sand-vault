@@ -324,9 +324,9 @@ The original SAND workflow, kept because it needs no state at all:
 
 ```bash
 sand archive report.pdf photos.zip --output-dir ./out
-# → media1.zip  media2.zip  media3.zip   (store each somewhere different)
+# → sand-p1.zip  sand-p2.zip  sand-p3.zip   (store each somewhere different)
 
-sand restore --parts report.pdf.media1,report.pdf.media3 --output-dir .
+sand restore --parts report.pdf.p1.sand,report.pdf.p3.sand --output-dir .
 # → report.pdf, byte-identical
 ```
 
@@ -652,7 +652,7 @@ sand/
 │   ├── crypto/                  # Argon2id + AES-256-GCM
 │   ├── compress/                # zstd
 │   ├── splitter/                # split, XOR, reconstruct
-│   ├── mediafile/               # binary .media part format
+│   ├── sandfile/                # binary .sand part format
 │   ├── provider/                # local, s3 (SigV4), webdav, gdrive, dropbox,
 │   │                            #   onedrive, box, proton + the OAuth sign-in flow
 │   ├── vault/                   # encrypted store, manifest, placement, scatter/gather
@@ -704,7 +704,7 @@ touch your real vault.
 | Path | What |
 |---|---|
 | `~/.sand/vault.sand` | Encrypted index + cloud credentials. **Back this up.** Without it, the parts scattered across your accounts are unrecoverable. |
-| `sand/<archive-id>/pN.media` | How parts appear on each account. The ID is random and reveals nothing. |
+| `<archive-id>-pN.sand` | How parts appear on each account, inside whatever folder or prefix that account is configured with. The ID is random and reveals nothing. |
 
 Override the vault location with `--vault` or `SAND_VAULT`.
 

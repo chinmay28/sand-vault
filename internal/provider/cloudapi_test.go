@@ -217,11 +217,11 @@ func TestOneDriveRoundTrip(t *testing.T) {
 	}
 
 	payload := []byte("encrypted shard bytes")
-	if err := p.Put(ctx, "sand/abc/p1.media", payload); err != nil {
+	if err := p.Put(ctx, "abc-p1.sand", payload); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
-	got, err := p.Get(ctx, "sand/abc/p1.media")
+	got, err := p.Get(ctx, "abc-p1.sand")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestOneDriveRoundTrip(t *testing.T) {
 		t.Errorf("Get returned %q, want %q", got, payload)
 	}
 
-	info, err := p.Stat(ctx, "sand/abc/p1.media")
+	info, err := p.Stat(ctx, "abc-p1.sand")
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
 	}
@@ -237,11 +237,11 @@ func TestOneDriveRoundTrip(t *testing.T) {
 		t.Errorf("Stat size = %d, want %d", info.Size, len(payload))
 	}
 
-	objects, err := p.List(ctx, "sand/")
+	objects, err := p.List(ctx, "abc")
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(objects) != 1 || objects[0].Key != "sand/abc/p1.media" {
+	if len(objects) != 1 || objects[0].Key != "abc-p1.sand" {
 		t.Errorf("List = %+v, want the one shard", objects)
 	}
 
@@ -250,14 +250,14 @@ func TestOneDriveRoundTrip(t *testing.T) {
 		t.Errorf("Usage = %+v, %v", usage, err)
 	}
 
-	if err := p.Delete(ctx, "sand/abc/p1.media"); err != nil {
+	if err := p.Delete(ctx, "abc-p1.sand"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if _, err := p.Get(ctx, "sand/abc/p1.media"); !errors.Is(err, ErrNotFound) {
+	if _, err := p.Get(ctx, "abc-p1.sand"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("Get after Delete = %v, want ErrNotFound", err)
 	}
 	// Deleting what is already gone is not an error.
-	if err := p.Delete(ctx, "sand/abc/p1.media"); err != nil {
+	if err := p.Delete(ctx, "abc-p1.sand"); err != nil {
 		t.Errorf("second Delete: %v", err)
 	}
 }
@@ -280,10 +280,10 @@ func TestOneDriveLargeShardUsesAnUploadSession(t *testing.T) {
 		payload[i] = byte(i)
 	}
 
-	if err := p.Put(ctx, "sand/big/p2.media", payload); err != nil {
+	if err := p.Put(ctx, "big-p2.sand", payload); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	got, err := p.Get(ctx, "sand/big/p2.media")
+	got, err := p.Get(ctx, "big-p2.sand")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -294,7 +294,7 @@ func TestOneDriveLargeShardUsesAnUploadSession(t *testing.T) {
 
 func TestOneDriveItemPathsAreEscaped(t *testing.T) {
 	p := newTestOneDrive()
-	if got := p.itemPath("sand/abc/p1.media"); got != "sand/sand/abc/p1.media" {
+	if got := p.itemPath("abc-p1.sand"); got != "sand/abc-p1.sand" {
 		t.Errorf("itemPath = %q", got)
 	}
 
@@ -302,8 +302,8 @@ func TestOneDriveItemPathsAreEscaped(t *testing.T) {
 	graphAPI = "https://graph.test/v1.0"
 	defer func() { graphAPI = restore }()
 
-	got := p.itemURL("folder name/p1.media", "content")
-	want := "https://graph.test/v1.0/me/drive/root:/folder%20name/p1.media:/content"
+	got := p.itemURL("folder name/p1.sand", "content")
+	want := "https://graph.test/v1.0/me/drive/root:/folder%20name/p1.sand:/content"
 	if got != want {
 		t.Errorf("itemURL = %q, want %q", got, want)
 	}
@@ -487,11 +487,11 @@ func TestBoxRoundTrip(t *testing.T) {
 	}
 
 	payload := []byte("encrypted shard bytes")
-	if err := p.Put(ctx, "sand/abc/p3.media", payload); err != nil {
+	if err := p.Put(ctx, "abc-p3.sand", payload); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
-	got, err := p.Get(ctx, "sand/abc/p3.media")
+	got, err := p.Get(ctx, "abc-p3.sand")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -501,18 +501,18 @@ func TestBoxRoundTrip(t *testing.T) {
 
 	// Overwriting has to land as a new version of the same file rather than a
 	// second item under the same name.
-	if err := p.Put(ctx, "sand/abc/p3.media", []byte("second")); err != nil {
+	if err := p.Put(ctx, "abc-p3.sand", []byte("second")); err != nil {
 		t.Fatalf("overwrite Put: %v", err)
 	}
-	objects, err := p.List(ctx, "sand/")
+	objects, err := p.List(ctx, "abc")
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(objects) != 1 || objects[0].Key != "sand/abc/p3.media" {
+	if len(objects) != 1 || objects[0].Key != "abc-p3.sand" {
 		t.Errorf("List = %+v, want one shard keyed by its object key", objects)
 	}
 
-	info, err := p.Stat(ctx, "sand/abc/p3.media")
+	info, err := p.Stat(ctx, "abc-p3.sand")
 	if err != nil || info.Size != int64(len("second")) {
 		t.Errorf("Stat = %+v, %v", info, err)
 	}
@@ -522,19 +522,19 @@ func TestBoxRoundTrip(t *testing.T) {
 		t.Errorf("Usage = %+v, %v", usage, err)
 	}
 
-	if err := p.Delete(ctx, "sand/abc/p3.media"); err != nil {
+	if err := p.Delete(ctx, "abc-p3.sand"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if _, err := p.Get(ctx, "sand/abc/p3.media"); !errors.Is(err, ErrNotFound) {
+	if _, err := p.Get(ctx, "abc-p3.sand"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("Get after Delete = %v, want ErrNotFound", err)
 	}
-	if err := p.Delete(ctx, "sand/abc/p3.media"); err != nil {
+	if err := p.Delete(ctx, "abc-p3.sand"); err != nil {
 		t.Errorf("second Delete: %v", err)
 	}
 }
 
 func TestBoxNamesRoundTripThroughAFlatFolder(t *testing.T) {
-	key := "sand/6f1b8c2a/p2.media"
+	key := "6f1b8c2a-p2.sand"
 	if got := keyFromBoxName(boxName(key)); got != key {
 		t.Errorf("%q survived the flattening as %q", key, got)
 	}

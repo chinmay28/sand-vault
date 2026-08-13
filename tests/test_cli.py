@@ -6,9 +6,9 @@ line of the binary is exercised — compression, encryption, splitting, and
 file I/O.
 
 After the multi-file archive change, `sand archive` produces three zip files
-(media1.zip, media2.zip, media3.zip) in the output directory.  Each zip holds
-the corresponding .mediaN part for every input file.  Restore still accepts
-individual .media files via --parts.
+(sand-p1.zip, sand-p2.zip, sand-p3.zip) in the output directory.  Each zip holds
+the corresponding .pN.sand part for every input file.  Restore still accepts
+individual .sand part files via --parts.
 """
 import hashlib
 import os
@@ -32,23 +32,23 @@ def run(sand_bin, *args):
 
 def archive(sand_bin, src, password, out_dir):
     """
-    Archive *src* and return the list of three extracted .media Paths.
+    Archive *src* and return the list of three extracted .sand part Paths.
 
-    `sand archive` now produces media1.zip / media2.zip / media3.zip.
-    This helper extracts the individual .mediaN files from those zips so
+    `sand archive` now produces sand-p1.zip / sand-p2.zip / sand-p3.zip.
+    This helper extracts the individual .pN.sand files from those zips so
     that restore() can use them directly (the restore command still expects
-    individual .media files, not zip files).
+    individual .sand part files, not zip files).
     """
     result = run(sand_bin, "archive", str(src), "--password", password, "--output-dir", str(out_dir))
     assert result.returncode == 0, f"archive failed:\n{result.stderr}"
     name = os.path.basename(str(src))
     parts = []
     for i in (1, 2, 3):
-        zip_path = out_dir / f"media{i}.zip"
-        media_name = f"{name}.media{i}"
+        zip_path = out_dir / f"sand-p{i}.zip"
+        part_name = f"{name}.p{i}.sand"
         with zipfile.ZipFile(zip_path) as zf:
-            zf.extract(media_name, out_dir)
-        parts.append(out_dir / media_name)
+            zf.extract(part_name, out_dir)
+        parts.append(out_dir / part_name)
     return parts
 
 
@@ -63,7 +63,7 @@ def archive_multi(sand_bin, srcs, password, out_dir):
         "--output-dir", str(out_dir),
     )
     assert result.returncode == 0, f"archive failed:\n{result.stderr}"
-    return [out_dir / f"media{i}.zip" for i in (1, 2, 3)]
+    return [out_dir / f"sand-p{i}.zip" for i in (1, 2, 3)]
 
 
 def restore(sand_bin, parts, password, out_dir):
@@ -99,27 +99,27 @@ class TestArchive:
 
         assert result.returncode == 0
         for i in (1, 2, 3):
-            assert (tmp_path / f"media{i}.zip").exists(), f"media{i}.zip not found"
+            assert (tmp_path / f"sand-p{i}.zip").exists(), f"sand-p{i}.zip not found"
 
-    def test_zip_files_contain_correct_media_parts(self, sand_bin, tmp_path):
+    def test_zip_files_contain_correct_part_files(self, sand_bin, tmp_path):
         src = tmp_path / "hello.txt"
         src.write_text("Hello, SAND!")
         run(sand_bin, "archive", str(src), "--password", "pw", "--output-dir", str(tmp_path))
 
         for i in (1, 2, 3):
-            with zipfile.ZipFile(tmp_path / f"media{i}.zip") as zf:
+            with zipfile.ZipFile(tmp_path / f"sand-p{i}.zip") as zf:
                 names = zf.namelist()
-                assert len(names) == 1, f"media{i}.zip should have 1 entry, got {names}"
-                assert names[0].endswith(f".media{i}"), f"entry should end in .media{i}, got {names[0]}"
+                assert len(names) == 1, f"sand-p{i}.zip should have 1 entry, got {names}"
+                assert names[0].endswith(f".p{i}.sand"), f"entry should end in .p{i}.sand, got {names[0]}"
 
-    def test_media_files_begin_with_SAND_magic(self, sand_bin, tmp_path):
+    def test_part_files_begin_with_SAND_magic(self, sand_bin, tmp_path):
         src = tmp_path / "magic.bin"
         src.write_bytes(b"\xDE\xAD\xBE\xEF" * 64)
-        parts = archive(sand_bin, src, "pw", tmp_path)  # extracts .media files
+        parts = archive(sand_bin, src, "pw", tmp_path)  # extracts .sand part files
 
         for i, path in enumerate(parts, 1):
             data = path.read_bytes()
-            assert data[:4] == b"SAND", f"media{i} missing SAND magic"
+            assert data[:4] == b"SAND", f"part {i} missing SAND magic"
 
     def test_all_three_parts_are_same_size(self, sand_bin, tmp_path):
         src = tmp_path / "equal.txt"
@@ -141,14 +141,14 @@ class TestArchive:
 
         run(sand_bin, "archive", str(src), "--password", "pw", "--output-dir", str(out))
 
-        assert (out / "media1.zip").exists()
-        assert not (tmp_path / "media1.zip").exists()
+        assert (out / "sand-p1.zip").exists()
+        assert not (tmp_path / "sand-p1.zip").exists()
 
     def test_archive_design_pdf(self, sand_bin, design_pdf, tmp_path):
         result = run(sand_bin, "archive", design_pdf, "--password", "pdfpw", "--output-dir", str(tmp_path))
         assert result.returncode == 0, result.stderr
         for i in (1, 2, 3):
-            assert (tmp_path / f"media{i}.zip").exists()
+            assert (tmp_path / f"sand-p{i}.zip").exists()
 
     def test_success_message_printed(self, sand_bin, tmp_path):
         src = tmp_path / "msg.txt"
@@ -157,7 +157,7 @@ class TestArchive:
         result = run(sand_bin, "archive", str(src), "--password", "pw", "--output-dir", str(tmp_path))
 
         assert "Archive complete" in result.stdout
-        assert "media1.zip" in result.stdout
+        assert "sand-p1.zip" in result.stdout
         assert "Any 2 zips" in result.stdout
 
 
@@ -179,7 +179,7 @@ class TestArchiveMultipleFiles:
         assert result.returncode == 0, result.stderr
 
         for i in (1, 2, 3):
-            assert (tmp_path / f"media{i}.zip").exists()
+            assert (tmp_path / f"sand-p{i}.zip").exists()
 
     def test_each_zip_has_one_part_per_input_file(self, sand_bin, tmp_path):
         files = [tmp_path / f"f{i}.txt" for i in range(3)]
@@ -189,11 +189,11 @@ class TestArchiveMultipleFiles:
         archive_multi(sand_bin, files, "pw", tmp_path)
 
         for i in (1, 2, 3):
-            with zipfile.ZipFile(tmp_path / f"media{i}.zip") as zf:
+            with zipfile.ZipFile(tmp_path / f"sand-p{i}.zip") as zf:
                 names = zf.namelist()
-                assert len(names) == 3, f"media{i}.zip: expected 3 entries, got {names}"
+                assert len(names) == 3, f"sand-p{i}.zip: expected 3 entries, got {names}"
                 for name in names:
-                    assert name.endswith(f".media{i}"), f"entry {name!r} should end in .media{i}"
+                    assert name.endswith(f".p{i}.sand"), f"entry {name!r} should end in .p{i}.sand"
 
     def test_each_file_restores_independently(self, sand_bin, tmp_path):
         orig_a = b"content of file A " + bytes(range(40))
@@ -205,9 +205,9 @@ class TestArchiveMultipleFiles:
 
         zip_paths = archive_multi(sand_bin, [src_a, src_b], "secret", tmp_path)
 
-        # Extract media files for each source from the zips
-        media_a = []
-        media_b = []
+        # Extract part files for each source from the zips
+        parts_a = []
+        parts_b = []
         for i, zp in enumerate(zip_paths, 1):
             with zipfile.ZipFile(zp) as zf:
                 for name in zf.namelist():
@@ -215,21 +215,21 @@ class TestArchiveMultipleFiles:
                     dest.parent.mkdir(exist_ok=True)
                     dest.write_bytes(zf.read(name))
                     if "fileA" in name:
-                        media_a.append(dest)
+                        parts_a.append(dest)
                     else:
-                        media_b.append(dest)
+                        parts_b.append(dest)
 
         # Restore file A using parts 1+2
         rd_a = tmp_path / "ra"
         rd_a.mkdir()
-        r = restore(sand_bin, media_a[:2], "secret", rd_a)
+        r = restore(sand_bin, parts_a[:2], "secret", rd_a)
         assert r.returncode == 0, r.stderr
         assert (rd_a / "fileA.bin").read_bytes() == orig_a
 
         # Restore file B using parts 2+3
         rd_b = tmp_path / "rb"
         rd_b.mkdir()
-        r = restore(sand_bin, media_b[1:], "secret", rd_b)
+        r = restore(sand_bin, parts_b[1:], "secret", rd_b)
         assert r.returncode == 0, r.stderr
         assert (rd_b / "fileB.bin").read_bytes() == orig_b
 

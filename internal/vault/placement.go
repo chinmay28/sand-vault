@@ -78,6 +78,14 @@ func BuildPlan(providerIDs []string, policy Policy, seed uint64) (Plan, error) {
 // ShardKey is the object key a part is stored under on its provider. Keys are
 // derived only from the random archive ID, so an observer with access to a
 // single account learns nothing about the file beyond its size.
+//
+// The key is a single flat filename with no directory components. Every
+// backend already puts SAND's objects somewhere of their own — a folder on
+// Dropbox, Box and OneDrive, a prefix on S3 and WebDAV, the chosen directory
+// for a local or sync folder — so nesting another "sand" folder inside that
+// only buried the parts one level deeper. Staying flat also means Google
+// Drive, which has no paths and stores each part as a plain file, ends up with
+// exactly the same part names as everywhere else.
 func ShardKey(archiveID string, part int) string {
-	return fmt.Sprintf("sand/%s/p%d.media", archiveID, part)
+	return fmt.Sprintf("%s-p%d.sand", archiveID, part)
 }

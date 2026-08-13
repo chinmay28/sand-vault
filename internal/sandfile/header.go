@@ -1,4 +1,4 @@
-package mediafile
+package sandfile
 
 import (
 	"bytes"
@@ -9,16 +9,16 @@ import (
 	"github.com/chinmay28/sand-vault/internal/crypto"
 )
 
-// Magic bytes identifying a SAND media file.
+// Magic bytes identifying a SAND part file.
 var Magic = [4]byte{'S', 'A', 'N', 'D'}
 
-// FormatVersion is the current media file format version.
+// FormatVersion is the current part file format version.
 const FormatVersion = 1
 
 // MaxFilenameLength is the maximum allowed original filename length.
 const MaxFilenameLength = 512
 
-// Header contains all metadata for a SAND media file.
+// Header contains all metadata for a SAND part file.
 type Header struct {
 	Version        uint8
 	PartNumber     uint8    // 1, 2, or 3
@@ -173,8 +173,8 @@ func UnmarshalHeader(data []byte) (*Header, int, error) {
 	return h, consumed, nil
 }
 
-// WriteMediaFile writes a complete media file: header + payload size (4 bytes) + encrypted payload.
-func WriteMediaFile(header *Header, encryptedPayload []byte) ([]byte, error) {
+// WritePart writes a complete part file: header + payload size (4 bytes) + encrypted payload.
+func WritePart(header *Header, encryptedPayload []byte) ([]byte, error) {
 	headerBytes, err := MarshalHeader(header)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling header: %w", err)
@@ -188,9 +188,9 @@ func WriteMediaFile(header *Header, encryptedPayload []byte) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// ReadMediaFile reads a complete media file and returns the header,
+// ReadPart reads a complete part file and returns the header,
 // the header bytes (for use as GCM associated data), and the encrypted payload.
-func ReadMediaFile(data []byte) (*Header, []byte, []byte, error) {
+func ReadPart(data []byte) (*Header, []byte, []byte, error) {
 	header, headerLen, err := UnmarshalHeader(data)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("reading header: %w", err)

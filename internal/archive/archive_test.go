@@ -54,7 +54,7 @@ func TestArchive_ProducesThreeFiles(t *testing.T) {
 			t.Fatalf("output file %d does not exist: %s", i+1, path)
 		}
 
-		expectedSuffix := ".media" + string(rune('1'+i))
+		expectedSuffix := fmt.Sprintf(".p%d.sand", i+1)
 		if !strings.HasSuffix(path, expectedSuffix) {
 			t.Fatalf("expected suffix %s, got %s", expectedSuffix, path)
 		}
@@ -558,7 +558,7 @@ func TestArchiveMultiple_PartGroupCounts(t *testing.T) {
 }
 
 func TestArchiveMultiple_PartSuffixesAreCorrect(t *testing.T) {
-	// Part group 0 → .media1, group 1 → .media2, group 2 → .media3.
+	// Part group 0 → .p1.sand, group 1 → .p2.sand, group 2 → .p3.sand.
 	inputDir, outputDir, _ := setupTestDirs(t)
 	files := []string{
 		writeTestFile(t, inputDir, "x.bin", []byte("x")),
@@ -571,7 +571,7 @@ func TestArchiveMultiple_PartSuffixesAreCorrect(t *testing.T) {
 	}
 
 	for partIdx, group := range result {
-		expectedSuffix := fmt.Sprintf(".media%d", partIdx+1)
+		expectedSuffix := fmt.Sprintf(".p%d.sand", partIdx+1)
 		for _, path := range group {
 			if !strings.HasSuffix(path, expectedSuffix) {
 				t.Fatalf("part group %d: path %s has wrong suffix (want %s)", partIdx+1, path, expectedSuffix)
@@ -698,10 +698,10 @@ func TestArchiveMultiple_MixedFileSizes(t *testing.T) {
 
 	for fileIdx, name := range names {
 		expected := contents[name]
-		mediaParts := []string{result[0][fileIdx], result[1][fileIdx], result[2][fileIdx]}
+		partBlobs := []string{result[0][fileIdx], result[1][fileIdx], result[2][fileIdx]}
 
 		rd := t.TempDir()
-		out, err := Restore(mediaParts[:2], "pw", rd) // parts 1+2
+		out, err := Restore(partBlobs[:2], "pw", rd) // parts 1+2
 		if err != nil {
 			t.Fatalf("%s: restore failed: %v", name, err)
 		}

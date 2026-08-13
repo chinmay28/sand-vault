@@ -85,12 +85,12 @@ func handleArchive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build media1.zip, media2.zip, media3.zip in memory.
+	// Build sand-p1.zip, sand-p2.zip, sand-p3.zip in memory.
 	innerZips := make([][]byte, archive.PartCount)
 	for i := 0; i < archive.PartCount; i++ {
 		data, err := buildZipBytes(partPaths[i])
 		if err != nil {
-			log.Printf("failed to build media%d.zip: %v", i+1, err)
+			log.Printf("failed to build sand-p%d.zip: %v", i+1, err)
 			writeError(w, http.StatusInternalServerError, "failed to build zip", "INTERNAL_ERROR")
 			return
 		}
@@ -105,7 +105,7 @@ func handleArchive(w http.ResponseWriter, r *http.Request) {
 	defer outer.Close()
 
 	for i, data := range innerZips {
-		name := fmt.Sprintf("media%d.zip", i+1)
+		name := fmt.Sprintf("sand-p%d.zip", i+1)
 		entry, err := outer.Create(name)
 		if err != nil {
 			log.Printf("failed to create outer zip entry %s: %v", name, err)
