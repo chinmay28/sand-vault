@@ -56,7 +56,8 @@ func init() {
 				"Under APIs & Services → OAuth consent screen → Audience, press " +
 					"Publish app. A project left in Testing turns away every account " +
 					"that is not on its test-user list, and drops the ones it lets in " +
-					"after seven days.",
+					"after seven days. Google greys the button out unless the redirect " +
+					"URI below is https — put TLS in front of this server first.",
 			},
 			AuthParams: map[string]string{
 				// Google only parts with a refresh token when asked, and only

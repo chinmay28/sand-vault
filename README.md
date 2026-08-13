@@ -240,6 +240,22 @@ unverified-app warning. Adding the account under **Test users** instead also
 works, but a project left in Testing expires its refresh tokens after seven
 days, and the connected account then goes dark until you sign in again.
 
+**Publishing needs an HTTPS redirect URI.** Google greys out **Publish app**
+while any of the project's clients has a `http://` URI registered, so a vault
+reached over plain HTTP cannot get past Testing. On a tailnet, Tailscale issues
+the certificate and terminates TLS for you — enable **HTTPS Certificates** on
+the admin console's DNS page, then:
+
+```bash
+tailscale serve --bg 8123          # https://<machine>.ts.net → 127.0.0.1:8123
+```
+
+SAND reads `X-Forwarded-Proto`, so the redirect URI it shows you turns `https://`
+on its own. Register that one on the client, delete the `http://` one, and
+**Publish app** lights up. Behind any other proxy, `scripts/nginx-sand.conf` is
+the same arrangement — and pin the URI with `SAND_OAUTH_REDIRECT` if the proxy
+does not pass the original host through.
+
 The CLI still takes credentials directly, which is also the way to move an
 account between machines:
 
