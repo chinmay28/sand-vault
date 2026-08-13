@@ -376,6 +376,10 @@ func TestRecoverRollsBackWhenTheVaultCannotBeWritten(t *testing.T) {
 	}
 
 	target, _ := newTestVault(t, 3)
+	// Connecting the accounts scheduled a backup push, and its local-folder
+	// roots live under the same directory as the vault file. Let it finish
+	// before that directory is removed, or the two race.
+	target.AwaitBackupSync()
 
 	// Make the vault file unwritable by replacing its directory with a file, so
 	// the atomic write cannot create its temporary neighbour.
