@@ -65,9 +65,16 @@ func TestLocalPingHints(t *testing.T) {
 	// A hardened systemd unit is the one case where nothing is wrong with the
 	// drive, so it must not be described as a mount problem.
 	t.Setenv("INVOCATION_ID", "1a2b3c")
-	got := hint("/media/me/Disk", syscall.EROFS)
-	if !strings.Contains(got, "ProtectSystem=strict") || !strings.Contains(got, "allow-local-path.sh /media/me/Disk") {
+	got := hint("/data/SANDVault", syscall.EROFS)
+	if !strings.Contains(got, "ProtectSystem=strict") || !strings.Contains(got, "allow-local-path.sh /data/SANDVault") {
 		t.Errorf("sandboxed EROFS hint = %q", got)
+	}
+
+	// Under a mount root the unit grants, so the unit is an old one: say that,
+	// since re-running the installer fixes this drive and every other.
+	got = hint("/media/me/Disk", syscall.EROFS)
+	if !strings.Contains(got, "Re-run the installer") || !strings.Contains(got, "allow-local-path.sh /media/me/Disk") {
+		t.Errorf("sandboxed EROFS hint under a mount root = %q", got)
 	}
 
 	t.Setenv("INVOCATION_ID", "")
@@ -92,6 +99,31 @@ func TestLocalPingHints(t *testing.T) {
 	} {
 		if got := hint("/media/me/Disk", tc.err); !strings.Contains(got, tc.want) || (tc.want == "" && got != "") {
 			t.Errorf("hint(%s) = %q, want it to mention %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestUnderMountRoot pins the match the hint shares with the unit's
+// ReadWritePaths= lines: a root itself and anything below it, and nothing that
+// merely starts with the same letters.
+func TestUnderMountRoot(t *testing.T) {
+	for _, tc := range []struct {
+		path string
+		want bool
+	}{
+		{"/media", true},
+		{"/media/me/Disk/SANDVault", true},
+		{"/media/", true},
+		{"/run/media/me/Disk", true},
+		{"/mnt/nas/sand", true},
+		{"/srv/sand", true},
+		{"/mediakit/sand", false},
+		{"/data/SANDVault", false},
+		{"/home/me/sand", false},
+		{"/", false},
+	} {
+		if got := underMountRoot(tc.path); got != tc.want {
+			t.Errorf("underMountRoot(%q) = %v, want %v", tc.path, got, tc.want)
 		}
 	}
 }

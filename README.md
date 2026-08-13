@@ -177,12 +177,14 @@ All of them are built on the standard library — SigV4 signing, OAuth and
 Microsoft Graph's chunked uploads included — so there are no cloud SDKs, no
 CGO, and the artifact is still one static binary.
 
-> **Local folder** on the systemd service needs one extra step: the unit is
-> sandboxed with `ProtectSystem=strict`, so every path outside `/var/lib/sand`
-> is read-only to it and connecting an external disk fails with *"…is not
-> writable: read-only file system"*. Grant the path once —
-> `sudo ./scripts/allow-local-path.sh /media/you/Disk/SANDVault` — and
-> reconnect. See [Local folders on the systemd
+> **Local folder** on the systemd service is sandboxed: the unit sets
+> `ProtectSystem=strict` and grants write access to `/var/lib/sand` plus the
+> mount roots a drive normally appears under — `/media`, `/run/media`, `/mnt`,
+> `/srv` — so an external disk or a NAS mount connects as-is. A vault folder
+> outside those is read-only to the service and fails with *"…is not writable:
+> read-only file system"*; grant it once —
+> `sudo ./scripts/allow-local-path.sh /data/SANDVault` — and reconnect. See
+> [Local folders on the systemd
 > service](#local-folders-on-the-systemd-service).
 
 > **Proton Drive** publishes no API. SAND writes its parts into the folder the
@@ -543,33 +545,57 @@ Both write the same unit and use the same data directory
 ### Local folders on the systemd service
 
 The unit is hardened with `ProtectSystem=strict`: the filesystem is read-only
-to the service apart from `ReadWritePaths=/var/lib/sand`. That is deliberate —
-the service holds your cloud credentials — but it also means a **Local folder**
-account pointed at an external disk or a NAS mount cannot connect:
+to the service apart from the paths its `ReadWritePaths=` lines name. That is
+deliberate — the service holds your cloud credentials — but a **Local folder**
+account has to be able to write somewhere, so the unit grants the data
+directory *and* the roots removable disks and network shares are mounted under:
+
+```ini
+ReadWritePaths=/var/lib/sand
+ReadWritePaths=-"/media"
+ReadWritePaths=-"/run/media"
+ReadWritePaths=-"/mnt"
+ReadWritePaths=-"/srv"
+```
+
+A drive mounted where your desktop or `/etc/fstab` normally puts it therefore
+connects with no extra step, while `/etc`, `/usr`, `/home` and the rest stay
+read-only to the service. The leading `-` means a root that does not exist on
+this host — or a drive that is not plugged in at boot — does not stop the
+service from starting. Set `SAND_MOUNT_ROOTS` at install time to change the
+list (colon-separated; empty grants nothing but the data directory).
+
+A vault folder outside those roots — `/data/SANDVault`, say — is still
+read-only to the service, and connecting it says so:
 
 ```
-could not connect to Local folder: /media/you/Disk/SANDVault is not writable:
+could not connect to Local folder: /data/SANDVault is not writable:
 read-only file system — the sand service runs under systemd with
 ProtectSystem=strict, which makes every path outside its data directory
-read-only to it.
+and the usual mount roots (/media, /run/media, /mnt, /srv) read-only to it.
 ```
 
 Nothing is wrong with the drive; the service simply has no write access to it.
 Grant the path and reconnect:
 
 ```bash
-sudo ./scripts/allow-local-path.sh /media/you/Disk/SANDVault
-sudo ./scripts/allow-local-path.sh --list      # what is granted now
-sudo ./scripts/allow-local-path.sh --remove /media/you/Disk/SANDVault
+sudo ./scripts/allow-local-path.sh /data/SANDVault
+sudo ./scripts/allow-local-path.sh --list      # what the unit and drop-in grant
+sudo ./scripts/allow-local-path.sh --remove /data/SANDVault
 ```
 
 It writes `/etc/systemd/system/sand.service.d/10-local-paths.conf`, which
-neither installer touches, so grants survive upgrades. To set them up at
-install time instead, pass a colon-separated list:
+neither installer touches, so grants survive upgrades. Naming a path the unit
+already covers is a no-op it tells you about rather than a redundant entry. To
+set paths up at install time instead, pass a colon-separated list:
 
 ```bash
-curl -fsSL .../quickstart.sh | sudo SAND_LOCAL_PATHS=/media/you/Disk/SANDVault bash
+curl -fsSL .../quickstart.sh | sudo SAND_LOCAL_PATHS=/data/SANDVault bash
 ```
+
+Upgrading an install made before the mount roots were granted rewrites the unit
+and picks them up; until then, a drive under `/media` needs the same one-path
+grant, and the connect error says as much.
 
 Two things the sandbox has no say in, and which the script warns about:
 

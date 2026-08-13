@@ -133,16 +133,23 @@ vault — if the new one fails its health check.
 
 ### Local folders under the sandbox
 
-The unit's `ProtectSystem=strict` makes everything outside `/var/lib/sand`
+The unit's `ProtectSystem=strict` makes everything outside its granted paths
 read-only to the service, so connecting a **Local folder** on an external disk
 failed with a bare `read-only file system` — a true statement about a drive
 that was mounted read-write and perfectly healthy.
 
-The three ways a local folder actually fails now say which one it is, and what
-to do about it: a sandboxed service (`INVOCATION_ID` is set), a folder owned by
-another user, or a genuinely read-only mount (checked against
-`/proc/self/mounts` rather than guessed). `scripts/allow-local-path.sh` grants
-a path to the service through a drop-in that upgrades do not touch, warns when
+The unit now grants the roots removable disks and network shares are mounted
+under — `/media`, `/run/media`, `/mnt`, `/srv`, each with the `-` prefix that
+lets the service start when the drive is unplugged — so a disk in the usual
+place connects with no extra step, while `/etc`, `/usr`, `/home` and the rest
+stay read-only. `SAND_MOUNT_ROOTS` changes the list at install time.
+
+For a vault folder outside those roots, the three ways a local folder actually
+fails now say which one it is, and what to do about it: a sandboxed service
+(`INVOCATION_ID` is set), a folder owned by another user, or a genuinely
+read-only mount (checked against `/proc/self/mounts` rather than guessed).
+`scripts/allow-local-path.sh` grants a path to the service through a drop-in
+that upgrades do not touch, skips paths the unit already covers, warns when
 ownership or the mount would defeat the grant anyway, and `SAND_LOCAL_PATHS`
 does the same at install time in both installers.
 

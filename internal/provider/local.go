@@ -219,8 +219,19 @@ func hint(root string, err error) string {
 	switch {
 	case errors.Is(err, syscall.EROFS):
 		if sandboxed() {
+			if underMountRoot(root) {
+				// The unit both installers write grants these roots, so a unit
+				// that does not is one an older installer wrote. Upgrading is
+				// the repair, and it fixes every other drive at the same time.
+				return " — the sand service runs under systemd with ProtectSystem=strict," +
+					" and this path is under " + strings.Join(mountRoots, ", ") +
+					", which the current unit grants but an older one does not." +
+					" Re-run the installer to refresh the unit, or grant this path alone:" +
+					" sudo scripts/allow-local-path.sh " + root + ", then reconnect."
+			}
 			return " — the sand service runs under systemd with ProtectSystem=strict," +
-				" which makes every path outside its data directory read-only to it." +
+				" which makes every path outside its data directory and the usual mount" +
+				" roots (" + strings.Join(mountRoots, ", ") + ") read-only to it." +
 				" Grant it this one: sudo scripts/allow-local-path.sh " + root +
 				" (or add ReadWritePaths= to the unit) and reconnect."
 		}
@@ -245,6 +256,24 @@ func hint(root string, err error) string {
 		return " — part of that path is a file, not a directory."
 	}
 	return ""
+}
+
+// mountRoots are the directories removable disks and network shares get
+// mounted under, which the systemd unit the installers write grants outright
+// (see scripts/quickstart.sh). A local folder under one of these needs no
+// per-path grant on a current install.
+var mountRoots = []string{"/media", "/run/media", "/mnt", "/srv"}
+
+// underMountRoot reports whether path is one of the mount roots or sits inside
+// one. Lexical, like the ReadWritePaths= match it mirrors.
+func underMountRoot(path string) bool {
+	clean := filepath.Clean(path)
+	for _, root := range mountRoots {
+		if clean == root || strings.HasPrefix(clean, root+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // sandboxed reports whether this process was started by systemd, which is the

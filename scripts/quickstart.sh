@@ -68,10 +68,15 @@
 #   SAND_USER        service system user     (default: sand)
 #   SAND_PREFIX      install prefix          (default: /opt/sand; source → $PREFIX/src)
 #   SAND_DATA_DIR    vault + backups dir     (default: /var/lib/sand)
-#   SAND_LOCAL_PATHS dirs a Local folder account may use, colon-separated. The
-#                    unit is sandboxed (ProtectSystem=strict), so an external
-#                    disk is read-only to the service until it is listed here
-#                    or granted later with scripts/allow-local-path.sh.
+#   SAND_MOUNT_ROOTS mount roots a Local folder account may live under,
+#                    colon-separated (default: /media:/run/media:/mnt:/srv).
+#                    The unit is sandboxed (ProtectSystem=strict) and grants
+#                    these, so an external disk mounted in the usual place is
+#                    writable to the service; everything else stays read-only.
+#                    Set empty to grant nothing but the data directory.
+#   SAND_LOCAL_PATHS extra dirs a Local folder account may use, colon-separated
+#                    — for a vault folder outside the mount roots above. Can
+#                    also be granted later with scripts/allow-local-path.sh.
 #   PORT             port to listen on       (default: 8123)
 #   HOST             bind address            (default: 0.0.0.0 — see the warning below)
 #   INSTALL_NODE     auto | never            install Node 22 if missing/old (default: auto; build-time only)
@@ -539,6 +544,24 @@ install_staged() {
 }
 install_staged
 
+# ProtectSystem=strict in the unit makes the whole filesystem read-only to the
+# service. Removable disks and network shares are mounted under a handful of
+# well-known roots, so the unit grants those outright: a "Local folder" account
+# on an external drive connects with no extra step, while /etc, /usr, /home and
+# everything else stay read-only. SAND_MOUNT_ROOTS overrides the list; set it
+# empty for a unit that grants nothing but $DATA_DIR.
+MOUNT_ROOTS="${SAND_MOUNT_ROOTS-/media:/run/media:/mnt:/srv}"
+mount_root_lines() {
+  # The trailing ':' gives the last root a newline of its own, so `read` sees
+  # it. The leading '-' lets the service start on a host where a root does not
+  # exist; the quotes keep a path with a space in it as one path.
+  printf '%s:' "$MOUNT_ROOTS" | tr ':' '\n' | while IFS= read -r root; do
+    [ -n "$root" ] || continue
+    printf 'ReadWritePaths=-"%s"\n' "${root%/}"
+  done
+}
+MOUNT_ROOT_LINES="$(mount_root_lines)"
+
 write_unit() {
   cat > "$UNIT_PATH" <<UNIT
 [Unit]
@@ -558,9 +581,10 @@ Restart=on-failure
 RestartSec=3
 
 # Hardening. The vault holds cloud credentials and the map of every stored
-# file, so the service gets write access to exactly one directory and nothing
-# else — note ProtectHome, which is also why the vault must live in
-# $DATA_DIR rather than the service user's (non-existent) home.
+# file, so the service gets write access to its data directory and the mount
+# roots a Local folder account lives under, and nothing else — note
+# ProtectHome, which is also why the vault must live in $DATA_DIR rather than
+# the service user's (non-existent) home.
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
@@ -570,6 +594,7 @@ ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
 ReadWritePaths=$DATA_DIR
+$MOUNT_ROOT_LINES
 
 [Install]
 WantedBy=multi-user.target
@@ -577,12 +602,12 @@ UNIT
 }
 write_unit
 
-# ProtectSystem=strict above makes every path outside $DATA_DIR read-only to
-# the service, so a "Local folder" account on an external disk cannot connect
-# ("read-only file system") until its directory is granted too. SAND_LOCAL_PATHS
-# grants them here, colon-separated; scripts/allow-local-path.sh does the same
-# later. Both write this one drop-in, and neither installer touches it on a
-# re-run, so grants survive upgrades.
+# The unit grants $DATA_DIR and the mount roots above; ProtectSystem=strict
+# keeps every other path read-only, so a "Local folder" account outside those
+# roots cannot connect ("read-only file system") until its directory is granted
+# too. SAND_LOCAL_PATHS grants such paths here, colon-separated;
+# scripts/allow-local-path.sh does the same later. Both write this one drop-in,
+# and neither installer touches it on a re-run, so grants survive upgrades.
 DROPIN_DIR="${UNIT_PATH}.d"
 if [ -n "${SAND_LOCAL_PATHS:-}" ]; then
   mkdir -p "$DROPIN_DIR"
