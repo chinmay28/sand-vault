@@ -14,12 +14,17 @@
 #   port    = 8123
 #   bind    = 0.0.0.0     (all interfaces — see the note at the end)
 #
-# The unit is sandboxed with ProtectSystem=strict, so a "Local folder" account
-# on an external disk is read-only to the service until its directory is
-# granted. Do it here with SAND_LOCAL_PATHS (colon-separated), or later with
-# scripts/allow-local-path.sh:
+# The unit is sandboxed with ProtectSystem=strict, so the service can only
+# write to the paths the unit grants: its data directory and the usual mount
+# roots (/media, /run/media, /mnt, /srv), which is where a "Local folder"
+# account on an external disk or a NAS share normally lives. A vault folder
+# somewhere else needs granting — here with SAND_LOCAL_PATHS (colon-separated),
+# or later with scripts/allow-local-path.sh:
 #
-#   sudo SAND_LOCAL_PATHS=/media/you/Disk/SANDVault ./scripts/deploy-linux.sh
+#   sudo SAND_LOCAL_PATHS=/data/SANDVault ./scripts/deploy-linux.sh
+#
+# SAND_MOUNT_ROOTS overrides the mount roots the unit grants by default; set it
+# empty for a unit that grants nothing but its data directory.
 #
 # After running:
 #   systemctl status sand
@@ -76,6 +81,27 @@ fi
 install -d -o sand -g sand -m 750 "${DATA_DIR}" "${DATA_DIR}/backups"
 echo "    data dir → ${DATA_DIR}"
 
+# ── Mount roots ──────────────────────────────────────────────────────────────
+# ProtectSystem=strict below makes the whole filesystem read-only to the
+# service. Removable disks and network shares are mounted under a handful of
+# well-known roots, so the unit grants those outright: a "Local folder" account
+# on an external drive then connects with no extra step, while /etc, /usr,
+# /home and everything else stay read-only. SAND_MOUNT_ROOTS= overrides the
+# list (colon-separated); set it empty to grant none.
+MOUNT_ROOTS="${SAND_MOUNT_ROOTS-/media:/run/media:/mnt:/srv}"
+mount_root_lines() {
+    local -a roots=()
+    IFS=':' read -r -a roots <<< "${MOUNT_ROOTS}"
+    local root
+    for root in "${roots[@]:-}"; do
+        [[ -n "${root}" ]] || continue
+        # The leading '-' lets the service start on a host where the root does
+        # not exist; quotes keep a path with a space in it as one path.
+        printf 'ReadWritePaths=-"%s"\n' "${root%/}"
+    done
+}
+MOUNT_ROOT_LINES="$(mount_root_lines)"
+
 # ── Write systemd unit ───────────────────────────────────────────────────────
 cat > /etc/systemd/system/sand.service <<EOF
 [Unit]
@@ -91,7 +117,8 @@ Environment=SAND_VAULT=${VAULT_PATH}
 Restart=on-failure
 RestartSec=5s
 # Security hardening. The service gets write access to its data directory and
-# nothing else; ProtectHome is why --vault above is not optional.
+# the mount roots a Local folder account lives under — nothing else;
+# ProtectHome is why --vault above is not optional.
 NoNewPrivileges=yes
 PrivateTmp=yes
 PrivateDevices=yes
@@ -101,6 +128,7 @@ ProtectKernelTunables=yes
 ProtectControlGroups=yes
 RestrictSUIDSGID=yes
 ReadWritePaths=${DATA_DIR}
+${MOUNT_ROOT_LINES}
 
 [Install]
 WantedBy=multi-user.target
@@ -109,11 +137,12 @@ EOF
 echo "    wrote /etc/systemd/system/sand.service"
 
 # ── Local folder paths ───────────────────────────────────────────────────────
-# ProtectSystem=strict above makes every path outside DATA_DIR read-only to the
-# service, so a "Local folder" account on an external disk fails to connect
-# with "read-only file system" until its directory is listed too. Grant paths
-# here at install time, or later with scripts/allow-local-path.sh — both write
-# this same drop-in, which survives re-runs of either installer.
+# The unit grants DATA_DIR and the mount roots above; ProtectSystem=strict
+# keeps everything else read-only, so a "Local folder" account outside those
+# roots fails to connect with "read-only file system" until its directory is
+# listed too. Grant such paths here at install time, or later with
+# scripts/allow-local-path.sh — both write this same drop-in, which survives
+# re-runs of either installer.
 DROPIN_DIR="/etc/systemd/system/sand.service.d"
 if [[ -n "${SAND_LOCAL_PATHS:-}" ]]; then
     mkdir -p "${DROPIN_DIR}"
