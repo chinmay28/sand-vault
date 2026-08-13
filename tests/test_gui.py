@@ -178,6 +178,37 @@ class TestConnectingAnAccount:
 
         app.keyboard.press("Escape")
 
+    def test_the_redirect_uri_copies_without_the_clipboard_api(self, app, server):
+        """SAND is usually reached over plain HTTP, where navigator.clipboard
+        does not exist at all. The copy button has to fall back rather than do
+        nothing, so the API is taken away here to force that path."""
+        app.get_by_text("+ Connect a cloud").click()
+        app.wait_for_selector("text=Sign in with your account")
+        app.get_by_text("Google Drive", exact=True).click()
+        app.wait_for_selector("text=Continue with Google")
+
+        app.evaluate(
+            """() => {
+              Object.defineProperty(navigator, 'clipboard',
+                { value: undefined, configurable: true })
+              window.__copied = []
+              document.execCommand = (command) => {
+                if (command !== 'copy') return false
+                const el = document.activeElement
+                window.__copied.push(el && el.value != null ? el.value : '')
+                return true
+              }
+            }"""
+        )
+
+        app.get_by_role("button", name="COPY").click()
+        app.wait_for_selector("text=COPIED", timeout=5000)
+        assert app.evaluate("() => window.__copied") == [
+            f"{server}/api/providers/oauth/callback"
+        ]
+
+        app.keyboard.press("Escape")
+
     def test_credentials_can_still_be_pasted_by_hand(self, app):
         app.get_by_text("+ Connect a cloud").click()
         app.wait_for_selector("text=Sign in with your account")
