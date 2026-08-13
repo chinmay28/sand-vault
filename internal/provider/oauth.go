@@ -28,11 +28,12 @@ type OAuthSpec struct {
 	// Google".
 	SignInLabel string `json:"sign_in_label"`
 
-	// ConsoleURL and ConsoleHelp point at the provider's developer console for
+	// ConsoleURL and ConsoleSteps point at the provider's developer console for
 	// the case where no app credentials have been configured for SAND and the
-	// user has to register one themselves.
-	ConsoleURL  string `json:"console_url,omitempty"`
-	ConsoleHelp string `json:"console_help,omitempty"`
+	// user has to register one themselves. Each step is rendered as its own
+	// numbered line, between "open the console" and "paste the client ID".
+	ConsoleURL   string   `json:"console_url,omitempty"`
+	ConsoleSteps []string `json:"console_steps,omitempty"`
 
 	// ClientIDField and ClientSecretField name the option keys the app
 	// credentials live under, so the connect form knows which of the spec's

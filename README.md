@@ -226,6 +226,20 @@ If a redirect cannot reach the server at all — signing in from a phone against
 a vault bound to `127.0.0.1`, say — the dialog takes the URL the browser was
 left on and finishes the exchange from there.
 
+**Google needs its consent screen published.** A new Google Cloud project starts
+in *Testing*, where signing in fails with:
+
+> Access blocked: … has not completed the Google verification process
+> Error 403: access_denied
+
+Creating the OAuth client is only half of the registration. Open **APIs &
+Services → OAuth consent screen → Audience** and press **Publish app**. SAND
+asks for one scope, `drive.file`, which Google classes as non-sensitive — so
+publishing takes effect immediately, with no verification review and no
+unverified-app warning. Adding the account under **Test users** instead also
+works, but a project left in Testing expires its refresh tokens after seven
+days, and the connected account then goes dark until you sign in again.
+
 The CLI still takes credentials directly, which is also the way to move an
 account between machines:
 

@@ -511,7 +511,7 @@ function SignInStart({ spec, client, setClient, busy, onStart, onManual, onBack 
                   style={{ color: COLORS.accent }}>Open the {spec.label} developer console ↗</a>
               ) : 'Open the provider\'s developer console'}
             </li>
-            {spec.oauth.console_help && <li>{spec.oauth.console_help}</li>}
+            {(spec.oauth.console_steps || []).map((step, i) => <li key={i}>{step}</li>)}
             <li>Paste the client ID below.</li>
           </ol>
 

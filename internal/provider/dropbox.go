@@ -35,8 +35,10 @@ func init() {
 			ClientIDEnv:       "SAND_DROPBOX_APP_KEY",
 			ClientSecretEnv:   "SAND_DROPBOX_APP_SECRET",
 			ConsoleURL:        "https://www.dropbox.com/developers/apps",
-			ConsoleHelp: "Create an app with scoped access to its own app folder, tick " +
-				"files.content.read and files.content.write, and add the redirect URI below.",
+			ConsoleSteps: []string{
+				"Create an app with scoped access to its own app folder, tick " +
+					"files.content.read and files.content.write, and add the redirect URI below.",
+			},
 			AuthParams: map[string]string{
 				// Dropbox hands out a refresh token only when the request says
 				// it wants offline access.

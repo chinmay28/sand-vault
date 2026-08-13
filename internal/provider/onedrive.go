@@ -50,8 +50,10 @@ func init() {
 			ClientIDEnv:       "SAND_MICROSOFT_CLIENT_ID",
 			ClientSecretEnv:   "SAND_MICROSOFT_CLIENT_SECRET",
 			ConsoleURL:        "https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade",
-			ConsoleHelp: "Register an application, allow personal and work accounts, and add the " +
-				"redirect URI below as a Web platform redirect.",
+			ConsoleSteps: []string{
+				"Register an application, allow personal and work accounts, and add the " +
+					"redirect URI below as a Web platform redirect.",
+			},
 			AuthParams: map[string]string{
 				"response_mode": "query",
 				"prompt":        "select_account",

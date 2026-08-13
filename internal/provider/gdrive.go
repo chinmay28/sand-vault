@@ -44,8 +44,20 @@ func init() {
 			ClientIDEnv:       "SAND_GOOGLE_CLIENT_ID",
 			ClientSecretEnv:   "SAND_GOOGLE_CLIENT_SECRET",
 			ConsoleURL:        "https://console.cloud.google.com/apis/credentials",
-			ConsoleHelp: "Enable the Google Drive API, then create an OAuth client ID of type " +
-				"“Web application” and add the redirect URI below to it.",
+			ConsoleSteps: []string{
+				"Enable the Google Drive API, then create an OAuth client ID of type " +
+					"“Web application” and add the redirect URI below to it.",
+				// The step everyone misses. A project starts in Testing, where
+				// Google turns away any account not on the test-user list with
+				// “Access blocked … has not completed the Google verification
+				// process”, and expires refresh tokens after seven days.
+				// drive.file is a non-sensitive scope, so publishing needs no
+				// verification review.
+				"Under APIs & Services → OAuth consent screen → Audience, press " +
+					"Publish app. A project left in Testing turns away every account " +
+					"that is not on its test-user list, and drops the ones it lets in " +
+					"after seven days.",
+			},
 			AuthParams: map[string]string{
 				// Google only parts with a refresh token when asked, and only
 				// re-issues one on a fresh consent.

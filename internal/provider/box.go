@@ -42,8 +42,10 @@ func init() {
 			ClientIDEnv:       "SAND_BOX_CLIENT_ID",
 			ClientSecretEnv:   "SAND_BOX_CLIENT_SECRET",
 			ConsoleURL:        "https://app.box.com/developers/console",
-			ConsoleHelp: "Create a Custom App with standard OAuth 2.0 (User Authentication), tick " +
-				"“Write all files and folders”, and add the redirect URI below.",
+			ConsoleSteps: []string{
+				"Create a Custom App with standard OAuth 2.0 (User Authentication), tick " +
+					"“Write all files and folders”, and add the redirect URI below.",
+			},
 		},
 	}, newBoxProvider)
 }
