@@ -14,6 +14,13 @@
 #   port    = 8123
 #   bind    = 0.0.0.0     (all interfaces — see the note at the end)
 #
+# The unit is sandboxed with ProtectSystem=strict, so a "Local folder" account
+# on an external disk is read-only to the service until its directory is
+# granted. Do it here with SAND_LOCAL_PATHS (colon-separated), or later with
+# scripts/allow-local-path.sh:
+#
+#   sudo SAND_LOCAL_PATHS=/media/you/Disk/SANDVault ./scripts/deploy-linux.sh
+#
 # After running:
 #   systemctl status sand
 #   journalctl -u sand -f
@@ -100,6 +107,29 @@ WantedBy=multi-user.target
 EOF
 
 echo "    wrote /etc/systemd/system/sand.service"
+
+# ── Local folder paths ───────────────────────────────────────────────────────
+# ProtectSystem=strict above makes every path outside DATA_DIR read-only to the
+# service, so a "Local folder" account on an external disk fails to connect
+# with "read-only file system" until its directory is listed too. Grant paths
+# here at install time, or later with scripts/allow-local-path.sh — both write
+# this same drop-in, which survives re-runs of either installer.
+DROPIN_DIR="/etc/systemd/system/sand.service.d"
+if [[ -n "${SAND_LOCAL_PATHS:-}" ]]; then
+    mkdir -p "${DROPIN_DIR}"
+    {
+        echo "# Paths a Local folder account may use. Also managed by"
+        echo "# scripts/allow-local-path.sh. A leading '-' lets the service start"
+        echo "# when the drive is not plugged in."
+        echo "[Service]"
+        # Split on ':' the way PATH is split, so drives with spaces still work.
+        IFS=':' read -r -a sand_local_paths <<< "${SAND_LOCAL_PATHS}"
+        for entry in "${sand_local_paths[@]}"; do
+            [[ -n "${entry}" ]] && printf 'ReadWritePaths=-"%s"\n' "${entry%/}"
+        done
+    } > "${DROPIN_DIR}/10-local-paths.conf"
+    echo "    local paths → ${DROPIN_DIR}/10-local-paths.conf"
+fi
 
 # ── Enable and start ─────────────────────────────────────────────────────────
 systemctl daemon-reload

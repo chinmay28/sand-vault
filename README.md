@@ -74,8 +74,9 @@ never lose data:**
   vault snapshot**.
 
 Override defaults with env vars (`PORT`, `HOST`, `SAND_INSTALL`, `SAND_REF`,
-`SAND_RELEASE`, `SAND_DATA_DIR`, `SAND_PREFIX`, `SAND_USER`, …). Manage it with
-`systemctl status sand` and `journalctl -u sand -f`.
+`SAND_RELEASE`, `SAND_DATA_DIR`, `SAND_PREFIX`, `SAND_USER`,
+`SAND_LOCAL_PATHS`, …). Manage it with `systemctl status sand` and
+`journalctl -u sand -f`.
 
 > **`HOST` defaults to `0.0.0.0`** — the service is reachable from your network
 > as soon as it is installed. Know what that exposes: this server is the one
@@ -175,6 +176,14 @@ Reads are a race, so a slow or offline account costs you nothing — it just los
 All of them are built on the standard library — SigV4 signing, OAuth and
 Microsoft Graph's chunked uploads included — so there are no cloud SDKs, no
 CGO, and the artifact is still one static binary.
+
+> **Local folder** on the systemd service needs one extra step: the unit is
+> sandboxed with `ProtectSystem=strict`, so every path outside `/var/lib/sand`
+> is read-only to it and connecting an external disk fails with *"…is not
+> writable: read-only file system"*. Grant the path once —
+> `sudo ./scripts/allow-local-path.sh /media/you/Disk/SANDVault` — and
+> reconnect. See [Local folders on the systemd
+> service](#local-folders-on-the-systemd-service).
 
 > **Proton Drive** publishes no API. SAND writes its parts into the folder the
 > Proton Drive desktop app syncs, which is the same arrangement as any other
@@ -531,6 +540,56 @@ systemctl status sand && journalctl -u sand -f
 Both write the same unit and use the same data directory
 (`/var/lib/sand`), so they can be used interchangeably on one host.
 
+### Local folders on the systemd service
+
+The unit is hardened with `ProtectSystem=strict`: the filesystem is read-only
+to the service apart from `ReadWritePaths=/var/lib/sand`. That is deliberate —
+the service holds your cloud credentials — but it also means a **Local folder**
+account pointed at an external disk or a NAS mount cannot connect:
+
+```
+could not connect to Local folder: /media/you/Disk/SANDVault is not writable:
+read-only file system — the sand service runs under systemd with
+ProtectSystem=strict, which makes every path outside its data directory
+read-only to it.
+```
+
+Nothing is wrong with the drive; the service simply has no write access to it.
+Grant the path and reconnect:
+
+```bash
+sudo ./scripts/allow-local-path.sh /media/you/Disk/SANDVault
+sudo ./scripts/allow-local-path.sh --list      # what is granted now
+sudo ./scripts/allow-local-path.sh --remove /media/you/Disk/SANDVault
+```
+
+It writes `/etc/systemd/system/sand.service.d/10-local-paths.conf`, which
+neither installer touches, so grants survive upgrades. To set them up at
+install time instead, pass a colon-separated list:
+
+```bash
+curl -fsSL .../quickstart.sh | sudo SAND_LOCAL_PATHS=/media/you/Disk/SANDVault bash
+```
+
+Two things the sandbox has no say in, and which the script warns about:
+
+- **Ownership.** The service runs as the `sand` user. A drive mounted by your
+  desktop session belongs to your login and is typically `0700`, so `sand`
+  cannot write to it whatever the unit says. Either
+  `sudo chown -R sand:sand /media/you/Disk/SANDVault`, or mount the drive with
+  options that let it write (`uid=`, `gid=`, `umask=` on NTFS/exFAT).
+- **A read-only mount.** If the drive itself is mounted `ro` — the usual cause
+  on NTFS is a dirty bit left by Windows fast startup or hibernation — remount
+  it read-write first. The connect error says so rather than blaming systemd:
+  SAND checks `/proc/self/mounts` before choosing its wording.
+
+An external drive plugged in *after* the service starts is picked up
+automatically. If a granted path stops working after a re-plug,
+`sudo systemctl restart sand` re-establishes it.
+
+Running `sand serve` directly from a shell has none of this — it writes
+wherever your user can.
+
 ### Windows — NSSM
 
 ```powershell
@@ -587,6 +646,7 @@ sand/
 │   ├── make-icons.mjs           # redraws the home-screen PNGs from icon.svg
 │   ├── build-release.sh         # cross-compile all platforms
 │   ├── deploy-linux.sh          # install an already-built binary
+│   ├── allow-local-path.sh      # let the sandboxed service write to a local disk
 │   └── nginx-sand.conf          # reverse-proxy template
 ├── CHANGELOG.md                 # release notes, one section per tag
 ├── SAND_ARCHITECTURE.md         # the full design document

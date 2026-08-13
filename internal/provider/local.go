@@ -2,11 +2,15 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 )
 
 func init() {
@@ -187,11 +191,135 @@ func (p *localProvider) List(ctx context.Context, prefix string) ([]ObjectInfo, 
 
 func (p *localProvider) Ping(ctx context.Context) error {
 	if err := os.MkdirAll(p.root, 0700); err != nil {
-		return fmt.Errorf("cannot use %s: %w", p.root, err)
+		return fmt.Errorf("cannot use %s: %s%s", p.root, cause(err), hint(p.root, err))
 	}
 	probe := filepath.Join(p.root, ".sand-write-probe")
 	if err := os.WriteFile(probe, []byte("ok"), 0600); err != nil {
-		return fmt.Errorf("%s is not writable: %w", p.root, err)
+		return fmt.Errorf("%s is not writable: %s%s", p.root, cause(err), hint(p.root, err))
 	}
 	return os.Remove(probe)
+}
+
+// cause strips the syscall wrapping off a filesystem error, leaving the part
+// that says what actually went wrong. The path is already in the sentence.
+func cause(err error) string {
+	var perr *fs.PathError
+	if errors.As(err, &perr) {
+		return perr.Err.Error()
+	}
+	return err.Error()
+}
+
+// hint explains an unwritable directory in terms of the thing to go fix. The
+// three ways a local folder usually fails — a sandboxed service, a folder
+// owned by somebody else, a drive that is not mounted — are indistinguishable
+// in the raw syscall error and have nothing in common as repairs. Returns a
+// leading-space sentence, or "" when there is nothing useful to add.
+func hint(root string, err error) string {
+	switch {
+	case errors.Is(err, syscall.EROFS):
+		if sandboxed() {
+			return " — the sand service runs under systemd with ProtectSystem=strict," +
+				" which makes every path outside its data directory read-only to it." +
+				" Grant it this one: sudo scripts/allow-local-path.sh " + root +
+				" (or add ReadWritePaths= to the unit) and reconnect."
+		}
+		if mountedReadOnly(root) {
+			return " — the filesystem holding it is mounted read-only." +
+				" Remount it read-write; on an NTFS drive that usually means clearing" +
+				" the dirty bit left by Windows fast startup or hibernation."
+		}
+		return " — remount the filesystem holding it read-write, or, if SAND runs as a" +
+			" sandboxed service, grant the service write access to this path."
+	case errors.Is(err, fs.ErrPermission):
+		return " — SAND runs as " + whoami() + ", which has no write permission there." +
+			" A removable drive mounted by a desktop session belongs to that desktop user" +
+			" and is typically unreadable to anyone else: chown the folder to the service" +
+			" user, or mount the drive with permissions it has."
+	case errors.Is(err, fs.ErrNotExist):
+		return " — the parent directory does not exist. If this is a removable or network" +
+			" drive, it is probably not mounted."
+	case errors.Is(err, syscall.ENOSPC):
+		return " — the filesystem is full."
+	case errors.Is(err, syscall.ENOTDIR):
+		return " — part of that path is a file, not a directory."
+	}
+	return ""
+}
+
+// sandboxed reports whether this process was started by systemd, which is the
+// deployment where ProtectSystem=strict turns an ordinary directory read-only
+// without anything about the drive itself being wrong.
+func sandboxed() bool {
+	return os.Getenv("INVOCATION_ID") != ""
+}
+
+// mountedReadOnly reports whether the mount that path falls under carries the
+// ro option. Reads /proc/self/mounts, so it answers only on Linux — elsewhere
+// it says no and the caller falls back to the generic wording.
+func mountedReadOnly(path string) bool {
+	data, err := os.ReadFile("/proc/self/mounts")
+	if err != nil {
+		return false
+	}
+	return mountedReadOnlyIn(string(data), path)
+}
+
+// mountedReadOnlyIn is mountedReadOnly against an already-read mount table.
+func mountedReadOnlyIn(table, path string) bool {
+	best, readOnly := "", false
+	for _, line := range strings.Split(table, "\n") {
+		// device mountpoint fstype options dump pass
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+		point := unescapeMount(fields[1])
+		if point != "/" && !strings.HasPrefix(path, point+"/") && path != point {
+			continue
+		}
+		if len(point) < len(best) {
+			continue
+		}
+		// Later entries win at equal length: a mount point can be mounted over,
+		// and /proc/self/mounts lists the effective one last.
+		best = point
+		readOnly = false
+		for _, opt := range strings.Split(fields[3], ",") {
+			if opt == "ro" {
+				readOnly = true
+			}
+		}
+	}
+	return readOnly
+}
+
+// unescapeMount decodes the octal escapes /proc/self/mounts uses for spaces
+// and other awkward characters in a mount point.
+func unescapeMount(field string) string {
+	if !strings.Contains(field, `\`) {
+		return field
+	}
+	var b strings.Builder
+	for i := 0; i < len(field); i++ {
+		if field[i] == '\\' && i+3 < len(field) {
+			if n, err := strconv.ParseUint(field[i+1:i+4], 8, 8); err == nil {
+				b.WriteByte(byte(n))
+				i += 3
+				continue
+			}
+		}
+		b.WriteByte(field[i])
+	}
+	return b.String()
+}
+
+// whoami names the account SAND is running as, for a permission error that is
+// really a question of which user the service is.
+func whoami() string {
+	uid := os.Getuid()
+	if u, err := user.LookupId(strconv.Itoa(uid)); err == nil && u.Username != "" {
+		return fmt.Sprintf("user %s (uid %d)", u.Username, uid)
+	}
+	return fmt.Sprintf("uid %d", uid)
 }
