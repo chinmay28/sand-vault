@@ -58,7 +58,7 @@ func readPasswordFrom(env, prompt string) (string, error) {
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		// Non-interactive: read a single line from stdin so the CLI can be
 		// driven from a script or a pipe.
-		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+		line, err := pipedInput().ReadString('\n')
 		if err != nil && line == "" {
 			return "", fmt.Errorf("reading password from stdin: %w", err)
 		}
@@ -72,6 +72,19 @@ func readPasswordFrom(env, prompt string) (string, error) {
 		return "", fmt.Errorf("reading password: %w", err)
 	}
 	return string(raw), nil
+}
+
+// stdin is buffered once for the whole process. A fresh bufio.Reader per read
+// would swallow whatever followed the first line into a buffer it then threw
+// away, so a command asking for two passwords down one pipe — `passwd`, given
+// the old one and the new one — would find the second line gone.
+var stdin *bufio.Reader
+
+func pipedInput() *bufio.Reader {
+	if stdin == nil {
+		stdin = bufio.NewReader(os.Stdin)
+	}
+	return stdin
 }
 
 // readNewPassword prompts twice and checks the two entries match.

@@ -13,6 +13,7 @@ import (
 
 	"github.com/chinmay28/sand-vault/internal/crypto"
 	"github.com/chinmay28/sand-vault/internal/provider"
+	"github.com/google/uuid"
 )
 
 // StoreVersion is the on-disk vault format version.
@@ -23,8 +24,10 @@ const StoreVersion = 2
 const checkPlaintext = "SAND-VAULT-OK"
 
 // DataKeySize is the length of the random key that actually protects file
-// content. Keeping it separate from the password means a password change
-// re-wraps one key instead of re-encrypting every stored file.
+// content. Keeping it separate from the password is what lets the vault hold
+// several of them at once: a password change mints a new one and the old one
+// stays behind, still readable, until every file has been re-encrypted under
+// the new one.
 const DataKeySize = 32
 
 // ErrLocked is returned by operations that need an unlocked vault.
@@ -66,6 +69,13 @@ func (k kdfParams) toArgon2() (crypto.Argon2Params, []byte, error) {
 	}, salt, nil
 }
 
+// wrappedKey is one retired data key, sealed under the vault key and tagged
+// with the generation it belongs to.
+type wrappedKey struct {
+	ID  string `json:"id"`
+	Key sealed `json:"key"`
+}
+
 // storeFile is the complete on-disk vault. Every field beyond the KDF
 // parameters is encrypted: provider credentials and the manifest both leak
 // meaningful information about the user, so neither is stored in the clear.
@@ -77,6 +87,28 @@ type storeFile struct {
 	Providers sealed    `json:"providers"`
 	Manifest  sealed    `json:"manifest"`
 	Policy    Policy    `json:"policy"`
+
+	// DataKeyID names the generation in DataKey, so a manifest entry can say
+	// which key its parts were sealed under. Absent on a vault written before
+	// the key could be rotated, which is why the empty string is a valid ID:
+	// those entries carry no key ID either, so the two still match.
+	DataKeyID string `json:"data_key_id,omitempty"`
+
+	// RetiredKeys holds the generations that files still hold parts under
+	// while a re-encryption is in flight. It is empty the rest of the time —
+	// a key is dropped the moment the last entry stops naming it.
+	RetiredKeys []wrappedKey `json:"retired_keys,omitempty"`
+
+	// BackupNeedsForce says the copies of the index on the accounts are sealed
+	// under a password this vault has stopped using, and must be overwritten
+	// rather than protected as another vault's.
+	//
+	// It is on disk rather than in memory because the push that replaces them
+	// can fail — the machine that changed the password may be offline for days
+	// — and until it lands, what those accounts hold is an index sealed under
+	// the old password carrying the old data key. Recovering from one would
+	// produce a vault that cannot read anything re-encrypted since.
+	BackupNeedsForce bool `json:"backup_needs_force,omitempty"`
 
 	// ManifestBackupDisabled turns off replicating the manifest to the
 	// connected accounts. Stored as the negative so that the absence of the
@@ -220,7 +252,7 @@ func newStore(password string, policy Policy) (*storeFile, []byte, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	wrappedKey, err := seal(vaultKey, dataKey)
+	sealedKey, err := seal(vaultKey, dataKey)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -242,7 +274,8 @@ func newStore(password string, policy Policy) (*storeFile, []byte, error) {
 			Threads: params.Threads,
 		},
 		Check:     check,
-		DataKey:   wrappedKey,
+		DataKey:   sealedKey,
+		DataKeyID: newKeyID(),
 		Providers: providers,
 		Manifest:  manifest,
 		Policy:    policy,
@@ -250,44 +283,83 @@ func newStore(password string, policy Policy) (*storeFile, []byte, error) {
 	return sf, dataKey, nil
 }
 
+// newKeyID mints an identifier for a data key generation. It is written into
+// the vault beside the key and into every entry sealed under it, so it never
+// has to be guessed from ordering.
+func newKeyID() string { return uuid.NewString() }
+
+// unsealed is everything a password opens: the key that protects the vault
+// file, the data keys that protect the stored parts, and the two encrypted
+// sections.
+type unsealed struct {
+	vaultKey  []byte
+	dataKey   []byte            // the active generation, used by new uploads
+	dataKeyID string            // its ID; "" on a vault written before rotation
+	retired   map[string][]byte // older generations, by ID, still in use
+	providers []provider.Config
+	manifest  *Manifest
+}
+
+// zero wipes every key this holds. Callers that adopt the keys into a vault
+// must not call it.
+func (u *unsealed) zero() {
+	crypto.ZeroBytes(u.vaultKey)
+	crypto.ZeroBytes(u.dataKey)
+	for _, k := range u.retired {
+		crypto.ZeroBytes(k)
+	}
+}
+
 // unsealStore derives the vault key from password and decrypts every section.
-func unsealStore(sf *storeFile, password string) (vaultKey, dataKey []byte, providers []provider.Config, manifest *Manifest, err error) {
+func unsealStore(sf *storeFile, password string) (*unsealed, error) {
 	params, salt, err := sf.KDF.toArgon2()
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, err
 	}
 
-	vaultKey = crypto.DeriveKey(password, salt, params)
+	u := &unsealed{
+		vaultKey:  crypto.DeriveKey(password, salt, params),
+		dataKeyID: sf.DataKeyID,
+		retired:   map[string][]byte{},
+	}
 
-	plain, err := open(vaultKey, sf.Check)
+	plain, err := open(u.vaultKey, sf.Check)
 	if err != nil || subtle.ConstantTimeCompare(plain, []byte(checkPlaintext)) != 1 {
-		crypto.ZeroBytes(vaultKey)
-		return nil, nil, nil, nil, ErrWrongPassword
+		u.zero()
+		return nil, ErrWrongPassword
 	}
 
-	dataKey, err = open(vaultKey, sf.DataKey)
+	u.dataKey, err = open(u.vaultKey, sf.DataKey)
 	if err != nil {
-		crypto.ZeroBytes(vaultKey)
-		return nil, nil, nil, nil, fmt.Errorf("unwrapping data key: %w", err)
+		u.zero()
+		return nil, fmt.Errorf("unwrapping data key: %w", err)
+	}
+	for _, retired := range sf.RetiredKeys {
+		key, err := open(u.vaultKey, retired.Key)
+		if err != nil {
+			u.zero()
+			return nil, fmt.Errorf("unwrapping the data key files are still stored under: %w", err)
+		}
+		u.retired[retired.ID] = key
 	}
 
-	providers = []provider.Config{}
-	if err := openJSON(vaultKey, sf.Providers, &providers); err != nil {
-		crypto.ZeroBytes(vaultKey)
-		return nil, nil, nil, nil, fmt.Errorf("decrypting connected accounts: %w", err)
+	u.providers = []provider.Config{}
+	if err := openJSON(u.vaultKey, sf.Providers, &u.providers); err != nil {
+		u.zero()
+		return nil, fmt.Errorf("decrypting connected accounts: %w", err)
 	}
 
-	manifest = newManifest()
-	if err := openJSON(vaultKey, sf.Manifest, manifest); err != nil {
-		crypto.ZeroBytes(vaultKey)
-		return nil, nil, nil, nil, fmt.Errorf("decrypting file index: %w", err)
+	u.manifest = newManifest()
+	if err := openJSON(u.vaultKey, sf.Manifest, u.manifest); err != nil {
+		u.zero()
+		return nil, fmt.Errorf("decrypting file index: %w", err)
 	}
-	if manifest.Entries == nil {
-		manifest.Entries = []*Entry{}
+	if u.manifest.Entries == nil {
+		u.manifest.Entries = []*Entry{}
 	}
-	if manifest.Folders == nil {
-		manifest.Folders = []string{}
+	if u.manifest.Folders == nil {
+		u.manifest.Folders = []string{}
 	}
 
-	return vaultKey, dataKey, providers, manifest, nil
+	return u, nil
 }

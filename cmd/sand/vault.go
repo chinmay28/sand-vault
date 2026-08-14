@@ -46,8 +46,8 @@ func vaultCmd() *cobra.Command {
 		Use:   "vault",
 		Short: "Create and manage the vault",
 	}
-	cmd.AddCommand(vaultInitCmd(), vaultStatusCmd(), vaultPasswdCmd(), vaultPolicyCmd(),
-		vaultBackupCmd(), vaultRecoverCmd())
+	cmd.AddCommand(vaultInitCmd(), vaultStatusCmd(), vaultPasswdCmd(), vaultMigrateCmd(),
+		vaultPolicyCmd(), vaultBackupCmd(), vaultRecoverCmd())
 	return cmd
 }
 
@@ -59,8 +59,8 @@ func vaultInitCmd() *cobra.Command {
 		Short: "Create a new vault",
 		Long: `Create the encrypted index that tracks your connected accounts and stored
 files. The password protects the index and the account credentials; file
-contents are encrypted under a random key stored inside it, so changing the
-password later does not re-upload anything.`,
+contents are encrypted under a random key stored inside it, which is rotated —
+and every file rebuilt onto the new one — if you ever change the password.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			v, err := vault.Open(vaultPath(cmd))
 			if err != nil {
@@ -114,15 +114,34 @@ func vaultStatusCmd() *cobra.Command {
 			if stats.Degraded > 0 {
 				fmt.Printf("Degraded:         %d file(s) are stored with fewer than 3 parts\n", stats.Degraded)
 			}
+			if stats.Pending > 0 {
+				fmt.Printf("Awaiting re-key:  %d file(s) are still under the previous key — run 'sand vault migrate'\n",
+					stats.Pending)
+			}
 			return nil
 		},
 	}
 }
 
 func vaultPasswdCmd() *cobra.Command {
-	return &cobra.Command{
+	var noMigrate bool
+
+	cmd := &cobra.Command{
 		Use:   "passwd",
-		Short: "Change the vault password",
+		Short: "Change the vault password and re-encrypt what it stores",
+		Long: `Change the password and rotate the key your files are stored under.
+
+The password is changed immediately. Because the parts on your accounts are
+encrypted under a key held inside the vault rather than under the password
+itself, changing the password only means something if that key changes too —
+otherwise anyone with the old password and an old copy of the vault file, or of
+the backup on any connected account, could still read every part.
+
+So a fresh key is generated and every file is rebuilt onto it: each one is
+gathered from its parts, re-encrypted, scattered again, and the parts the old
+key opened are erased. That is a download and an upload per file, and it can
+take a while. Nothing is unreadable while it runs, and it can be interrupted:
+'sand vault migrate' picks up wherever it stopped.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			v, err := vault.Open(vaultPath(cmd))
 			if err != nil {
@@ -140,14 +159,93 @@ func vaultPasswdCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := v.ChangePassword(old, next); err != nil {
+
+			// The password change and the re-encryption are run as two steps
+			// so this can report on the second one as it goes.
+			if _, err := v.ChangePassword(cmd.Context(), old, next, false); err != nil {
 				return err
 			}
+			defer v.Lock()
+			// The copies of the index on the accounts are sealed under the old
+			// password and carry the key being retired, so the push replacing
+			// them has to land before this process goes away.
+			defer v.AwaitBackupSync()
+			fmt.Println("Password changed.")
 
-			fmt.Println("Password changed. Stored files were not re-uploaded.")
-			return nil
+			if noMigrate {
+				if pending := v.PendingMigration(); pending > 0 {
+					fmt.Printf("%d file(s) are still stored under the old key — "+
+						"until 'sand vault migrate' has run, the old password and a copy of the "+
+						"old vault file would still open their parts.\n", pending)
+				}
+				return nil
+			}
+			return runMigration(cmd, v)
 		},
 	}
+
+	cmd.Flags().BoolVar(&noMigrate, "no-migrate", false,
+		"change the password now and leave the files on the old key for 'sand vault migrate'")
+	return cmd
+}
+
+func vaultMigrateCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "migrate",
+		Short: "Re-encrypt files still stored under an old key",
+		Long: `Finish the re-encryption a password change started.
+
+Run this after a password change that was interrupted, deferred with
+--no-migrate, or held up by an account that was offline at the time. It moves
+whatever is still on the old key and erases the parts left behind. Files that
+have already moved are not touched, so running it again is free.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			v, err := openVault(cmd)
+			if err != nil {
+				return err
+			}
+			defer v.Lock()
+
+			if v.PendingMigration() == 0 {
+				fmt.Println("Every file is already stored under the vault's current key.")
+				return nil
+			}
+			return runMigration(cmd, v)
+		},
+	}
+}
+
+// runMigration re-encrypts everything left on an old key, reporting as it goes:
+// a large vault can be at this for a long time, and silence would be
+// indistinguishable from a hang.
+func runMigration(cmd *cobra.Command, v *vault.Vault) error {
+	pending := v.PendingMigration()
+	if pending == 0 {
+		return nil
+	}
+	fmt.Printf("Re-encrypting %d file(s) under the new key…\n", pending)
+
+	report, err := v.MigrateFiles(cmd.Context(), func(path string, done, total int) {
+		fmt.Printf("  [%d/%d] %s\n", done, total, path)
+	})
+	if report != nil {
+		printWarnings(report.Warnings)
+		fmt.Printf("Re-encrypted %d of %d file(s) (%s).\n",
+			report.Migrated, report.Pending, formatBytes(report.Bytes))
+		if report.Remaining > 0 {
+			fmt.Printf("%d file(s) could not be moved and are still readable under the old key, "+
+				"which the vault keeps until they are — fix what is reported above and run "+
+				"'sand vault migrate'.\n", report.Remaining)
+		}
+	}
+	if err != nil {
+		return err
+	}
+
+	// The copies on the accounts carry the keys, so let the push settle before
+	// the process exits and the report claims the change is complete.
+	v.AwaitBackupSync()
+	return nil
 }
 
 func vaultPolicyCmd() *cobra.Command {

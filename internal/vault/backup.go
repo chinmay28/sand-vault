@@ -94,13 +94,53 @@ type Snapshot struct {
 	DataKey   string          `json:"data_key"` // base64, unwraps the stored parts
 	Accounts  []BackupAccount `json:"accounts"`
 	Manifest  *Manifest       `json:"manifest"`
+
+	// KeyID names the generation in DataKey, and Keys carries every generation
+	// the manifest still refers to, that one included. A password change
+	// rotates the data key and re-encrypts the files onto it one at a time, so
+	// a backup written while that is in flight describes files sitting on two
+	// different keys and has to hand over both.
+	KeyID string        `json:"key_id,omitempty"`
+	Keys  []SnapshotKey `json:"keys,omitempty"`
 }
 
-// ShardPassword is the secret that opens the parts this snapshot describes.
-// It is the same value the vault feeds to the archive layer, so a caller
-// holding a snapshot and enough part files can rebuild a file with no vault.
+// SnapshotKey is one data key generation carried by a backup.
+type SnapshotKey struct {
+	ID  string `json:"id"`
+	Key string `json:"key"` // base64
+}
+
+// ShardPassword is the secret that opens parts written under the snapshot's
+// current data key. It is the same value the vault feeds to the archive layer,
+// so a caller holding a snapshot and enough part files can rebuild a file with
+// no vault.
+//
+// Prefer ShardPasswordFor when the file is known: after a password change that
+// has not finished migrating, some files answer to an older key instead.
 func (s *Snapshot) ShardPassword() (string, error) {
-	key, err := base64.StdEncoding.DecodeString(s.DataKey)
+	return s.ShardPasswordFor(s.KeyID)
+}
+
+// ShardPasswordFor is the secret that opens parts written under one key
+// generation, named as a manifest entry names it.
+func (s *Snapshot) ShardPasswordFor(keyID string) (string, error) {
+	encoded := ""
+	switch {
+	case keyID == s.KeyID:
+		encoded = s.DataKey
+	default:
+		for _, k := range s.Keys {
+			if k.ID == keyID {
+				encoded = k.Key
+				break
+			}
+		}
+	}
+	if encoded == "" {
+		return "", fmt.Errorf("this backup carries no data key for generation %q", keyID)
+	}
+
+	key, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
 		return "", fmt.Errorf("decoding the recovered data key: %w", err)
 	}
@@ -108,6 +148,11 @@ func (s *Snapshot) ShardPassword() (string, error) {
 		return "", fmt.Errorf("recovered data key is %d bytes, expected %d", len(key), DataKeySize)
 	}
 	return shardPasswordFor(key), nil
+}
+
+// ShardPasswordForEntry is the secret that opens one file's parts.
+func (s *Snapshot) ShardPasswordForEntry(e *Entry) (string, error) {
+	return s.ShardPasswordFor(e.KeyID)
 }
 
 // sealBackup wraps a snapshot in an envelope that a password alone can open.
@@ -240,11 +285,22 @@ func (v *Vault) snapshotLocked() *Snapshot {
 			AddedAt: cfg.AddedAt,
 		})
 	}
+	keys := []SnapshotKey{{
+		ID:  v.dataKeyID,
+		Key: base64.StdEncoding.EncodeToString(v.dataKey),
+	}}
+	for id, key := range v.retired {
+		keys = append(keys, SnapshotKey{ID: id, Key: base64.StdEncoding.EncodeToString(key)})
+	}
+	sort.Slice(keys, func(i, j int) bool { return keys[i].ID < keys[j].ID })
+
 	return &Snapshot{
 		Version:   backupVersion,
 		CreatedAt: time.Now().UTC(),
 		Policy:    v.store.Policy,
 		DataKey:   base64.StdEncoding.EncodeToString(v.dataKey),
+		KeyID:     v.dataKeyID,
+		Keys:      keys,
 		Accounts:  accounts,
 		Manifest:  v.manifest,
 	}
@@ -281,6 +337,11 @@ func (v *Vault) SyncManifestBackup(ctx context.Context, force bool) ([]string, e
 		erased, _ := v.ForgetBackups(ctx)
 		return erased, fmt.Errorf("%w: %s", ErrBackupRefused, reason)
 	}
+
+	// A password change leaves copies behind that this vault can no longer
+	// open, and that the foreign-backup guard would therefore protect. The
+	// vault remembers that until a push has actually replaced them.
+	force = force || v.store.BackupNeedsForce
 
 	vaultKey := append([]byte(nil), v.vaultKey...)
 	blob, err := sealBackup(v.snapshotLocked(), v.store.KDF, v.vaultKey)
@@ -325,8 +386,35 @@ func (v *Vault) SyncManifestBackup(ctx context.Context, force bool) ([]string, e
 	}
 	wg.Wait()
 
+	if len(warnings) == 0 {
+		// Every account now holds a copy under the current password, so the
+		// standing instruction to overwrite has done its job.
+		v.clearBackupForce()
+	}
+
 	sort.Strings(warnings)
 	return warnings, nil
+}
+
+// clearBackupForce records that the copies on the accounts are current again.
+//
+// It writes the vault file directly rather than going through persistLocked:
+// nothing encrypted changed, and persisting would schedule the very push that
+// just finished.
+func (v *Vault) clearBackupForce() {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	if v.store == nil || !v.store.BackupNeedsForce {
+		return
+	}
+	v.store.BackupNeedsForce = false
+	if err := writeStore(v.path, v.store); err != nil {
+		// Left set, so the next push forces again. The cost of being wrong in
+		// this direction is one redundant overwrite of our own backup.
+		v.store.BackupNeedsForce = true
+		log.Printf("could not record that the manifest backups are current: %v", err)
+	}
 }
 
 // guardForeignBackup refuses to overwrite a backup this vault cannot open.
@@ -591,6 +679,12 @@ func (v *Vault) Recover(ctx context.Context, snapshot *Snapshot, dryRun bool) (*
 	if err != nil || len(dataKey) != DataKeySize {
 		return nil, fmt.Errorf("the backup carries no usable data key")
 	}
+	// A backup taken while a password change was still re-encrypting names
+	// more than one generation, and the files left on the older one need it.
+	retired, err := snapshotRetiredKeys(snapshot)
+	if err != nil {
+		return nil, err
+	}
 
 	// Ask every account what it holds, so shards can be matched to accounts by
 	// the keys that are actually there rather than by remembered IDs.
@@ -669,22 +763,38 @@ func (v *Vault) Recover(ctx context.Context, snapshot *Snapshot, dryRun bool) (*
 		return nil, fmt.Errorf("this vault gained files while the recovery was running; start again")
 	}
 
-	// Adopt the recovered data key: it is what every stored part was encrypted
-	// under, and new uploads should join them rather than start a second key.
+	// Adopt the recovered data keys: they are what the stored parts were
+	// encrypted under, and new uploads should join them rather than start a
+	// key of their own.
 	wrapped, err := seal(v.vaultKey, dataKey)
 	if err != nil {
 		return nil, err
 	}
+	var wrappedRetired []wrappedKey
+	for id, key := range retired {
+		sealedKey, err := seal(v.vaultKey, key)
+		if err != nil {
+			return nil, err
+		}
+		wrappedRetired = append(wrappedRetired, wrappedKey{ID: id, Key: sealedKey})
+	}
 
 	previous := struct {
-		dataKey  []byte
-		wrapped  sealed
-		policy   Policy
-		manifest *Manifest
-	}{v.dataKey, v.store.DataKey, v.store.Policy, v.manifest}
+		dataKey   []byte
+		dataKeyID string
+		retired   map[string][]byte
+		wrapped   sealed
+		retiredOn []wrappedKey
+		policy    Policy
+		manifest  *Manifest
+	}{v.dataKey, v.dataKeyID, v.retired, v.store.DataKey, v.store.RetiredKeys, v.store.Policy, v.manifest}
 
 	v.store.DataKey = wrapped
+	v.store.DataKeyID = snapshot.KeyID
+	v.store.RetiredKeys = wrappedRetired
 	v.dataKey = dataKey
+	v.dataKeyID = snapshot.KeyID
+	v.retired = retired
 	if snapshot.Policy.Valid() {
 		v.store.Policy = snapshot.Policy
 	}
@@ -696,14 +806,53 @@ func (v *Vault) Recover(ctx context.Context, snapshot *Snapshot, dryRun bool) (*
 		// see a vault that already holds files — and would strand the caller
 		// with an index that is not on disk.
 		v.dataKey = previous.dataKey
+		v.dataKeyID = previous.dataKeyID
+		v.retired = previous.retired
 		v.store.DataKey = previous.wrapped
+		v.store.DataKeyID = previous.dataKeyID
+		v.store.RetiredKeys = previous.retiredOn
 		v.store.Policy = previous.policy
 		v.manifest = previous.manifest
 		return nil, err
 	}
 
 	crypto.ZeroBytes(previous.dataKey)
+	for _, key := range previous.retired {
+		crypto.ZeroBytes(key)
+	}
 	return report, nil
+}
+
+// snapshotRetiredKeys decodes the generations a snapshot carries beyond its
+// current one, keeping only those its own manifest still points at.
+func snapshotRetiredKeys(snapshot *Snapshot) (map[string][]byte, error) {
+	needed := map[string]bool{}
+	for _, e := range snapshot.Manifest.Entries {
+		if e.KeyID != snapshot.KeyID {
+			needed[e.KeyID] = true
+		}
+	}
+
+	retired := map[string][]byte{}
+	for _, k := range snapshot.Keys {
+		if !needed[k.ID] {
+			continue
+		}
+		key, err := base64.StdEncoding.DecodeString(k.Key)
+		if err != nil || len(key) != DataKeySize {
+			return nil, fmt.Errorf("the backup carries an unusable data key for generation %q", k.ID)
+		}
+		retired[k.ID] = key
+	}
+
+	for id := range needed {
+		if _, ok := retired[id]; !ok {
+			return nil, fmt.Errorf(
+				"the backup describes files stored under a data key it does not carry (%q) — "+
+					"it was written by a build that could not record a key change in progress", id)
+		}
+	}
+	return retired, nil
 }
 
 // locateShards asks every connected account for a listing and returns a map of

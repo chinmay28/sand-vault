@@ -150,6 +150,7 @@ func (s *Server) Handler() (http.Handler, error) {
 	protected := map[string]http.HandlerFunc{
 		"POST /api/vault/lock":     s.handleVaultLock,
 		"POST /api/vault/password": s.handleVaultPassword,
+		"POST /api/vault/migrate":  s.handleVaultMigrate,
 		"POST /api/vault/policy":   s.handleVaultPolicy,
 
 		"GET /api/providers":            s.handleProvidersList,

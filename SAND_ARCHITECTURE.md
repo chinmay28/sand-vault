@@ -83,24 +83,26 @@ everything meaningful is encrypted. It is the only persistent state SAND has.
 
 ```json
 {
-  "version":   2,
-  "kdf":       { "salt": "…", "time": 3, "memory": 65536, "threads": 4 },
-  "check":     { "nonce": "…", "ciphertext": "…" },
-  "data_key":  { "nonce": "…", "ciphertext": "…" },
-  "providers": { "nonce": "…", "ciphertext": "…" },
-  "manifest":  { "nonce": "…", "ciphertext": "…" },
-  "policy":    "strict"
+  "version":     2,
+  "kdf":         { "salt": "…", "time": 3, "memory": 65536, "threads": 4 },
+  "check":       { "nonce": "…", "ciphertext": "…" },
+  "data_key":    { "nonce": "…", "ciphertext": "…" },
+  "data_key_id": "…",
+  "providers":   { "nonce": "…", "ciphertext": "…" },
+  "manifest":    { "nonce": "…", "ciphertext": "…" },
+  "policy":      "strict"
 }
 ```
 
-Only the KDF parameters and the policy are in the clear. Everything else is
-sealed with AES-256-GCM under the **vault key**, derived from your password
-with Argon2id.
+Only the KDF parameters, the policy and the key generation labels are in the
+clear. Everything else is sealed with AES-256-GCM under the **vault key**,
+derived from your password with Argon2id.
 
 | Section | Holds | Why it is encrypted |
 |---|---|---|
 | `check` | A fixed magic string | Opening it is what verifies the password |
 | `data_key` | 32 random bytes | The key files are actually encrypted with |
+| `retired_keys` | Earlier data keys, while a password change is still re-encrypting (§3.3) | They open parts that have not moved yet |
 | `providers` | Account configs **including credentials** | A stolen vault file must not yield cloud access |
 | `manifest` | Filenames, folders, sizes, part placement | Filenames and folder structure are themselves sensitive |
 
@@ -112,13 +114,56 @@ key.
 
 This buys two things:
 
-- **Password changes are instant.** `sand vault passwd` re-wraps 32 bytes.
-  Nothing is re-uploaded, because nothing a provider holds depended on your
-  password.
 - **Part encryption does not inherit a weak password.** The secret protecting
   file content is 256 bits of entropy regardless of what you typed.
+- **The vault can hold more than one of them at a time**, which is what makes
+  changing a password something other than a lie. See §3.3.
 
-### 3.3 Locking
+### 3.3 Changing the password rotates the data key
+
+Re-wrapping the data key under a new password would leave every part on every
+account encrypted exactly as before. Anyone holding the old password *and* an
+old copy of the vault file — or of the `manifest.sand` sitting on each connected
+account — could still unwrap the same key and read the same parts. The password
+would have changed; what it protects would not have.
+
+So `sand vault passwd` generates a **new** data key and rebuilds every stored
+file onto it. Each file is gathered from its parts, decrypted under the old key,
+re-encrypted under the new one, scattered again, and the parts the old key opened
+are erased.
+
+That cannot be one atomic act — it is a download and an upload per file, across
+accounts that may be slow or offline — so the vault carries the old key beside
+the new one while it runs:
+
+| On disk | Holds |
+|---|---|
+| `data_key` + `data_key_id` | The current generation. Every new upload uses it. |
+| `retired_keys[]` | The generations files are still stored under, wrapped under the new password |
+| `manifest.entries[].key_id` | Which generation each file's parts answer to |
+
+The password change itself is one atomic write: new key minted, old key kept
+beside it, every section re-sealed under the new password. From that moment the
+old password opens nothing. Files then move one at a time, each committed on its
+own, and a retired key is dropped — from memory and from the file — the moment
+no entry names it, whether the last file on it was migrated or deleted.
+
+What that buys:
+
+- The password is genuinely changed the second the command returns.
+- Every file stays readable throughout, on whichever key it is on.
+- An interrupted migration resumes (`sand vault migrate`) rather than restarts.
+- A file on an offline account holds up nothing but itself, and is reported.
+
+A manifest backup written mid-migration carries **every** generation it needs,
+so a vault lost halfway through still recovers both halves of its files.
+
+**The cost is bandwidth.** Changing the password re-downloads and re-uploads
+everything the vault holds. `--no-migrate` changes the password now and leaves
+the files for later, at the price of the old password still being enough to read
+the parts that have not moved.
+
+### 3.4 Locking
 
 Unlocking derives the vault key, decrypts every section, and holds the keys in
 memory. Locking zeroes them and drops the decrypted index. A locked vault can
@@ -127,14 +172,14 @@ list nothing and fetch nothing — there is no cached view to fall back on.
 The server re-locks automatically once every browser session has been idle past
 the timeout (default 30 minutes, `--idle-timeout`).
 
-### 3.4 Atomic writes
+### 3.5 Atomic writes
 
 The vault file is rewritten in full on every change, via a temp file in the same
 directory plus `fsync` and `rename`. An interrupted write cannot corrupt the
 index that maps your files to their parts — the one piece of state whose loss
 would strand everything.
 
-### 3.5 The manifest backup
+### 3.6 The manifest backup
 
 Losing the vault file used to be unrecoverable, and not by a small margin: parts
 are encrypted under the random `data_key`, which existed in exactly one place.
@@ -186,7 +231,7 @@ The write is guarded in one more way: an account already holding a backup this
 vault cannot open is left alone, because that is a *different* vault's recovery
 data and connecting an account to a second vault must not destroy it.
 
-### 3.6 Recovery
+### 3.7 Recovery
 
 Three routes back, in increasing order of how much has survived:
 
@@ -537,7 +582,8 @@ reveals only whether a vault exists.
 | POST | `/api/vault/init` | Create the vault, start a session |
 | POST | `/api/vault/unlock` | Unlock, start a session |
 | POST | `/api/vault/lock` | Zero the keys, end every session |
-| POST | `/api/vault/password` | Re-wrap under a new password |
+| POST | `/api/vault/password` | New password, new data key, everything re-encrypted onto it (`"migrate": false` to defer) |
+| POST | `/api/vault/migrate` | Finish a re-encryption that was deferred or interrupted |
 | POST | `/api/vault/policy` | Change placement policy |
 | GET | `/api/providers/specs` | Backend descriptions for the connect form |
 | GET | `/api/providers` | Connected accounts: online, parts held, quota |
@@ -618,7 +664,7 @@ The same endpoints back the API (`POST /api/archive`, `POST /api/restore`).
 | Threat | Mitigation |
 |---|---|
 | **One cloud account compromised** | Attacker holds one part: ciphertext derived from half the compressed bytes, plus a `manifest.sand` they cannot open. Under `strict` one part per file is guaranteed by placement. |
-| **One account compromised *and* the password guessed** | The manifest opens: tree, placement map, data key, and roughly half of each large file that account holds a part of. A whole file still needs a second account. See §3.5. |
+| **One account compromised *and* the password guessed** | The manifest opens: tree, placement map, data key, and roughly half of each large file that account holds a part of. A whole file still needs a second account. See §3.6. |
 | **Two accounts compromised** | Attacker holds enough parts but not the key — which needs the vault file, or a manifest backup *and* the password. |
 | **Vault file stolen** | Every section is AES-256-GCM sealed under an Argon2id key. Yields neither cloud credentials nor filenames. |
 | **Provider tampers with a part** | GCM tag fails; the other two parts still rebuild the file |

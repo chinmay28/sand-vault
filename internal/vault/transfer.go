@@ -27,8 +27,6 @@ func (v *Vault) Upload(ctx context.Context, dir, name string, data []byte, overw
 		return nil, nil, err
 	}
 
-	// Snapshot everything the transfer needs, then release the lock: the
-	// network round-trips below must not block browsing.
 	v.mu.RLock()
 	if v.dataKey == nil {
 		v.mu.RUnlock()
@@ -39,94 +37,13 @@ func (v *Vault) Upload(ctx context.Context, dir, name string, data []byte, overw
 		v.mu.RUnlock()
 		return nil, nil, fmt.Errorf("no such folder: %s", dir)
 	}
-	shardPassword := v.shardPasswordLocked()
-	policy := v.store.Policy
-	configs := append([]provider.Config(nil), v.providers...)
 	v.mu.RUnlock()
 
-	if len(configs) == 0 {
-		return nil, nil, fmt.Errorf("connect at least one cloud account before uploading")
-	}
-
-	encoded, err := archive.EncodeBytes(data, name, shardPassword)
+	placed, err := v.scatter(ctx, name, data)
 	if err != nil {
-		return nil, nil, err
+		return nil, placed.warnings, err
 	}
-
-	archiveID := hex.EncodeToString(encoded.ArchiveID[:])
-	byID := make(map[string]provider.Config, len(configs))
-	ids := make([]string, 0, len(configs))
-	for _, cfg := range configs {
-		ids = append(ids, cfg.ID)
-		byID[cfg.ID] = cfg
-	}
-
-	// Seeding from the archive ID rotates which account receives part 1, so
-	// load spreads evenly instead of always landing on the first account.
-	seed := binary.BigEndian.Uint64(encoded.ArchiveID[:8])
-	plan, err := BuildPlan(ids, policy, seed)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	type putResult struct {
-		shard Shard
-		err   error
-	}
-
-	results := make(chan putResult, len(plan))
-	var wg sync.WaitGroup
-
-	for part, providerID := range plan {
-		cfg := byID[providerID]
-		blob := encoded.Parts[part-1]
-		key := ShardKey(archiveID, part)
-
-		wg.Add(1)
-		go func(part int, cfg provider.Config, key string, blob []byte) {
-			defer wg.Done()
-
-			p, err := v.buildProvider(cfg)
-			if err != nil {
-				results <- putResult{err: fmt.Errorf("part %d → %s: %w", part, cfg.Name, err)}
-				return
-			}
-			if err := p.Put(ctx, key, blob); err != nil {
-				results <- putResult{err: fmt.Errorf("part %d → %s: %w", part, cfg.Name, err)}
-				return
-			}
-			results <- putResult{shard: Shard{
-				Part:         part,
-				ProviderID:   cfg.ID,
-				ProviderName: cfg.Name,
-				ProviderKind: string(cfg.Kind),
-				Key:          key,
-				Size:         int64(len(blob)),
-			}}
-		}(part, cfg, key, blob)
-	}
-
-	wg.Wait()
-	close(results)
-
-	var shards []Shard
-	var warnings []string
-	for r := range results {
-		if r.err != nil {
-			warnings = append(warnings, r.err.Error())
-			continue
-		}
-		shards = append(shards, r.shard)
-	}
-	sort.Slice(shards, func(i, j int) bool { return shards[i].Part < shards[j].Part })
-
-	if len(shards) < archive.MinPartsToRestore {
-		// Not enough parts landed to ever rebuild the file — undo the ones
-		// that did rather than leaving orphaned blobs on people's accounts.
-		v.deleteShards(context.WithoutCancel(ctx), shards)
-		return nil, warnings, fmt.Errorf("stored only %d of %d parts, need at least %d: %s",
-			len(shards), archive.PartCount, archive.MinPartsToRestore, strings.Join(warnings, "; "))
-	}
+	shards, warnings := placed.shards, placed.warnings
 
 	now := time.Now().UTC()
 	entry := &Entry{
@@ -134,9 +51,10 @@ func (v *Vault) Upload(ctx context.Context, dir, name string, data []byte, overw
 		Dir:        dir,
 		Name:       name,
 		Size:       int64(len(data)),
-		Hash:       hex.EncodeToString(encoded.OriginalHash[:]),
+		Hash:       hex.EncodeToString(placed.originalHash[:]),
 		MIME:       DetectMIME(name, data),
-		ArchiveID:  archiveID,
+		ArchiveID:  placed.archiveID,
+		KeyID:      placed.keyID,
 		CreatedAt:  now,
 		ModifiedAt: now,
 		Shards:     shards,
@@ -189,6 +107,128 @@ func (v *Vault) Upload(ctx context.Context, dir, name string, data []byte, overw
 	return entry, warnings, nil
 }
 
+// placement is the outcome of encoding one file and scattering its parts: what
+// landed, where, and under which key generation.
+type placement struct {
+	archiveID    string
+	keyID        string
+	originalHash [32]byte
+	shards       []Shard
+	warnings     []string
+}
+
+// scatter encodes data into encrypted parts under the vault's active data key
+// and places them across the connected accounts.
+//
+// It is the half of an upload that touches the network, and re-encrypting a
+// file after a password change is the same operation with a different reason:
+// both hand it plaintext and get back the parts that now hold it. Whatever it
+// records in the returned shards is really on the accounts — on too few parts
+// landing it erases the ones that did and returns an error, so a caller never
+// has to clean up after a failure of its own.
+func (v *Vault) scatter(ctx context.Context, name string, data []byte) (placement, error) {
+	// Snapshot everything the transfer needs, then release the lock: the
+	// network round-trips below must not block browsing.
+	v.mu.RLock()
+	if v.dataKey == nil {
+		v.mu.RUnlock()
+		return placement{}, ErrLocked
+	}
+	out := placement{keyID: v.dataKeyID}
+	shardPassword := v.shardPasswordLocked()
+	policy := v.store.Policy
+	configs := append([]provider.Config(nil), v.providers...)
+	v.mu.RUnlock()
+
+	if len(configs) == 0 {
+		return out, fmt.Errorf("connect at least one cloud account before uploading")
+	}
+
+	encoded, err := archive.EncodeBytes(data, name, shardPassword)
+	if err != nil {
+		return out, err
+	}
+	out.archiveID = hex.EncodeToString(encoded.ArchiveID[:])
+	out.originalHash = encoded.OriginalHash
+
+	byID := make(map[string]provider.Config, len(configs))
+	ids := make([]string, 0, len(configs))
+	for _, cfg := range configs {
+		ids = append(ids, cfg.ID)
+		byID[cfg.ID] = cfg
+	}
+
+	// Seeding from the archive ID rotates which account receives part 1, so
+	// load spreads evenly instead of always landing on the first account.
+	seed := binary.BigEndian.Uint64(encoded.ArchiveID[:8])
+	plan, err := BuildPlan(ids, policy, seed)
+	if err != nil {
+		return out, err
+	}
+
+	type putResult struct {
+		shard Shard
+		err   error
+	}
+
+	results := make(chan putResult, len(plan))
+	var wg sync.WaitGroup
+
+	for part, providerID := range plan {
+		cfg := byID[providerID]
+		blob := encoded.Parts[part-1]
+		key := ShardKey(out.archiveID, part)
+
+		wg.Add(1)
+		go func(part int, cfg provider.Config, key string, blob []byte) {
+			defer wg.Done()
+
+			p, err := v.buildProvider(cfg)
+			if err != nil {
+				results <- putResult{err: fmt.Errorf("part %d → %s: %w", part, cfg.Name, err)}
+				return
+			}
+			if err := p.Put(ctx, key, blob); err != nil {
+				results <- putResult{err: fmt.Errorf("part %d → %s: %w", part, cfg.Name, err)}
+				return
+			}
+			results <- putResult{shard: Shard{
+				Part:         part,
+				ProviderID:   cfg.ID,
+				ProviderName: cfg.Name,
+				ProviderKind: string(cfg.Kind),
+				Key:          key,
+				Size:         int64(len(blob)),
+			}}
+		}(part, cfg, key, blob)
+	}
+
+	wg.Wait()
+	close(results)
+
+	for r := range results {
+		if r.err != nil {
+			out.warnings = append(out.warnings, r.err.Error())
+			continue
+		}
+		out.shards = append(out.shards, r.shard)
+	}
+	sort.Slice(out.shards, func(i, j int) bool { return out.shards[i].Part < out.shards[j].Part })
+
+	if len(out.shards) < archive.MinPartsToRestore {
+		// Not enough parts landed to ever rebuild the file — undo the ones
+		// that did rather than leaving orphaned blobs on people's accounts.
+		v.deleteShards(context.WithoutCancel(ctx), out.shards)
+		err := fmt.Errorf("stored only %d of %d parts, need at least %d: %s",
+			len(out.shards), archive.PartCount, archive.MinPartsToRestore,
+			strings.Join(out.warnings, "; "))
+		out.shards = nil
+		return out, err
+	}
+
+	return out, nil
+}
+
 // Fetch gathers enough parts to rebuild a file, decrypts it, and returns the
 // original bytes. It reads from every account holding a part at once and
 // stops as soon as the minimum number of parts have arrived, so one slow or
@@ -204,9 +244,14 @@ func (v *Vault) Fetch(ctx context.Context, id string) ([]byte, *Entry, error) {
 		v.mu.RUnlock()
 		return nil, nil, fmt.Errorf("no such file: %s", id)
 	}
-	shardPassword := v.shardPasswordLocked()
+	// Not necessarily the key new uploads use: a file waiting its turn in a
+	// password change's re-encryption is still sealed under the old one.
+	shardPassword, err := v.shardPasswordForLocked(entry.KeyID)
 	configs := v.configsForLocked(entry.Shards)
 	v.mu.RUnlock()
+	if err != nil {
+		return nil, nil, fmt.Errorf("reading %s: %w", entry.Path(), err)
+	}
 
 	fetchCtx, cancel := context.WithCancel(ctx)
 	defer cancel()

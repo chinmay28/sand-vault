@@ -32,7 +32,14 @@ type Vault struct {
 	mu       sync.RWMutex
 	store    *storeFile
 	vaultKey []byte // nil while locked
-	dataKey  []byte // nil while locked
+	dataKey  []byte // the active data key; nil while locked
+
+	// dataKeyID names the generation in dataKey, and retired holds the older
+	// generations that files are still stored under while a password change
+	// re-encrypts them. Both are empty on a vault whose key has never been
+	// rotated.
+	dataKeyID string
+	retired   map[string][]byte
 
 	providers []provider.Config
 	manifest  *Manifest
@@ -148,6 +155,8 @@ func (v *Vault) Init(password string, policy Policy) error {
 	v.store = sf
 	v.vaultKey = crypto.DeriveKey(password, salt, params)
 	v.dataKey = dataKey
+	v.dataKeyID = sf.DataKeyID
+	v.retired = map[string][]byte{}
 	v.providers = []provider.Config{}
 	v.manifest = newManifest()
 	v.resetLiveCache()
@@ -168,15 +177,12 @@ func (v *Vault) Unlock(password string) error {
 		v.store = sf
 	}
 
-	vaultKey, dataKey, providers, manifest, err := unsealStore(v.store, password)
+	u, err := unsealStore(v.store, password)
 	if err != nil {
 		return err
 	}
 
-	v.vaultKey = vaultKey
-	v.dataKey = dataKey
-	v.providers = providers
-	v.manifest = manifest
+	v.adoptLocked(u)
 	v.resetLiveCache()
 
 	// Anything that changed while an account was unreachable — or while the
@@ -193,8 +199,13 @@ func (v *Vault) Lock() {
 
 	crypto.ZeroBytes(v.vaultKey)
 	crypto.ZeroBytes(v.dataKey)
+	for _, key := range v.retired {
+		crypto.ZeroBytes(key)
+	}
 	v.vaultKey = nil
 	v.dataKey = nil
+	v.dataKeyID = ""
+	v.retired = nil
 	v.providers = nil
 	v.manifest = nil
 
@@ -203,75 +214,39 @@ func (v *Vault) Lock() {
 	v.liveMu.Unlock()
 }
 
-// ChangePassword re-wraps the vault under a new password. Stored files are
-// untouched: they are encrypted under the data key, which does not change.
-func (v *Vault) ChangePassword(oldPassword, newPassword string) error {
-	if strings.TrimSpace(newPassword) == "" {
-		return fmt.Errorf("new password must not be empty")
+// adoptLocked installs the keys and sections a password just opened. The
+// caller must hold the write lock, and must not zero what it passes in.
+func (v *Vault) adoptLocked(u *unsealed) {
+	v.vaultKey = u.vaultKey
+	v.dataKey = u.dataKey
+	v.dataKeyID = u.dataKeyID
+	v.retired = u.retired
+	if v.retired == nil {
+		v.retired = map[string][]byte{}
 	}
-
-	v.mu.Lock()
-	defer v.mu.Unlock()
-
-	if v.store == nil {
-		return ErrNotInitialized
-	}
-	if _, _, _, _, err := unsealStore(v.store, oldPassword); err != nil {
-		return err
-	}
-
-	// Everything the old key protected is already decrypted in memory when
-	// unlocked; re-derive it here so the call also works from a locked vault.
-	_, dataKey, providers, manifest, err := unsealStore(v.store, oldPassword)
-	if err != nil {
-		return err
-	}
-
-	sf, _, err := newStore(newPassword, v.store.Policy)
-	if err != nil {
-		return err
-	}
-	params, salt, err := sf.KDF.toArgon2()
-	if err != nil {
-		return err
-	}
-	newKey := crypto.DeriveKey(newPassword, salt, params)
-
-	if sf.DataKey, err = seal(newKey, dataKey); err != nil {
-		crypto.ZeroBytes(newKey)
-		return err
-	}
-	if sf.Providers, err = sealJSON(newKey, providers); err != nil {
-		crypto.ZeroBytes(newKey)
-		return err
-	}
-	if sf.Manifest, err = sealJSON(newKey, manifest); err != nil {
-		crypto.ZeroBytes(newKey)
-		return err
-	}
-	if err := writeStore(v.path, sf); err != nil {
-		crypto.ZeroBytes(newKey)
-		return err
-	}
-
-	crypto.ZeroBytes(v.vaultKey)
-	v.store = sf
-	v.vaultKey = newKey
-	v.dataKey = dataKey
-	v.providers = providers
-	v.manifest = manifest
-
-	// The backup is sealed under the password, so the copies on the accounts
-	// still answer to the old one until they are replaced.
-	v.scheduleBackup(true)
-	return nil
+	v.providers = u.providers
+	v.manifest = u.manifest
 }
 
-// shardPassword is the secret used to encrypt file parts. It is the hex form
-// of the vault's random data key, so part encryption never depends on the
-// strength of what the user typed.
+// shardPasswordLocked is the secret used to encrypt the parts of new uploads.
+// It is the hex form of the vault's active random data key, so part encryption
+// never depends on the strength of what the user typed.
 func (v *Vault) shardPasswordLocked() string {
 	return shardPasswordFor(v.dataKey)
+}
+
+// shardPasswordForLocked returns the secret that opens the parts of a file
+// sealed under a given key generation. Anything not yet re-encrypted after a
+// password change is still on an older one, and asking for a generation the
+// vault no longer holds is a corrupt index rather than a wrong password.
+func (v *Vault) shardPasswordForLocked(keyID string) (string, error) {
+	if keyID == v.dataKeyID {
+		return shardPasswordFor(v.dataKey), nil
+	}
+	if key, ok := v.retired[keyID]; ok {
+		return shardPasswordFor(key), nil
+	}
+	return "", fmt.Errorf("this file is recorded under a data key the vault no longer holds")
 }
 
 // shardPasswordFor derives the part secret from a data key. Recovery needs the
@@ -288,6 +263,10 @@ func (v *Vault) persistLocked() error {
 	}
 
 	v.manifest.UpdatedAt = time.Now().UTC()
+
+	// Every index change is a chance for the last file on a retired key to
+	// have moved off it, and a key nothing needs must not linger in the file.
+	v.pruneRetiredKeysLocked()
 
 	providers, err := sealJSON(v.vaultKey, v.providers)
 	if err != nil {
@@ -797,6 +776,10 @@ type Stats struct {
 	Degraded    int    `json:"degraded"`
 	Accounts    int    `json:"accounts"`
 	Policy      Policy `json:"policy"`
+
+	// Pending counts the files still stored under a retired data key after a
+	// password change, waiting to be re-encrypted under the new one.
+	Pending int `json:"pending_migration"`
 }
 
 // Stats returns aggregate counters for the whole vault.
@@ -820,6 +803,9 @@ func (v *Vault) Stats() (Stats, error) {
 		}
 		if len(e.Shards) < archive.PartCount {
 			s.Degraded++
+		}
+		if e.KeyID != v.dataKeyID {
+			s.Pending++
 		}
 		if e.Dir != "/" {
 			folders[e.Dir] = true

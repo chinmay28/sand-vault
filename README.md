@@ -280,6 +280,37 @@ enough to rebuild.
 
 ---
 
+## Changing the password
+
+```bash
+./sand vault passwd
+```
+
+This does more than it sounds like. The parts on your accounts are encrypted
+under a random key kept inside the vault file, not under your password, so
+re-wrapping that key under a new password would leave every part exactly as
+readable as before to anyone holding the old password and an old copy of the
+vault file — or of the `manifest.sand` on any connected account.
+
+So changing the password mints a **new** random key and rebuilds every stored
+file onto it: each file is gathered from its parts, re-encrypted, scattered
+again, and the parts the old key opened are erased.
+
+That is a download and an upload per file, so on a full vault it takes a while
+and it costs bandwidth. It is safe to interrupt:
+
+- The password itself changes in one atomic write, before any file moves.
+- Files stay readable throughout — the vault keeps the old key for whatever has
+  not moved yet, and drops it the moment nothing needs it.
+- `./sand vault migrate` picks up whatever is left, including files whose
+  account was offline at the time. `./sand vault status` says how many are.
+
+`./sand vault passwd --no-migrate` changes the password now and leaves the files
+for later. Until the migration runs, the old password plus an old copy of the
+vault file still opens the parts that have not moved.
+
+---
+
 ## Losing the vault file
 
 Parts are encrypted under a random 256-bit key that lives inside your vault
@@ -366,7 +397,8 @@ everything.
 ```
 sand vault init [--policy strict|redundant]   Create the vault
 sand vault status                             What's stored, where, how much
-sand vault passwd                             Change password (nothing re-uploads)
+sand vault passwd [--no-migrate]              Change password, re-encrypt everything
+sand vault migrate                            Finish a deferred or interrupted re-encryption
 sand vault policy [strict|redundant]          Show or set placement policy
 sand vault backup [--disable|--enable]        Write the encrypted index to every account
 sand vault recover [--from ACCOUNT]           Rebuild a lost vault from an account's copy
@@ -486,7 +518,8 @@ its home screen gets the password prompt like any other browser would.
 | GET | `/api/health` | Liveness |
 | GET | `/api/vault` | Initialized? Unlocked? Stats |
 | POST | `/api/vault/init` · `/unlock` · `/lock` | Vault lifecycle |
-| POST | `/api/vault/password` · `/policy` | Change password / placement |
+| POST | `/api/vault/password` · `/policy` | Change password (re-encrypts every file) / placement |
+| POST | `/api/vault/migrate` | Finish a deferred or interrupted re-encryption |
 | GET | `/api/providers/specs` | Backend descriptions for the connect form |
 | GET · POST | `/api/providers` | List / connect accounts |
 | POST | `/api/providers/{id}/test` | Re-check an account |
@@ -537,9 +570,11 @@ another site in your browser can't drive the local API.
 | Metadata leaking to a provider | Object keys derived only from a random ID |
 
 **Two keys, not one.** File parts are encrypted under a random 256-bit data key,
-which is itself wrapped by your password. So changing your password re-wraps 32
-bytes instead of re-uploading everything, and part encryption doesn't inherit a
-weak password.
+which is itself wrapped by your password — so part encryption doesn't inherit a
+weak password. Changing your password mints a **new** data key and re-encrypts
+every stored file onto it, because merely re-wrapping the old one would leave
+every part on your accounts readable to whoever has the old password and an old
+copy of the vault file.
 
 ### What SAND does not protect against
 

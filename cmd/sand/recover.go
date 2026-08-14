@@ -282,19 +282,18 @@ func openManifestFile(path string) (*vault.Snapshot, error) {
 // Parts written by the vault are encrypted under its random data key, not under
 // the user's password, so a password alone cannot open them. The manifest
 // carries that key, which is what turns "two part files and a password" into a
-// recovered file.
+// recovered file. It can carry more than one: a backup written while a password
+// change was still re-encrypting describes files on either side of the change,
+// so the key is chosen per file wherever the parts can be traced to one.
 func restoreWithManifest(manifestPath string, partPaths []string, preserveTree bool, outputDir string) (password, dir, vaultPath string, err error) {
 	snapshot, err := openManifestFile(manifestPath)
 	if err != nil {
 		return "", "", "", err
 	}
-	password, err = snapshot.ShardPassword()
-	if err != nil {
-		return "", "", "", err
-	}
 
 	dir = outputDir
-	if entry := entryForParts(snapshot, partPaths); entry != nil {
+	entry := entryForParts(snapshot, partPaths)
+	if entry != nil {
 		vaultPath = entry.Path()
 		if preserveTree && entry.Dir != "/" {
 			dir = filepath.Join(outputDir, filepath.FromSlash(strings.TrimPrefix(entry.Dir, "/")))
@@ -302,6 +301,14 @@ func restoreWithManifest(manifestPath string, partPaths []string, preserveTree b
 				return "", "", "", fmt.Errorf("creating %s: %w", dir, err)
 			}
 		}
+		if password, err = snapshot.ShardPasswordForEntry(entry); err != nil {
+			return "", "", "", err
+		}
+		return password, dir, vaultPath, nil
+	}
+
+	if password, err = snapshot.ShardPassword(); err != nil {
+		return "", "", "", err
 	}
 	return password, dir, vaultPath, nil
 }

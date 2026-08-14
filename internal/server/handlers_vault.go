@@ -121,21 +121,48 @@ func (s *Server) handleVaultLock(w http.ResponseWriter, r *http.Request) {
 type passwordRequest struct {
 	OldPassword string `json:"old_password"`
 	NewPassword string `json:"new_password"`
+
+	// Migrate re-encrypts every stored file under the new data key before the
+	// call returns. A pointer so that omitting it means yes: leaving files on
+	// the old key has to be asked for, not fallen into.
+	Migrate *bool `json:"migrate"`
 }
 
+// handleVaultPassword changes the password and, unless asked not to,
+// re-encrypts every stored file under the fresh data key that comes with it.
+//
+// The migration is a download and an upload per file, so this request can run
+// for a long time on a large vault. Files stay readable throughout, and a
+// client that gives up on the response is not a client that broke anything:
+// whatever moved stays moved, and POST /api/vault/migrate finishes the rest.
 func (s *Server) handleVaultPassword(w http.ResponseWriter, r *http.Request) {
 	var req passwordRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
 		return
 	}
+	migrate := req.Migrate == nil || *req.Migrate
 
 	v, _ := s.Vault()
-	if err := v.ChangePassword(req.OldPassword, req.NewPassword); err != nil {
+	report, err := v.ChangePassword(r.Context(), req.OldPassword, req.NewPassword, migrate)
+	if err != nil {
 		vaultErrorResponse(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	writeJSON(w, http.StatusOK, report)
+}
+
+// handleVaultMigrate finishes a re-encryption an earlier password change did
+// not complete, because it was interrupted, deferred, or held up by an account
+// that was offline at the time.
+func (s *Server) handleVaultMigrate(w http.ResponseWriter, r *http.Request) {
+	v, _ := s.Vault()
+	report, err := v.MigrateFiles(r.Context(), nil)
+	if err != nil {
+		vaultErrorResponse(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, report)
 }
 
 type policyRequest struct {
