@@ -304,7 +304,16 @@ func (v *Vault) migrateFile(ctx context.Context, id string) (path string, size i
 		return path, 0, nil, fmt.Errorf("%s could not be re-encrypted: %w", path, err)
 	}
 
-	placed, err := v.scatter(ctx, name, data)
+	// Re-encrypting is not a move: the file goes back to the accounts it was
+	// already on, whether they were chosen for it or picked at random. Any that
+	// have been disconnected since are topped up from what is connected now,
+	// rather than leaving the file a part short for good.
+	current := make([]string, 0, len(stale))
+	for _, s := range stale {
+		current = append(current, s.ProviderID)
+	}
+
+	placed, err := v.scatter(ctx, name, data, current, false)
 	warnings = placed.warnings
 	if err != nil {
 		return path, 0, warnings, fmt.Errorf("re-encrypting %s: %w", path, err)

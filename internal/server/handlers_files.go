@@ -112,6 +112,7 @@ func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 		dir = "/"
 	}
 	overwrite := r.FormValue("overwrite") == "true" || r.FormValue("overwrite") == "1"
+	accounts := formAccounts(r)
 
 	uploads := r.MultipartForm.File["files[]"]
 	if len(uploads) == 0 {
@@ -143,7 +144,10 @@ func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		entry, warnings, err := v.Upload(ctx, dir, fh.Filename, data, overwrite)
+		entry, warnings, err := v.Upload(ctx, dir, fh.Filename, data, vault.UploadOptions{
+			Overwrite: overwrite,
+			Accounts:  accounts,
+		})
 		result.Warnings = warnings
 		if err != nil {
 			result.Error = err.Error()
@@ -162,6 +166,25 @@ func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusBadGateway
 	}
 	writeJSON(w, status, map[string]any{"results": results, "stored": stored})
+}
+
+// formAccounts reads the accounts an upload chose to spread over. The field
+// may be repeated once per account or given as one comma-separated list,
+// because a form built by hand and a form built by the browser tend to differ
+// on that, and neither is worth refusing over. Absent, the vault's default
+// applies.
+func formAccounts(r *http.Request) []string {
+	var out []string
+	for _, key := range []string{"accounts", "accounts[]"} {
+		for _, raw := range r.MultipartForm.Value[key] {
+			for _, id := range strings.Split(raw, ",") {
+				if id = strings.TrimSpace(id); id != "" {
+					out = append(out, id)
+				}
+			}
+		}
+	}
+	return out
 }
 
 func (s *Server) handleFileDelete(w http.ResponseWriter, r *http.Request) {

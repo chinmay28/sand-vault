@@ -191,6 +191,7 @@ export default function App() {
             loading={loadingList}
             error={error}
             providers={providers}
+            defaultAccounts={status.stats?.default_accounts || []}
             mobile={mobile}
             onNavigate={setPath}
             onRefresh={refreshAll}

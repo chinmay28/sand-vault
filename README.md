@@ -108,7 +108,7 @@ make build
     --set username=alice --set password=…
 
 # 4. Store and retrieve
-./sand put ~/Documents/passport.pdf
+./sand put ~/Documents/passport.pdf          # add --accounts to pick the clouds
 ./sand ls
 #   passport.pdf  2.1 MB  Aug 12 09:14  p1:usb-drive p2:r2-cold p3:nextcloud
 ./sand get /passport.pdf -o ./restored.pdf
@@ -278,6 +278,33 @@ enough to rebuild.
 ./sand vault policy redundant    # change (applies to new uploads)
 ```
 
+### Which clouds a file goes to
+
+Policy says how many parts may share an account. With more than three accounts
+connected, something also has to say *which* three a file uses — three parts
+cannot go to five places.
+
+Every upload can choose for itself, and the browser asks before a single byte
+leaves the machine: the dialog opens on the clouds the file is about to be
+scattered over, and any of them can be swapped for another account.
+
+A vault-wide default sets what that dialog opens on. With no default set, each
+file gets three clouds picked at random, which is what spreads a vault evenly
+over more than three accounts instead of filling the first three.
+
+```bash
+./sand vault defaults                      # show
+./sand vault defaults usb-drive r2-cold nextcloud   # set
+./sand vault defaults --clear              # back to picking per upload
+
+./sand put report.pdf --accounts usb-drive,nextcloud   # this file only
+```
+
+A selection is followed exactly rather than topped up: naming two clouds stores
+two parts and says that the file has no spare, instead of quietly putting the
+third somewhere you did not choose. Disconnecting an account drops it from the
+default.
+
 ---
 
 ## Changing the password
@@ -400,6 +427,7 @@ sand vault status                             What's stored, where, how much
 sand vault passwd [--no-migrate]              Change password, re-encrypt everything
 sand vault migrate                            Finish a deferred or interrupted re-encryption
 sand vault policy [strict|redundant]          Show or set placement policy
+sand vault defaults [account]... [--clear]    Show or set the clouds uploads go to
 sand vault backup [--disable|--enable]        Write the encrypted index to every account
 sand vault recover [--from ACCOUNT]           Rebuild a lost vault from an account's copy
 ```
@@ -426,7 +454,7 @@ sand remote remove <name-or-id> [--force]     Disconnect
 ```
 sand ls [path] [-l]                24 B  Aug 12 09:14  p1:acct-a p2:acct-b p3:acct-c
 sand find <query> [--path /dir] [--type file|folder] [--limit N] [-l]
-sand put <file>... [--path /dir] [--overwrite]
+sand put <file>... [--path /dir] [--overwrite] [--accounts a,b,c]
 sand get <path-or-id> [-o out]     Rebuild and decrypt
 sand mkdir <path>
 sand mv <path> <new-path>          Index only — parts never move
@@ -553,6 +581,7 @@ its home screen gets the password prompt like any other browser would.
 | GET | `/api/vault` | Initialized? Unlocked? Stats |
 | POST | `/api/vault/init` · `/unlock` · `/lock` | Vault lifecycle |
 | POST | `/api/vault/password` · `/policy` | Change password (re-encrypts every file) / placement |
+| POST | `/api/vault/defaults` | Set the accounts uploads use by default (empty = pick per file) |
 | POST | `/api/vault/migrate` | Finish a deferred or interrupted re-encryption |
 | GET | `/api/providers/specs` | Backend descriptions for the connect form |
 | GET · POST | `/api/providers` | List / connect accounts |

@@ -4,6 +4,7 @@ import { api } from '../api'
 import { Banner, Button, IconButton, Spinner } from './ui'
 import ConnectCloud, { pendingOAuthFlow } from './ConnectCloud'
 import ChangePassword from './ChangePassword'
+import { DefaultClouds, PARTS_PER_FILE } from './CloudSelect'
 import { DevMark } from './Brand'
 
 /* The sidebar: every cloud account SAND is wired into, whether it is answering,
@@ -17,7 +18,10 @@ export default function AccountsPanel({
   // reopen the dialog on it rather than making the user start again.
   const [connecting, setConnecting] = useState(() => Boolean(pendingOAuthFlow()))
   const [changingPassword, setChangingPassword] = useState(false)
+  const [choosingDefaults, setChoosingDefaults] = useState(false)
   const [error, setError] = useState(null)
+
+  const defaults = stats?.default_accounts || []
 
   useEffect(() => {
     if (!mobile || !open) return
@@ -128,7 +132,12 @@ export default function AccountsPanel({
         )}
 
         {providers.map((provider) => (
-          <AccountCard key={provider.id} provider={provider} onRemove={() => remove(provider)} />
+          <AccountCard
+            key={provider.id}
+            provider={provider}
+            isDefault={defaults.includes(provider.id)}
+            onRemove={() => remove(provider)}
+          />
         ))}
 
         {!enough && providers.length > 0 && (
@@ -160,6 +169,29 @@ export default function AccountsPanel({
             {stats.degraded > 0 && (
               <div style={{ color: COLORS.warn }}>{stats.degraded} file(s) missing a spare part</div>
             )}
+          </div>
+        )}
+
+        {/* Which clouds an upload starts on. Every upload can still choose its
+            own, so this is the answer it opens with rather than a rule. */}
+        {providers.length > 0 && (
+          <div style={{ marginTop: '10px' }}>
+            <div style={{
+              fontFamily: FONT.mono,
+              fontSize: '10px',
+              color: COLORS.textMuted,
+              lineHeight: 1.9,
+            }}>
+              {defaults.length > 0
+                ? `default clouds: ${defaults.length} of ${providers.length}`
+                : `default clouds: ${PARTS_PER_FILE} picked per upload`}
+            </div>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setChoosingDefaults(true)}
+              style={{ padding: '4px 0' }}
+            >{defaults.length > 0 ? 'Change default clouds' : 'Set default clouds'}</Button>
           </div>
         )}
 
@@ -195,6 +227,15 @@ export default function AccountsPanel({
         <ConnectCloud
           onClose={() => setConnecting(false)}
           onConnected={() => { setConnecting(false); onChanged() }}
+        />
+      )}
+
+      {choosingDefaults && (
+        <DefaultClouds
+          providers={providers}
+          defaults={defaults}
+          onClose={() => setChoosingDefaults(false)}
+          onChanged={onChanged}
         />
       )}
 
@@ -269,7 +310,7 @@ function PendingMigration({ count, onDone, onError }) {
   )
 }
 
-function AccountCard({ provider, onRemove }) {
+function AccountCard({ provider, isDefault, onRemove }) {
   const [testing, setTesting] = useState(false)
   const [result, setResult] = useState(null)
   const color = accountColor(provider.id)
@@ -314,6 +355,22 @@ function AccountCard({ provider, onRemove }) {
           textOverflow: 'ellipsis',
           whiteSpace: 'nowrap',
         }}>{provider.name}</span>
+        {isDefault && (
+          <span
+            title="Uploads go here unless they choose otherwise"
+            style={{
+              flexShrink: 0,
+              padding: '1px 5px',
+              borderRadius: '3px',
+              border: `1px solid ${COLORS.accentDim}`,
+              color: COLORS.accentBright,
+              fontFamily: FONT.mono,
+              fontSize: '8.5px',
+              fontWeight: 700,
+              letterSpacing: '0.8px',
+              textTransform: 'uppercase',
+            }}>default</span>
+        )}
         <span
           title={online ? 'Reachable' : errorText || 'Unreachable'}
           style={{

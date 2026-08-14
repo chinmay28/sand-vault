@@ -15,13 +15,30 @@ import (
 	"github.com/google/uuid"
 )
 
-// Upload encodes data into encrypted parts, scatters them across the
-// connected accounts according to the vault's placement policy, and records
+// UploadOptions is everything about an upload except the bytes themselves.
+type UploadOptions struct {
+	// Overwrite replaces a file of the same name in the destination folder
+	// instead of storing this one beside it under a numbered name.
+	Overwrite bool
+
+	// Accounts names the connected accounts this file's parts should go to,
+	// overriding the vault's default for this one upload. Empty hands the
+	// choice to the default, and failing that to a random pick.
+	//
+	// It is honoured exactly, as a stored default is: naming two accounts
+	// stores two parts and warns about the missing spare, because a deliberate
+	// choice of which clouds may hold a file must not be widened behind the
+	// user's back — that is the whole thing SAND is for.
+	Accounts []string
+}
+
+// Upload encodes data into encrypted parts, scatters them across the accounts
+// chosen for the file according to the vault's placement policy, and records
 // the result in the index.
 //
 // It returns the new entry plus any non-fatal warnings, such as one account
 // being unreachable while enough others accepted their part.
-func (v *Vault) Upload(ctx context.Context, dir, name string, data []byte, overwrite bool) (*Entry, []string, error) {
+func (v *Vault) Upload(ctx context.Context, dir, name string, data []byte, opts UploadOptions) (*Entry, []string, error) {
 	name, err := SanitizeName(name)
 	if err != nil {
 		return nil, nil, err
@@ -39,7 +56,10 @@ func (v *Vault) Upload(ctx context.Context, dir, name string, data []byte, overw
 	}
 	v.mu.RUnlock()
 
-	placed, err := v.scatter(ctx, name, data)
+	// Either the upload's own choice or, left to itself, the vault's default —
+	// and whichever it turns out to be is followed exactly. Only a vault with
+	// neither picks accounts of its own, inside scatter.
+	placed, err := v.scatter(ctx, name, data, opts.Accounts, true)
 	if err != nil {
 		return nil, placed.warnings, err
 	}
@@ -69,7 +89,7 @@ func (v *Vault) Upload(ctx context.Context, dir, name string, data []byte, overw
 
 	var replaced *Entry
 	if existing := v.manifest.ByPath(JoinPath(dir, name)); existing != nil {
-		if overwrite {
+		if opts.Overwrite {
 			replaced = existing
 			v.manifest.remove(existing.ID)
 		} else {
@@ -107,6 +127,31 @@ func (v *Vault) Upload(ctx context.Context, dir, name string, data []byte, overw
 	return entry, warnings, nil
 }
 
+// resolveAccounts turns an explicit account selection into the list of IDs to
+// place across. An account that is not connected is an error rather than
+// something to skip over: quietly narrowing a chosen set would put the file on
+// fewer accounts than the person choosing believed it was going to.
+func resolveAccounts(selected []string, byID map[string]provider.Config) ([]string, error) {
+	out := make([]string, 0, len(selected))
+	seen := map[string]bool{}
+	for _, id := range selected {
+		cfg, ok := byID[id]
+		if !ok {
+			return nil, fmt.Errorf("no connected account with id %s", id)
+		}
+		if seen[id] {
+			return nil, fmt.Errorf("%s is listed twice — each part of a file goes to a different account", cfg.Name)
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	if len(out) > AccountsPerFile {
+		return nil, fmt.Errorf("a file has only %d parts — choose at most %d accounts (got %d)",
+			archive.PartCount, AccountsPerFile, len(out))
+	}
+	return out, nil
+}
+
 // placement is the outcome of encoding one file and scattering its parts: what
 // landed, where, and under which key generation.
 type placement struct {
@@ -118,7 +163,19 @@ type placement struct {
 }
 
 // scatter encodes data into encrypted parts under the vault's active data key
-// and places them across the connected accounts.
+// and places them across the accounts chosen for the file.
+//
+// preferred is where the parts should go. Left empty it falls back to the
+// vault's default accounts, and failing that to a random pick — a vault with
+// several accounts connected spreads each file over three of them rather than
+// always the same three.
+//
+// With exact set, a preference is the whole answer: nothing is added to it and
+// every account in it must still be connected, because it came from someone
+// deliberately choosing which clouds may hold this file. Without it a
+// preference is a starting point to be filled in from what is connected, which
+// is what re-encrypting a file wants — it belongs back where it was, and back
+// to three parts if it had lost one.
 //
 // It is the half of an upload that touches the network, and re-encrypting a
 // file after a password change is the same operation with a different reason:
@@ -126,7 +183,7 @@ type placement struct {
 // records in the returned shards is really on the accounts — on too few parts
 // landing it erases the ones that did and returns an error, so a caller never
 // has to clean up after a failure of its own.
-func (v *Vault) scatter(ctx context.Context, name string, data []byte) (placement, error) {
+func (v *Vault) scatter(ctx context.Context, name string, data []byte, preferred []string, exact bool) (placement, error) {
 	// Snapshot everything the transfer needs, then release the lock: the
 	// network round-trips below must not block browsing.
 	v.mu.RLock()
@@ -137,11 +194,40 @@ func (v *Vault) scatter(ctx context.Context, name string, data []byte) (placemen
 	out := placement{keyID: v.dataKeyID}
 	shardPassword := v.shardPasswordLocked()
 	policy := v.store.Policy
+	defaults := append([]string(nil), v.store.DefaultAccounts...)
 	configs := append([]provider.Config(nil), v.providers...)
 	v.mu.RUnlock()
 
 	if len(configs) == 0 {
 		return out, fmt.Errorf("connect at least one cloud account before uploading")
+	}
+
+	byID := make(map[string]provider.Config, len(configs))
+	ids := make([]string, 0, len(configs))
+	for _, cfg := range configs {
+		ids = append(ids, cfg.ID)
+		byID[cfg.ID] = cfg
+	}
+
+	if len(preferred) == 0 {
+		// Nothing was chosen for this file, so the vault's standing answer
+		// applies. Anything in it that has since been disconnected is dropped
+		// rather than failing the upload: it is a leftover, not a request.
+		for _, id := range defaults {
+			if _, ok := byID[id]; ok {
+				preferred = append(preferred, id)
+			}
+		}
+	}
+
+	// Checked before the file is encoded rather than after: a selection naming
+	// an account that is not connected is a mistake to report, not work to do.
+	var chosen []string
+	if exact && len(preferred) > 0 {
+		var err error
+		if chosen, err = resolveAccounts(preferred, byID); err != nil {
+			return out, err
+		}
 	}
 
 	encoded, err := archive.EncodeBytes(data, name, shardPassword)
@@ -151,17 +237,15 @@ func (v *Vault) scatter(ctx context.Context, name string, data []byte) (placemen
 	out.archiveID = hex.EncodeToString(encoded.ArchiveID[:])
 	out.originalHash = encoded.OriginalHash
 
-	byID := make(map[string]provider.Config, len(configs))
-	ids := make([]string, 0, len(configs))
-	for _, cfg := range configs {
-		ids = append(ids, cfg.ID)
-		byID[cfg.ID] = cfg
+	// Seeding from the archive ID picks this file's accounts and rotates which
+	// of them receives part 1, so load spreads evenly instead of every upload
+	// landing the same way on the same accounts.
+	seed := binary.BigEndian.Uint64(encoded.ArchiveID[:8])
+	if chosen == nil {
+		chosen = SelectAccounts(ids, preferred, seed)
 	}
 
-	// Seeding from the archive ID rotates which account receives part 1, so
-	// load spreads evenly instead of always landing on the first account.
-	seed := binary.BigEndian.Uint64(encoded.ArchiveID[:8])
-	plan, err := BuildPlan(ids, policy, seed)
+	plan, err := BuildPlan(chosen, policy, seed)
 	if err != nil {
 		return out, err
 	}

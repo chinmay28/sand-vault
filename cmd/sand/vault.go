@@ -47,7 +47,7 @@ func vaultCmd() *cobra.Command {
 		Short: "Create and manage the vault",
 	}
 	cmd.AddCommand(vaultInitCmd(), vaultStatusCmd(), vaultPasswdCmd(), vaultMigrateCmd(),
-		vaultPolicyCmd(), vaultBackupCmd(), vaultRecoverCmd())
+		vaultPolicyCmd(), vaultDefaultsCmd(), vaultBackupCmd(), vaultRecoverCmd())
 	return cmd
 }
 
@@ -245,6 +245,78 @@ func runMigration(cmd *cobra.Command, v *vault.Vault) error {
 	// The copies on the accounts carry the keys, so let the push settle before
 	// the process exits and the report claims the change is complete.
 	v.AwaitBackupSync()
+	return nil
+}
+
+func vaultDefaultsCmd() *cobra.Command {
+	var clear bool
+
+	cmd := &cobra.Command{
+		Use:   "defaults [account]...",
+		Short: "Show or set the accounts uploads go to by default",
+		Long: `Every file is split into three parts, each of which goes to a different
+account. With more than three connected, this is which three an upload uses
+when it does not say otherwise — 'sand put --accounts' overrides it per upload.
+
+With no default set, each file picks its own three at random, so a large vault
+still spreads over everything connected instead of filling the same three.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			v, err := openVault(cmd)
+			if err != nil {
+				return err
+			}
+			defer v.Lock()
+
+			if len(args) == 0 && !clear {
+				return printDefaultAccounts(v)
+			}
+			if len(args) > 0 && clear {
+				return fmt.Errorf("--clear takes no accounts")
+			}
+
+			chosen, err := resolveAccountNames(v, args)
+			if err != nil {
+				return err
+			}
+			if err := v.SetDefaultAccounts(chosen); err != nil {
+				return err
+			}
+			if clear {
+				fmt.Println("Default cleared — each upload now picks its accounts at random.")
+				return nil
+			}
+			return printDefaultAccounts(v)
+		},
+	}
+
+	cmd.Flags().BoolVar(&clear, "clear", false, "forget the default and pick accounts per upload instead")
+	return cmd
+}
+
+// printDefaultAccounts names the vault's default accounts, resolving the
+// stored IDs against what is connected so the output reads like the rest of
+// the CLI rather than like the index.
+func printDefaultAccounts(v *vault.Vault) error {
+	defaults := v.DefaultAccounts()
+	if len(defaults) == 0 {
+		fmt.Println("No default set — each upload picks its accounts at random.")
+		return nil
+	}
+
+	configs, err := v.Providers()
+	if err != nil {
+		return err
+	}
+	for _, id := range defaults {
+		name := id
+		for _, cfg := range configs {
+			if cfg.ID == id {
+				name = fmt.Sprintf("%s (%s)", cfg.Name, cfg.Kind)
+				break
+			}
+		}
+		fmt.Println(name)
+	}
 	return nil
 }
 

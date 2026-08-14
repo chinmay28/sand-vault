@@ -43,6 +43,11 @@ export const api = {
   unlock: (password) => request('/api/vault/unlock', { method: 'POST', body: { password } }),
   lock: () => request('/api/vault/lock', { method: 'POST' }),
   setPolicy: (policy) => request('/api/vault/policy', { method: 'POST', body: { policy } }),
+  /* The accounts an upload spreads over unless it names its own. An empty list
+     clears the default, which puts every upload back to picking three clouds
+     at random. */
+  setDefaultAccounts: (accounts) =>
+    request('/api/vault/defaults', { method: 'POST', body: { accounts } }),
   /* Changing the password rotates the key the stored parts are encrypted
      under, so unless the migration is deferred this call only comes back once
      every file has been rebuilt onto the new key — minutes, on a full vault.
@@ -104,12 +109,16 @@ export const api = {
 
   /* Uploads go through XMLHttpRequest rather than fetch so the UI can show
      real progress while a large file is being split and scattered. */
-  upload(files, path, { overwrite = false, onProgress } = {}) {
+  upload(files, path, { overwrite = false, accounts = [], onProgress } = {}) {
     return new Promise((resolve, reject) => {
       const form = new FormData()
       for (const file of files) form.append('files[]', file)
       form.append('path', path)
       form.append('overwrite', String(overwrite))
+      /* One field per account rather than a joined string: the server accepts
+         either, and this way an ID is never mistaken for a list. Sending none
+         leaves the choice to the vault's default. */
+      for (const id of accounts) form.append('accounts', id)
 
       const xhr = new XMLHttpRequest()
       xhr.open('POST', '/api/files')

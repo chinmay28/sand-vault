@@ -90,13 +90,16 @@ everything meaningful is encrypted. It is the only persistent state SAND has.
   "data_key_id": "…",
   "providers":   { "nonce": "…", "ciphertext": "…" },
   "manifest":    { "nonce": "…", "ciphertext": "…" },
-  "policy":      "strict"
+  "policy":      "strict",
+  "default_accounts": ["…", "…", "…"]
 }
 ```
 
-Only the KDF parameters, the policy and the key generation labels are in the
-clear. Everything else is sealed with AES-256-GCM under the **vault key**,
-derived from your password with Argon2id.
+Only the KDF parameters, the policy, the key generation labels and the default
+accounts are in the clear — those last are the random IDs of accounts whose
+names, kinds and credentials all sit inside the encrypted providers section, so
+they name nothing on their own. Everything else is sealed with AES-256-GCM
+under the **vault key**, derived from your password with Argon2id.
 
 | Section | Holds | Why it is encrypted |
 |---|---|---|
@@ -293,9 +296,9 @@ the same read lock a listing takes:
                 p1    p2          p3                │
                                                     ▼
                                         ┌───────────────────────┐
-                                        │  placement policy     │
-                                        │  decides which        │
-                                        │  account gets which   │
+                                        │  the accounts chosen  │
+                                        │  for this file, then  │
+                                        │  the placement policy │
                                         └───────────┬───────────┘
                                                     │ concurrent PUTs
                           ┌─────────────────────────┼─────────────────────┐
@@ -373,10 +376,36 @@ Survives an account going dark even with one or two connected — at the cost of
 the guarantee above, since a doubled-up account holds enough to rebuild. The
 UI says so plainly when you pick it.
 
-### 5.3 Spreading load
+### 5.3 Which accounts, of the ones connected
 
-The starting account rotates per file, seeded from the file's random archive ID.
-Without this every part 1 would pile onto the first-connected account.
+Policy decides how many parts may share an account. It does not decide *which*
+accounts a file uses, which matters as soon as more than three are connected —
+three parts cannot go to five places.
+
+That choice is made in this order:
+
+| The upload says | What happens |
+|---|---|
+| These accounts | Exactly those, and every one must be connected. Naming two stores two parts and warns about the missing spare. |
+| Nothing, and the vault has default accounts | Exactly the default, on the same terms |
+| Nothing, and there is no default | Three picked at random for this file alone |
+
+The random pick is seeded from the file's archive ID — 128 random bits minted
+for it — so consecutive uploads land on different accounts and a vault with
+six accounts fills all six instead of the first three. Re-encrypting a file
+after a password change is not one of these cases: it goes back to the accounts
+it was already on, topped up if one has since been disconnected.
+
+The default is honoured rather than completed for the same reason the choice
+exists at all. Deciding which providers may hold a file is the point of SAND;
+quietly adding a fourth because the default named three and one went away would
+put data somewhere its owner deliberately did not choose. What a narrower
+selection costs — one part fewer, no spare — is said in the upload's warnings
+instead. Disconnecting an account prunes it from the default, and clears the
+default outright if that would leave fewer than two.
+
+Within the chosen accounts the starting one rotates per file, seeded the same
+way. Without this every part 1 would pile onto the same account.
 
 ### 5.4 Object keys leak nothing
 
@@ -610,6 +639,7 @@ reveals only whether a vault exists.
 | POST | `/api/vault/password` | New password, new data key, everything re-encrypted onto it (`"migrate": false` to defer) |
 | POST | `/api/vault/migrate` | Finish a re-encryption that was deferred or interrupted |
 | POST | `/api/vault/policy` | Change placement policy |
+| POST | `/api/vault/defaults` | Set the accounts uploads use by default (empty list = pick per file) |
 | GET | `/api/providers/specs` | Backend descriptions for the connect form |
 | GET | `/api/providers` | Connected accounts: online, parts held, quota |
 | POST | `/api/providers` | Connect an account (pings before saving) |
@@ -622,7 +652,7 @@ reveals only whether a vault exists.
 | DELETE | `/api/providers/{id}` | Disconnect (`?force=1` to override the guard) |
 | GET | `/api/files?path=` | List a folder |
 | GET | `/api/search?q=` | Find files and folders by name (`&path=` scopes to a subtree, `&type=file\|folder`, `&limit=`) |
-| POST | `/api/files` | Upload (multipart `files[]`, `path`, `overwrite`) |
+| POST | `/api/files` | Upload (multipart `files[]`, `path`, `overwrite`, `accounts`) |
 | GET | `/api/files/{id}` | Metadata including part placement |
 | GET | `/api/files/{id}/content` | **Rebuild and stream** (`?download=1` to save) |
 | GET | `/api/files/{id}/health` | Per-part reachability, without downloading |

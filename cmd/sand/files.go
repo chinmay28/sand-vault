@@ -155,6 +155,7 @@ func putCmd() *cobra.Command {
 	var (
 		dest      string
 		overwrite bool
+		accounts  []string
 	)
 
 	cmd := &cobra.Command{
@@ -168,6 +169,11 @@ func putCmd() *cobra.Command {
 			}
 			defer v.Lock()
 
+			chosen, err := resolveAccountNames(v, accounts)
+			if err != nil {
+				return err
+			}
+
 			ctx := context.Background()
 			for _, path := range args {
 				data, err := os.ReadFile(path)
@@ -175,7 +181,10 @@ func putCmd() *cobra.Command {
 					return fmt.Errorf("reading %s: %w", path, err)
 				}
 
-				entry, warnings, err := v.Upload(ctx, dest, filepath.Base(path), data, overwrite)
+				entry, warnings, err := v.Upload(ctx, dest, filepath.Base(path), data, vault.UploadOptions{
+					Overwrite: overwrite,
+					Accounts:  chosen,
+				})
 				if err != nil {
 					return fmt.Errorf("uploading %s: %w", path, err)
 				}
@@ -190,7 +199,40 @@ func putCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&dest, "path", "/", "destination folder inside the vault")
 	cmd.Flags().BoolVar(&overwrite, "overwrite", false, "replace an existing file with the same name")
+	cmd.Flags().StringSliceVar(&accounts, "accounts", nil,
+		"accounts to scatter these files over, by name or id (default: the vault's, or three at random)")
 	return cmd
+}
+
+// resolveAccountNames turns what someone typed on the command line into
+// connected account IDs. Names are what the rest of the CLI prints, so they are
+// what it accepts; an ID still works for a name that is awkward to type.
+func resolveAccountNames(v *vault.Vault, wanted []string) ([]string, error) {
+	if len(wanted) == 0 {
+		return nil, nil
+	}
+
+	configs, err := v.Providers()
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]string, 0, len(wanted))
+	for _, want := range wanted {
+		want = strings.TrimSpace(want)
+		matched := ""
+		for _, cfg := range configs {
+			if cfg.ID == want || strings.EqualFold(cfg.Name, want) {
+				matched = cfg.ID
+				break
+			}
+		}
+		if matched == "" {
+			return nil, fmt.Errorf("no connected account called %q — 'sand remote ls' lists them", want)
+		}
+		out = append(out, matched)
+	}
+	return out, nil
 }
 
 func getCmd() *cobra.Command {

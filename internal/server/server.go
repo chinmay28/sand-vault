@@ -152,6 +152,7 @@ func (s *Server) Handler() (http.Handler, error) {
 		"POST /api/vault/password": s.handleVaultPassword,
 		"POST /api/vault/migrate":  s.handleVaultMigrate,
 		"POST /api/vault/policy":   s.handleVaultPolicy,
+		"POST /api/vault/defaults": s.handleVaultDefaults,
 
 		"GET /api/providers":            s.handleProvidersList,
 		"POST /api/providers":           s.handleProviderAdd,
