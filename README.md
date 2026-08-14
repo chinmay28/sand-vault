@@ -475,6 +475,9 @@ pipe the password on stdin.
   health read-out
 - **Preview** — images, video, audio, PDF and text render inline, rebuilt on
   demand; anything else downloads
+- **Change password** — at the foot of the sidebar; re-encrypts every stored
+  file onto the new key, and offers to finish the job later if you defer it or
+  an account was unreachable
 - **Auto-lock** — the vault re-locks after the idle timeout
 
 The UI loads no external fonts, scripts or styles. Opening your vault makes zero

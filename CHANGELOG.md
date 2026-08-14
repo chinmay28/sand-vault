@@ -120,6 +120,9 @@ the files that had not moved yet:
   there is nothing to do is free.
 - `sand vault status` and the accounts panel in the browser both say how many
   files are still on the old key, and the panel offers to finish the job.
+- The browser can do all of this too: **Change vault password** sits at the
+  foot of the accounts panel, says how much it is about to re-encrypt before
+  you commit to it, and reports what moved.
 - `sand vault passwd --no-migrate` changes the password now and defers the
   re-encryption. Until it runs, the old password and an old copy of the vault
   file still open whatever has not moved.
