@@ -174,6 +174,32 @@ Box and Microsoft retire a refresh token as it is spent. SAND writes the
 replacement back into the vault as it goes, so an account connected once keeps
 answering.
 
+### A folder is picked, not typed out
+
+The two backends that take a path — a local folder, and Proton Drive through
+the folder its desktop app syncs — used to ask for it in full, spelled
+correctly, from memory. That path belongs to the machine SAND is running on,
+which is very often not the machine you are typing on: the vault gets driven
+from a phone, and the phone has no idea what is mounted on the NAS.
+
+Both fields now come with **Browse…**. It walks the server's own folders,
+starting from home and the roots a drive appears under — `/media`,
+`/run/media`, `/mnt`, `/srv`, or the drive letters on Windows — with a
+breadcrumb back up, hidden folders behind a toggle, and symlinked folders
+followed, since a synced cloud folder is usually one. The field stays a text
+box, so a path you already have still pastes in.
+
+A folder that does not exist yet is still a valid answer, because connecting
+creates it. Type a path for one and the picker opens at the nearest folder
+that *is* there, keeping the rest as a name to create inside it — so what you
+typed comes back unchanged if you just confirm.
+
+What is behind it, `GET /api/system/folders`, is deliberately the smallest
+thing that could work: it answers with folder names, never a file and never
+its contents, and only to a session that has unlocked the vault — a session
+that could already point an account at any folder on the machine by typing its
+path.
+
 ### The vault
 
 A single encrypted file (`~/.sand/vault.sand`, or `/var/lib/sand/vault.sand`

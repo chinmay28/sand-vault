@@ -613,7 +613,26 @@ refresh token as it is spent: the vault installs a sink on every live provider
 it builds, and a rotated token is written back — asynchronously, because the
 refresh may well be happening inside a call that already holds the vault lock.
 
-### 8.5 Google Drive has no paths
+### 8.5 A path field is picked, not typed
+
+A field can declare itself a folder on this machine — `Directory: true` — and
+the generated form puts a picker on it. `GET /api/system/folders?path=` answers
+with the subfolders of one folder, its parent, and the roots worth jumping to
+(home, and `/media`, `/run/media`, `/mnt`, `/srv`, or the drive letters on
+Windows). Symlinked folders are followed, because a synced cloud folder is
+frequently one.
+
+The endpoint browses the filesystem SAND runs on, not the vault, so it is kept
+narrow on purpose: folder names only, never a file and never its contents,
+behind the same session as everything else — a session that could already point
+an account anywhere by typing the path. A path naming a folder that is not
+there yet is a legitimate answer, since connecting creates it, so the listing
+climbs to the nearest existing ancestor and reports both what was asked for and
+what it could show. The browser is told the server's path separator rather than
+guessing it: the phone in your hand and the machine holding the folder are
+often not the same kind of computer.
+
+### 8.6 Google Drive has no paths
 
 Drive is not a path-addressed store, so the SAND object key is written into the
 file's `appProperties` and looked up by query, with a per-provider ID cache so
@@ -660,6 +679,7 @@ reveals only whether a vault exists.
 | DELETE | `/api/files/{id}` | Erase every part, drop the entry |
 | POST | `/api/folders` | Create a folder |
 | DELETE | `/api/folders?path=&recursive=` | Delete a folder |
+| GET | `/api/system/folders?path=` | Folders on the machine SAND runs on, for the folder picker (§8.5) |
 | POST | `/api/archive` | Standalone mode (§10) |
 | POST | `/api/restore` | Standalone mode (§10) |
 

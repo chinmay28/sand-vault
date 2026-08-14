@@ -26,6 +26,7 @@ func init() {
 				Placeholder: "/mnt/backup/sand",
 				Help:        "Created if it does not exist.",
 				Required:    true,
+				Directory:   true,
 			},
 		},
 	}, newLocalProvider)
@@ -35,7 +36,7 @@ func init() {
 // folder backends, which are the same thing pointed at a folder some desktop
 // client keeps in step with a cloud account.
 func newLocalProvider(cfg Config) (Provider, error) {
-	root := expandHome(cfg.Option("path"))
+	root := ExpandHome(cfg.Option("path"))
 	abs, err := filepath.Abs(root)
 	if err != nil {
 		return nil, fmt.Errorf("resolving %q: %w", root, err)
@@ -43,9 +44,9 @@ func newLocalProvider(cfg Config) (Provider, error) {
 	return &localProvider{base: base{cfg: cfg}, root: abs}, nil
 }
 
-// expandHome resolves a leading ~ so a path copied out of documentation works
+// ExpandHome resolves a leading ~ so a path copied out of documentation works
 // as typed.
-func expandHome(path string) string {
+func ExpandHome(path string) string {
 	path = strings.TrimSpace(path)
 	if path != "~" && !strings.HasPrefix(path, "~/") && !strings.HasPrefix(path, `~\`) {
 		return path
@@ -263,6 +264,13 @@ func hint(root string, err error) string {
 // (see scripts/quickstart.sh). A local folder under one of these needs no
 // per-path grant on a current install.
 var mountRoots = []string{"/media", "/run/media", "/mnt", "/srv"}
+
+// MountRoots returns those directories, for the folder picker: they are the
+// places a drive worth scattering shards onto turns up, and the shortcuts it
+// offers alongside home.
+func MountRoots() []string {
+	return append([]string(nil), mountRoots...)
+}
 
 // underMountRoot reports whether path is one of the mount roots or sits inside
 // one. Lexical, like the ReadWritePaths= match it mirrors.

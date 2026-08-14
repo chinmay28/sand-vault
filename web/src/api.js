@@ -80,6 +80,12 @@ export const api = {
       method: 'POST',
       body: { flow_id: flowId, name, options },
     }),
+  /* Folders on the machine SAND runs on, for the backends configured with a
+     path. Answers with folder names only — the vault's own files are the other
+     endpoints. */
+  systemFolders: (path = '') =>
+    request(`/api/system/folders?path=${encodeURIComponent(path)}`),
+
   removeProvider: (id, force) =>
     request(`/api/providers/${encodeURIComponent(id)}${force ? '?force=1' : ''}`, { method: 'DELETE' }),
 
