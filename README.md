@@ -191,6 +191,14 @@ CGO, and the artifact is still one static binary.
 > [Local folders on the systemd
 > service](#local-folders-on-the-systemd-service).
 
+> **The two backends that take a path** — `local` and `proton` — are pointed at
+> one rather than told it: the field has a **Browse…** button that walks the
+> folders of the machine SAND is running on, starting at home and the mount
+> roots a drive turns up under. That machine is rarely the one you are holding,
+> which is the whole problem with typing the path from memory on a phone. The
+> folder does not have to exist yet — name a new one inside the folder you
+> picked, and connecting creates it.
+
 > **Proton Drive** publishes no API. SAND writes its parts into the folder the
 > Proton Drive desktop app syncs, which is the same arrangement as any other
 > account: the parts are encrypted before Proton ever sees them. On a headless
@@ -595,6 +603,7 @@ its home screen gets the password prompt like any other browser would.
 | POST | `/api/files/{id}/move` | Rename / move |
 | DELETE | `/api/files/{id}` | Erase every part |
 | POST · DELETE | `/api/folders` | Create / delete folders |
+| GET | `/api/system/folders?path=` | Folders on this machine, for the folder picker |
 | POST | `/api/archive` · `/api/restore` | Standalone mode |
 
 Uploads report per-file results, so one failure in a batch doesn't sink the rest:

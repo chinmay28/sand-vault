@@ -34,7 +34,8 @@ func init() {
 				Default:     protonDefaultPath(),
 				Help: "The folder the Proton Drive app syncs. SAND creates a subfolder of its " +
 					"own inside it and only ever writes encrypted parts.",
-				Required: true,
+				Required:  true,
+				Directory: true,
 			},
 		},
 	}, newLocalProvider)

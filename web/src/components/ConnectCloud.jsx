@@ -2,6 +2,7 @@ import React, { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { COLORS, FONT, KIND_ICONS } from '../theme'
 import { api } from '../api'
 import { Banner, Button, Input, Modal, PasswordInput, Spinner } from './ui'
+import DirectoryPicker from './DirectoryPicker'
 
 /* Connecting an account, without leaving the app.
 
@@ -639,6 +640,17 @@ function SignInWaiting({ spec, flow, pasted, setPasted, showPaste, setShowPaste,
 /* The generated part of a connect form. */
 function SpecFields({ fields, values, onChange }) {
   return fields.map((field) => {
+    if (field.directory) {
+      return (
+        <DirectoryField
+          key={field.key}
+          field={field}
+          value={values[field.key] || ''}
+          onChange={(value) => onChange(field.key, value)}
+        />
+      )
+    }
+
     const Control = field.secret ? PasswordInput : Input
     return (
       <Control
@@ -651,6 +663,48 @@ function SpecFields({ fields, values, onChange }) {
       />
     )
   })
+}
+
+/* A folder on the machine SAND runs on. Still a text field — a path pasted
+   from somewhere else is the fastest way in when you have one — with a browse
+   button for when you do not, which is most of the time on a phone. */
+function DirectoryField({ field, value, onChange }) {
+  const [picking, setPicking] = useState(false)
+
+  return (
+    <>
+      <Input
+        label={field.label + (field.required ? ' *' : '')}
+        help={field.help}
+        placeholder={field.placeholder}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        style={{ paddingRight: '74px' }}
+        trailing={
+          <button
+            type="button"
+            onClick={() => setPicking(true)}
+            style={{
+              position: 'absolute', top: 0, bottom: 0, right: '4px',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              width: '66px', background: 'none', border: 'none',
+              color: COLORS.accent, cursor: 'pointer',
+              fontFamily: FONT.mono, fontSize: '10px', letterSpacing: '1px', padding: 0,
+            }}
+          >BROWSE…</button>
+        }
+      />
+
+      {picking && (
+        <DirectoryPicker
+          value={value}
+          title={`Choose the ${field.label.toLowerCase()}`}
+          onPick={(path) => { onChange(path); setPicking(false) }}
+          onClose={() => setPicking(false)}
+        />
+      )}
+    </>
+  )
 }
 
 /* Known services, one click away from a filled-in form. */

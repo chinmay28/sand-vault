@@ -144,6 +144,12 @@ type FieldSpec struct {
 	Required    bool   `json:"required,omitempty"`
 	Default     string `json:"default,omitempty"`
 
+	// Directory marks a field that names a folder on the machine SAND is
+	// running on, rather than a path inside somebody else's service. The
+	// connect form puts a folder picker on those, so the path can be walked to
+	// instead of transcribed from a terminal window.
+	Directory bool `json:"directory,omitempty"`
+
 	// Advanced fields are the ones a browser sign-in fills in for you. The
 	// connect form keeps them behind a disclosure so the common path is a
 	// button rather than a form.

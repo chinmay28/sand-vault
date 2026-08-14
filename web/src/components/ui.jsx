@@ -156,14 +156,40 @@ export function PasswordInput({ label, help, value, onChange, ...props }) {
   )
 }
 
-export function Modal({ title, subtitle, onClose, children, width = 520 }) {
+/* Every open dialog, innermost last. */
+const modalStack = []
+
+/* `zIndex` is for the dialog a dialog opens — the folder picker over the
+   connect form — which has to sit above the one that opened it rather than
+   wherever the portal happened to put it. */
+export function Modal({ title, subtitle, onClose, children, width = 520, zIndex = 100 }) {
   const mobile = useIsMobile()
 
+  // Escape closes the dialog on top and only that one: the folder picker opens
+  // over the connect form, and one keypress dismissing both would throw away a
+  // half-filled form. Read through a ref so a re-render — which hands us a
+  // fresh onClose every time — cannot reorder the stack underneath the dialog
+  // that is actually in front.
+  const closeRef = useRef(onClose)
+  closeRef.current = onClose
+
   useEffect(() => {
-    const onKey = (e) => { if (e.key === 'Escape') onClose?.() }
+    const token = {}
+    modalStack.push(token)
+
+    const onKey = (e) => {
+      if (e.key !== 'Escape') return
+      if (modalStack[modalStack.length - 1] !== token) return
+      closeRef.current?.()
+    }
     window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      const at = modalStack.indexOf(token)
+      if (at !== -1) modalStack.splice(at, 1)
+    }
+  }, [])
 
   /* Rendered at the end of the document rather than where it was written: a
      modal opened from inside the accounts drawer would otherwise be trapped by
@@ -181,7 +207,7 @@ export function Modal({ title, subtitle, onClose, children, width = 520 }) {
         alignItems: 'center',
         justifyContent: 'center',
         padding: mobile ? '12px' : '24px',
-        zIndex: 100,
+        zIndex,
       }}
     >
       <div

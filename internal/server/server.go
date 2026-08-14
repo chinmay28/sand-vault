@@ -159,6 +159,9 @@ func (s *Server) Handler() (http.Handler, error) {
 		"POST /api/providers/{id}/test": s.handleProviderTest,
 		"DELETE /api/providers/{id}":    s.handleProviderRemove,
 
+		// Folders on this machine, for the backends configured with a path.
+		"GET /api/system/folders": s.handleSystemFolders,
+
 		"POST /api/providers/oauth/start":    s.handleOAuthStart,
 		"POST /api/providers/oauth/exchange": s.handleOAuthExchange,
 		"POST /api/providers/oauth/complete": s.handleOAuthComplete,

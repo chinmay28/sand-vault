@@ -263,6 +263,75 @@ class TestConnectingAnAccount:
         app.keyboard.press("Escape")
 
 
+class TestPickingAFolder:
+    """A local folder is chosen by walking to it, not by typing it out.
+
+    The path belongs to the machine running SAND, which on a phone is not the
+    machine holding the keyboard — so the dialog browses the server's own
+    folders and hands back the one that was picked.
+    """
+
+    def open_local_form(self, app):
+        app.get_by_text("+ Connect a cloud").click()
+        app.wait_for_selector("text=Local folder")
+        app.get_by_text("Local folder").click()
+        return app.locator("form")
+
+    def test_browsing_fills_the_path_in_and_connects(self, app, clouds):
+        base = clouds("picker")
+        os.makedirs(os.path.join(base, "drive"), exist_ok=True)
+
+        form = self.open_local_form(app)
+        # Typed in as a starting point; everything after this is clicking.
+        form.locator("input").nth(1).fill(base)
+        app.get_by_role("button", name="BROWSE…").click()
+
+        app.wait_for_selector("text=Choose the directory", timeout=15000)
+        app.get_by_text("drive", exact=True).click()
+        app.get_by_label("New folder inside it (optional)").fill("parts")
+        app.get_by_role("button", name="Use this folder").click()
+
+        chosen = os.path.join(base, "drive", "parts")
+        assert form.locator("input").nth(1).input_value() == chosen
+
+        form.locator("input").nth(0).fill("picked-folder")
+        form.locator("button[type=submit]").click()
+
+        app.wait_for_selector("text=picked-folder", timeout=30000)
+        # Connecting created the folder that was named but did not exist.
+        assert os.path.isdir(chosen)
+
+    def test_a_folder_that_is_not_there_yet_opens_at_its_nearest_parent(self, app, clouds):
+        base = clouds("picker-missing")
+
+        form = self.open_local_form(app)
+        form.locator("input").nth(1).fill(os.path.join(base, "not-yet"))
+        app.get_by_role("button", name="BROWSE…").click()
+        app.wait_for_selector("text=Choose the directory", timeout=15000)
+
+        # The picker opens on the folder that exists, keeping the rest as the
+        # folder to create — so confirming gives back the path as typed.
+        expect(app.get_by_label("New folder inside it (optional)")).to_have_value("not-yet")
+        app.get_by_role("button", name="Use this folder").click()
+        assert form.locator("input").nth(1).input_value() == os.path.join(base, "not-yet")
+
+        app.keyboard.press("Escape")
+
+    def test_escape_closes_the_picker_without_losing_the_form(self, app, clouds):
+        form = self.open_local_form(app)
+        form.locator("input").nth(0).fill("half-filled")
+        app.get_by_role("button", name="BROWSE…").click()
+        app.wait_for_selector("text=Choose the directory", timeout=15000)
+
+        app.keyboard.press("Escape")
+        app.wait_for_timeout(400)
+
+        assert app.get_by_text("Choose the directory").count() == 0
+        assert form.locator("input").nth(0).input_value() == "half-filled"
+
+        app.keyboard.press("Escape")
+
+
 class TestUploadAndPreview:
     def test_upload_then_preview_rebuilds_the_file(self, app, tmp_path):
         body = "this text only comes back if the parts were gathered and decrypted\n"
