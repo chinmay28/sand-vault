@@ -3,6 +3,7 @@ import { COLORS, FONT, KIND_ICONS, accountColor, formatBytes } from '../theme'
 import { api } from '../api'
 import { Banner, Button, Spinner } from './ui'
 import ConnectCloud, { pendingOAuthFlow } from './ConnectCloud'
+import ChangePassword from './ChangePassword'
 import { DevMark } from './Brand'
 
 /* The sidebar: every cloud account SAND is wired into, whether it is answering,
@@ -15,6 +16,7 @@ export default function AccountsPanel({
   // A sign-in that took over the tab is still in flight when the app reloads:
   // reopen the dialog on it rather than making the user start again.
   const [connecting, setConnecting] = useState(() => Boolean(pendingOAuthFlow()))
+  const [changingPassword, setChangingPassword] = useState(false)
   const [error, setError] = useState(null)
 
   useEffect(() => {
@@ -172,6 +174,18 @@ export default function AccountsPanel({
           />
         )}
 
+        {/* Vault-wide rather than account-wide, but this is where the vault's
+            own state already lives, and the header has no room for it on a
+            phone. */}
+        <div style={{ marginTop: '12px', display: 'flex' }}>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => setChangingPassword(true)}
+            style={{ padding: '4px 0' }}
+          >Change vault password</Button>
+        </div>
+
         {/* Turned out of the header on a phone, it lands here. */}
         {mobile && (
           <div style={{ display: 'flex', justifyContent: 'center', marginTop: '14px' }}>
@@ -184,6 +198,14 @@ export default function AccountsPanel({
         <ConnectCloud
           onClose={() => setConnecting(false)}
           onConnected={() => { setConnecting(false); onChanged() }}
+        />
+      )}
+
+      {changingPassword && (
+        <ChangePassword
+          stats={stats}
+          onClose={() => setChangingPassword(false)}
+          onChanged={onChanged}
         />
       )}
     </aside>

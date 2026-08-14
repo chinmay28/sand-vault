@@ -317,6 +317,106 @@ def horizontal_overflow(page):
     )
 
 
+class TestChangePassword:
+    """The password dialog, which is also the only way to re-key a vault from
+    the browser.
+
+    Changing the password rotates the key the stored parts are encrypted under
+    and re-encrypts every file onto it, so this is the one test that rewrites
+    what is on the "accounts". It puts the password back before it finishes,
+    because the vault is shared for the whole session.
+    """
+
+    def _change(self, app, current, new, migrate=True):
+        app.get_by_text("Change vault password").first.click()
+        app.wait_for_selector("text=Re-encrypt my files now", timeout=15000)
+
+        app.get_by_label("Current password").fill(current)
+        app.get_by_label("New password", exact=True).fill(new)
+        app.get_by_label("Confirm new password").fill(new)
+        if not migrate:
+            app.get_by_role("checkbox").uncheck()
+
+        app.get_by_role("button", name="Change password").click()
+        # Re-encrypting is a download and an upload per file, so give it room.
+        app.wait_for_selector("text=Password changed", timeout=120000)
+
+    def _dismiss(self, app):
+        app.get_by_role("button", name="Done").click()
+        app.wait_for_selector("text=Password changed", state="detached", timeout=15000)
+
+    def test_changing_the_password_re_encrypts_the_stored_files(self, app, vault_password, tmp_path):
+        source = tmp_path / "rekeyed.txt"
+        source.write_text("this has to survive the change")
+        upload_and_settle(app, source)
+
+        # Only restore what was actually changed: a restore attempted after a
+        # change that never happened would fail in the finally block and hide
+        # the real failure.
+        changed = False
+        try:
+            self._change(app, vault_password, "a-brand-new-passphrase")
+            changed = True
+            # The report says what moved, not just that the password changed.
+            app.wait_for_selector("text=re-encrypted under the new key", timeout=15000)
+            self._dismiss(app)
+
+            # Nothing is left behind on the old key.
+            assert app.get_by_text("previous password").count() == 0
+
+            # And the file still opens, which it only can if the parts were
+            # rewritten under the new key and the index followed them.
+            app.locator('button[title="Open"]:has-text("rekeyed.txt")').first.click()
+            app.wait_for_selector("text=this has to survive the change", timeout=30000)
+            app.keyboard.press("Escape")
+        finally:
+            if changed:
+                self._change(app, "a-brand-new-passphrase", vault_password)
+                self._dismiss(app)
+
+    def test_a_wrong_current_password_is_reported(self, app, vault_password):
+        app.get_by_text("Change vault password").first.click()
+        app.wait_for_selector("text=Re-encrypt my files now", timeout=15000)
+
+        app.get_by_label("Current password").fill("not-the-password")
+        app.get_by_label("New password", exact=True).fill("does-not-matter")
+        app.get_by_label("Confirm new password").fill("does-not-matter")
+        app.get_by_role("button", name="Change password").click()
+
+        app.wait_for_selector("text=That is not your current password", timeout=30000)
+        app.get_by_role("button", name="Cancel").click()
+
+    def test_mismatched_new_passwords_never_reach_the_server(self, app, vault_password):
+        app.get_by_text("Change vault password").first.click()
+        app.wait_for_selector("text=Re-encrypt my files now", timeout=15000)
+
+        app.get_by_label("Current password").fill(vault_password)
+        app.get_by_label("New password", exact=True).fill("one-thing")
+        app.get_by_label("Confirm new password").fill("another-thing")
+        app.get_by_role("button", name="Change password").click()
+
+        app.wait_for_selector("text=The two new passwords do not match", timeout=15000)
+        # The vault is untouched: the dialog is still a form, not a report.
+        assert app.get_by_text("Password changed").count() == 0
+        app.get_by_role("button", name="Cancel").click()
+
+    def test_deferring_the_migration_offers_to_finish_it(self, app, vault_password):
+        changed = False
+        try:
+            self._change(app, vault_password, "deferred-for-now", migrate=False)
+            changed = True
+            self._dismiss(app)
+
+            # The accounts panel is where an unfinished re-key is picked up.
+            app.wait_for_selector("text=previous password", timeout=15000)
+            app.get_by_role("button", name="Finish re-encrypting").click()
+            app.wait_for_selector("text=previous password", state="detached", timeout=120000)
+        finally:
+            if changed:
+                self._change(app, "deferred-for-now", vault_password)
+                self._dismiss(app)
+
+
 class TestMobileLayout:
     """The app has to be usable on a phone, not just narrower.
 
