@@ -224,7 +224,8 @@ row of files.
 A file row's actions are a single `⋯` on a phone rather than a download and a
 delete a few pixels apart: the choices open in a bottom sheet, named rather than
 drawn, with the destructive one set apart at the end. Deleting confirms in a
-dialog of the app's own instead of the browser's `confirm()`.
+dialog of the app's own instead of the browser's `confirm()`. The part badges
+become a read-out, since the same inspector is in the menu by name.
 
 Added to a home screen it goes on as an app: the SAND mark instead of a
 screenshot of the page, and a launch without browser chrome. The mark ships in

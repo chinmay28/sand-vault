@@ -101,12 +101,12 @@ export default function AccountsPanel({
               glyph="⟳"
               label="Re-check every account"
               tone="muted"
-              size={mobile ? 40 : 28}
+              size={mobile ? 44 : 28}
               onClick={onRefresh}
             />
           )}
           {mobile && (
-            <IconButton glyph="✕" label="Close" tone="muted" size={40} onClick={onClose} />
+            <IconButton glyph="✕" label="Close" tone="muted" size={44} onClick={onClose} />
           )}
         </span>
       </div>

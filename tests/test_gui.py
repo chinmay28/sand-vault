@@ -480,14 +480,17 @@ class TestMobileLayout:
         app.set_viewport_size(PHONE)
         app.wait_for_timeout(400)
 
+        # Sized inline rather than by the `pointer: coarse` rule, which a
+        # resized desktop browser never matches — and which an inline style
+        # would silently outrank anyway.
         undersized = app.evaluate(
             """() => {
-                const list = [...document.querySelectorAll('main button, main a[href]')]
+                const list = [...document.querySelectorAll('button, a[href]')]
                 return list.map((el) => {
                     const r = el.getBoundingClientRect()
                     return { what: (el.getAttribute('aria-label') || el.textContent || '').trim().slice(0, 30),
                              w: Math.round(r.width), h: Math.round(r.height) }
-                }).filter((x) => x.w > 0 && (x.w < 40 || x.h < 40))
+                }).filter((x) => x.w > 0 && (x.w < 44 || x.h < 44))
             }"""
         )
         assert not undersized, f"controls too small to tap: {undersized}"
@@ -508,6 +511,15 @@ class TestMobileLayout:
         app.locator('button[aria-label="Actions for menu.txt"]').click()
         app.wait_for_selector("text=Where the parts live", timeout=10000)
 
+        # The part badges are only a read-out on a phone, so the inspector they
+        # open on a desktop has to be reachable from the menu instead.
+        app.get_by_text("Where the parts live").click()
+        app.wait_for_selector("text=Where this file lives", timeout=20000)
+        app.keyboard.press("Escape")
+        app.wait_for_timeout(400)
+
+        app.locator('button[aria-label="Actions for menu.txt"]').click()
+        app.wait_for_selector("text=Where the parts live", timeout=10000)
         app.get_by_text("Delete", exact=True).click()
         app.wait_for_selector("text=Delete menu.txt?", timeout=10000)
 

@@ -101,6 +101,11 @@ export function DevMark({ bare = false }) {
           display: 'inline-flex',
           flex: 'none',
           alignItems: 'center',
+          justifyContent: 'center',
+          // The badge itself stops reading below 36px, so the target grows
+          // around it rather than the artwork growing with it.
+          minWidth: '44px',
+          minHeight: '44px',
           border: 0,
           // In the header the mark hangs off the nav on a hairline; standing
           // on its own there is nothing to divide it from, so drop the rule.

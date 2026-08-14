@@ -139,7 +139,13 @@ export default function ChangePassword({ stats, onClose, onChanged }) {
             checked={migrate}
             disabled={busy}
             onChange={(e) => setMigrate(e.target.checked)}
-            style={{ marginTop: '2px', accentColor: COLORS.accent }}
+            /* The whole label toggles it, so the box itself only has to be
+               seen — but 13px of it is hard to even see, let alone read as
+               ticked at arm's length. */
+            style={{
+              width: '18px', height: '18px', flexShrink: 0,
+              marginTop: '1px', accentColor: COLORS.accent,
+            }}
           />
           <span style={{ fontFamily: FONT.sans, fontSize: '12px', lineHeight: 1.55, color: COLORS.text }}>
             Re-encrypt my files now

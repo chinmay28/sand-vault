@@ -507,6 +507,11 @@ names spelled out and the destructive one set apart at the end. Deleting then
 asks once more in a dialog of the app's own, rather than the browser's
 `confirm()`, whose two buttons land side by side at the top of the screen.
 
+The part badges are a read-out there rather than a third thing to hit: the menu
+opens the same inspector by name. Sizes are set by the layout itself rather than
+left to a `pointer: coarse` rule, so a narrow window behaves the way a phone
+does — and a phone never inherits a target some inline style quietly shrank.
+
 **Add to Home Screen** puts the vault on the home screen under the SAND mark
 rather than a screenshot of the page, and — on iOS always, on Android wherever
 the browser honours the manifest — opens it without browser chrome. The mark is

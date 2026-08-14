@@ -137,7 +137,7 @@ export default function App() {
               aria-label="Connected clouds"
               data-icon-button="true"
               onClick={() => setAccountsOpen(true)}
-              style={{ fontSize: '17px', padding: '4px 8px', justifyContent: 'center' }}
+              style={{ fontSize: '17px', padding: '4px 8px', minWidth: '44px', justifyContent: 'center' }}
             >☰</Button>
           )}
 
@@ -162,11 +162,11 @@ export default function App() {
               meaning and the accessible name comes off aria-label. */}
           <Button size="sm" variant="ghost" onClick={refreshAll}
             data-icon-button={mobile || undefined}
-            style={mobile ? { fontSize: '16px', padding: '4px 8px', justifyContent: 'center' } : null}
+            style={mobile ? { fontSize: '16px', padding: '4px 8px', minWidth: '44px', justifyContent: 'center' } : null}
             title="Refresh" aria-label="Refresh">⟳{mobile ? '' : ' Refresh'}</Button>
           <Button size="sm" onClick={lock}
             data-icon-button={mobile || undefined}
-            style={mobile ? { fontSize: '15px', padding: '4px 8px', justifyContent: 'center' } : null}
+            style={mobile ? { fontSize: '15px', padding: '4px 8px', minWidth: '44px', justifyContent: 'center' } : null}
             title="Lock vault" aria-label="Lock vault">🔒{mobile ? '' : ' Lock vault'}</Button>
           {/* No room for the developer mark up here on a phone — it moves to
               the foot of the accounts drawer instead. */}

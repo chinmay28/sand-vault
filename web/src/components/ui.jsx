@@ -5,6 +5,11 @@ import { useIsMobile } from '../hooks'
 
 export function Button({ variant = 'default', size = 'md', style, disabled, ...props }) {
   const [hover, setHover] = useState(false)
+  // Every button gets a fingertip-sized height on a phone, from the toolbar
+  // down to a "Disconnect" at the foot of the accounts drawer. Set here rather
+  // than in the coarse-pointer rule so a narrow window is laid out the way a
+  // phone is, and because an inline height would outrank that rule anyway.
+  const mobile = useIsMobile()
 
   const palette = {
     primary: { bg: COLORS.accent, fg: COLORS.bg, border: COLORS.accent },
@@ -25,6 +30,7 @@ export function Button({ variant = 'default', size = 'md', style, disabled, ...p
         display: 'inline-flex',
         alignItems: 'center',
         gap: '6px',
+        minHeight: mobile ? '44px' : undefined,
         padding,
         background: palette.bg,
         color: palette.fg,
@@ -236,8 +242,11 @@ export function Modal({ title, subtitle, onClose, children, width = 520 }) {
               cursor: 'pointer',
               lineHeight: 1,
               flexShrink: 0,
-              minWidth: '32px',
-              minHeight: '32px',
+              // Named here rather than left to the coarse-pointer floor: an
+              // inline style outranks it, so a smaller number set here would
+              // quietly shrink the target back on the devices that need it.
+              minWidth: mobile ? '44px' : '32px',
+              minHeight: mobile ? '44px' : '32px',
               padding: 0,
             }}
           >✕</button>

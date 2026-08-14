@@ -221,8 +221,8 @@ function Crumb({ label, mobile, onClick, active }) {
         border: 'none',
         // Walking back up the tree is a tap like any other, so the trail gets
         // room to be tapped rather than being treated as decoration.
-        minHeight: mobile ? '40px' : 0,
-        minWidth: mobile ? '40px' : 0,
+        minHeight: mobile ? '44px' : 0,
+        minWidth: mobile ? '44px' : 0,
         padding: mobile ? '4px 10px' : '2px 4px',
         borderRadius: '6px',
         cursor: 'pointer',
@@ -403,23 +403,13 @@ function FileRow({ file, mobile, onPreview, onInspect, onRefresh, onError }) {
     />
   )
 
-  const parts = (
-    <button
-      onClick={onInspect}
-      title="Where the parts live"
-      aria-label="Where the parts live"
-      style={{
-        display: 'flex', alignItems: 'center', gap: mobile ? '4px' : '3px',
-        background: 'none', border: 'none',
-        // Padding rather than bigger badges: the badges stay a compact
-        // read-out while the button around them is worth aiming at. The size
-        // is set here rather than left to the coarse-pointer rule, so it holds
-        // on any narrow screen and not just on ones with a touchscreen.
-        minHeight: mobile ? '40px' : 0,
-        padding: mobile ? '0 6px' : 0,
-        borderRadius: '6px', cursor: 'pointer', flexShrink: 0,
-      }}
-    >
+  /* On a phone the badges are a read-out and nothing more. A third target in a
+     row that already has a name and a menu would have to be either too small
+     to hit or tall enough to push the next file off the screen — and the menu
+     already offers the same inspector by name. On a desktop the badges stay
+     the shortcut they have always been. */
+  const partsBadges = (
+    <>
       {[1, 2, 3].map((part) => {
         const shard = file.shards.find((s) => s.part === part)
         return (
@@ -449,7 +439,25 @@ function FileRow({ file, mobile, onPreview, onInspect, onRefresh, onError }) {
           {dead ? '✗' : '!'}
         </span>
       )}
-    </button>
+    </>
+  )
+
+  const parts = mobile ? (
+    <span
+      title={`${file.shards.length} of 3 parts stored`}
+      style={{ display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 0 }}
+    >{partsBadges}</span>
+  ) : (
+    <button
+      onClick={onInspect}
+      title="Where the parts live"
+      aria-label="Where the parts live"
+      style={{
+        display: 'flex', alignItems: 'center', gap: '3px',
+        background: 'none', border: 'none', padding: 0,
+        borderRadius: '6px', cursor: 'pointer', flexShrink: 0,
+      }}
+    >{partsBadges}</button>
   )
 
   /* A pointer can pick between two 34px squares. A fingertip cannot, and one
