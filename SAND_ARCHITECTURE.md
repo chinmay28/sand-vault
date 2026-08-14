@@ -632,6 +632,16 @@ what it could show. The browser is told the server's path separator rather than
 guessing it: the phone in your hand and the machine holding the folder are
 often not the same kind of computer.
 
+Readability, not existence, decides where the picker opens and what it offers.
+Under the service `$HOME` is `/home` and `ProtectHome=yes` denies it, so the
+opening folder is the first candidate that can actually be listed — home, then
+the vault's own directory, then the mount roots — and a root that cannot be
+opened is left out of the shortcuts instead of offered as one that always
+fails. A listing that fails is still a `200` carrying the folder's parent and
+those shortcuts, with the reason in `error`: an unreadable folder is a normal
+thing to walk into, and a picker that cannot leave the folder it landed on is
+worse than one that explains itself.
+
 ### 8.6 Google Drive has no paths
 
 Drive is not a path-addressed store, so the SAND object key is written into the
