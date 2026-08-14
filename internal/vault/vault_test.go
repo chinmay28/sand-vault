@@ -485,8 +485,12 @@ func TestChangePasswordKeepsFilesReadable(t *testing.T) {
 		t.Fatalf("Upload: %v", err)
 	}
 
-	if err := v.ChangePassword(testPassword, "a brand new password"); err != nil {
+	report, err := v.ChangePassword(ctx, testPassword, "a brand new password", true)
+	if err != nil {
 		t.Fatalf("ChangePassword: %v", err)
+	}
+	if !report.Done() {
+		t.Fatalf("migration left %d file(s) behind: %v", report.Remaining, report.Warnings)
 	}
 
 	reopened, err := Open(v.Path())

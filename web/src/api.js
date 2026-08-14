@@ -43,11 +43,16 @@ export const api = {
   unlock: (password) => request('/api/vault/unlock', { method: 'POST', body: { password } }),
   lock: () => request('/api/vault/lock', { method: 'POST' }),
   setPolicy: (policy) => request('/api/vault/policy', { method: 'POST', body: { policy } }),
-  changePassword: (oldPassword, newPassword) =>
+  /* Changing the password rotates the key the stored parts are encrypted
+     under, so unless the migration is deferred this call only comes back once
+     every file has been rebuilt onto the new key — minutes, on a full vault.
+     Deferring leaves the files readable and finishable with migrate(). */
+  changePassword: (oldPassword, newPassword, { migrate = true } = {}) =>
     request('/api/vault/password', {
       method: 'POST',
-      body: { old_password: oldPassword, new_password: newPassword },
+      body: { old_password: oldPassword, new_password: newPassword, migrate },
     }),
+  migrate: () => request('/api/vault/migrate', { method: 'POST' }),
 
   providerSpecs: () => request('/api/providers/specs'),
   providers: () => request('/api/providers'),

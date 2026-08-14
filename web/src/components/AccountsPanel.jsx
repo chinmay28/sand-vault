@@ -164,6 +164,14 @@ export default function AccountsPanel({
           </div>
         )}
 
+        {stats?.pending_migration > 0 && (
+          <PendingMigration
+            count={stats.pending_migration}
+            onDone={onChanged}
+            onError={setError}
+          />
+        )}
+
         {/* Turned out of the header on a phone, it lands here. */}
         {mobile && (
           <div style={{ display: 'flex', justifyContent: 'center', marginTop: '14px' }}>
@@ -200,6 +208,45 @@ export default function AccountsPanel({
       />
       {panel}
     </>
+  )
+}
+
+/* A password change rotates the key the parts on the accounts are encrypted
+   under, and each file has to be gathered and scattered again to move onto it.
+   Anything left behind is still readable — and still readable with the old
+   password, which is the whole reason to finish. */
+function PendingMigration({ count, onDone, onError }) {
+  const [running, setRunning] = useState(false)
+
+  const finish = async () => {
+    setRunning(true)
+    onError(null)
+    try {
+      const report = await api.migrate()
+      if (report.warnings?.length) onError(report.warnings.join('\n'))
+      onDone()
+    } catch (err) {
+      onError(err.message)
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  return (
+    <Banner tone="warn">
+      {count} file{count === 1 ? ' is' : 's are'} still encrypted under your previous
+      password&apos;s key.
+      <Button
+        size="sm"
+        variant="ghost"
+        onClick={finish}
+        disabled={running}
+        style={{ marginTop: '8px' }}
+      >
+        {running ? <Spinner size={10} /> : null}
+        {running ? 'Re-encrypting…' : 'Finish re-encrypting'}
+      </Button>
+    </Banner>
   )
 }
 

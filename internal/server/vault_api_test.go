@@ -235,6 +235,97 @@ func TestUploadListDownloadRoundTrip(t *testing.T) {
 	}
 }
 
+func TestChangingThePasswordReEncryptsWhatIsStored(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("pw", 3)
+
+	content := []byte("scattered under the key that is about to be replaced")
+	file := c.upload("secret.txt", "/", content)
+	id := file["id"].(string)
+	shardsBefore := file["shards"].([]any)
+	keyBefore := shardsBefore[0].(map[string]any)["key"].(string)
+
+	w, body := c.json(http.MethodPost, "/api/vault/password", map[string]any{
+		"old_password": "pw",
+		"new_password": "a different passphrase entirely",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("change password: %d %s", w.Code, w.Body.String())
+	}
+	if body["migrated"] != float64(1) || body["remaining"] != float64(0) {
+		t.Fatalf("report = %v, want the one file re-encrypted", body)
+	}
+
+	// Same file, same bytes, different parts: the migration rewrote them.
+	w, meta := c.json(http.MethodGet, "/api/files/"+id, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("file meta: %d %s", w.Code, w.Body.String())
+	}
+	shardsAfter := meta["file"].(map[string]any)["shards"].([]any)
+	if keyAfter := shardsAfter[0].(map[string]any)["key"].(string); keyAfter == keyBefore {
+		t.Error("the parts kept their keys, so nothing was re-encrypted")
+	}
+
+	w = c.do(http.MethodGet, "/api/files/"+id+"/content?download=1", nil, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("download after the change: %d %s", w.Code, w.Body.String())
+	}
+	if !bytes.Equal(w.Body.Bytes(), content) {
+		t.Error("the re-encrypted file does not read back as it was stored")
+	}
+
+	// And the vault answers to the new password alone.
+	c.json(http.MethodPost, "/api/vault/lock", nil)
+	if w, _ := c.json(http.MethodPost, "/api/vault/unlock", map[string]any{"password": "pw"}); w.Code != http.StatusUnauthorized {
+		t.Errorf("the old password still unlocks the vault: %d", w.Code)
+	}
+	if w, _ := c.json(http.MethodPost, "/api/vault/unlock",
+		map[string]any{"password": "a different passphrase entirely"}); w.Code != http.StatusOK {
+		t.Fatalf("unlock with the new password: %d", w.Code)
+	}
+}
+
+func TestDeferredMigrationIsFinishedByTheMigrateEndpoint(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("pw", 3)
+	c.upload("waiting.txt", "/", []byte("still on the old key"))
+
+	w, body := c.json(http.MethodPost, "/api/vault/password", map[string]any{
+		"old_password": "pw",
+		"new_password": "changed in a hurry",
+		"migrate":      false,
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("change password: %d %s", w.Code, w.Body.String())
+	}
+	if body["remaining"] != float64(1) {
+		t.Fatalf("report = %v, want one file outstanding", body)
+	}
+
+	// The status endpoint is how the app knows to offer finishing it.
+	w, status := c.json(http.MethodGet, "/api/vault", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: %d", w.Code)
+	}
+	stats := status["stats"].(map[string]any)
+	if stats["pending_migration"] != float64(1) {
+		t.Errorf("stats = %v, want one file pending migration", stats)
+	}
+
+	w, body = c.json(http.MethodPost, "/api/vault/migrate", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("migrate: %d %s", w.Code, w.Body.String())
+	}
+	if body["migrated"] != float64(1) || body["remaining"] != float64(0) {
+		t.Fatalf("report = %v, want the outstanding file migrated", body)
+	}
+
+	w, status = c.json(http.MethodGet, "/api/vault", nil)
+	if pending := status["stats"].(map[string]any)["pending_migration"]; pending != float64(0) {
+		t.Errorf("pending_migration = %v after migrating, want 0", pending)
+	}
+}
+
 func TestInlineContentForcesDownloadForRiskyTypes(t *testing.T) {
 	c := newTestClient(t)
 	c.setup("pw", 3)

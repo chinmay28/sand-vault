@@ -32,6 +32,12 @@ type Entry struct {
 	CreatedAt  time.Time `json:"created_at"`
 	ModifiedAt time.Time `json:"modified_at"`
 	Shards     []Shard   `json:"shards"`
+
+	// KeyID names the data key generation this file's parts are sealed under.
+	// It trails the vault's active generation only while a password change is
+	// still re-encrypting; the empty string is the generation of a vault
+	// written before keys could be rotated.
+	KeyID string `json:"key_id,omitempty"`
 }
 
 // Path is the full browser path of the entry.

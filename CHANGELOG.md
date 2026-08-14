@@ -90,6 +90,44 @@ account already holding a *different* vault's backup is also left alone, so
 connecting an account to a second vault cannot destroy the first one's way
 back.
 
+### Changing your password now changes what protects your files
+
+`sand vault passwd` used to re-wrap the data key and say, truthfully, that
+nothing had to be re-uploaded. That was the wrong trade. The parts on your
+accounts were still encrypted under the same key, so anyone holding the old
+password and an old copy of the vault file — or of the `manifest.sand` sitting
+on every connected account — could still read every one of them. The password
+had changed; what it protected had not.
+
+Now a password change mints a **new** data key and rebuilds every stored file
+onto it: each file is gathered from its parts, re-encrypted, scattered again,
+and the parts the old key opened are erased from the accounts.
+
+That is a download and an upload per file, which cannot be one atomic act, so
+the vault holds more than one data key while it runs. The password change itself
+is a single write — new key minted, old key kept beside it, every section
+re-sealed under the new password — and each file then moves on its own, with the
+manifest recording which key generation each one answers to. A retired key is
+dropped the moment no file names it, whether the last file on it was migrated or
+deleted.
+
+So the password is genuinely changed the second the command returns, every file
+stays readable the whole way through, and an interruption costs you nothing but
+the files that had not moved yet:
+
+- `sand vault migrate` picks up whatever is left — after an interruption, or
+  after an account that was offline held its files back. Running it again when
+  there is nothing to do is free.
+- `sand vault status` and the accounts panel in the browser both say how many
+  files are still on the old key, and the panel offers to finish the job.
+- `sand vault passwd --no-migrate` changes the password now and defers the
+  re-encryption. Until it runs, the old password and an old copy of the vault
+  file still open whatever has not moved.
+
+A manifest backup written while a migration is in flight carries every key
+generation it describes, so a vault lost halfway through still recovers all of
+its files, and `sand restore --manifest` picks the right key per file.
+
 ### Connected cloud accounts
 
 Eight backends behind one small object-store interface: **Google Drive**,
