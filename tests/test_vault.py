@@ -11,6 +11,7 @@ would, so these tests exercise the whole path without needing credentials.
 """
 import hashlib
 import os
+import shutil
 import subprocess
 import urllib.parse
 
@@ -213,8 +214,15 @@ class TestStoreAndRetrieve:
         for dirpath, _, filenames in os.walk(root):
             for filename in filenames:
                 assert "canary" not in filename.lower(), f"filename leaked in {filename}"
-                with open(os.path.join(dirpath, filename), "rb") as fh:
-                    blob = fh.read()
+                try:
+                    with open(os.path.join(dirpath, filename), "rb") as fh:
+                        blob = fh.read()
+                except FileNotFoundError:
+                    # A manifest backup from an earlier upload lands as a
+                    # `.sand-tmp-*` file and is renamed into place; the walk can
+                    # see one and reach it after the rename. What it becomes is
+                    # checked on the next pass around this loop.
+                    continue
                 assert marker not in blob, f"plaintext found in {filename}"
                 checked += 1
         assert checked > 0, "no shards were written"
@@ -235,7 +243,15 @@ class TestStoreAndRetrieve:
             assert got.status_code == 200, got.text
             assert got.content == payload
         finally:
-            os.rename(stashed, account_root)
+            # The account may have been recreated underneath us: a manifest
+            # backup running in the background makes its own directory. Put the
+            # parts back into whatever is there rather than renaming onto it.
+            if os.path.isdir(account_root):
+                for name in os.listdir(stashed):
+                    shutil.move(os.path.join(stashed, name), os.path.join(account_root, name))
+                shutil.rmtree(stashed, ignore_errors=True)
+            else:
+                os.rename(stashed, account_root)
 
     def test_health_flags_a_missing_part(self, server, unlocked, clouds, tmp_path):
         r = upload(unlocked, server, "damaged.bin", os.urandom(20_000))
