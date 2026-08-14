@@ -466,6 +466,56 @@ class TestMobileLayout:
 
         assert not horizontal_overflow(app)
 
+    def test_row_controls_are_thumb_sized_on_a_phone(self, app, tmp_path):
+        """Anything tappable in the file list has to be worth aiming at.
+
+        44px is the smallest target Apple and Google both publish; below that a
+        fingertip covering the row's download arrow also covers the delete
+        beside it.
+        """
+        source = tmp_path / "thumbs.txt"
+        source.write_text("fat fingers")
+        upload_and_settle(app, source)
+
+        app.set_viewport_size(PHONE)
+        app.wait_for_timeout(400)
+
+        undersized = app.evaluate(
+            """() => {
+                const list = [...document.querySelectorAll('main button, main a[href]')]
+                return list.map((el) => {
+                    const r = el.getBoundingClientRect()
+                    return { what: (el.getAttribute('aria-label') || el.textContent || '').trim().slice(0, 30),
+                             w: Math.round(r.width), h: Math.round(r.height) }
+                }).filter((x) => x.w > 0 && (x.w < 40 || x.h < 40))
+            }"""
+        )
+        assert not undersized, f"controls too small to tap: {undersized}"
+
+    def test_a_row_menu_stands_between_the_thumb_and_delete(self, app, tmp_path):
+        """On a phone the row carries one menu button rather than a download
+        and a delete a few pixels apart, and deleting still has to pass a
+        confirmation — so a mis-tap costs a tap, not a file."""
+        source = tmp_path / "menu.txt"
+        source.write_text("still here")
+        upload_and_settle(app, source)
+
+        app.set_viewport_size(PHONE)
+        app.wait_for_timeout(400)
+
+        # The paired icons are gone; one menu button takes their place.
+        assert app.locator('a[title="Download the rebuilt, decrypted file"]').count() == 0
+        app.locator('button[aria-label="Actions for menu.txt"]').click()
+        app.wait_for_selector("text=Where the parts live", timeout=10000)
+
+        app.get_by_text("Delete", exact=True).click()
+        app.wait_for_selector("text=Delete menu.txt?", timeout=10000)
+
+        # Backing out of the confirmation leaves the file where it was.
+        app.get_by_role("button", name="Cancel").click()
+        app.wait_for_timeout(400)
+        assert app.get_by_text("menu.txt", exact=True).count() > 0
+
     def test_accounts_sit_behind_a_drawer_on_a_phone(self, app):
         app.set_viewport_size(PHONE)
         app.wait_for_timeout(300)

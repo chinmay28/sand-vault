@@ -493,10 +493,19 @@ paying for a re-download when nothing has changed.
 A vault you reach over Tailscale or a reverse proxy gets opened from a phone as
 often as from a desk, so the layout folds rather than shrinks. Under 860px wide
 the sidebar becomes a drawer behind `☰`, the file table drops its columns for
-stacked rows — name and actions on one line, size, date and part badges on the
-next — and the toolbar gives the breadcrumb trail a row of its own. Controls get
-touch-sized targets, and heights are measured against the visible viewport so a
-phone's collapsing address bar never hides the last row.
+stacked rows — name and menu on one line, size, date and part badges on the
+next — and the toolbar gives the breadcrumb trail a row of its own. Heights are
+measured against the visible viewport, so a phone's collapsing address bar never
+hides the last row.
+
+Every control is a target a fingertip can actually hit: 44px, the smallest size
+Apple and Google both publish, and a glyph-only button gets that in width as
+well as height. Where a pointer can pick between a download and a delete a few
+pixels apart, a fingertip cannot — so on a phone each row carries a single `⋯`
+instead, and the choices open in a sheet at the bottom of the screen with their
+names spelled out and the destructive one set apart at the end. Deleting then
+asks once more in a dialog of the app's own, rather than the browser's
+`confirm()`, whose two buttons land side by side at the top of the screen.
 
 **Add to Home Screen** puts the vault on the home screen under the SAND mark
 rather than a screenshot of the page, and — on iOS always, on Android wherever

@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { COLORS, FONT, accountColor, fileIcon, formatBytes, formatDate } from '../theme'
 import { api, joinPath } from '../api'
 import { useDownload } from '../download'
-import { Banner, Button, Empty, Modal, Spinner } from './ui'
+import { ActionSheet, Banner, Button, ConfirmDialog, Empty, IconButton, Modal, Spinner } from './ui'
 
 /* Name, size, modified, parts, actions. The four fixed columns come to nearly
    500px, which is why the phone layout stacks instead of shrinking them. */
@@ -94,22 +94,24 @@ export default function FileBrowser({
           flex: 1, minWidth: mobile ? '100%' : '180px', display: 'flex', alignItems: 'center',
           gap: '5px', fontFamily: FONT.mono, fontSize: '12px', flexWrap: 'wrap',
         }}>
-          <Crumb label="▣ /" onClick={() => onNavigate('/')} active={path === '/'} />
+          <Crumb label="▣ /" mobile={mobile} onClick={() => onNavigate('/')} active={path === '/'} />
           {segments.map((segment, i) => {
             const target = '/' + segments.slice(0, i + 1).join('/')
             return (
               <React.Fragment key={target}>
                 <span style={{ color: COLORS.textMuted }}>/</span>
-                <Crumb label={segment} onClick={() => onNavigate(target)} active={i === segments.length - 1} />
+                <Crumb label={segment} mobile={mobile} onClick={() => onNavigate(target)} active={i === segments.length - 1} />
               </React.Fragment>
             )
           })}
         </nav>
 
-        <Button size="sm" onClick={() => setCreatingFolder(true)}
-          style={mobile ? { flex: 1, justifyContent: 'center' } : null}>+ Folder</Button>
-        <Button size="sm" variant="primary" onClick={() => fileInput.current?.click()} disabled={!canUpload}
-          style={mobile ? { flex: 1, justifyContent: 'center' } : null}>
+        {/* The two actions split the phone's row, each ending up wider than a
+            thumb and taller than the 44px floor. */}
+        <Button size={mobile ? 'md' : 'sm'} onClick={() => setCreatingFolder(true)}
+          style={mobile ? { flex: 1, justifyContent: 'center', minHeight: '46px' } : null}>+ Folder</Button>
+        <Button size={mobile ? 'md' : 'sm'} variant="primary" onClick={() => fileInput.current?.click()} disabled={!canUpload}
+          style={mobile ? { flex: 1, justifyContent: 'center', minHeight: '46px' } : null}>
           ↑ Upload
         </Button>
         <input
@@ -210,17 +212,22 @@ export default function FileBrowser({
   )
 }
 
-function Crumb({ label, onClick, active }) {
+function Crumb({ label, mobile, onClick, active }) {
   return (
     <button
       onClick={onClick}
       style={{
         background: 'none',
         border: 'none',
-        padding: '2px 4px',
+        // Walking back up the tree is a tap like any other, so the trail gets
+        // room to be tapped rather than being treated as decoration.
+        minHeight: mobile ? '40px' : 0,
+        minWidth: mobile ? '40px' : 0,
+        padding: mobile ? '4px 10px' : '2px 4px',
+        borderRadius: '6px',
         cursor: 'pointer',
         fontFamily: FONT.mono,
-        fontSize: '12px',
+        fontSize: mobile ? '13px' : '12px',
         color: active ? COLORS.accent : COLORS.textDim,
         fontWeight: active ? 700 : 400,
       }}
@@ -278,26 +285,15 @@ function FileTable({ path, listing, canUpload, mobile, onNavigate, onPreview, on
       )}
 
       {folders.map((folder) => (
-        <Row key={`dir:${folder}`} mobile={mobile}>
-          <button
-            onClick={() => onNavigate(joinPath(path, folder))}
-            style={{
-              display: 'flex', alignItems: 'center', gap: '9px',
-              flex: 1, minWidth: 0,
-              background: 'none', border: 'none', padding: 0, cursor: 'pointer',
-              fontFamily: FONT.mono, fontSize: '12.5px', color: COLORS.text,
-              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-              textAlign: 'left',
-            }}
-          >
-            <span style={{ color: COLORS.accent }}>▸</span>
-            <span>📁</span>
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{folder}</span>
-          </button>
-          {/* The three empty middle cells only exist to fill the grid. */}
-          {!mobile && <><span /><span /><span /></>}
-          <FolderActions path={joinPath(path, folder)} onRefresh={onRefresh} onError={onError} />
-        </Row>
+        <FolderRow
+          key={`dir:${folder}`}
+          name={folder}
+          path={joinPath(path, folder)}
+          mobile={mobile}
+          onNavigate={onNavigate}
+          onRefresh={onRefresh}
+          onError={onError}
+        />
       ))}
 
       {files.map((file) => (
@@ -322,64 +318,89 @@ function Row({ children, mobile }) {
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       style={{
-        // Too narrow for columns, so the row becomes a strip: name on the
-        // left, actions on the right, and everything else on a second line.
+        // Too narrow for columns, so the row becomes a stack: the name and its
+        // menu on the first line, the details underneath. It is also roomier
+        // than the desktop row — a row a fingertip has to hit needs the height
+        // more than the screen needs to hold one more file.
         ...(mobile
-          ? { display: 'flex', flexWrap: 'wrap', rowGap: '6px', columnGap: '8px' }
-          : { display: 'grid', gridTemplateColumns: COLUMNS, gap: '12px' }),
-        alignItems: 'center',
-        padding: mobile ? '8px 12px' : '9px 14px',
+          ? { display: 'flex', flexDirection: 'column', rowGap: '2px' }
+          : { display: 'grid', gridTemplateColumns: COLUMNS, gap: '12px', alignItems: 'center' }),
+        padding: mobile ? '6px 10px 8px' : '9px 14px',
         borderBottom: `1px solid ${COLORS.border}22`,
         background: hover ? COLORS.surfaceHover : 'transparent',
         fontFamily: FONT.mono,
         fontSize: '11.5px',
         color: COLORS.textDim,
-        minHeight: '38px',
+        minHeight: mobile ? '64px' : '38px',
       }}
     >{children}</div>
+  )
+}
+
+/* The tappable name. On a phone it claims the whole first line and a 44px
+   height, so opening a file means hitting the row rather than the glyph. */
+function NameButton({ mobile, icon, label, chevron, disabled, title, onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      disabled={disabled}
+      style={{
+        display: 'flex', alignItems: 'center', gap: '9px',
+        flex: 1, minWidth: 0,
+        minHeight: mobile ? '44px' : 0,
+        background: 'none', border: 'none',
+        padding: mobile ? '0 2px' : 0,
+        borderRadius: '8px',
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        fontFamily: FONT.mono,
+        fontSize: mobile ? '13.5px' : '12.5px',
+        color: disabled ? COLORS.error : COLORS.text,
+        overflow: 'hidden', textAlign: 'left',
+      }}
+    >
+      {chevron !== undefined
+        ? <span style={{ color: COLORS.accent, flexShrink: 0 }}>{chevron}</span>
+        /* Lines file names up under the folder rows' ▸ chevron. */
+        : <span style={{ width: '12px', flexShrink: 0 }} />}
+      <span style={{ flexShrink: 0 }}>{icon}</span>
+      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
+    </button>
   )
 }
 
 function FileRow({ file, mobile, onPreview, onInspect, onRefresh, onError }) {
   const [busy, setBusy] = useState(false)
   const [download, downloading] = useDownload(onError)
+  const [menu, setMenu] = useState(false)
+  const [confirming, setConfirming] = useState(false)
   const degraded = file.shards.length < 3
   const dead = file.shards.length < 2
 
   const remove = async () => {
-    if (!window.confirm(`Delete "${file.name}"?\n\nEvery part is erased from the accounts holding it. This cannot be undone.`)) return
     setBusy(true)
     try {
       const resp = await api.deleteFile(file.id)
       if (resp.warnings?.length) onError(resp.warnings.join('\n'))
+      setConfirming(false)
       onRefresh()
     } catch (err) {
       onError(err.message)
+      setConfirming(false)
     } finally {
       setBusy(false)
     }
   }
 
   const name = (
-    <button
-      onClick={onPreview}
-      title={dead ? 'Too few parts remain to rebuild this file' : 'Open'}
-      style={{
-        display: 'flex', alignItems: 'center', gap: '9px',
-        flex: 1, minWidth: 0,
-        background: 'none', border: 'none', padding: 0,
-        cursor: dead ? 'not-allowed' : 'pointer',
-        fontFamily: FONT.mono, fontSize: '12.5px',
-        color: dead ? COLORS.error : COLORS.text,
-        overflow: 'hidden', textAlign: 'left',
-      }}
+    <NameButton
+      mobile={mobile}
+      icon={fileIcon(file.mime, file.name)}
+      label={file.name}
       disabled={dead}
-    >
-      {/* Lines the name up under the folder rows' ▸ chevron. */}
-      {!mobile && <span style={{ width: '12px' }} />}
-      <span>{fileIcon(file.mime, file.name)}</span>
-      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span>
-    </button>
+      title={dead ? 'Too few parts remain to rebuild this file' : 'Open'}
+      onClick={onPreview}
+    />
   )
 
   const parts = (
@@ -387,7 +408,17 @@ function FileRow({ file, mobile, onPreview, onInspect, onRefresh, onError }) {
       onClick={onInspect}
       title="Where the parts live"
       aria-label="Where the parts live"
-      style={{ display: 'flex', alignItems: 'center', gap: '3px', background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}
+      style={{
+        display: 'flex', alignItems: 'center', gap: mobile ? '4px' : '3px',
+        background: 'none', border: 'none',
+        // Padding rather than bigger badges: the badges stay a compact
+        // read-out while the button around them is worth aiming at. The size
+        // is set here rather than left to the coarse-pointer rule, so it holds
+        // on any narrow screen and not just on ones with a touchscreen.
+        minHeight: mobile ? '40px' : 0,
+        padding: mobile ? '0 6px' : 0,
+        borderRadius: '6px', cursor: 'pointer', flexShrink: 0,
+      }}
     >
       {[1, 2, 3].map((part) => {
         const shard = file.shards.find((s) => s.part === part)
@@ -396,11 +427,11 @@ function FileRow({ file, mobile, onPreview, onInspect, onRefresh, onError }) {
             key={part}
             title={shard ? `Part ${part} on ${shard.provider_name}` : `Part ${part} not stored`}
             style={{
-              width: '19px',
-              height: '15px',
+              width: mobile ? '22px' : '19px',
+              height: mobile ? '17px' : '15px',
               borderRadius: '3px',
               fontFamily: FONT.mono,
-              fontSize: '8.5px',
+              fontSize: mobile ? '9.5px' : '8.5px',
               fontWeight: 700,
               display: 'flex',
               alignItems: 'center',
@@ -421,41 +452,110 @@ function FileRow({ file, mobile, onPreview, onInspect, onRefresh, onError }) {
     </button>
   )
 
-  const actions = (
-    <span style={{ display: 'flex', gap: '4px', justifyContent: 'flex-end', flexShrink: 0 }}>
+  /* A pointer can pick between two 34px squares. A fingertip cannot, and one
+     of them deletes the file everywhere, so the phone gets a single menu
+     button instead and spells the choices out in a sheet. */
+  const actions = mobile ? (
+    <IconButton
+      glyph="⋯"
+      label={`Actions for ${file.name}`}
+      onClick={() => setMenu(true)}
+      size={44}
+      style={{ background: COLORS.surfaceRaised, border: `1px solid ${COLORS.border}`, fontSize: '18px' }}
+    />
+  ) : (
+    <span style={{ display: 'flex', gap: '2px', justifyContent: 'flex-end', flexShrink: 0 }}>
       {/* Every row carries this control, so the spoken name says which file it
           belongs to rather than repeating the same sentence down the list. */}
-      <button
-        onClick={() => download(file)}
-        disabled={downloading}
+      <IconButton
+        glyph={downloading ? '…' : '↓'}
+        label={`Download ${file.name}`}
         title="Download the rebuilt, decrypted file"
-        aria-label={`Download ${file.name}`}
-        style={{
-          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-          background: 'none', border: 'none', cursor: downloading ? 'default' : 'pointer',
-          color: COLORS.textDim, fontFamily: FONT.mono, fontSize: '13px', padding: '2px 5px',
-        }}
-      >{downloading ? '…' : '↓'}</button>
-      <button
-        onClick={remove}
+        disabled={downloading}
+        onClick={() => download(file)}
+      />
+      <IconButton
+        glyph={busy ? '…' : '✕'}
+        label="Delete everywhere"
+        tone="muted"
         disabled={busy}
-        title="Delete everywhere"
-        aria-label="Delete everywhere"
-        style={{ background: 'none', border: 'none', color: COLORS.textMuted, cursor: 'pointer', fontSize: '12px', padding: '2px 5px' }}
-      >{busy ? '…' : '✕'}</button>
+        onClick={() => setConfirming(true)}
+      />
     </span>
+  )
+
+  const dialogs = (
+    <>
+      {menu && (
+        <ActionSheet
+          title={file.name}
+          subtitle={`${formatBytes(file.size)} · ${formatDate(file.modified_at)}`}
+          onClose={() => setMenu(false)}
+          items={[
+            {
+              key: 'open',
+              glyph: '◱',
+              label: 'Open',
+              hint: dead ? 'Too few parts remain to rebuild this file' : 'Gather the parts and rebuild it here',
+              disabled: dead,
+              onSelect: onPreview,
+            },
+            {
+              key: 'download',
+              glyph: '↓',
+              // The sheet closes on the way out and the fetch carries on
+              // behind it — a home-screen app has no tab to park a download
+              // in, so nothing here may navigate.
+              label: downloading ? 'Downloading…' : 'Download',
+              hint: 'Save the rebuilt, decrypted file',
+              disabled: downloading,
+              onSelect: () => download(file),
+            },
+            {
+              key: 'parts',
+              glyph: '◈',
+              label: 'Where the parts live',
+              hint: `${file.shards.length} of 3 parts stored`,
+              onSelect: onInspect,
+            },
+            {
+              key: 'delete',
+              glyph: '✕',
+              label: 'Delete',
+              hint: 'Erases every part, everywhere',
+              danger: true,
+              onSelect: () => setConfirming(true),
+            },
+          ]}
+        />
+      )}
+
+      {confirming && (
+        <ConfirmDialog
+          title={`Delete ${file.name}?`}
+          busy={busy}
+          onConfirm={remove}
+          onClose={() => !busy && setConfirming(false)}
+        >
+          Every part is erased from the accounts holding it. This cannot be undone.
+        </ConfirmDialog>
+      )}
+    </>
   )
 
   if (mobile) {
     return (
       <Row mobile>
-        {name}
-        {actions}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          {name}
+          {actions}
+        </div>
         {/* Size, date and the part badges share the second line — the columns
-            they came from are gone, so they carry their own separators. */}
+            they came from are gone, so they carry their own separators. The
+            line is indented to sit under the name, clear of the icon. */}
         <div style={{
           display: 'flex', alignItems: 'center', gap: '8px',
-          width: '100%', fontSize: '10.5px', color: COLORS.textMuted,
+          paddingLeft: '23px', fontSize: '11px', color: COLORS.textMuted,
         }}>
           <span style={{ whiteSpace: 'nowrap' }}>{formatBytes(file.size)}</span>
           <span>·</span>
@@ -465,6 +565,7 @@ function FileRow({ file, mobile, onPreview, onInspect, onRefresh, onError }) {
           <span style={{ flex: 1 }} />
           {parts}
         </div>
+        {dialogs}
       </Row>
     )
   }
@@ -476,30 +577,107 @@ function FileRow({ file, mobile, onPreview, onInspect, onRefresh, onError }) {
       <span>{formatDate(file.modified_at)}</span>
       {parts}
       {actions}
+      {dialogs}
     </Row>
   )
 }
 
-function FolderActions({ path, onRefresh, onError }) {
+function FolderRow({ name, path, mobile, onNavigate, onRefresh, onError }) {
+  const [menu, setMenu] = useState(false)
+  const [confirming, setConfirming] = useState(false)
+  const [busy, setBusy] = useState(false)
+
+  const open = () => onNavigate(path)
+
   const remove = async () => {
-    if (!window.confirm(`Delete "${path}" and everything inside it?\n\nAll parts are erased from every account. This cannot be undone.`)) return
+    setBusy(true)
     try {
       const resp = await api.deleteFolder(path, true)
       if (resp.warnings?.length) onError(resp.warnings.join('\n'))
+      setConfirming(false)
       onRefresh()
     } catch (err) {
       onError(err.message)
+      setConfirming(false)
+    } finally {
+      setBusy(false)
     }
   }
 
-  return (
+  const nameButton = (
+    <NameButton mobile={mobile} icon="📁" label={name} chevron="▸" title="Open folder" onClick={open} />
+  )
+
+  const actions = mobile ? (
+    <IconButton
+      glyph="⋯"
+      label={`Actions for ${name}`}
+      onClick={() => setMenu(true)}
+      size={44}
+      style={{ background: COLORS.surfaceRaised, border: `1px solid ${COLORS.border}`, fontSize: '18px' }}
+    />
+  ) : (
     <span style={{ display: 'flex', justifyContent: 'flex-end' }}>
-      <button
-        onClick={remove}
-        title="Delete folder"
-        style={{ background: 'none', border: 'none', color: COLORS.textMuted, cursor: 'pointer', fontSize: '12px', padding: '2px 5px' }}
-      >✕</button>
+      <IconButton glyph="✕" label="Delete folder" tone="muted" onClick={() => setConfirming(true)} />
     </span>
+  )
+
+  const dialogs = (
+    <>
+      {menu && (
+        <ActionSheet
+          title={name}
+          subtitle="Folder"
+          onClose={() => setMenu(false)}
+          items={[
+            { key: 'open', glyph: '▸', label: 'Open folder', onSelect: open },
+            {
+              key: 'delete',
+              glyph: '✕',
+              label: 'Delete folder',
+              hint: 'Erases everything inside it, everywhere',
+              danger: true,
+              onSelect: () => setConfirming(true),
+            },
+          ]}
+        />
+      )}
+
+      {confirming && (
+        <ConfirmDialog
+          title={`Delete ${name}?`}
+          subtitle={path}
+          busy={busy}
+          confirmLabel="Delete folder"
+          onConfirm={remove}
+          onClose={() => !busy && setConfirming(false)}
+        >
+          The folder and everything inside it goes: all parts are erased from every account. This cannot be undone.
+        </ConfirmDialog>
+      )}
+    </>
+  )
+
+  if (mobile) {
+    return (
+      <Row mobile>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minHeight: '48px' }}>
+          {nameButton}
+          {actions}
+        </div>
+        {dialogs}
+      </Row>
+    )
+  }
+
+  return (
+    <Row>
+      {nameButton}
+      {/* The three empty middle cells only exist to fill the grid. */}
+      <span /><span /><span />
+      {actions}
+      {dialogs}
+    </Row>
   )
 }
 

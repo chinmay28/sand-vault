@@ -39,9 +39,9 @@ export function Brand({ size = 'md' }) {
             down with the viewport rather than pushing everything else off. */}
         <span style={{
           fontFamily: FONT.mono,
-          fontSize: large ? 'clamp(20px, 6.4vw, 26px)' : 'clamp(15px, 4.4vw, 17px)',
+          fontSize: large ? 'clamp(20px, 6.4vw, 26px)' : 'clamp(13.5px, 4.4vw, 17px)',
           fontWeight: 700,
-          letterSpacing: large ? 'clamp(4px, 1.7vw, 7px)' : 'clamp(2.5px, 1vw, 4px)',
+          letterSpacing: large ? 'clamp(4px, 1.7vw, 7px)' : 'clamp(2px, 1vw, 4px)',
           whiteSpace: 'nowrap',
         }}>
           <span style={{ color: COLORS.accent }}>SAND</span>

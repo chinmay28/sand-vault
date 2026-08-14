@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { COLORS, FONT, KIND_ICONS, accountColor, formatBytes } from '../theme'
 import { api } from '../api'
-import { Banner, Button, Spinner } from './ui'
+import { Banner, Button, IconButton, Spinner } from './ui'
 import ConnectCloud, { pendingOAuthFlow } from './ConnectCloud'
 import ChangePassword from './ChangePassword'
 import { DevMark } from './Brand'
@@ -97,19 +97,16 @@ export default function AccountsPanel({
 
         <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
           {loading ? <Spinner size={12} /> : (
-            <button
+            <IconButton
+              glyph="⟳"
+              label="Re-check every account"
+              tone="muted"
+              size={mobile ? 40 : 28}
               onClick={onRefresh}
-              title="Re-check every account"
-              aria-label="Re-check every account"
-              style={{ background: 'none', border: 'none', color: COLORS.textMuted, cursor: 'pointer', fontSize: '13px', padding: '0 6px' }}
-            >⟳</button>
+            />
           )}
           {mobile && (
-            <button
-              onClick={onClose}
-              aria-label="Close"
-              style={{ background: 'none', border: 'none', color: COLORS.textMuted, cursor: 'pointer', fontSize: '15px', padding: '0 6px' }}
-            >✕</button>
+            <IconButton glyph="✕" label="Close" tone="muted" size={40} onClick={onClose} />
           )}
         </span>
       </div>

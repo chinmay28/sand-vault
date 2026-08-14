@@ -121,8 +121,11 @@ export default function App() {
         <header style={{
           display: 'flex',
           alignItems: 'center',
-          gap: mobile ? '8px' : '14px',
-          padding: mobile ? '8px 12px' : '10px 20px',
+          // Tighter on a phone than it looks like it wants to be: the three
+          // header controls are now full 44px targets, and the room for them
+          // comes out of the spacing between them.
+          gap: mobile ? '6px' : '14px',
+          padding: mobile ? '8px 10px' : '10px 20px',
           borderBottom: `1px solid ${COLORS.border}`,
           background: COLORS.surface,
           flexShrink: 0,
@@ -132,8 +135,9 @@ export default function App() {
               size="sm"
               variant="ghost"
               aria-label="Connected clouds"
+              data-icon-button="true"
               onClick={() => setAccountsOpen(true)}
-              style={{ fontSize: '15px', padding: '4px 8px' }}
+              style={{ fontSize: '17px', padding: '4px 8px', justifyContent: 'center' }}
             >☰</Button>
           )}
 
@@ -157,8 +161,12 @@ export default function App() {
           {/* Narrow enough and the labels are dropped; the glyphs carry the
               meaning and the accessible name comes off aria-label. */}
           <Button size="sm" variant="ghost" onClick={refreshAll}
+            data-icon-button={mobile || undefined}
+            style={mobile ? { fontSize: '16px', padding: '4px 8px', justifyContent: 'center' } : null}
             title="Refresh" aria-label="Refresh">⟳{mobile ? '' : ' Refresh'}</Button>
           <Button size="sm" onClick={lock}
+            data-icon-button={mobile || undefined}
+            style={mobile ? { fontSize: '15px', padding: '4px 8px', justifyContent: 'center' } : null}
             title="Lock vault" aria-label="Lock vault">🔒{mobile ? '' : ' Lock vault'}</Button>
           {/* No room for the developer mark up here on a phone — it moves to
               the foot of the accounts drawer instead. */}
@@ -223,9 +231,17 @@ function Shell({ children }) {
           82% { transform: scale(1); }
           100% { transform: scale(1.06); }
         }
+        /* Row menus rise from the edge they are anchored to, so it is obvious
+           they belong to the thumb rather than to the middle of the screen. */
+        @keyframes sand-sheet-up {
+          from { transform: translateY(14px); opacity: 0; }
+          to { transform: translateY(0); opacity: 1; }
+        }
+        .sand-sheet { animation: sand-sheet-up 0.18s ease-out; }
         /* The cross-fade stays — it isn't motion — but the scale doesn't. */
         @media (prefers-reduced-motion: reduce) {
           .sand-dev-lockup { animation: none !important; }
+          .sand-sheet { animation: none !important; }
         }
         * { box-sizing: border-box; }
         :root {
@@ -247,12 +263,19 @@ function Shell({ children }) {
           input, textarea, select { font-size: 16px !important; }
         }
         /* A fingertip is a far blunter instrument than a mouse pointer, so
-           give every control a real target on touch screens. */
+           give every control a real target on touch screens: 44px is the size
+           both Apple and Google publish as the smallest one worth aiming at.
+           Glyph-only controls need the width as much as the height — an arrow
+           is barely a dozen pixels across on its own. */
         @media (pointer: coarse) {
           button,
           a[href],
-          input:not([type="radio"]):not([type="checkbox"]) { min-height: 40px; }
+          input:not([type="radio"]):not([type="checkbox"]) { min-height: 44px; }
+          [data-icon-button] { min-width: 44px; }
         }
+        /* Stops the 300ms wait for a possible second tap, which otherwise
+           reads as the app being slow to answer. */
+        button, a[href], [role="button"] { touch-action: manipulation; }
         ::-webkit-scrollbar { width: 10px; height: 10px; }
         ::-webkit-scrollbar-track { background: ${COLORS.bg}; }
         ::-webkit-scrollbar-thumb { background: ${COLORS.border}; border-radius: 5px; }

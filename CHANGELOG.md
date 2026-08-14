@@ -217,8 +217,14 @@ ETag, so an upgrade actually reaches a browser that has opened the vault before.
 
 The layout folds on a phone rather than shrinking: under 860px the accounts
 sidebar becomes a drawer, the file table's columns give way to stacked rows, and
-controls take touch-sized targets. Heights track the visible viewport, so a
-collapsing address bar never sits over the last row of files.
+controls take touch-sized targets — 44px, in width as well as height. Heights
+track the visible viewport, so a collapsing address bar never sits over the last
+row of files.
+
+A file row's actions are a single `⋯` on a phone rather than a download and a
+delete a few pixels apart: the choices open in a bottom sheet, named rather than
+drawn, with the destructive one set apart at the end. Deleting confirms in a
+dialog of the app's own instead of the browser's `confirm()`.
 
 Added to a home screen it goes on as an app: the SAND mark instead of a
 screenshot of the page, and a launch without browser chrome. The mark ships in
