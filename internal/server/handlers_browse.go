@@ -2,6 +2,7 @@ package server
 
 import (
 	"errors"
+	"io"
 	"io/fs"
 	"net/http"
 	"os"
@@ -58,12 +59,19 @@ type browseResponse struct {
 	Folders   []browseFolder `json:"folders"`
 	Roots     []browseRoot   `json:"roots"`
 	Truncated bool           `json:"truncated"`
+
+	// Error is why this folder could not be listed. A folder SAND cannot read
+	// is a normal thing to walk into — the sandbox hides /home, a removable
+	// drive belongs to somebody else — so it comes back as a listing that
+	// failed rather than as a failed request: the picker still gets its
+	// parent and its roots, and can go somewhere else.
+	Error string `json:"error,omitempty"`
 }
 
 func (s *Server) handleSystemFolders(w http.ResponseWriter, r *http.Request) {
 	requested := provider.ExpandHome(r.URL.Query().Get("path"))
 	if requested == "" {
-		requested = browseStart()
+		requested = s.browseStart()
 	}
 
 	abs, err := filepath.Abs(requested)
@@ -73,42 +81,90 @@ func (s *Server) handleSystemFolders(w http.ResponseWriter, r *http.Request) {
 	}
 
 	listed := nearestExistingDir(abs)
-	folders, truncated, err := readFolders(listed)
-	if err != nil {
-		if errors.Is(err, fs.ErrPermission) {
-			writeError(w, http.StatusForbidden, err.Error(), "FORBIDDEN")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, err.Error(), "BROWSE_FAILED")
-		return
-	}
-
 	parent := filepath.Dir(listed)
 	if parent == listed {
 		parent = ""
 	}
 
-	writeJSON(w, http.StatusOK, browseResponse{
+	resp := browseResponse{
 		Requested: abs,
 		Path:      listed,
 		Parent:    parent,
 		Exists:    listed == abs,
 		Separator: string(os.PathSeparator),
-		Folders:   folders,
 		Roots:     browseRoots(),
-		Truncated: truncated,
-	})
+	}
+
+	folders, truncated, err := readFolders(listed)
+	if err != nil {
+		resp.Error = err.Error()
+	} else {
+		resp.Folders, resp.Truncated = folders, truncated
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
-// browseStart is where the picker opens when nothing has been typed yet.
-func browseStart() string {
+// browseStart is where the picker opens when nothing has been typed yet: the
+// first of these this process can actually read.
+//
+// Home is the obvious answer and the wrong one to insist on. Under the
+// systemd unit both installers write, SAND runs as a user with no home of its
+// own and `ProtectHome=yes` in force, so `$HOME` resolves to `/home` and the
+// sandbox refuses to open it — which used to strand the picker on an empty
+// folder it could not leave. The vault's own directory is always readable by
+// definition, and the mount roots are where a drive worth scattering onto
+// actually turns up.
+func (s *Server) browseStart() string {
+	candidates := make([]string, 0, 8)
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		return home
+		candidates = append(candidates, home)
 	}
+	candidates = append(candidates, s.vaultDir())
+	candidates = append(candidates, provider.MountRoots()...)
 	if wd, err := os.Getwd(); err == nil && wd != "" {
-		return wd
+		candidates = append(candidates, wd)
+	}
+	candidates = append(candidates, string(os.PathSeparator))
+
+	if start := firstReadableDir(candidates); start != "" {
+		return start
 	}
 	return string(os.PathSeparator)
+}
+
+// vaultDir is the folder holding the vault file — /var/lib/sand under the
+// service, ~/.sand on a desktop.
+func (s *Server) vaultDir() string {
+	path := s.VaultPath
+	if path == "" {
+		path = DefaultVaultPath()
+	}
+	return filepath.Dir(path)
+}
+
+func firstReadableDir(candidates []string) string {
+	for _, dir := range candidates {
+		if dir != "" && readable(dir) {
+			return dir
+		}
+	}
+	return ""
+}
+
+// readable reports whether this process can list a folder, which is not the
+// same question as whether the folder is there: a sandbox, or a drive mounted
+// by somebody else's desktop session, answers yes to one and no to the other.
+// Only the first entry is read, so the check costs nothing on a huge folder.
+func readable(dir string) bool {
+	f, err := os.Open(dir)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	if _, err := f.ReadDir(1); err != nil && !errors.Is(err, io.EOF) {
+		return false
+	}
+	return true
 }
 
 // nearestExistingDir walks up from path until it reaches a folder that is
@@ -178,8 +234,10 @@ func isFolder(dir string, entry fs.DirEntry) bool {
 	return err == nil && info.IsDir()
 }
 
-// browseRoots lists the places worth jumping to directly, skipping any that
-// this machine does not have.
+// browseRoots lists the places worth jumping to directly, skipping any this
+// machine does not have and any this process cannot open. A shortcut that
+// only ever answers "permission denied" — /home under the service's sandbox —
+// is worse than no shortcut.
 func browseRoots() []browseRoot {
 	var out []browseRoot
 	add := func(label, path string) {
@@ -192,6 +250,9 @@ func browseRoots() []browseRoot {
 			}
 		}
 		if info, err := os.Stat(path); err != nil || !info.IsDir() {
+			return
+		}
+		if !readable(path) {
 			return
 		}
 		out = append(out, browseRoot{Label: label, Path: path})

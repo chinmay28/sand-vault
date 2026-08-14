@@ -193,8 +193,10 @@ CGO, and the artifact is still one static binary.
 
 > **The two backends that take a path** — `local` and `proton` — are pointed at
 > one rather than told it: the field has a **Browse…** button that walks the
-> folders of the machine SAND is running on, starting at home and the mount
-> roots a drive turns up under. That machine is rarely the one you are holding,
+> folders of the machine SAND is running on, opening at the first folder it can
+> actually read — home, or the vault's own directory when the service's sandbox
+> denies `/home` — with the mount roots a drive turns up under one tap away.
+> That machine is rarely the one you are holding,
 > which is the whole problem with typing the path from memory on a phone. The
 > folder does not have to exist yet — name a new one inside the folder you
 > picked, and connecting creates it.

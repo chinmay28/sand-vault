@@ -38,6 +38,9 @@ export default function DirectoryPicker({ value = '', title = 'Choose a folder',
     try {
       const resp = await api.systemFolders(path)
       setListing(resp)
+      // A folder that cannot be read still answers, with its parent and the
+      // roots — so the picker says why and stays somewhere you can leave.
+      if (resp.error) setError(resp.error)
       if (seed && !resp.exists) setNewFolder(missingTail(resp))
     } catch (err) {
       setError(err.message)
@@ -142,7 +145,9 @@ export default function DirectoryPicker({ value = '', title = 'Choose a folder',
             color: COLORS.textMuted,
             lineHeight: 1.5,
           }}>
-            No folders in here. It can still hold the parts — choose it as it is.
+            {listing?.error
+              ? 'SAND cannot read this folder. Try one of the shortcuts above.'
+              : 'No folders in here. It can still hold the parts — choose it as it is.'}
           </div>
         )}
 

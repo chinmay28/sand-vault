@@ -110,6 +110,9 @@ func TestBrowseFoldersExpandsHomeAndDefaultsToIt(t *testing.T) {
 	if err != nil {
 		t.Skip("no home directory on this machine")
 	}
+	if !readable(home) {
+		t.Skip("home is not readable by this process")
+	}
 
 	w, resp := c.browse("")
 	if w.Code != http.StatusOK {
@@ -136,6 +139,96 @@ func TestBrowseFoldersExpandsHomeAndDefaultsToIt(t *testing.T) {
 	if resp.Separator != string(os.PathSeparator) {
 		t.Fatalf("separator = %q", resp.Separator)
 	}
+}
+
+// The service runs as a user with no home of its own, under a unit that sets
+// ProtectHome=yes: $HOME resolves to /home and the sandbox refuses to open it.
+// Opening the picker there strands it on a folder it cannot read and cannot
+// leave, so an unreadable home is skipped rather than insisted on.
+func TestBrowseStartSkipsAnUnreadableHome(t *testing.T) {
+	blocked := unreadableDir(t)
+
+	base := t.TempDir()
+	vault := filepath.Join(base, "data", "vault.sand")
+	if err := os.MkdirAll(filepath.Dir(vault), 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("HOME", blocked)
+	// Windows and plan9 read other variables; the rest of the check is
+	// platform-independent, so only assert where HOME is what os reads.
+	if home, err := os.UserHomeDir(); err != nil || home != blocked {
+		t.Skip("home directory is not taken from $HOME on this platform")
+	}
+
+	s := &Server{VaultPath: vault}
+	if start := s.browseStart(); start != filepath.Dir(vault) {
+		t.Fatalf("started at %s, want the vault's own folder %s", start, filepath.Dir(vault))
+	}
+}
+
+// The same folder, walked into deliberately: the listing fails, but the reply
+// still carries the parent and the roots, so the picker can go somewhere else
+// instead of dead-ending on an empty list.
+func TestBrowseFoldersReportsAnUnreadableFolderWithoutStranding(t *testing.T) {
+	blocked := unreadableDir(t)
+
+	c := newTestClient(t)
+	c.setup("browse-password", 1)
+
+	w, resp := c.browse(blocked)
+	if w.Code != http.StatusOK {
+		t.Fatalf("browse: %d %s", w.Code, w.Body.String())
+	}
+	if resp.Error == "" {
+		t.Fatal("expected the listing to say why it failed")
+	}
+	if resp.Path != blocked || resp.Parent != filepath.Dir(blocked) {
+		t.Fatalf("path = %q, parent = %q", resp.Path, resp.Parent)
+	}
+	if len(resp.Roots) == 0 {
+		t.Fatal("no roots to escape to")
+	}
+}
+
+// A shortcut that can only ever answer "permission denied" is worse than no
+// shortcut, so an unreadable root is left out of the list.
+func TestBrowseRootsSkipUnreadableFolders(t *testing.T) {
+	blocked := unreadableDir(t)
+
+	t.Setenv("HOME", blocked)
+	if home, err := os.UserHomeDir(); err != nil || home != blocked {
+		t.Skip("home directory is not taken from $HOME on this platform")
+	}
+
+	for _, root := range browseRoots() {
+		if root.Path == blocked {
+			t.Fatalf("unreadable folder offered as a root: %v", root)
+		}
+	}
+}
+
+// unreadableDir makes a folder this process cannot list, skipping the test
+// where that is not possible — root ignores the mode bits entirely.
+func unreadableDir(t *testing.T) string {
+	t.Helper()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("directory modes do not deny reads on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("running as root, which reads a folder whatever its mode says")
+	}
+
+	dir := filepath.Join(t.TempDir(), "blocked")
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0700) })
+	return dir
 }
 
 // A folder symlinked from elsewhere — how sync clients and mount helpers hand

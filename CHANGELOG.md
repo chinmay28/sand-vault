@@ -189,6 +189,15 @@ breadcrumb back up, hidden folders behind a toggle, and symlinked folders
 followed, since a synced cloud folder is usually one. The field stays a text
 box, so a path you already have still pastes in.
 
+Where it opens is the first of those SAND can actually read, which under the
+service is not home: it runs as a user with no home of its own and a unit that
+sets `ProtectHome=yes`, so `$HOME` resolves to `/home` and the sandbox refuses
+to open it. That case falls through to the vault's own directory, and an
+unreadable folder is dropped from the shortcuts rather than offered as one that
+only ever fails. Walking into a folder SAND cannot read is a listing that says
+why — with its parent and the shortcuts still there to leave by — rather than a
+dead end.
+
 A folder that does not exist yet is still a valid answer, because connecting
 creates it. Type a path for one and the picker opens at the nearest folder
 that *is* there, keeping the rest as a name to create inside it — so what you
