@@ -270,15 +270,38 @@ class TestUploadAndPreview:
         # Each part must name the account holding it.
         assert re.search(r"ui-(one|two|three)", body)
 
-    def test_download_link_points_at_the_content_endpoint(self, app, tmp_path):
+    def test_downloading_a_file_hands_back_the_plaintext(self, app, tmp_path):
         source = tmp_path / "dl.txt"
         source.write_text("download me")
 
         upload_and_settle(app, source)
 
-        link = app.locator('a[title="Download the rebuilt, decrypted file"]').first
-        href = link.get_attribute("href")
-        assert "/api/files/" in href and "download=1" in href
+        with app.expect_download(timeout=60000) as download:
+            app.get_by_label("Download dl.txt").click()
+
+        assert download.value.suggested_filename == "dl.txt"
+        assert download.value.path().read_text() == "download me"
+
+    def test_downloading_never_navigates_the_app_away(self, app, tmp_path):
+        """Added to a home screen the vault has no address bar and no back
+        button, so a download that took the window with it would strand the
+        user on whatever the phone made of the file — an epub or a zip becomes
+        a bare document icon with nothing to press.  The bytes have to arrive
+        without the page ever leaving.
+        """
+        source = tmp_path / "stay-put.txt"
+        source.write_text("the app should still be here afterwards")
+
+        upload_and_settle(app, source)
+        before = app.url
+
+        with app.expect_download(timeout=60000):
+            app.get_by_label("Download stay-put.txt").click()
+
+        assert app.url == before
+        # The file browser is still on screen, which it would not be if the
+        # window had gone to the content endpoint.
+        assert app.locator('button[title="Where the parts live"]').first.is_visible()
 
 
 class TestFolders:

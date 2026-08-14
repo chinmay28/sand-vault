@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { COLORS, FONT, formatBytes, previewKind } from '../theme'
 import { useIsMobile } from '../hooks'
 import { api } from '../api'
+import { useDownload } from '../download'
 import { Banner, Button, Modal, Spinner } from './ui'
 
 /* How much of the visible viewport a preview may take before the modal's own
@@ -19,6 +20,11 @@ export default function PreviewModal({ file, onClose }) {
   const [text, setText] = useState(null)
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(kind === 'text')
+
+  /* Kept apart from the preview's own error: a file whose download fails is
+     still a file the preview above may be rendering perfectly well. */
+  const [downloadError, setDownloadError] = useState(null)
+  const [download, downloading] = useDownload(setDownloadError)
 
   useEffect(() => {
     if (kind !== 'text') return
@@ -133,15 +139,24 @@ export default function PreviewModal({ file, onClose }) {
         )}
       </div>
 
+      {downloadError && (
+        <Banner tone="error" onDismiss={() => setDownloadError(null)}>{downloadError}</Banner>
+      )}
+
       <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
         <Button variant="ghost" onClick={onClose}
           style={mobile ? { flex: 1, justifyContent: 'center' } : null}>Close</Button>
         <Button
           variant="primary"
-          as="a"
-          onClick={() => { window.location.href = api.contentURL(file.id, { download: true }) }}
+          onClick={() => download(file)}
+          disabled={downloading}
+          title="Download the rebuilt, decrypted file"
           style={mobile ? { flex: 2, justifyContent: 'center' } : null}
-        >↓ Download decrypted</Button>
+        >
+          {downloading
+            ? <><Spinner size={12} color={COLORS.bg} /> Rebuilding…</>
+            : '↓ Download decrypted'}
+        </Button>
       </div>
     </Modal>
   )
