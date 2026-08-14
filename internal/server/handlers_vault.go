@@ -165,6 +165,30 @@ func (s *Server) handleVaultMigrate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, report)
 }
 
+type defaultAccountsRequest struct {
+	// Accounts is the vault-wide selection new uploads start from. An empty
+	// list clears it, which puts every upload back to picking its own accounts
+	// at random.
+	Accounts []string `json:"accounts"`
+}
+
+// handleVaultDefaults records which accounts uploads should use when they do
+// not name their own.
+func (s *Server) handleVaultDefaults(w http.ResponseWriter, r *http.Request) {
+	var req defaultAccountsRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
+		return
+	}
+
+	v, _ := s.Vault()
+	if err := v.SetDefaultAccounts(req.Accounts); err != nil {
+		vaultErrorResponse(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"default_accounts": v.DefaultAccounts()})
+}
+
 type policyRequest struct {
 	Policy vault.Policy `json:"policy"`
 }

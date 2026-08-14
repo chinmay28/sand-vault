@@ -88,6 +88,17 @@ type storeFile struct {
 	Manifest  sealed    `json:"manifest"`
 	Policy    Policy    `json:"policy"`
 
+	// DefaultAccounts names the accounts an upload spreads over when it does
+	// not choose its own. Empty means "no preference", and every upload picks
+	// its own three at random instead.
+	//
+	// In the clear beside the policy, and for the same reason: these are the
+	// random IDs of accounts whose names, kinds and credentials all live inside
+	// the encrypted providers section. A stolen vault file learns from them
+	// only that up to three accounts were singled out, which the encrypted
+	// section it cannot open would have told it anyway.
+	DefaultAccounts []string `json:"default_accounts,omitempty"`
+
 	// DataKeyID names the generation in DataKey, so a manifest entry can say
 	// which key its parts were sealed under. Absent on a vault written before
 	// the key could be rotated, which is why the empty string is a valid ID:

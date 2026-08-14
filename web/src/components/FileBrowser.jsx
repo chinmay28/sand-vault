@@ -3,6 +3,7 @@ import { COLORS, FONT, accountColor, fileIcon, formatBytes, formatDate } from '.
 import { api, joinPath } from '../api'
 import { useDownload } from '../download'
 import { ActionSheet, Banner, Button, ConfirmDialog, Empty, IconButton, Modal, Spinner } from './ui'
+import { UploadDestination } from './CloudSelect'
 
 /* Name, size, modified, parts, actions. The four fixed columns come to nearly
    500px, which is why the phone layout stacks instead of shrinking them. */
@@ -13,10 +14,11 @@ const COLUMNS = 'minmax(0,1fr) 92px 150px 132px 108px'
 const SEARCH_DEBOUNCE_MS = 180
 
 export default function FileBrowser({
-  path, listing, loading, error, providers, mobile,
+  path, listing, loading, error, providers, defaultAccounts, mobile,
   onNavigate, onRefresh, onPreview, onInspect, onError,
 }) {
   const [dragging, setDragging] = useState(false)
+  const [pending, setPending] = useState(null)
   const [uploads, setUploads] = useState([])
   const [warnings, setWarnings] = useState([])
   const [creatingFolder, setCreatingFolder] = useState(false)
@@ -73,18 +75,25 @@ export default function FileBrowser({
     if (searchTerm) runSearch()
   }, [onRefresh, runSearch, searchTerm])
 
-  const uploadFiles = useCallback(async (files) => {
+  /* Files are held here until the clouds they are going to have been settled.
+     Nothing is read or sent in the meantime — the picker is between choosing
+     files and uploading them, not a step inside the upload. */
+  const chooseFiles = useCallback((files) => {
     if (!files.length) return
     if (!canUpload) {
       onError('Connect a cloud account before uploading — there is nowhere to put the parts yet.')
       return
     }
+    setPending(files)
+  }, [canUpload, onError])
 
+  const uploadFiles = useCallback(async (files, accounts) => {
     const batch = { id: Math.random().toString(36).slice(2), names: [...files].map((f) => f.name), progress: 0 }
     setUploads((prev) => [...prev, batch])
 
     try {
       const resp = await api.upload(files, path, {
+        accounts,
         onProgress: (fraction) => setUploads((prev) =>
           prev.map((u) => (u.id === batch.id ? { ...u, progress: fraction } : u))),
       })
@@ -101,7 +110,7 @@ export default function FileBrowser({
     } finally {
       setUploads((prev) => prev.filter((u) => u.id !== batch.id))
     }
-  }, [path, canUpload, onError, onRefresh])
+  }, [path, onError, onRefresh])
 
   /* Drag counting: dragenter/dragleave fire for every child element, so a
      naive boolean flickers as the pointer crosses rows. */
@@ -119,7 +128,7 @@ export default function FileBrowser({
     e.preventDefault()
     dragDepth.current = 0
     setDragging(false)
-    uploadFiles(Array.from(e.dataTransfer.files || []))
+    chooseFiles(Array.from(e.dataTransfer.files || []))
   }
 
   const segments = path === '/' ? [] : path.slice(1).split('/')
@@ -178,7 +187,7 @@ export default function FileBrowser({
           type="file"
           multiple
           style={{ display: 'none' }}
-          onChange={(e) => { uploadFiles(Array.from(e.target.files || [])); e.target.value = '' }}
+          onChange={(e) => { chooseFiles(Array.from(e.target.files || [])); e.target.value = '' }}
         />
       </div>
 
@@ -274,6 +283,18 @@ export default function FileBrowser({
             </div>
           </div>
         </div>
+      )}
+
+      {pending && (
+        <UploadDestination
+          files={pending}
+          path={path}
+          providers={providers}
+          defaults={defaultAccounts}
+          onClose={() => setPending(null)}
+          onChanged={onRefresh}
+          onUpload={(accounts) => { setPending(null); uploadFiles(pending, accounts) }}
+        />
       )}
 
       {creatingFolder && (

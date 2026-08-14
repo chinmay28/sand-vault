@@ -270,7 +270,7 @@ func TestSearchFindsWhatWasActuallyUploaded(t *testing.T) {
 	if err := v.Mkdir("/receipts"); err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
-	entry, _, err := v.Upload(context.Background(), "/receipts", "coffee.txt", []byte("2.80"), false)
+	entry, _, err := v.Upload(context.Background(), "/receipts", "coffee.txt", []byte("2.80"), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}

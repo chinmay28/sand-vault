@@ -147,6 +147,146 @@ func (c *testClient) upload(name, dir string, content []byte) map[string]any {
 	return resp.Results[0]["file"].(map[string]any)
 }
 
+// uploadTo posts one file, naming the accounts its parts should go to.
+func (c *testClient) uploadTo(name, dir string, content []byte, accounts []string) map[string]any {
+	c.t.Helper()
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	part, err := mw.CreateFormFile("files[]", name)
+	if err != nil {
+		c.t.Fatalf("CreateFormFile: %v", err)
+	}
+	part.Write(content)
+	mw.WriteField("path", dir)
+	for _, id := range accounts {
+		mw.WriteField("accounts", id)
+	}
+	mw.Close()
+
+	w := c.do(http.MethodPost, "/api/files", &buf, mw.FormDataContentType())
+	var resp struct {
+		Results []map[string]any `json:"results"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if len(resp.Results) != 1 {
+		c.t.Fatalf("expected 1 upload result, got %d: %s", len(resp.Results), w.Body.String())
+	}
+	return resp.Results[0]
+}
+
+// providerIDs lists the connected accounts in the order they were added.
+func (c *testClient) providerIDs() []string {
+	c.t.Helper()
+
+	w, body := c.json(http.MethodGet, "/api/providers", nil)
+	if w.Code != http.StatusOK {
+		c.t.Fatalf("providers: %d %s", w.Code, w.Body.String())
+	}
+	var ids []string
+	for _, raw := range body["providers"].([]any) {
+		ids = append(ids, raw.(map[string]any)["id"].(string))
+	}
+	return ids
+}
+
+// shardAccounts is the set of accounts an upload result's parts landed on.
+func shardAccounts(t *testing.T, file map[string]any) map[string]bool {
+	t.Helper()
+
+	out := map[string]bool{}
+	for _, raw := range file["shards"].([]any) {
+		out[raw.(map[string]any)["provider_id"].(string)] = true
+	}
+	return out
+}
+
+func TestUploadGoesToTheAccountsItNames(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("pw", 5)
+	ids := c.providerIDs()
+	chosen := []string{ids[1], ids[3], ids[4]}
+
+	result := c.uploadTo("picked.txt", "/", []byte("payload"), chosen)
+	if ok, _ := result["ok"].(bool); !ok {
+		t.Fatalf("upload failed: %v", result["error"])
+	}
+
+	landed := shardAccounts(t, result["file"].(map[string]any))
+	if len(landed) != 3 {
+		t.Fatalf("parts landed on %d accounts, want 3", len(landed))
+	}
+	for _, id := range chosen {
+		if !landed[id] {
+			t.Errorf("chosen account %s holds no part", id)
+		}
+	}
+}
+
+func TestUploadRejectsAnAccountThatIsNotConnected(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("pw", 3)
+
+	result := c.uploadTo("nowhere.txt", "/", []byte("payload"), []string{"not-an-account"})
+	if ok, _ := result["ok"].(bool); ok {
+		t.Fatal("expected an upload naming an unknown account to fail")
+	}
+	if msg, _ := result["error"].(string); !strings.Contains(msg, "no connected account") {
+		t.Errorf("error should name the problem, got %q", msg)
+	}
+}
+
+func TestDefaultAccountsApplyToLaterUploads(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("pw", 5)
+	ids := c.providerIDs()
+	defaults := []string{ids[0], ids[2], ids[4]}
+
+	w, body := c.json(http.MethodPost, "/api/vault/defaults", map[string]any{"accounts": defaults})
+	if w.Code != http.StatusOK {
+		t.Fatalf("set defaults: %d %s", w.Code, w.Body.String())
+	}
+	if got := body["default_accounts"].([]any); len(got) != 3 {
+		t.Fatalf("default_accounts = %v, want the three that were set", got)
+	}
+
+	// And the status endpoint reports them, so the browser can preselect them.
+	_, status := c.json(http.MethodGet, "/api/vault", nil)
+	stats := status["stats"].(map[string]any)
+	if got := stats["default_accounts"].([]any); len(got) != 3 {
+		t.Errorf("stats.default_accounts = %v, want 3 accounts", got)
+	}
+
+	landed := shardAccounts(t, c.upload("defaulted.txt", "/", []byte("payload")))
+	for _, id := range defaults {
+		if !landed[id] {
+			t.Errorf("default account %s holds no part", id)
+		}
+	}
+
+	// Clearing hands the choice back to the per-file pick.
+	if w, _ := c.json(http.MethodPost, "/api/vault/defaults", map[string]any{"accounts": []string{}}); w.Code != http.StatusOK {
+		t.Fatalf("clear defaults: %d %s", w.Code, w.Body.String())
+	}
+	_, status = c.json(http.MethodGet, "/api/vault", nil)
+	stats = status["stats"].(map[string]any)
+	if got := stats["default_accounts"].([]any); len(got) != 0 {
+		t.Errorf("stats.default_accounts = %v, want it cleared", got)
+	}
+}
+
+func TestDefaultAccountsRejectAnUnknownAccount(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("pw", 3)
+	ids := c.providerIDs()
+
+	w, _ := c.json(http.MethodPost, "/api/vault/defaults",
+		map[string]any{"accounts": []string{ids[0], "not-an-account"}})
+	if w.Code == http.StatusOK {
+		t.Fatal("expected a default naming an unknown account to be refused")
+	}
+}
+
 func TestVaultLifecycleOverHTTP(t *testing.T) {
 	c := newTestClient(t)
 

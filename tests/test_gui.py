@@ -61,15 +61,41 @@ def app(page, server, vault_password, clouds):
     return page
 
 
-def upload_and_settle(page, source):
+def select_clouds(page, names):
+    """Leave exactly `names` selected in whichever cloud picker is open.
+
+    Every selection starts from something — the vault's default, or a random
+    handful — so a test that wants particular clouds has to clear what is there
+    before choosing its own.
+    """
+    while page.get_by_role("checkbox", checked=True).count() > 0:
+        page.get_by_role("checkbox", checked=True).first.click()
+    for name in names:
+        page.get_by_role("checkbox").filter(has_text=name).click()
+
+
+def upload_and_settle(page, source, choose=None):
     """Upload a file through the picker and wait for the refresh to finish.
 
-    The wait is for the file's own row rather than for its name: the progress
-    card carries the name too, so anything looser returns while the parts are
-    still being scattered.
+    Choosing files opens the destination dialog rather than starting the
+    upload: which clouds a file is scattered over is a decision taken per
+    upload, so nothing leaves the machine until it is confirmed.  `choose`
+    names the accounts to end up selected; left out, whatever the dialog opened
+    on is what the file goes to.
+
+    The wait afterwards is for the file's own row rather than for its name: the
+    progress card carries the name too, so anything looser returns while the
+    parts are still being scattered.
     """
     name = os.path.basename(source)
     page.set_input_files("input[type=file]", str(source))
+
+    confirm = page.get_by_role("button", name=re.compile(r"Upload to \d+ cloud"))
+    confirm.wait_for(timeout=20000)
+    if choose is not None:
+        select_clouds(page, choose)
+    confirm.click()
+
     page.wait_for_selector(f'button[title="Open"]:has-text("{name}")', timeout=90000)
     page.wait_for_load_state("networkidle")
 
@@ -305,6 +331,83 @@ class TestUploadAndPreview:
         # The file browser is still on screen, which it would not be if the
         # window had gone to the content endpoint.
         assert app.locator('button[title="Where the parts live"]').first.is_visible()
+
+
+class TestChoosingClouds:
+    """Which clouds a file is scattered over is a decision, not a detail.
+
+    Every upload passes through the picker, which opens on the vault's default
+    clouds — or, with none set, on three chosen at random — and can be changed
+    before anything leaves the machine.
+    """
+
+    def _open_picker(self, app, tmp_path, name="picked.txt"):
+        source = tmp_path / name
+        source.write_text("choose where this lives")
+        app.set_input_files("input[type=file]", str(source))
+        app.wait_for_selector("text=/Upload to \\d+ cloud/", timeout=20000)
+        return source
+
+    def _set_default_clouds(self, app, accounts):
+        """Make `accounts` — and only those — the vault's default clouds."""
+        app.get_by_role("button", name=re.compile("(Set|Change) default clouds")).click()
+        dialog = app.get_by_role("heading", name="Default clouds")
+        dialog.wait_for(timeout=20000)
+        select_clouds(app, accounts)
+        app.get_by_role("button", name="Save default").click()
+        dialog.wait_for(state="detached", timeout=20000)
+
+    def test_the_picker_offers_every_connected_cloud(self, app, tmp_path):
+        self._open_picker(app, tmp_path, "offered.txt")
+
+        for name in ("ui-one", "ui-two", "ui-three"):
+            assert app.get_by_role("checkbox").filter(has_text=name).count() == 1
+        # A file has three parts, so three clouds start selected however many
+        # are connected — and the button says which it is going to.
+        assert app.get_by_role("checkbox", checked=True).count() == 3
+        assert app.get_by_role("button", name="↑ Upload to 3 clouds").count() == 1
+
+    def test_nothing_is_uploaded_until_the_picker_is_confirmed(self, app, tmp_path):
+        self._open_picker(app, tmp_path, "cancelled.txt")
+        app.get_by_role("button", name="Cancel").click()
+
+        app.wait_for_selector("text=/Upload to \\d+ cloud/", state="detached", timeout=20000)
+        assert app.get_by_text("cancelled.txt").count() == 0
+
+    def test_deselecting_a_cloud_keeps_the_file_off_it(self, app, tmp_path):
+        source = tmp_path / "two-clouds.txt"
+        source.write_text("only two clouds may hold this")
+
+        upload_and_settle(app, source, choose=["ui-one", "ui-two"])
+
+        # Each badge in the row names the account holding that part, so the
+        # row itself says where the file did and did not go.
+        row = app.locator('button[title="Open"]', has_text="two-clouds.txt").locator("xpath=..")
+        assert row.get_by_title(re.compile(r"Part \d on ui-three")).count() == 0
+        assert row.get_by_title("Part 3 not stored").count() == 1
+
+    def test_a_default_is_marked_and_preselected(self, app, tmp_path):
+        self._set_default_clouds(app, ["ui-one", "ui-two"])
+        try:
+            app.wait_for_selector("text=/default clouds: 2 of \\d+/", timeout=20000)
+            # The accounts carrying the default say so on their own card.
+            assert app.get_by_text("default", exact=True).count() == 2
+
+            self._open_picker(app, tmp_path, "defaulted.txt")
+            assert app.get_by_role("button", name="↑ Upload to 2 clouds").count() == 1
+            assert app.get_by_text("Your default clouds are selected").count() == 1
+            app.get_by_role("button", name="Cancel").click()
+            app.wait_for_selector("text=/Upload to \\d+ cloud/", state="detached", timeout=20000)
+        finally:
+            # Back to picking per upload, so the rest of the suite is unaffected.
+            app.get_by_role("button", name=re.compile("(Set|Change) default clouds")).click()
+            dialog = app.get_by_role("heading", name="Default clouds")
+            dialog.wait_for(timeout=20000)
+            app.get_by_role("button", name="Pick per upload").click()
+            dialog.wait_for(state="detached", timeout=20000)
+
+        app.wait_for_selector("text=default clouds: 3 picked per upload", timeout=20000)
+        assert app.get_by_text("default", exact=True).count() == 0
 
 
 class TestFolders:

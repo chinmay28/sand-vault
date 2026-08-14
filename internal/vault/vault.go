@@ -123,6 +123,67 @@ func (v *Vault) SetPolicy(p Policy) error {
 	return v.persistLocked()
 }
 
+// DefaultAccounts returns the accounts uploads spread over unless they name
+// their own. An empty result means no default is set, and every upload picks
+// its own accounts at random.
+func (v *Vault) DefaultAccounts() []string {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	if v.store == nil {
+		return nil
+	}
+	return append([]string(nil), v.store.DefaultAccounts...)
+}
+
+// SetDefaultAccounts records which accounts future uploads should use. Passing
+// nothing clears the default and hands the choice back to the per-file random
+// pick.
+//
+// The selection is checked against what is actually connected, because a
+// default naming an account that has gone away would quietly become a smaller
+// spread than the user asked for on every upload after it.
+func (v *Vault) SetDefaultAccounts(ids []string) error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.dataKey == nil {
+		return ErrLocked
+	}
+
+	chosen := make([]string, 0, len(ids))
+	seen := map[string]bool{}
+	for _, id := range ids {
+		cfg, ok := v.configForLocked(id)
+		if !ok {
+			return fmt.Errorf("no connected account with id %s", id)
+		}
+		if seen[id] {
+			return fmt.Errorf("%s is listed twice — a file's parts each go to a different account", cfg.Name)
+		}
+		seen[id] = true
+		chosen = append(chosen, id)
+	}
+	if len(chosen) > AccountsPerFile {
+		return fmt.Errorf("a file has only %d parts — choose at most %d accounts (got %d)",
+			archive.PartCount, AccountsPerFile, len(chosen))
+	}
+	if len(chosen) > 0 && len(chosen) < archive.MinPartsToRestore {
+		return fmt.Errorf(
+			"choose at least %d accounts, so that a file still has a second place to be rebuilt from",
+			archive.MinPartsToRestore)
+	}
+
+	if len(chosen) == 0 {
+		chosen = nil
+	}
+	previous := v.store.DefaultAccounts
+	v.store.DefaultAccounts = chosen
+	if err := v.persistLocked(); err != nil {
+		v.store.DefaultAccounts = previous
+		return err
+	}
+	return nil
+}
+
 // Init creates a new vault sealed under password and leaves it unlocked.
 func (v *Vault) Init(password string, policy Policy) error {
 	if strings.TrimSpace(password) == "" {
@@ -541,6 +602,23 @@ func (v *Vault) RemoveProvider(id string, force bool) error {
 
 	v.providers = append(v.providers[:idx], v.providers[idx+1:]...)
 
+	// A default naming an account that is no longer there would silently
+	// shrink the spread of every upload after this one.
+	if len(v.store.DefaultAccounts) > 0 {
+		kept := make([]string, 0, len(v.store.DefaultAccounts))
+		for _, def := range v.store.DefaultAccounts {
+			if surviving[def] {
+				kept = append(kept, def)
+			}
+		}
+		if len(kept) < archive.MinPartsToRestore {
+			// Too little left to be a default at all; the per-file random pick
+			// takes over rather than every upload landing on one account.
+			kept = nil
+		}
+		v.store.DefaultAccounts = kept
+	}
+
 	// Drop shard records pointing at the disconnected account so the index
 	// keeps telling the truth about what is actually retrievable.
 	for _, e := range v.manifest.Entries {
@@ -777,6 +855,10 @@ type Stats struct {
 	Accounts    int    `json:"accounts"`
 	Policy      Policy `json:"policy"`
 
+	// DefaultAccounts is the vault-wide account selection new uploads start
+	// from. Empty means each upload picks its own at random.
+	DefaultAccounts []string `json:"default_accounts"`
+
 	// Pending counts the files still stored under a retired data key after a
 	// password change, waiting to be re-encrypted under the new one.
 	Pending int `json:"pending_migration"`
@@ -791,7 +873,11 @@ func (v *Vault) Stats() (Stats, error) {
 	}
 
 	folders := map[string]bool{}
-	s := Stats{Accounts: len(v.providers), Policy: v.store.Policy}
+	s := Stats{
+		Accounts:        len(v.providers),
+		Policy:          v.store.Policy,
+		DefaultAccounts: append([]string{}, v.store.DefaultAccounts...),
+	}
 	for _, f := range v.manifest.Folders {
 		folders[f] = true
 	}

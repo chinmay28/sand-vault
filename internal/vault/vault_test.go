@@ -52,7 +52,7 @@ func TestUploadFetchRoundTrip(t *testing.T) {
 	v, _ := newTestVault(t, 3)
 
 	payload := []byte("the quick brown fox jumps over the lazy dog\n")
-	entry, warnings, err := v.Upload(context.Background(), "/", "notes.txt", payload, false)
+	entry, warnings, err := v.Upload(context.Background(), "/", "notes.txt", payload, UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestUploadFetchRoundTrip(t *testing.T) {
 func TestShardsLandOnDistinctAccounts(t *testing.T) {
 	v, _ := newTestVault(t, 3)
 
-	entry, _, err := v.Upload(context.Background(), "/", "spread.bin", []byte("abcdefgh"), false)
+	entry, _, err := v.Upload(context.Background(), "/", "spread.bin", []byte("abcdefgh"), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestFetchSurvivesOneAccountGoingDark(t *testing.T) {
 		t.Fatalf("rand: %v", err)
 	}
 
-	entry, _, err := v.Upload(context.Background(), "/", "big.bin", payload, false)
+	entry, _, err := v.Upload(context.Background(), "/", "big.bin", payload, UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestFetchSurvivesOneAccountGoingDark(t *testing.T) {
 func TestFetchFailsWithOnlyOnePartLeft(t *testing.T) {
 	v, roots := newTestVault(t, 3)
 
-	entry, _, err := v.Upload(context.Background(), "/", "fragile.txt", []byte("hello"), false)
+	entry, _, err := v.Upload(context.Background(), "/", "fragile.txt", []byte("hello"), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestFetchFailsWithOnlyOnePartLeft(t *testing.T) {
 func TestHealthReportsMissingShard(t *testing.T) {
 	v, roots := newTestVault(t, 3)
 
-	entry, _, err := v.Upload(context.Background(), "/", "watched.txt", []byte("payload"), false)
+	entry, _, err := v.Upload(context.Background(), "/", "watched.txt", []byte("payload"), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -211,7 +211,7 @@ func TestHealthReportsMissingShard(t *testing.T) {
 func TestStrictPolicyRefusesSingleAccount(t *testing.T) {
 	v, _ := newTestVault(t, 1)
 
-	_, _, err := v.Upload(context.Background(), "/", "lonely.txt", []byte("data"), false)
+	_, _, err := v.Upload(context.Background(), "/", "lonely.txt", []byte("data"), UploadOptions{})
 	if err == nil {
 		t.Fatal("expected strict placement to refuse a single connected account")
 	}
@@ -227,7 +227,7 @@ func TestRedundantPolicyDoublesUp(t *testing.T) {
 		t.Fatalf("SetPolicy: %v", err)
 	}
 
-	entry, _, err := v.Upload(context.Background(), "/", "doubled.txt", []byte("data"), false)
+	entry, _, err := v.Upload(context.Background(), "/", "doubled.txt", []byte("data"), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -251,10 +251,10 @@ func TestFoldersAndListing(t *testing.T) {
 	if err := v.Mkdir("/photos/2024"); err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
-	if _, _, err := v.Upload(ctx, "/photos/2024", "a.txt", []byte("a"), false); err != nil {
+	if _, _, err := v.Upload(ctx, "/photos/2024", "a.txt", []byte("a"), UploadOptions{}); err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
-	if _, _, err := v.Upload(ctx, "/", "root.txt", []byte("r"), false); err != nil {
+	if _, _, err := v.Upload(ctx, "/", "root.txt", []byte("r"), UploadOptions{}); err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 
@@ -285,10 +285,10 @@ func TestUploadCollisionMakesUniqueName(t *testing.T) {
 	v, _ := newTestVault(t, 3)
 	ctx := context.Background()
 
-	if _, _, err := v.Upload(ctx, "/", "dup.txt", []byte("first"), false); err != nil {
+	if _, _, err := v.Upload(ctx, "/", "dup.txt", []byte("first"), UploadOptions{}); err != nil {
 		t.Fatalf("first Upload: %v", err)
 	}
-	second, _, err := v.Upload(ctx, "/", "dup.txt", []byte("second"), false)
+	second, _, err := v.Upload(ctx, "/", "dup.txt", []byte("second"), UploadOptions{})
 	if err != nil {
 		t.Fatalf("second Upload: %v", err)
 	}
@@ -301,10 +301,10 @@ func TestUploadOverwriteReplaces(t *testing.T) {
 	v, _ := newTestVault(t, 3)
 	ctx := context.Background()
 
-	if _, _, err := v.Upload(ctx, "/", "same.txt", []byte("first"), false); err != nil {
+	if _, _, err := v.Upload(ctx, "/", "same.txt", []byte("first"), UploadOptions{}); err != nil {
 		t.Fatalf("first Upload: %v", err)
 	}
-	second, _, err := v.Upload(ctx, "/", "same.txt", []byte("second"), true)
+	second, _, err := v.Upload(ctx, "/", "same.txt", []byte("second"), UploadOptions{Overwrite: true})
 	if err != nil {
 		t.Fatalf("overwrite Upload: %v", err)
 	}
@@ -333,7 +333,7 @@ func TestDeleteRemovesShards(t *testing.T) {
 	v, roots := newTestVault(t, 3)
 	ctx := context.Background()
 
-	entry, _, err := v.Upload(ctx, "/", "temp.txt", []byte("bye"), false)
+	entry, _, err := v.Upload(ctx, "/", "temp.txt", []byte("bye"), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -367,7 +367,7 @@ func TestMoveRenamesWithoutTouchingShards(t *testing.T) {
 	if err := v.Mkdir("/archive"); err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
-	entry, _, err := v.Upload(ctx, "/", "movable.txt", []byte("content"), false)
+	entry, _, err := v.Upload(ctx, "/", "movable.txt", []byte("content"), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -402,7 +402,7 @@ func TestRmdirRecursive(t *testing.T) {
 	if err := v.Mkdir("/docs/reports"); err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
-	if _, _, err := v.Upload(ctx, "/docs/reports", "q1.txt", []byte("q1"), false); err != nil {
+	if _, _, err := v.Upload(ctx, "/docs/reports", "q1.txt", []byte("q1"), UploadOptions{}); err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 
@@ -426,7 +426,7 @@ func TestLockUnlockPersistsIndex(t *testing.T) {
 	v, _ := newTestVault(t, 3)
 	ctx := context.Background()
 
-	entry, _, err := v.Upload(ctx, "/", "persist.txt", []byte("durable"), false)
+	entry, _, err := v.Upload(ctx, "/", "persist.txt", []byte("durable"), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -460,7 +460,7 @@ func TestLockUnlockPersistsIndex(t *testing.T) {
 func TestVaultFileLeaksNoFilenames(t *testing.T) {
 	v, _ := newTestVault(t, 3)
 
-	if _, _, err := v.Upload(context.Background(), "/", "top-secret-plans.txt", []byte("x"), false); err != nil {
+	if _, _, err := v.Upload(context.Background(), "/", "top-secret-plans.txt", []byte("x"), UploadOptions{}); err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 
@@ -480,7 +480,7 @@ func TestChangePasswordKeepsFilesReadable(t *testing.T) {
 	v, _ := newTestVault(t, 3)
 	ctx := context.Background()
 
-	entry, _, err := v.Upload(ctx, "/", "keeper.txt", []byte("still here"), false)
+	entry, _, err := v.Upload(ctx, "/", "keeper.txt", []byte("still here"), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -517,7 +517,7 @@ func TestRemoveProviderGuardsRecoverability(t *testing.T) {
 	v, _ := newTestVault(t, 3)
 	ctx := context.Background()
 
-	entry, _, err := v.Upload(ctx, "/", "guarded.txt", []byte("x"), false)
+	entry, _, err := v.Upload(ctx, "/", "guarded.txt", []byte("x"), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -624,7 +624,7 @@ func TestShardKeyIsFlat(t *testing.T) {
 
 func TestUploadedShardKeysMatchShardKey(t *testing.T) {
 	v, _ := newTestVault(t, 3)
-	entry, _, err := v.Upload(context.Background(), "/", "notes.txt", []byte("hello"), false)
+	entry, _, err := v.Upload(context.Background(), "/", "notes.txt", []byte("hello"), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}

@@ -202,6 +202,37 @@ that did land if fewer than two succeed. Reads race all three accounts and
 finish on the first two to arrive, so an offline account costs nothing on the
 read path.
 
+### Which clouds a file goes to is yours to choose
+
+Policy decides how many parts may share an account. Connect a fourth account
+and something also has to decide *which* three a file uses — three parts cannot
+go to five places, and until now that was decided by the order the accounts
+happened to be connected in.
+
+Now every upload chooses. The browser asks before a single byte leaves the
+machine: the dialog names the clouds the files are about to be scattered over,
+each of which can be swapped for another account, and says what a narrower
+choice costs before you make it rather than after.
+
+What that dialog opens on is the vault's **default clouds**, set from the
+accounts panel, from the upload dialog itself, or with
+`sand vault defaults usb-drive r2-cold nextcloud`. With no default set — which
+is how every existing vault starts — each file gets three clouds picked at
+random, seeded from its own archive ID. That is what finally makes a fifth
+account worth connecting: uploads spread over everything you have joined
+instead of piling onto the first three.
+
+A selection is followed exactly rather than quietly completed. Choosing two
+clouds stores two parts and warns that the file has no spare, instead of
+putting the third somewhere you deliberately left out — deciding which
+providers may hold your data is the entire point of SAND. Disconnecting an
+account drops it from the default, and re-encrypting after a password change
+puts a file back on the accounts it was already on.
+
+On the command line it is `sand put report.pdf --accounts usb-drive,nextcloud`
+for one upload and `sand vault defaults` for the standing answer; over HTTP,
+an `accounts` field on the upload and `POST /api/vault/defaults`.
+
 ### Finding a file again
 
 A vault deep enough to be worth having is one you cannot click through, so the
