@@ -8,6 +8,10 @@ import { ActionSheet, Banner, Button, ConfirmDialog, Empty, IconButton, Modal, S
    500px, which is why the phone layout stacks instead of shrinking them. */
 const COLUMNS = 'minmax(0,1fr) 92px 150px 132px 108px'
 
+/* How long to sit on a keystroke before asking the server. Long enough that
+   typing a word is one query rather than six, short enough to feel live. */
+const SEARCH_DEBOUNCE_MS = 180
+
 export default function FileBrowser({
   path, listing, loading, error, providers, mobile,
   onNavigate, onRefresh, onPreview, onInspect, onError,
@@ -16,10 +20,58 @@ export default function FileBrowser({
   const [uploads, setUploads] = useState([])
   const [warnings, setWarnings] = useState([])
   const [creatingFolder, setCreatingFolder] = useState(false)
+  const [query, setQuery] = useState('')
+  const [scoped, setScoped] = useState(true)
+  const [results, setResults] = useState(null)
+  const [searching, setSearching] = useState(false)
+  const [searchError, setSearchError] = useState(null)
   const fileInput = useRef(null)
   const dragDepth = useRef(0)
 
   const canUpload = providers.length > 0
+  const searchTerm = query.trim()
+  // Searching from inside a folder looks there first; the results header can
+  // widen it to the whole vault.
+  const searchScope = scoped ? path : '/'
+
+  // Walking into a folder is a different question from the one being asked, so
+  // the search ends when navigation begins.
+  useEffect(() => { setQuery('') }, [path])
+
+  const runSearch = useCallback((signal) => api.search(searchTerm, { path: searchScope, signal })
+    .then((resp) => { setResults(resp); setSearchError(null) })
+    .catch((err) => {
+      if (err.name === 'AbortError') return
+      setResults(null)
+      setSearchError(err.message)
+    }), [searchTerm, searchScope])
+
+  useEffect(() => {
+    if (!searchTerm) {
+      setResults(null)
+      setSearchError(null)
+      setSearching(false)
+      return
+    }
+
+    // Every keystroke cancels the request the last one started, so a slow
+    // answer can never arrive after — and overwrite — a newer one.
+    const controller = new AbortController()
+    setSearching(true)
+    const timer = setTimeout(() => {
+      runSearch(controller.signal).finally(() => {
+        if (!controller.signal.aborted) setSearching(false)
+      })
+    }, SEARCH_DEBOUNCE_MS)
+
+    return () => { clearTimeout(timer); controller.abort() }
+  }, [searchTerm, runSearch])
+
+  // A deleted result has to leave the results too, not just the listing.
+  const refreshSearch = useCallback(() => {
+    onRefresh()
+    if (searchTerm) runSearch()
+  }, [onRefresh, runSearch, searchTerm])
 
   const uploadFiles = useCallback(async (files) => {
     if (!files.length) return
@@ -106,6 +158,13 @@ export default function FileBrowser({
           })}
         </nav>
 
+        <SearchField
+          value={query}
+          busy={searching}
+          mobile={mobile}
+          onChange={setQuery}
+        />
+
         {/* The two actions split the phone's row, each ending up wider than a
             thumb and taller than the 44px floor. */}
         <Button size={mobile ? 'md' : 'sm'} onClick={() => setCreatingFolder(true)}
@@ -161,7 +220,23 @@ export default function FileBrowser({
           </div>
         ))}
 
-        {loading && !listing ? (
+        {searchTerm ? (
+          <SearchResults
+            term={searchTerm}
+            results={results}
+            searching={searching}
+            error={searchError}
+            path={path}
+            scoped={scoped}
+            mobile={mobile}
+            onScopeChange={setScoped}
+            onNavigate={onNavigate}
+            onPreview={onPreview}
+            onInspect={onInspect}
+            onRefresh={refreshSearch}
+            onError={onError}
+          />
+        ) : loading && !listing ? (
           <div style={{ padding: '48px', textAlign: 'center' }}><Spinner size={20} /></div>
         ) : (
           <FileTable
@@ -209,6 +284,157 @@ export default function FileBrowser({
         />
       )}
     </main>
+  )
+}
+
+/* The one control that reaches past the folder you are standing in. The index
+   it queries only exists in the open vault, so this is also the only thing in
+   the app that can answer "where did I put that?" at all. */
+function SearchField({ value, busy, mobile, onChange }) {
+  return (
+    <div style={{
+      position: 'relative',
+      display: 'flex',
+      alignItems: 'center',
+      // On a phone the field takes a row of its own, above the two actions.
+      flex: mobile ? '1 0 100%' : '0 1 240px',
+      minWidth: mobile ? '100%' : '150px',
+    }}>
+      <span style={{
+        position: 'absolute', left: mobile ? '11px' : '9px', color: COLORS.textMuted,
+        fontSize: '13px', pointerEvents: 'none',
+      }}>⌕</span>
+      <input
+        type="search"
+        value={value}
+        aria-label="Search files and folders"
+        placeholder="Search files and folders"
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => { if (e.key === 'Escape') onChange('') }}
+        style={{
+          width: '100%',
+          // Tall enough to be a target in its own right on a phone, where the
+          // clear button beside it also has to clear 44px.
+          minHeight: mobile ? '46px' : 0,
+          padding: mobile ? '8px 48px 8px 30px' : '6px 28px 6px 24px',
+          background: COLORS.bg,
+          border: `1px solid ${COLORS.border}`,
+          borderRadius: '6px',
+          color: COLORS.text,
+          fontFamily: FONT.mono,
+          fontSize: mobile ? '13px' : '12px',
+          outline: 'none',
+          boxSizing: 'border-box',
+          // Otherwise Safari renders a search field as its own rounded pill
+          // and ignores most of the above. (Its clear button is dropped in
+          // App.jsx, which is where a pseudo-element can be reached.)
+          WebkitAppearance: 'none',
+        }}
+      />
+      {busy && (
+        <span style={{ position: 'absolute', right: mobile ? '14px' : '9px', display: 'flex' }}>
+          <Spinner size={mobile ? 13 : 11} />
+        </span>
+      )}
+      {!busy && value && (
+        <span style={{ position: 'absolute', right: mobile ? '2px' : '4px', display: 'flex' }}>
+          <IconButton
+            glyph="✕"
+            label="Clear the search"
+            tone="muted"
+            size={mobile ? 44 : 20}
+            onClick={() => onChange('')}
+            style={{ fontSize: mobile ? '13px' : '11px' }}
+          />
+        </span>
+      )}
+    </div>
+  )
+}
+
+/* Search results are the same rows as a listing, with the folder each hit
+   lives in spelled out — a name on its own means nothing once the answer can
+   come from anywhere in the vault. */
+function SearchResults({
+  term, results, searching, error, path, scoped, mobile,
+  onScopeChange, onNavigate, onPreview, onInspect, onRefresh, onError,
+}) {
+  if (error) return <Banner tone="error">{error}</Banner>
+  if (!results) {
+    return <div style={{ padding: '48px', textAlign: 'center' }}><Spinner size={20} /></div>
+  }
+
+  const hits = results.hits || []
+  const scopeNote = path !== '/' && (
+    <button
+      onClick={() => onScopeChange(!scoped)}
+      style={{
+        background: 'none', border: 'none', padding: mobile ? '6px 0' : 0, cursor: 'pointer',
+        minHeight: mobile ? '44px' : 0,
+        fontFamily: FONT.mono, fontSize: '11px', color: COLORS.accent, textDecoration: 'underline',
+      }}
+    >{scoped ? 'search the whole vault' : `search only ${path}`}</button>
+  )
+
+  return (
+    <>
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap',
+        marginBottom: '10px', fontFamily: FONT.mono, fontSize: '11px', color: COLORS.textMuted,
+      }}>
+        <span>
+          {hits.length === 0 ? 'No matches' : `${results.matched} match${results.matched === 1 ? '' : 'es'}`}
+          {' for '}<span style={{ color: COLORS.textDim }}>{term}</span>
+          {scoped && path !== '/' && <> in <span style={{ color: COLORS.textDim }}>{path}</span></>}
+          {searching && ' …'}
+        </span>
+        {scopeNote}
+      </div>
+
+      {results.truncated && (
+        <Banner tone="info">
+          Showing the closest {hits.length} of {results.matched} matches. Narrow the search to see the rest.
+        </Banner>
+      )}
+
+      {hits.length === 0 ? (
+        <Empty icon="⌕" title={`Nothing matches "${term}"`}>
+          Names are matched anywhere, ignoring case. Use <code>*</code> and <code>?</code> for wildcards
+          ("*.jpg"), or include a "/" to match a whole path ("photos/2024").
+        </Empty>
+      ) : (
+        <div style={{
+          border: `1px solid ${COLORS.border}`,
+          borderRadius: '8px',
+          overflow: 'hidden',
+          background: COLORS.surface,
+        }}>
+          {hits.map((hit) => (hit.type === 'folder' ? (
+            <FolderRow
+              key={`dir:${hit.path}`}
+              name={hit.name}
+              path={hit.path}
+              location={hit.dir}
+              mobile={mobile}
+              onNavigate={onNavigate}
+              onRefresh={onRefresh}
+              onError={onError}
+            />
+          ) : (
+            <FileRow
+              key={hit.file.id}
+              file={hit.file}
+              location={hit.dir}
+              mobile={mobile}
+              onPreview={() => onPreview(hit.file)}
+              onInspect={() => onInspect(hit.file)}
+              onRefresh={onRefresh}
+              onError={onError}
+            />
+          )))}
+        </div>
+      )}
+    </>
   )
 }
 
@@ -338,8 +564,10 @@ function Row({ children, mobile }) {
 }
 
 /* The tappable name. On a phone it claims the whole first line and a 44px
-   height, so opening a file means hitting the row rather than the glyph. */
-function NameButton({ mobile, icon, label, chevron, disabled, title, onClick }) {
+   height, so opening a file means hitting the row rather than the glyph.
+   `location` is the folder the row was found in, which only a search result
+   has to say. */
+function NameButton({ mobile, icon, label, location, chevron, disabled, title, onClick }) {
   return (
     <button
       onClick={onClick}
@@ -365,11 +593,23 @@ function NameButton({ mobile, icon, label, chevron, disabled, title, onClick }) 
         : <span style={{ width: '12px', flexShrink: 0 }} />}
       <span style={{ flexShrink: 0 }}>{icon}</span>
       <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
+      {location && (
+        /* Shrinks before the name does: a truncated name is worse than a
+           truncated path. */
+        <span
+          title={location}
+          style={{
+            minWidth: 0, flexShrink: 1,
+            color: COLORS.textMuted, fontSize: mobile ? '11px' : '10.5px',
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          }}
+        >in {location}</span>
+      )}
     </button>
   )
 }
 
-function FileRow({ file, mobile, onPreview, onInspect, onRefresh, onError }) {
+function FileRow({ file, location, mobile, onPreview, onInspect, onRefresh, onError }) {
   const [busy, setBusy] = useState(false)
   const [download, downloading] = useDownload(onError)
   const [menu, setMenu] = useState(false)
@@ -397,6 +637,7 @@ function FileRow({ file, mobile, onPreview, onInspect, onRefresh, onError }) {
       mobile={mobile}
       icon={fileIcon(file.mime, file.name)}
       label={file.name}
+      location={location}
       disabled={dead}
       title={dead ? 'Too few parts remain to rebuild this file' : 'Open'}
       onClick={onPreview}
@@ -590,7 +831,7 @@ function FileRow({ file, mobile, onPreview, onInspect, onRefresh, onError }) {
   )
 }
 
-function FolderRow({ name, path, mobile, onNavigate, onRefresh, onError }) {
+function FolderRow({ name, path, location, mobile, onNavigate, onRefresh, onError }) {
   const [menu, setMenu] = useState(false)
   const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -613,7 +854,7 @@ function FolderRow({ name, path, mobile, onNavigate, onRefresh, onError }) {
   }
 
   const nameButton = (
-    <NameButton mobile={mobile} icon="📁" label={name} chevron="▸" title="Open folder" onClick={open} />
+    <NameButton mobile={mobile} icon="📁" label={name} location={location} chevron="▸" title="Open folder" onClick={open} />
   )
 
   const actions = mobile ? (

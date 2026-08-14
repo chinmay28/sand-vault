@@ -249,6 +249,31 @@ reconnected show up as unreachable parts. The recovered vault adopts the old
 data key, so new uploads join the existing files instead of starting a second
 key, and it rewrites the backups under its own password.
 
+### 3.8 Searching is a property of the open vault
+
+Every store SAND writes to could answer "what do you hold?" with a list of
+opaque part names and nothing else — filenames and folder structure live only
+in the manifest, and the manifest is only ever readable while the vault is
+unlocked, in memory. So search is not something delegated to a provider or
+recovered from an index on disk: it is a scan of the decrypted manifest, and
+locking the vault takes it away with everything else.
+
+That also means it is cheap. The index is already in memory, a vault holds
+thousands of entries rather than millions, and `Vault.Search` walks it under
+the same read lock a listing takes:
+
+- a bare query is a case-insensitive substring of the **name**; `*` and `?`
+  make it a wildcard pattern; a query containing `/` is matched against the
+  full **path** instead, anchored at a segment boundary
+- folders are results too, including the ones that were never created
+  explicitly and exist only because something was stored beneath them
+- hits are ranked — exact name, then prefix, then substring, then by depth,
+  so the answer nearest the top of the tree comes first — and the cap is
+  applied after ranking, so truncating keeps the best matches rather than
+  whichever the index happened to list first
+- a file hit carries its whole index entry, so a result row draws its size,
+  placement and redundancy without a second round trip
+
 ---
 
 ## 4. The Data Pipeline
@@ -596,6 +621,7 @@ reveals only whether a vault exists.
 | POST | `/api/providers/{id}/test` | Re-check one account |
 | DELETE | `/api/providers/{id}` | Disconnect (`?force=1` to override the guard) |
 | GET | `/api/files?path=` | List a folder |
+| GET | `/api/search?q=` | Find files and folders by name (`&path=` scopes to a subtree, `&type=file\|folder`, `&limit=`) |
 | POST | `/api/files` | Upload (multipart `files[]`, `path`, `overwrite`) |
 | GET | `/api/files/{id}` | Metadata including part placement |
 | GET | `/api/files/{id}/content` | **Rebuild and stream** (`?download=1` to save) |
@@ -715,8 +741,9 @@ in front of it (`scripts/nginx-sand.conf`, or Tailscale Serve), or set
 
 ```
 sand/
-├── cmd/sand/                  # CLI: serve, vault, remote, ls/put/get/rm, archive/restore,
-│                              #   manifest ls, vault backup/recover
+├── cmd/sand/                  # CLI: serve, vault, remote, ls/find/put/get/rm,
+│                              #   archive/restore, manifest ls,
+│                              #   vault backup/recover
 ├── internal/
 │   ├── archive/               # encode.go — the in-memory pipeline both modes use
 │   ├── compress/              # zstd

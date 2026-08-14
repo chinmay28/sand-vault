@@ -3,10 +3,12 @@ package server
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,6 +34,40 @@ func (s *Server) handleFilesList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, listing)
+}
+
+// handleSearch answers a query against the file index. Only the vault can:
+// names and folder structure are encrypted everywhere else, so no account can
+// be asked what it is holding.
+func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+
+	limit := 0
+	if raw := query.Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 0 {
+			writeError(w, http.StatusBadRequest, "limit must be a whole number", "BAD_REQUEST")
+			return
+		}
+		limit = parsed
+	}
+
+	v, _ := s.Vault()
+	results, err := v.Search(vault.SearchOptions{
+		Query: query.Get("q"),
+		Dir:   query.Get("path"),
+		Kind:  vault.SearchKind(query.Get("type")),
+		Limit: limit,
+	})
+	if err != nil {
+		if errors.Is(err, vault.ErrEmptyQuery) {
+			writeError(w, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
+			return
+		}
+		vaultErrorResponse(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, results)
 }
 
 func (s *Server) handleFileMeta(w http.ResponseWriter, r *http.Request) {

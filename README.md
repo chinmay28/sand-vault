@@ -425,6 +425,7 @@ sand remote remove <name-or-id> [--force]     Disconnect
 
 ```
 sand ls [path] [-l]                24 B  Aug 12 09:14  p1:acct-a p2:acct-b p3:acct-c
+sand find <query> [--path /dir] [--type file|folder] [--limit N] [-l]
 sand put <file>... [--path /dir] [--overwrite]
 sand get <path-or-id> [-o out]     Rebuild and decrypt
 sand mkdir <path>
@@ -435,6 +436,19 @@ sand check [path] [--all]          Verify parts are still there; non-zero if not
 
 `sand check --all` exits non-zero when anything is degraded or unrecoverable,
 which makes it a reasonable cron job.
+
+`sand find` searches the file index by name: a bare word matches any name
+containing it, ignoring case; `*` and `?` are wildcards (`sand find '*.jpg'`);
+and a query with a `/` in it is matched against the whole path
+(`sand find photos/2024`). Folders are results too. The index only exists
+inside the open vault, so this is the only way to search at all — no connected
+account can be asked what it is holding.
+
+```
+sand find receipt
+/receipts/
+/receipts/coffee.pdf   18 KB  Aug 12 09:14  p1:acct-a p2:acct-b p3:acct-c
+```
 
 ### Server
 
@@ -471,6 +485,9 @@ pipe the password on stdin.
 - **Connect dialog** — generated from each backend's own field spec, so new
   backends appear without frontend changes
 - **Browser** — folders, breadcrumbs, drag-and-drop upload with progress
+- **Search** — a box in the toolbar finds a file or folder anywhere in the
+  vault, each hit shown with the folder it lives in; searching inside a folder
+  looks there first and offers to widen to the whole vault
 - **Part badges** — `①②③` coloured per account; click for a live per-part
   health read-out
 - **Preview** — images, video, audio, PDF and text render inline, rebuilt on
@@ -542,6 +559,7 @@ its home screen gets the password prompt like any other browser would.
 | POST | `/api/providers/{id}/test` | Re-check an account |
 | DELETE | `/api/providers/{id}` | Disconnect (`?force=1`) |
 | GET | `/api/files?path=` | List a folder |
+| GET | `/api/search?q=` | Find files and folders by name (`&path=` to scope, `&type=file\|folder`, `&limit=`) |
 | POST | `/api/files` | Upload (`files[]`, `path`, `overwrite`) |
 | GET | `/api/files/{id}/content` | Rebuild and stream (`?download=1`) |
 | GET | `/api/files/{id}/health` | Per-part reachability |
@@ -797,8 +815,9 @@ sudo nginx -t && sudo systemctl reload nginx
 
 ```
 sand/
-├── cmd/sand/                    # CLI: serve, vault, remote, ls/put/get/rm, archive/restore,
-│                                #   manifest ls, vault backup/recover
+├── cmd/sand/                    # CLI: serve, vault, remote, ls/find/put/get/rm,
+│                                #   archive/restore, manifest ls,
+│                                #   vault backup/recover
 ├── internal/
 │   ├── archive/                 # encode.go — the in-memory pipeline both modes share
 │   ├── crypto/                  # Argon2id + AES-256-GCM

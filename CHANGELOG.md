@@ -202,11 +202,28 @@ that did land if fewer than two succeed. Reads race all three accounts and
 finish on the first two to arrive, so an offline account costs nothing on the
 read path.
 
+### Finding a file again
+
+A vault deep enough to be worth having is one you cannot click through, so the
+index is searchable — by name, or by path for a query with a `/` in it, with
+`*` and `?` as wildcards. Folders are results too, including the ones that
+exist only because something was stored inside them, and each hit says which
+folder it was found in.
+
+It is `sand find receipt` on the command line, `GET /api/search?q=` over HTTP,
+and a box in the browser's toolbar that searches as you type. Searching from
+inside a folder looks there first and offers to widen to the whole vault.
+
+None of it asks a cloud account anything. Filenames and folder structure live
+only in the encrypted index, so searching is something an **open** vault can
+do and nothing else can — which is also why it is instant: the index is
+already in memory.
+
 ### The browser
 
 Lock screen, a sidebar of connected accounts with live status and how much each
-is holding, breadcrumbs, drag-and-drop upload with progress, part badges
-coloured per account, a per-part health read-out, and inline preview for
+is holding, breadcrumbs, search, drag-and-drop upload with progress, part
+badges coloured per account, a per-part health read-out, and inline preview for
 images, video, audio, PDF and text — each one rebuilt on demand.
 
 It loads no external fonts, scripts or styles: opening your vault makes zero
@@ -302,9 +319,9 @@ non-loopback bind.
 
 - `cmd/sand` is present. The Makefile and the e2e suite both referenced it, but
   it had never been committed, so the tree did not build.
-- New CLI: `vault`, `remote`, `ls`, `put`, `get`, `mkdir`, `mv`, `rm`, `check`.
-  `sand check --all` exits non-zero on a degraded or unrecoverable file, which
-  makes it a reasonable cron job.
+- New CLI: `vault`, `remote`, `ls`, `find`, `put`, `get`, `mkdir`, `mv`, `rm`,
+  `check`. `sand check --all` exits non-zero on a degraded or unrecoverable
+  file, which makes it a reasonable cron job.
 - `scripts/deploy-linux.sh` writes a unit the service can actually run — it
   previously combined `ProtectHome=yes` with no vault path, so the server had
   nowhere to write.

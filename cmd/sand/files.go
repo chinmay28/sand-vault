@@ -75,6 +75,82 @@ func describeSpread(e *vault.Entry) string {
 	return label
 }
 
+func findCmd() *cobra.Command {
+	var (
+		scope string
+		kind  string
+		limit int
+		long  bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "find <query>",
+		Short: "Search the vault for a file or folder",
+		Long: `Search the file index by name.
+
+A bare word matches any name containing it, ignoring case. Use * and ? for
+wildcards ("*.jpg", "report-202?.pdf"), and a query with a / in it is matched
+against the whole path ("photos/2024") rather than the name alone.
+
+The index is only readable while the vault is open, so this is the only way to
+search at all — no connected account can be asked what it is holding.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			v, err := openVault(cmd)
+			if err != nil {
+				return err
+			}
+			defer v.Lock()
+
+			results, err := v.Search(vault.SearchOptions{
+				Query: args[0],
+				Dir:   scope,
+				Kind:  vault.SearchKind(kind),
+				Limit: limit,
+			})
+			if err != nil {
+				return err
+			}
+			if len(results.Hits) == 0 {
+				fmt.Fprintf(os.Stderr, "no matches for %q\n", results.Query)
+				return nil
+			}
+
+			tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+			for _, hit := range results.Hits {
+				if hit.File == nil {
+					fmt.Fprintf(tw, "%s/\t\t\t\n", hit.Path)
+					continue
+				}
+				f := hit.File
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s",
+					hit.Path, formatBytes(f.Size),
+					f.ModifiedAt.Local().Format("2006-01-02 15:04"), describeSpread(f))
+				if long {
+					fmt.Fprintf(tw, "\t%s", f.ID)
+				}
+				fmt.Fprintln(tw)
+			}
+			if err := tw.Flush(); err != nil {
+				return err
+			}
+
+			if results.Truncated {
+				fmt.Fprintf(os.Stderr,
+					"showing %d of %d matches — narrow the query or raise --limit\n",
+					len(results.Hits), results.Matched)
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&scope, "path", "/", "only search inside this folder")
+	cmd.Flags().StringVar(&kind, "type", string(vault.SearchAll), "what to look for: all, file or folder")
+	cmd.Flags().IntVar(&limit, "limit", vault.DefaultSearchLimit, "most matches to print")
+	cmd.Flags().BoolVarP(&long, "long", "l", false, "also show entry IDs")
+	return cmd
+}
+
 func putCmd() *cobra.Command {
 	var (
 		dest      string

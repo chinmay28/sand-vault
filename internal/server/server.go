@@ -163,6 +163,7 @@ func (s *Server) Handler() (http.Handler, error) {
 		"POST /api/providers/oauth/complete": s.handleOAuthComplete,
 		"GET /api/providers/oauth/{id}":      s.handleOAuthStatus,
 
+		"GET /api/search":             s.handleSearch,
 		"GET /api/files":              s.handleFilesList,
 		"POST /api/files":             s.handleFilesUpload,
 		"GET /api/files/{id}":         s.handleFileMeta,

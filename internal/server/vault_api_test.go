@@ -10,6 +10,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -429,6 +430,100 @@ func TestMoveOverHTTP(t *testing.T) {
 	w = c.do(http.MethodGet, "/api/files/"+id+"/content", nil, "")
 	if w.Body.String() != "content" {
 		t.Errorf("content after move = %q", w.Body.String())
+	}
+}
+
+// searchPaths runs a search and returns the paths it found, in order.
+func (c *testClient) searchPaths(query string) []string {
+	c.t.Helper()
+
+	w, body := c.json(http.MethodGet, "/api/search?"+query, nil)
+	if w.Code != http.StatusOK {
+		c.t.Fatalf("search %q: %d %v", query, w.Code, body)
+	}
+	hits, _ := body["hits"].([]any)
+	out := make([]string, 0, len(hits))
+	for _, hit := range hits {
+		out = append(out, hit.(map[string]any)["path"].(string))
+	}
+	return out
+}
+
+func TestSearchOverHTTP(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("pw", 3)
+
+	c.json(http.MethodPost, "/api/folders", map[string]any{"path": "/photos/2024"})
+	c.upload("beach.jpg", "/photos/2024", []byte("jpeg-ish"))
+	c.upload("beach-notes.txt", "/", []byte("where the photo was taken"))
+	c.upload("unrelated.bin", "/", []byte("nothing to find here"))
+
+	if got := c.searchPaths("q=beach"); len(got) != 2 ||
+		got[0] != "/beach-notes.txt" || got[1] != "/photos/2024/beach.jpg" {
+		t.Errorf("search for beach = %v, want the two beach files, shallowest first", got)
+	}
+
+	// A folder is a result in its own right.
+	if got := c.searchPaths("q=photos"); len(got) != 1 || got[0] != "/photos" {
+		t.Errorf("search for photos = %v, want [/photos]", got)
+	}
+
+	// Scope, type and wildcards all reach the vault.
+	if got := c.searchPaths("q=beach&path=/photos"); len(got) != 1 || got[0] != "/photos/2024/beach.jpg" {
+		t.Errorf("scoped search = %v, want only the file under /photos", got)
+	}
+	if got := c.searchPaths("q=photos&type=file"); len(got) != 0 {
+		t.Errorf("file-only search for photos = %v, want nothing", got)
+	}
+	if got := c.searchPaths("q=" + url.QueryEscape("*.jpg")); len(got) != 1 || got[0] != "/photos/2024/beach.jpg" {
+		t.Errorf("wildcard search = %v, want the jpg", got)
+	}
+
+	// A file hit carries its index entry, so a result row needs no second call.
+	w, body := c.json(http.MethodGet, "/api/search?q=beach.jpg", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("search: %d %v", w.Code, body)
+	}
+	hit := body["hits"].([]any)[0].(map[string]any)
+	if hit["type"] != "file" {
+		t.Errorf("type = %v, want file", hit["type"])
+	}
+	file, _ := hit["file"].(map[string]any)
+	if file == nil || len(file["shards"].([]any)) != 3 {
+		t.Errorf("hit = %v, want the entry and its three shards", hit)
+	}
+}
+
+func TestSearchRejectsAnEmptyQuery(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("pw", 3)
+
+	w, body := c.json(http.MethodGet, "/api/search?q=%20", nil)
+	if w.Code != http.StatusBadRequest || body["code"] != "BAD_REQUEST" {
+		t.Errorf("empty search = %d %v, want 400 BAD_REQUEST", w.Code, body)
+	}
+
+	w, body = c.json(http.MethodGet, "/api/search?q=x&path=/nowhere", nil)
+	if w.Code != http.StatusNotFound || body["code"] != "NOT_FOUND" {
+		t.Errorf("search in a missing folder = %d %v, want 404 NOT_FOUND", w.Code, body)
+	}
+}
+
+func TestSearchNeedsAnOpenVault(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("pw", 3)
+	c.upload("secret-name.txt", "/", []byte("x"))
+
+	if w, _ := c.json(http.MethodPost, "/api/vault/lock", nil); w.Code != http.StatusOK {
+		t.Fatalf("lock: %d", w.Code)
+	}
+
+	w, body := c.json(http.MethodGet, "/api/search?q=secret", nil)
+	if w.Code != http.StatusUnauthorized || body["code"] != "LOCKED" {
+		t.Errorf("searching a locked vault = %d %v, want 401 LOCKED", w.Code, body)
+	}
+	if strings.Contains(w.Body.String(), "secret-name") {
+		t.Error("a locked vault must not leak a filename")
 	}
 }
 

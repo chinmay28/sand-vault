@@ -255,6 +255,10 @@ function Shell({ children }) {
         }
         @supports (height: 100dvh) { :root { --app-height: 100dvh; } }
         html { -webkit-text-size-adjust: 100%; }
+        /* WebKit draws its own clear button inside a search field, which would
+           sit on top of the app's — and only appears in that one browser. */
+        input[type="search"]::-webkit-search-cancel-button,
+        input[type="search"]::-webkit-search-decoration { -webkit-appearance: none; }
         body { margin: 0; background: ${COLORS.bg}; }
         /* iOS zooms the whole page in when it focuses a field smaller than
            16px. Every input here is styled inline, so this is one of the few

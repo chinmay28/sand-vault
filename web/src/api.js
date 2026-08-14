@@ -79,6 +79,15 @@ export const api = {
     request(`/api/providers/${encodeURIComponent(id)}${force ? '?force=1' : ''}`, { method: 'DELETE' }),
 
   list: (path) => request(`/api/files?path=${encodeURIComponent(path)}`),
+  /* Only the server can answer this: the file index is encrypted everywhere
+     else, so there is nothing on any cloud account to ask. */
+  search: (query, { path = '/', type, limit, signal } = {}) => {
+    const params = new URLSearchParams({ q: query })
+    if (path && path !== '/') params.set('path', path)
+    if (type) params.set('type', type)
+    if (limit) params.set('limit', String(limit))
+    return request(`/api/search?${params.toString()}`, { signal })
+  },
   fileMeta: (id) => request(`/api/files/${encodeURIComponent(id)}`),
   fileHealth: (id) => request(`/api/files/${encodeURIComponent(id)}/health`),
   deleteFile: (id) => request(`/api/files/${encodeURIComponent(id)}`, { method: 'DELETE' }),

@@ -14,6 +14,7 @@ import os
 import re
 
 import pytest
+from playwright.sync_api import expect
 
 pytestmark = pytest.mark.gui
 
@@ -63,11 +64,13 @@ def app(page, server, vault_password, clouds):
 def upload_and_settle(page, source):
     """Upload a file through the picker and wait for the refresh to finish.
 
-    The upload triggers a listing refresh, so clicking a row the instant the
-    name appears can race the re-render.
+    The wait is for the file's own row rather than for its name: the progress
+    card carries the name too, so anything looser returns while the parts are
+    still being scattered.
     """
+    name = os.path.basename(source)
     page.set_input_files("input[type=file]", str(source))
-    page.wait_for_selector(f"text={os.path.basename(source)}", timeout=90000)
+    page.wait_for_selector(f'button[title="Open"]:has-text("{name}")', timeout=90000)
     page.wait_for_load_state("networkidle")
 
 
@@ -317,6 +320,76 @@ class TestFolders:
         app.wait_for_selector("text=gui-folder", timeout=10000)
 
 
+class TestSearch:
+    """The search box, which reaches past the folder the browser is standing in.
+
+    The index it queries only exists inside the open vault, so a hit here is
+    proof the server answered from decrypted metadata — no account can be asked
+    what it holds.
+    """
+
+    def _search(self, app, query):
+        box = app.get_by_label("Search files and folders")
+        box.fill(query)
+        # Results are debounced, so wait for the count line rather than racing it.
+        app.wait_for_selector("text=/(match|matches|No matches) for/", timeout=20000)
+        return box
+
+    def test_finds_a_file_stored_in_another_folder(self, app, tmp_path):
+        app.get_by_text("+ Folder").click()
+        app.wait_for_selector("text=New folder")
+        app.fill('input[placeholder="Folder name"]', "search-folder")
+        app.locator('button[type=submit]:has-text("Create")').click()
+        app.wait_for_selector("text=search-folder", timeout=20000)
+
+        app.get_by_text("search-folder").first.click()
+        source = tmp_path / "buried-treasure.txt"
+        source.write_text("found me")
+        upload_and_settle(app, source)
+
+        # Back at the root, where the file is not listed at all.
+        app.get_by_text("▣ /").click()
+        expect(app.get_by_text("buried-treasure.txt")).to_have_count(0)
+
+        self._search(app, "buried")
+        app.wait_for_selector("text=buried-treasure.txt", timeout=20000)
+        # The result says which folder it was found in.
+        assert app.get_by_text("in /search-folder").count() > 0
+
+        # And it still opens from there, rebuilt out of its scattered parts.
+        app.locator('button[title="Open"]').first.click()
+        app.wait_for_selector("text=found me", timeout=60000)
+
+    def test_a_folder_is_a_result_too(self, app):
+        app.get_by_text("+ Folder").click()
+        app.wait_for_selector("text=New folder")
+        app.fill('input[placeholder="Folder name"]', "findable-folder")
+        app.locator('button[type=submit]:has-text("Create")').click()
+        app.wait_for_selector("text=findable-folder", timeout=20000)
+
+        self._search(app, "findable")
+        app.get_by_text("findable-folder").first.click()
+        # Clicking a folder hit walks into it and ends the search.
+        app.wait_for_load_state("networkidle")
+        assert app.get_by_label("Search files and folders").input_value() == ""
+
+    def test_a_query_that_matches_nothing_says_so(self, app):
+        self._search(app, "no-such-thing-anywhere")
+        app.wait_for_selector('text=Nothing matches "no-such-thing-anywhere"', timeout=20000)
+
+    def test_clearing_the_search_returns_to_the_listing(self, app, tmp_path):
+        source = tmp_path / "still-listed.txt"
+        source.write_text("here")
+        upload_and_settle(app, source)
+
+        self._search(app, "no-such-thing-anywhere")
+        app.wait_for_selector("text=Nothing matches", timeout=20000)
+        expect(app.get_by_text("still-listed.txt")).to_have_count(0)
+
+        app.get_by_label("Clear the search").click()
+        app.wait_for_selector("text=still-listed.txt", timeout=20000)
+
+
 PHONE = {"width": 390, "height": 844}
 NARROW_PHONE = {"width": 320, "height": 640}
 
@@ -463,6 +536,28 @@ class TestMobileLayout:
 
         app.set_viewport_size(size)
         app.wait_for_timeout(300)
+
+        assert not horizontal_overflow(app)
+
+    @pytest.mark.parametrize("size", [PHONE, NARROW_PHONE])
+    def test_search_results_do_not_scroll_sideways(self, app, tmp_path, size):
+        app.get_by_text("+ Folder").click()
+        app.wait_for_selector("text=New folder")
+        app.fill('input[placeholder="Folder name"]', "a-folder-with-a-long-name")
+        app.locator('button[type=submit]:has-text("Create")').click()
+        app.wait_for_selector("text=a-folder-with-a-long-name", timeout=20000)
+        app.get_by_text("a-folder-with-a-long-name").first.click()
+
+        source = tmp_path / "a-narrow-screens-worst-nightmare.txt"
+        source.write_text("narrow")
+        upload_and_settle(app, source)
+
+        app.set_viewport_size(size)
+        app.wait_for_timeout(300)
+        # A result carries its folder as well as its name, which is the widest
+        # a row in this app ever gets.
+        app.get_by_label("Search files and folders").fill("nightmare")
+        app.wait_for_selector("text=a-narrow-screens-worst-nightmare.txt", timeout=20000)
 
         assert not horizontal_overflow(app)
 
