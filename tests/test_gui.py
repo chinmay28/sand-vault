@@ -507,12 +507,23 @@ class TestMobileLayout:
         app.wait_for_timeout(400)
 
         # The paired icons are gone; one menu button takes their place.
-        assert app.locator('a[title="Download the rebuilt, decrypted file"]').count() == 0
+        assert app.get_by_label("Download menu.txt").count() == 0
         app.locator('button[aria-label="Actions for menu.txt"]').click()
         app.wait_for_selector("text=Where the parts live", timeout=10000)
 
+        # Downloading from the sheet still hands the bytes back without taking
+        # the window with it — the sheet closes, the app stays put.
+        before = app.url
+        with app.expect_download(timeout=60000) as download:
+            app.get_by_text("Download", exact=True).click()
+        assert download.value.suggested_filename == "menu.txt"
+        assert app.url == before
+        app.wait_for_timeout(400)
+
         # The part badges are only a read-out on a phone, so the inspector they
         # open on a desktop has to be reachable from the menu instead.
+        app.locator('button[aria-label="Actions for menu.txt"]').click()
+        app.wait_for_selector("text=Where the parts live", timeout=10000)
         app.get_by_text("Where the parts live").click()
         app.wait_for_selector("text=Where this file lives", timeout=20000)
         app.keyboard.press("Escape")
