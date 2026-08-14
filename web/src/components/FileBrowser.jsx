@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { COLORS, FONT, accountColor, fileIcon, formatBytes, formatDate } from '../theme'
 import { api, joinPath } from '../api'
+import { useDownload } from '../download'
 import { Banner, Button, Empty, Modal, Spinner } from './ui'
 
 /* Name, size, modified, parts, actions. The four fixed columns come to nearly
@@ -341,6 +342,7 @@ function Row({ children, mobile }) {
 
 function FileRow({ file, mobile, onPreview, onInspect, onRefresh, onError }) {
   const [busy, setBusy] = useState(false)
+  const [download, downloading] = useDownload(onError)
   const degraded = file.shards.length < 3
   const dead = file.shards.length < 2
 
@@ -421,15 +423,19 @@ function FileRow({ file, mobile, onPreview, onInspect, onRefresh, onError }) {
 
   const actions = (
     <span style={{ display: 'flex', gap: '4px', justifyContent: 'flex-end', flexShrink: 0 }}>
-      <a
-        href={api.contentURL(file.id, { download: true })}
+      {/* Every row carries this control, so the spoken name says which file it
+          belongs to rather than repeating the same sentence down the list. */}
+      <button
+        onClick={() => download(file)}
+        disabled={downloading}
         title="Download the rebuilt, decrypted file"
-        aria-label="Download the rebuilt, decrypted file"
+        aria-label={`Download ${file.name}`}
         style={{
           display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-          color: COLORS.textDim, textDecoration: 'none', fontSize: '13px', padding: '2px 5px',
+          background: 'none', border: 'none', cursor: downloading ? 'default' : 'pointer',
+          color: COLORS.textDim, fontFamily: FONT.mono, fontSize: '13px', padding: '2px 5px',
         }}
-      >↓</a>
+      >{downloading ? '…' : '↓'}</button>
       <button
         onClick={remove}
         disabled={busy}

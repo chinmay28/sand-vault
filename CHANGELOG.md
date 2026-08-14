@@ -227,6 +227,14 @@ manifest with 192px, 512px and maskable icons for Android — all rendered from
 the one `icon.svg` by `scripts/make-icons.mjs`, and all served from the binary,
 like everything else the browser loads.
 
+Launching without browser chrome also means launching without a back button, so
+downloading a file no longer navigates the window to it. Sending a home-screen
+app at a file the phone cannot render inline — an epub, a zip — left it showing
+a bare document icon on a black screen with nothing to press, and force-quitting
+the app was the only way out. The bytes are now fetched in the background and
+handed to the browser under the file's own name, and the page you started from
+never moves.
+
 ### Quick start
 
 One command installs SAND as a hardened systemd service, building from source
