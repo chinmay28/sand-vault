@@ -135,6 +135,16 @@ func DecodeBytes(blobs [][]byte, password string) (*Decoded, error) {
 			return nil, fmt.Errorf("parsing part %d: %w", i+1, err)
 		}
 
+		// A chunked part derives its key from the vault's data key rather than a
+		// password, and carries no Argon2 parameters to derive one with. Turning
+		// it away here is what stops those zeroed parameters reaching the KDF,
+		// which treats them as a programming error and panics.
+		if part.Header.Version == sandfile.ChunkedFormatVersion {
+			return nil, fmt.Errorf(
+				"part %d is a chunk (format version %d) — read it with DecodeChunk",
+				i+1, part.Header.Version)
+		}
+
 		pn := int(part.Header.PartNumber)
 		if _, exists := parsed[pn]; exists {
 			return nil, fmt.Errorf("duplicate part number %d", pn)

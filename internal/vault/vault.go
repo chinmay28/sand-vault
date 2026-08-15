@@ -44,6 +44,13 @@ type Vault struct {
 	providers []provider.Config
 	manifest  *Manifest
 
+	// chunkSize is the plaintext chunk length new uploads are cut into. It is
+	// per-vault rather than a constant because every file records the size it
+	// was written with, so changing it never invalidates what is already
+	// stored — and because a test that wants several chunks should not have to
+	// push tens of megabytes to get them.
+	chunkSize uint32
+
 	// liveMu guards the cache of constructed providers. It is a leaf lock,
 	// always taken last, so cache warming can happen while mu is held.
 	liveMu sync.Mutex
@@ -82,7 +89,11 @@ type Vault struct {
 // Open returns a handle to the vault at path. The vault starts locked; if no
 // file exists yet, Initialized reports false and Init can create one.
 func Open(path string) (*Vault, error) {
-	v := &Vault{path: path, live: map[string]provider.Provider{}}
+	v := &Vault{
+		path:      path,
+		live:      map[string]provider.Provider{},
+		chunkSize: archive.DefaultChunkSize,
+	}
 	v.backupIdle.L = &v.backupMu
 
 	sf, err := readStore(path)
@@ -329,6 +340,22 @@ func (v *Vault) shardPasswordForLocked(keyID string) (string, error) {
 // same derivation from a key that came out of a backup rather than a vault.
 func shardPasswordFor(dataKey []byte) string {
 	return hex.EncodeToString(dataKey)
+}
+
+// dataKeyForLocked returns a copy of the raw data key that opens a given
+// generation's chunks. It is shardPasswordForLocked's counterpart for the
+// chunked format, which derives its keys from the key material itself rather
+// than from a password spelled out in hex — see crypto.DeriveChunkKey.
+//
+// The copy is the caller's to zero.
+func (v *Vault) dataKeyForLocked(keyID string) ([]byte, error) {
+	if keyID == v.dataKeyID {
+		return append([]byte(nil), v.dataKey...), nil
+	}
+	if key, ok := v.retired[keyID]; ok {
+		return append([]byte(nil), key...), nil
+	}
+	return nil, fmt.Errorf("this file is recorded under a data key the vault no longer holds")
 }
 
 // persistLocked re-seals the mutable sections and writes the vault file. The

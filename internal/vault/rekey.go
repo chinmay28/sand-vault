@@ -310,7 +310,11 @@ func (v *Vault) migrateFile(ctx context.Context, id string) (path string, size i
 		return "", 0, nil, nil
 	}
 	path, name := entry.Path(), entry.Name
-	stale := append([]Shard(nil), entry.Shards...)
+	// A copy of the entry as it stands, so the parts it is on now can be erased
+	// after the new ones commit — including, for a file already chunked, every
+	// chunk rather than only the first.
+	stale := *entry
+	stale.Shards = append([]Shard(nil), entry.Shards...)
 	v.mu.RUnlock()
 
 	data, _, err := v.Fetch(ctx, id)
@@ -322,21 +326,31 @@ func (v *Vault) migrateFile(ctx context.Context, id string) (path string, size i
 	// already on, whether they were chosen for it or picked at random. Any that
 	// have been disconnected since are topped up from what is connected now,
 	// rather than leaving the file a part short for good.
-	current := make([]string, 0, len(stale))
-	for _, s := range stale {
+	current := make([]string, 0, len(stale.Shards))
+	for _, s := range stale.Shards {
 		current = append(current, s.ProviderID)
 	}
 
-	placed, err := v.scatter(ctx, name, data, current, false)
+	// Re-encrypting writes the current format, so a file stored whole before
+	// chunking existed comes back chunked. That is the cheapest moment to do it:
+	// the file has already been gathered and is about to be scattered again, so
+	// changing format costs nothing beyond what the re-encryption was paying.
+	placed, err := v.scatterChunked(ctx, name, data, current, false, v.uploadChunkSize())
 	warnings = placed.warnings
 	if err != nil {
 		return path, 0, warnings, fmt.Errorf("re-encrypting %s: %w", path, err)
+	}
+	fresh := &Entry{
+		ArchiveID:  placed.archiveID,
+		Shards:     placed.shards,
+		ChunkSize:  placed.chunkSize,
+		ChunkCount: placed.chunkCount,
 	}
 
 	v.mu.Lock()
 	if v.dataKey == nil {
 		v.mu.Unlock()
-		v.deleteShards(context.WithoutCancel(ctx), placed.shards)
+		v.deleteEntryShards(context.WithoutCancel(ctx), fresh)
 		return path, 0, warnings, ErrLocked
 	}
 	e := v.manifest.ByID(id)
@@ -345,7 +359,7 @@ func (v *Vault) migrateFile(ctx context.Context, id string) (path string, size i
 		// referenced by nothing, so they go the same way the old ones did.
 		v.mu.Unlock()
 		warnings = append(warnings,
-			v.deleteShards(context.WithoutCancel(ctx), placed.shards)...)
+			v.deleteEntryShards(context.WithoutCancel(ctx), fresh)...)
 		return path, 0, warnings, nil
 	}
 
@@ -353,6 +367,8 @@ func (v *Vault) migrateFile(ctx context.Context, id string) (path string, size i
 	e.ArchiveID = placed.archiveID
 	e.KeyID = placed.keyID
 	e.Shards = placed.shards
+	e.ChunkSize = placed.chunkSize
+	e.ChunkCount = placed.chunkCount
 	// ModifiedAt is left alone: the file did not change, only the key that
 	// hides it did.
 	err = v.persistLocked()
@@ -363,7 +379,7 @@ func (v *Vault) migrateFile(ctx context.Context, id string) (path string, size i
 	v.mu.Unlock()
 
 	if err != nil {
-		v.deleteShards(context.WithoutCancel(ctx), placed.shards)
+		v.deleteEntryShards(context.WithoutCancel(ctx), fresh)
 		return path, 0, warnings, fmt.Errorf("recording the re-encrypted %s: %w", path, err)
 	}
 
@@ -371,7 +387,7 @@ func (v *Vault) migrateFile(ctx context.Context, id string) (path string, size i
 	// password could open, so getting rid of them is the point rather than
 	// housekeeping. A failure here is reported, not fatal: the index already
 	// points at the new parts.
-	for _, w := range v.deleteShards(context.WithoutCancel(ctx), stale) {
+	for _, w := range v.deleteEntryShards(context.WithoutCancel(ctx), &stale) {
 		warnings = append(warnings, fmt.Sprintf("%s: a part under the old key is still there — %s", path, w))
 	}
 	return path, size, warnings, nil

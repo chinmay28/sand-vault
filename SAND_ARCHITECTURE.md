@@ -590,6 +590,20 @@ password, version 3 derives from the vault's data key (§6.2). That is also why
 **standalone mode keeps writing version 2** — it has no vault and no data key,
 so a password is genuinely all it has.
 
+The vault writes version 3 for every upload, and re-encrypting a file after a
+password change writes it too, so a vault filled before chunking existed
+converts as `sand vault passwd` works through it. Files still stored whole are
+read exactly as they were; `Entry.Chunked` is what decides which path a read
+takes. A whole-file part and a chunked one are told apart by their version
+alone, which is why the two decoders refuse each other's input rather than
+guessing.
+
+One consequence worth stating: a part is written to **every** chunk of a file or
+erased from all of them. A part that fails partway through an upload has the
+chunks it did manage erased, so that a shard in the index always means the
+objects behind it are really there — which is what delete, health and recovery
+all read it as.
+
 `ChunkSize` is the **plaintext** length of every chunk but the last, which makes
 the chunk holding an offset that offset divided by it. Recording it rather than
 inferring it is the point: a seek must not have to read an index to find out
@@ -949,10 +963,12 @@ sand/
 
 ## 15. Not Built
 
-- **Streaming / chunked processing** for files larger than available RAM. The
-  on-disk format for it exists (§7.1) and is tested, but nothing writes or reads
-  it yet: the vault still stores and gathers whole files, so an upload and a
-  read are both still bounded by RAM. The reader over it is the next piece.
+- **Streaming** for files larger than available RAM. The vault now stores and
+  reads in chunks (§7.1), so the *format* no longer stands in the way — but
+  `Upload` still takes a whole `[]byte` and `Fetch` still returns one, so both
+  ends are bounded by RAM as before. What is missing is the API over the
+  format: a reader that answers an offset without rebuilding the file, and a
+  writer that takes an `io.Reader`.
 - **A filesystem view** — WebDAV, and a FUSE mount behind it for clients that
   need a real path rather than a URL
 - **Repair** — re-uploading a missing part from the two that survive, rather

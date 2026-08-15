@@ -124,6 +124,17 @@ func (s *Snapshot) ShardPassword() (string, error) {
 // ShardPasswordFor is the secret that opens parts written under one key
 // generation, named as a manifest entry names it.
 func (s *Snapshot) ShardPasswordFor(keyID string) (string, error) {
+	key, err := s.DataKeyFor(keyID)
+	if err != nil {
+		return "", err
+	}
+	return shardPasswordFor(key), nil
+}
+
+// DataKeyFor is the raw key material of one generation, which is what a chunked
+// file's per-chunk keys are derived from. A file stored whole wants
+// ShardPasswordFor instead — the same key, spelled the way that format expects.
+func (s *Snapshot) DataKeyFor(keyID string) ([]byte, error) {
 	encoded := ""
 	switch {
 	case keyID == s.KeyID:
@@ -137,22 +148,27 @@ func (s *Snapshot) ShardPasswordFor(keyID string) (string, error) {
 		}
 	}
 	if encoded == "" {
-		return "", fmt.Errorf("this backup carries no data key for generation %q", keyID)
+		return nil, fmt.Errorf("this backup carries no data key for generation %q", keyID)
 	}
 
 	key, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
-		return "", fmt.Errorf("decoding the recovered data key: %w", err)
+		return nil, fmt.Errorf("decoding the recovered data key: %w", err)
 	}
 	if len(key) != DataKeySize {
-		return "", fmt.Errorf("recovered data key is %d bytes, expected %d", len(key), DataKeySize)
+		return nil, fmt.Errorf("recovered data key is %d bytes, expected %d", len(key), DataKeySize)
 	}
-	return shardPasswordFor(key), nil
+	return key, nil
 }
 
 // ShardPasswordForEntry is the secret that opens one file's parts.
 func (s *Snapshot) ShardPasswordForEntry(e *Entry) (string, error) {
 	return s.ShardPasswordFor(e.KeyID)
+}
+
+// DataKeyForEntry is the key material one file's chunks are derived from.
+func (s *Snapshot) DataKeyForEntry(e *Entry) ([]byte, error) {
+	return s.DataKeyFor(e.KeyID)
 }
 
 // sealBackup wraps a snapshot in an envelope that a password alone can open.

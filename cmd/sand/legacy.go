@@ -139,17 +139,33 @@ and the password — rebuilds a file with no vault and no network.`,
 				return fmt.Errorf("creating output directory: %w", err)
 			}
 
+			// Which restore this is depends on how the parts were written, not
+			// on what was asked for: a vault writes chunks, standalone mode
+			// writes whole files, and both land in .sand files that look alike.
+			chunked, err := archive.PartsAreChunked(partPaths[0])
+			if err != nil {
+				return err
+			}
+
 			dir := outputDir
 			vaultPath := ""
+			var dataKey []byte
 			if manifestPath != "" {
 				if password != "" {
 					return fmt.Errorf("--password is the vault password when --manifest is used; it is prompted for")
 				}
-				var err error
-				password, dir, vaultPath, err = restoreWithManifest(manifestPath, partPaths, preserveTree, outputDir)
+				resolved, err := restoreWithManifest(manifestPath, partPaths, preserveTree, outputDir)
 				if err != nil {
 					return err
 				}
+				password, dataKey, dir, vaultPath = resolved.password, resolved.dataKey, resolved.dir, resolved.vaultPath
+			} else if chunked {
+				// A chunk's key is derived from the vault's random data key, so
+				// no password on its own opens one. The manifest backup is the
+				// only thing outside the vault that carries that key.
+				return fmt.Errorf(
+					"these parts were written by a vault and cannot be opened by a password alone — " +
+						"pass the manifest.sand from one of the accounts with --manifest")
 			} else if password == "" {
 				var err error
 				password, err = readPassword("Decryption password: ")
@@ -158,7 +174,12 @@ and the password — rebuilds a file with no vault and no network.`,
 				}
 			}
 
-			outputPath, err := archive.Restore(partPaths, password, dir)
+			var outputPath string
+			if chunked {
+				outputPath, err = archive.RestoreChunked(partPaths, dataKey, dir)
+			} else {
+				outputPath, err = archive.Restore(partPaths, password, dir)
+			}
 			if err != nil {
 				return err
 			}
