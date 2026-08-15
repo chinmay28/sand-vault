@@ -116,6 +116,9 @@ func (v *Vault) Upload(ctx context.Context, dir, name string, data []byte, opts 
 	// best-effort basis so a failure here does not fail the upload.
 	if replaced != nil {
 		v.deleteShards(context.WithoutCancel(ctx), replaced.Shards)
+		// Its thumbnail showed the old contents and is keyed by an ID nothing
+		// points at any more.
+		v.removeThumbs(context.WithoutCancel(ctx), dir, replaced.ID)
 	}
 
 	if len(shards) < archive.PartCount {
@@ -328,13 +331,36 @@ func (v *Vault) Fetch(ctx context.Context, id string) ([]byte, *Entry, error) {
 		v.mu.RUnlock()
 		return nil, nil, fmt.Errorf("no such file: %s", id)
 	}
+	shards := append([]Shard(nil), entry.Shards...)
+	keyID, label := entry.KeyID, entry.Path()
+	v.mu.RUnlock()
+
+	data, err := v.gather(ctx, shards, keyID, label)
+	if err != nil {
+		return nil, nil, err
+	}
+	return data, entry, nil
+}
+
+// gather collects enough of a set of parts to rebuild what they encode and
+// decrypts it. It is the read half of scatter, and everything the vault stores
+// goes through it — a file's parts and a folder's thumbnail pack alike.
+//
+// label names the thing being read, for error messages: a path for a file, a
+// description for anything else.
+func (v *Vault) gather(ctx context.Context, shards []Shard, keyID, label string) ([]byte, error) {
+	v.mu.RLock()
+	if v.dataKey == nil {
+		v.mu.RUnlock()
+		return nil, ErrLocked
+	}
 	// Not necessarily the key new uploads use: a file waiting its turn in a
 	// password change's re-encryption is still sealed under the old one.
-	shardPassword, err := v.shardPasswordForLocked(entry.KeyID)
-	configs := v.configsForLocked(entry.Shards)
+	shardPassword, err := v.shardPasswordForLocked(keyID)
+	configs := v.configsForLocked(shards)
 	v.mu.RUnlock()
 	if err != nil {
-		return nil, nil, fmt.Errorf("reading %s: %w", entry.Path(), err)
+		return nil, fmt.Errorf("reading %s: %w", label, err)
 	}
 
 	fetchCtx, cancel := context.WithCancel(ctx)
@@ -345,9 +371,9 @@ func (v *Vault) Fetch(ctx context.Context, id string) ([]byte, *Entry, error) {
 		blob []byte
 		err  error
 	}
-	results := make(chan getResult, len(entry.Shards))
+	results := make(chan getResult, len(shards))
 
-	for _, shard := range entry.Shards {
+	for _, shard := range shards {
 		cfg, ok := configs[shard.ProviderID]
 		if !ok {
 			results <- getResult{part: shard.Part, err: fmt.Errorf(
@@ -373,7 +399,7 @@ func (v *Vault) Fetch(ctx context.Context, id string) ([]byte, *Entry, error) {
 
 	var blobs [][]byte
 	var failures []string
-	for i := 0; i < len(entry.Shards); i++ {
+	for i := 0; i < len(shards); i++ {
 		r := <-results
 		if r.err != nil {
 			failures = append(failures, r.err.Error())
@@ -386,16 +412,16 @@ func (v *Vault) Fetch(ctx context.Context, id string) ([]byte, *Entry, error) {
 	}
 
 	if len(blobs) < archive.MinPartsToRestore {
-		return nil, nil, fmt.Errorf(
+		return nil, fmt.Errorf(
 			"could not gather %d parts for %s (got %d): %s",
-			archive.MinPartsToRestore, entry.Path(), len(blobs), strings.Join(failures, "; "))
+			archive.MinPartsToRestore, label, len(blobs), strings.Join(failures, "; "))
 	}
 
 	decoded, err := archive.DecodeBytes(blobs, shardPassword)
 	if err != nil {
-		return nil, nil, fmt.Errorf("rebuilding %s: %w", entry.Path(), err)
+		return nil, fmt.Errorf("rebuilding %s: %w", label, err)
 	}
-	return decoded.Data, entry, nil
+	return decoded.Data, nil
 }
 
 // Delete removes a file from the index and erases its parts from every
@@ -414,17 +440,28 @@ func (v *Vault) Delete(ctx context.Context, id string) ([]string, error) {
 		return nil, fmt.Errorf("no such file: %s", id)
 	}
 	shards := append([]Shard(nil), entry.Shards...)
+	dir := entry.Dir
 	v.mu.RUnlock()
 
 	warnings := v.deleteShards(ctx, shards)
 
 	v.mu.Lock()
-	defer v.mu.Unlock()
 	if v.dataKey == nil {
+		v.mu.Unlock()
 		return warnings, ErrLocked
 	}
 	v.manifest.remove(id)
-	return warnings, v.persistLocked()
+	err := v.persistLocked()
+	v.mu.Unlock()
+
+	if err != nil {
+		return warnings, err
+	}
+
+	// After the file itself is gone, so a failure to rewrite the pack cannot
+	// keep a deleted file in the listing.
+	v.removeThumbs(ctx, dir, id)
+	return warnings, nil
 }
 
 // Rmdir removes a folder. Without recursive it refuses to touch a folder that
@@ -460,15 +497,25 @@ func (v *Vault) Rmdir(ctx context.Context, dir string, recursive bool) ([]string
 	}
 
 	v.mu.Lock()
-	defer v.mu.Unlock()
 	if v.dataKey == nil {
+		v.mu.Unlock()
 		return warnings, ErrLocked
 	}
 	for _, id := range ids {
 		v.manifest.remove(id)
 	}
 	v.manifest.removeFolders(dir)
-	return warnings, v.persistLocked()
+	err := v.persistLocked()
+	v.mu.Unlock()
+
+	if err != nil {
+		return warnings, err
+	}
+
+	// The folder and everything under it is gone, and so are the thumbnails
+	// that were stored a folder at a time.
+	v.dropThumbFolders(ctx, dir)
+	return warnings, nil
 }
 
 // deleteShards erases a set of parts, returning a warning per failure.

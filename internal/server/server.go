@@ -175,6 +175,8 @@ func (s *Server) Handler() (http.Handler, error) {
 		"POST /api/files/{id}/move":   s.handleFileMove,
 		"GET /api/files/{id}/health":  s.handleFileHealth,
 		"GET /api/files/{id}/content": s.handleFileContent,
+		"GET /api/files/{id}/thumb":   s.handleFileThumb,
+		"PUT /api/files/{id}/thumb":   s.handleFileThumbSet,
 
 		"POST /api/folders":   s.handleFolderCreate,
 		"DELETE /api/folders": s.handleFolderDelete,

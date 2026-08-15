@@ -113,12 +113,36 @@ export const api = {
   contentURL: (id, { download = false } = {}) =>
     `/api/files/${encodeURIComponent(id)}/content${download ? '?download=1' : ''}`,
 
+  /* The stored preview image. The first row of a folder to ask for one makes
+     the server gather that folder's whole pack; the rest are answered from
+     memory, so a listing costs one round-trip to the accounts rather than one
+     per picture. */
+  thumbURL: (id) => `/api/files/${encodeURIComponent(id)}/thumb`,
+
+  /* Stores a picture for a file that has none — one uploaded before
+     thumbnails existed, or from the command line. */
+  putThumb: (id, blob) => fetch(`/api/files/${encodeURIComponent(id)}/thumb`, {
+    method: 'PUT',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'image/jpeg' },
+    body: blob,
+  }).then((resp) => {
+    if (!resp.ok) throw new ApiError(`could not store the preview (${resp.status})`, 'HTTP_ERROR', resp.status)
+    return true
+  }),
+
   /* Uploads go through XMLHttpRequest rather than fetch so the UI can show
      real progress while a large file is being split and scattered. */
-  upload(files, path, { overwrite = false, accounts = [], onProgress } = {}) {
+  upload(files, path, { overwrite = false, accounts = [], thumbs = [], onProgress } = {}) {
     return new Promise((resolve, reject) => {
       const form = new FormData()
-      for (const file of files) form.append('files[]', file)
+      Array.from(files).forEach((file, i) => {
+        form.append('files[]', file)
+        /* Named for the file's position rather than its name: two files
+           dropped together can share a name, and only some of them will have
+           a picture at all. */
+        if (thumbs[i]) form.append(`thumb-${i}`, thumbs[i], 'thumb.jpg')
+      })
       form.append('path', path)
       form.append('overwrite', String(overwrite))
       /* One field per account rather than a joined string: the server accepts

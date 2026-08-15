@@ -528,6 +528,10 @@ pipe the password on stdin.
   looks there first and offers to widen to the whole vault
 - **Part badges** — `①②③` coloured per account; click for a live per-part
   health read-out
+- **Thumbnails** — images and PDFs show a picture rather than an icon, the PDF's
+  being its first page. Made in the browser when the file is uploaded, then
+  stored the way everything else is: split into three encrypted parts across
+  your accounts, one small pack per folder. Anything without one keeps its icon
 - **Preview** — images, video, audio, PDF and text render inline, rebuilt on
   demand; anything else downloads
 - **Change password** — at the foot of the sidebar; re-encrypts every stored
@@ -548,8 +552,9 @@ paying for a re-download when nothing has changed.
 A vault you reach over Tailscale or a reverse proxy gets opened from a phone as
 often as from a desk, so the layout folds rather than shrinks. Under 860px wide
 the sidebar becomes a drawer behind `☰`, the file table drops its columns for
-stacked rows — name and menu on one line, size, date and part badges on the
-next — and the toolbar gives the breadcrumb trail a row of its own. Heights are
+stacked rows — the thumbnail or icon down the left, the name beside it, and
+size, date and part badges underneath — and the toolbar gives the breadcrumb
+trail a row of its own. Heights are
 measured against the visible viewport, so a phone's collapsing address bar never
 hides the last row.
 
@@ -599,8 +604,9 @@ its home screen gets the password prompt like any other browser would.
 | DELETE | `/api/providers/{id}` | Disconnect (`?force=1`) |
 | GET | `/api/files?path=` | List a folder |
 | GET | `/api/search?q=` | Find files and folders by name (`&path=` to scope, `&type=file\|folder`, `&limit=`) |
-| POST | `/api/files` | Upload (`files[]`, `path`, `overwrite`) |
+| POST | `/api/files` | Upload (`files[]`, `path`, `overwrite`, `thumb-N` per file) |
 | GET | `/api/files/{id}/content` | Rebuild and stream (`?download=1`) |
+| GET · PUT | `/api/files/{id}/thumb` | The stored thumbnail; PUT stores one for a file that has none |
 | GET | `/api/files/{id}/health` | Per-part reachability |
 | POST | `/api/files/{id}/move` | Rename / move |
 | DELETE | `/api/files/{id}` | Erase every part |

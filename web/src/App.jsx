@@ -195,14 +195,22 @@ export default function App() {
             mobile={mobile}
             onNavigate={setPath}
             onRefresh={refreshAll}
-            onPreview={setPreview}
+            onPreview={(file, hasThumb) => setPreview({ file, hasThumb })}
             onInspect={setInspecting}
             onError={setError}
           />
         </div>
       </div>
 
-      {preview && <PreviewModal file={preview} onClose={() => setPreview(null)} />}
+      {preview && (
+        <PreviewModal
+          file={preview.file}
+          hasThumb={preview.hasThumb}
+          onClose={() => setPreview(null)}
+          /* A file that had no picture in the list has one now. */
+          onThumbStored={() => refreshListing()}
+        />
+      )}
       {inspecting && <ShardInspector file={inspecting} onClose={() => setInspecting(null)} />}
     </Shell>
   )

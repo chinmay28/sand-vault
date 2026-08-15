@@ -78,6 +78,10 @@ type SearchResults struct {
 	// number returned when Truncated is set.
 	Matched   int  `json:"matched"`
 	Truncated bool `json:"truncated"`
+
+	// Thumbs names the hits that have a stored thumbnail, exactly as a listing
+	// does — a result row is the same row, and draws the same picture.
+	Thumbs []string `json:"thumbs"`
 }
 
 // Search finds files and folders whose name — or whose path, for a query that
@@ -127,6 +131,17 @@ func (v *Vault) Search(opts SearchOptions) (*SearchResults, error) {
 		results.Truncated = true
 	}
 	results.Hits = hits
+
+	matched := make([]*Entry, 0, len(hits))
+	for _, hit := range hits {
+		if hit.File != nil {
+			matched = append(matched, hit.File)
+		}
+	}
+	results.Thumbs = v.thumbIDsForLocked(matched)
+	if results.Thumbs == nil {
+		results.Thumbs = []string{}
+	}
 	return results, nil
 }
 
