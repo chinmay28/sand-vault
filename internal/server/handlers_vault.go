@@ -14,6 +14,21 @@ type vaultStatus struct {
 	Path        string       `json:"path"`
 	Policy      vault.Policy `json:"policy"`
 	Stats       *vault.Stats `json:"stats,omitempty"`
+
+	// WebDAV describes the mountable share, and is absent when the server was
+	// started without one. It is only told to an authenticated session: the
+	// path is not a secret — the share answers 401 there whoever asks — but
+	// there is no reason to help a stranger find a second door.
+	WebDAV *webdavStatus `json:"webdav,omitempty"`
+}
+
+// webdavStatus is what the browser needs to tell someone how to mount the
+// share. The address is deliberately not included: the browser already knows
+// which host it reached this server on, and that is the one that will work from
+// the machine doing the mounting — a name the server guessed for itself might
+// not resolve anywhere else.
+type webdavStatus struct {
+	Path string `json:"path"`
 }
 
 func (s *Server) handleVaultStatus(w http.ResponseWriter, r *http.Request) {
@@ -33,6 +48,9 @@ func (s *Server) handleVaultStatus(w http.ResponseWriter, r *http.Request) {
 		status.Unlocked = true
 		if stats, err := v.Stats(); err == nil {
 			status.Stats = &stats
+		}
+		if s.WebDAV {
+			status.WebDAV = &webdavStatus{Path: s.webdavPrefix() + "/"}
 		}
 	}
 

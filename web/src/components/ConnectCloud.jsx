@@ -1,7 +1,7 @@
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { COLORS, FONT, KIND_ICONS } from '../theme'
 import { api } from '../api'
-import { Banner, Button, Input, Modal, PasswordInput, Spinner } from './ui'
+import { Banner, Button, CopyField, Input, Modal, PasswordInput, Spinner } from './ui'
 import DirectoryPicker from './DirectoryPicker'
 
 /* Connecting an account, without leaving the app.
@@ -754,108 +754,5 @@ function Presets({ spec, onApply }) {
         }}>{chosen.help}</span>
       )}
     </div>
-  )
-}
-
-/* Put text on the clipboard from wherever the app happens to be running.
-
-   navigator.clipboard only exists on a secure origin, and SAND is normally
-   reached over plain HTTP at a LAN or tailnet address — so the async API is
-   the shortcut here, not the mechanism. */
-async function writeToClipboard(text) {
-  try {
-    // Throws outright when the API is missing, rejects when it is blocked.
-    await navigator.clipboard.writeText(text)
-    return true
-  } catch {
-    return execCommandCopy(text)
-  }
-}
-
-/* The pre-clipboard-API copy: deprecated, but the only one that works on
-   http://. The text goes into a throwaway node rather than the field itself so
-   the page keeps its own selection, focus and scroll position. */
-function execCommandCopy(text) {
-  const scratch = document.createElement('textarea')
-  scratch.value = text
-  // Read-only keeps iOS from opening a keyboard over the dialog, and is what
-  // makes a selection stick there at all.
-  scratch.setAttribute('readonly', '')
-  scratch.setAttribute('aria-hidden', 'true')
-  // Rendered but out of the way — display:none or visibility:hidden would
-  // leave nothing to select.
-  scratch.style.cssText =
-    'position:fixed;top:0;left:0;width:1px;height:1px;padding:0;border:0;opacity:0;'
-  document.body.appendChild(scratch)
-
-  const restore = document.activeElement
-  try {
-    scratch.focus()
-    scratch.select()
-    scratch.setSelectionRange(0, text.length)
-    return document.execCommand('copy')
-  } catch {
-    return false
-  } finally {
-    scratch.remove()
-    if (restore instanceof HTMLElement) restore.focus()
-  }
-}
-
-/* A read-only value with a copy button — the redirect URI has to be
-   transcribed exactly into someone else's console. */
-function CopyField({ label, value }) {
-  // 'manual' is the last resort: nothing could reach the clipboard, so the
-  // value is selected and the user is told to copy it themselves. A button
-  // that silently does nothing is the one outcome worth avoiding.
-  const [state, setState] = useState('idle')
-  const fieldId = useId()
-  const flashTimer = useRef(null)
-
-  useEffect(() => () => window.clearTimeout(flashTimer.current), [])
-
-  const flash = (next) => {
-    setState(next)
-    window.clearTimeout(flashTimer.current)
-    flashTimer.current = window.setTimeout(() => setState('idle'), 2400)
-  }
-
-  const copy = async () => {
-    if (await writeToClipboard(value)) {
-      flash('copied')
-      return
-    }
-    const field = document.getElementById(fieldId)
-    field?.focus()
-    try { field?.setSelectionRange(0, value.length) } catch { /* not selectable */ }
-    flash('manual')
-  }
-
-  return (
-    <Input
-      id={fieldId}
-      label={label}
-      value={value}
-      readOnly
-      help={state === 'manual'
-        ? 'This browser will not let the page copy for you — the address is selected, copy it by hand.'
-        : undefined}
-      onFocus={(e) => e.target.select()}
-      style={{ paddingRight: '62px', color: COLORS.textDim }}
-      trailing={
-        <button
-          type="button"
-          onClick={copy}
-          style={{
-            position: 'absolute', top: 0, bottom: 0, right: '4px',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            width: '54px', background: 'none', border: 'none',
-            color: state === 'copied' ? COLORS.success : COLORS.textMuted,
-            cursor: 'pointer', fontFamily: FONT.mono, fontSize: '10px',
-            letterSpacing: '1px', padding: 0,
-          }}
-        >{state === 'copied' ? 'COPIED' : 'COPY'}</button>
-      }
-    />
   )
 }

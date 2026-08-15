@@ -4,6 +4,7 @@ import { api } from '../api'
 import { Banner, Button, IconButton, Spinner } from './ui'
 import ConnectCloud, { pendingOAuthFlow } from './ConnectCloud'
 import ChangePassword from './ChangePassword'
+import MountDrive from './MountDrive'
 import { DefaultClouds, PARTS_PER_FILE } from './CloudSelect'
 import { DevMark } from './Brand'
 
@@ -12,12 +13,13 @@ import { DevMark } from './Brand'
    same panel becomes a drawer over the file browser — the file list is what you
    came for on a phone, and the accounts are a place you visit. */
 export default function AccountsPanel({
-  providers, loading, stats, mobile, open, onClose, onRefresh, onChanged,
+  providers, loading, stats, webdav, mobile, open, onClose, onRefresh, onChanged,
 }) {
   // A sign-in that took over the tab is still in flight when the app reloads:
   // reopen the dialog on it rather than making the user start again.
   const [connecting, setConnecting] = useState(() => Boolean(pendingOAuthFlow()))
   const [changingPassword, setChangingPassword] = useState(false)
+  const [mounting, setMounting] = useState(false)
   const [choosingDefaults, setChoosingDefaults] = useState(false)
   const [error, setError] = useState(null)
 
@@ -206,7 +208,18 @@ export default function AccountsPanel({
         {/* Vault-wide rather than account-wide, but this is where the vault's
             own state already lives, and the header has no room for it on a
             phone. */}
-        <div style={{ marginTop: '12px', display: 'flex' }}>
+        <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
+          {/* Absent unless the server was started with --webdav, because
+              telling someone to mount a share that is not being served is
+              worse than not mentioning it. */}
+          {webdav?.path && (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setMounting(true)}
+              style={{ padding: '4px 0' }}
+            >Mount as a drive</Button>
+          )}
           <Button
             size="sm"
             variant="ghost"
@@ -237,6 +250,10 @@ export default function AccountsPanel({
           onClose={() => setChoosingDefaults(false)}
           onChanged={onChanged}
         />
+      )}
+
+      {mounting && (
+        <MountDrive path={webdav?.path} onClose={() => setMounting(false)} />
       )}
 
       {changingPassword && (
