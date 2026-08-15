@@ -344,6 +344,20 @@ function AccountCard({ provider, isDefault, onRemove }) {
       borderRadius: '6px',
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+        {/* The stripe down the card's edge says the same thing, but it is easy
+            to read as decoration. This is the part badge's own shape and
+            colour, sitting next to the account's name — the two halves of the
+            match, spelled out. */}
+        <span
+          title="Parts stored here carry this colour in the file list"
+          style={{
+            width: '14px',
+            height: '14px',
+            flexShrink: 0,
+            borderRadius: '3px',
+            background: color,
+          }}
+        />
         <span style={{ fontSize: '13px' }}>{KIND_ICONS[provider.kind] || '☁'}</span>
         <span style={{
           flex: 1,

@@ -353,6 +353,33 @@ class TestUploadAndPreview:
         row = app.locator('button[title="Where the parts live"]').first
         assert row.count() > 0
 
+    def test_each_account_wears_a_colour_of_its_own(self, app, tmp_path):
+        """A part badge and the sidebar card for the account holding that part
+        are the same colour, and no two accounts share one — which is the whole
+        of how a row says which three clouds a file went to."""
+        source = tmp_path / "colours.txt"
+        source.write_text("which cloud holds which part")
+
+        upload_and_settle(app, source, choose=["ui-one", "ui-two", "ui-three"])
+
+        row = app.locator('button[title="Open"]', has_text="colours.txt").locator("xpath=..")
+        background = "el => getComputedStyle(el).backgroundColor"
+        colours = {}
+
+        for name in ("ui-one", "ui-two", "ui-three"):
+            # The swatch is the only titled span before the account's name on
+            # its card; the kind icon beside it carries no title.
+            swatch = app.get_by_text(name, exact=True).first.locator(
+                "xpath=preceding-sibling::span[@title]"
+            )
+            colours[name] = swatch.evaluate(background)
+
+            badge = row.get_by_title(re.compile(rf"Part \d on {name}$"))
+            assert badge.count() == 1
+            assert badge.evaluate(background) == colours[name]
+
+        assert len(set(colours.values())) == 3
+
     def test_shard_inspector_names_the_accounts(self, app, tmp_path):
         source = tmp_path / "inspect.txt"
         source.write_text("where does this live")

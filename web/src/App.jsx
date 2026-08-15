@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react'
-import { COLORS, FONT } from './theme'
+import { COLORS, FONT, assignAccountColors } from './theme'
 import { useIsMobile } from './hooks'
 import { api } from './api'
 import LockScreen from './components/LockScreen'
@@ -26,6 +26,11 @@ export default function App() {
 
   const mobile = useIsMobile()
   const unlocked = !!status?.unlocked
+
+  // Which account owns which colour can only be decided against the whole list,
+  // and every pane below reads the answer back by id — so settle it here, in
+  // the render that owns the list, before any of them draw a badge.
+  assignAccountColors(providers)
 
   // On a phone the accounts panel is a drawer over the browser; once there is
   // room for both panes again it is simply always there, so drop the flag.
