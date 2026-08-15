@@ -183,6 +183,7 @@ export default function App() {
             providers={providers}
             loading={loadingProviders}
             stats={status.stats}
+            webdav={status.webdav}
             mobile={mobile}
             open={accountsOpen}
             onClose={() => setAccountsOpen(false)}
