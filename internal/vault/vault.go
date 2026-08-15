@@ -49,6 +49,17 @@ type Vault struct {
 	liveMu sync.Mutex
 	live   map[string]provider.Provider
 
+	// thumbMu guards the decrypted thumbnails held in memory, by folder and
+	// then by file. Another leaf lock: nothing is acquired while it is held,
+	// which is what lets Lock clear the cache while holding mu.
+	thumbMu sync.Mutex
+	thumbs  map[string]map[string][]byte
+
+	// thumbLoad serializes gathering thumbnail packs from the accounts, so
+	// that a folder whose every row wants a picture fetches its pack once
+	// rather than once per row. It is taken before mu, never while holding it.
+	thumbLoad sync.Mutex
+
 	// backupMu guards the manifest backup syncer's state. Also a leaf lock:
 	// scheduling a push happens while mu is held, and the push itself runs on
 	// its own goroutine after mu is released.
@@ -269,6 +280,10 @@ func (v *Vault) Lock() {
 	v.retired = nil
 	v.providers = nil
 	v.manifest = nil
+
+	// Thumbnails are decrypted pictures of the user's files, so they go the
+	// same way the keys do.
+	v.forgetAllThumbs()
 
 	v.liveMu.Lock()
 	v.live = map[string]provider.Provider{}
@@ -735,6 +750,11 @@ type Listing struct {
 	Parent  string   `json:"parent"`
 	Folders []string `json:"folders"`
 	Files   []*Entry `json:"files"`
+
+	// Thumbs names the files in this listing that have a stored thumbnail, so
+	// the browser knows which rows to draw a picture for without asking for
+	// one it will not get.
+	Thumbs []string `json:"thumbs"`
 }
 
 // List returns the contents of a folder.
@@ -763,11 +783,17 @@ func (v *Vault) List(dir string) (*Listing, error) {
 		}
 	}
 
+	thumbs := v.thumbIDsForLocked(files)
+	if thumbs == nil {
+		thumbs = []string{}
+	}
+
 	return &Listing{
 		Path:    dir,
 		Parent:  parent,
 		Folders: folders,
 		Files:   append([]*Entry{}, files...),
+		Thumbs:  thumbs,
 	}, nil
 }
 
@@ -801,22 +827,30 @@ func (v *Vault) Mkdir(dir string) error {
 
 // Move renames a file and/or moves it to another folder. Only the index
 // changes: the encrypted parts stay exactly where they are.
-func (v *Vault) Move(id, newDir, newName string) (*Entry, error) {
+//
+// The thumbnail is the exception, because thumbnails are stored a folder at a
+// time: moving a file across folders moves its picture between two packs,
+// which is network work and so happens after the move itself has landed.
+func (v *Vault) Move(ctx context.Context, id, newDir, newName string) (*Entry, error) {
 	v.mu.Lock()
-	defer v.mu.Unlock()
+
 	if v.dataKey == nil {
+		v.mu.Unlock()
 		return nil, ErrLocked
 	}
 
 	e := v.manifest.ByID(id)
 	if e == nil {
+		v.mu.Unlock()
 		return nil, fmt.Errorf("no such file: %s", id)
 	}
+	from := e.Dir
 
 	dir := e.Dir
 	if newDir != "" {
 		dir = CleanDir(newDir)
 		if !v.manifest.FolderExists(dir) {
+			v.mu.Unlock()
 			return nil, fmt.Errorf("no such folder: %s", dir)
 		}
 	}
@@ -824,14 +858,17 @@ func (v *Vault) Move(id, newDir, newName string) (*Entry, error) {
 	if newName != "" {
 		clean, err := SanitizeName(newName)
 		if err != nil {
+			v.mu.Unlock()
 			return nil, err
 		}
 		name = clean
 	}
 	if dir == e.Dir && name == e.Name {
+		v.mu.Unlock()
 		return e, nil
 	}
 	if existing := v.manifest.ByPath(JoinPath(dir, name)); existing != nil {
+		v.mu.Unlock()
 		return nil, fmt.Errorf("%s already exists", JoinPath(dir, name))
 	}
 
@@ -839,9 +876,14 @@ func (v *Vault) Move(id, newDir, newName string) (*Entry, error) {
 	e.Name = name
 	e.ModifiedAt = time.Now().UTC()
 
-	if err := v.persistLocked(); err != nil {
+	err := v.persistLocked()
+	v.mu.Unlock()
+
+	if err != nil {
 		return nil, err
 	}
+
+	v.moveThumb(ctx, id, from, dir)
 	return e, nil
 }
 

@@ -209,6 +209,46 @@ its contents, and only to a session that has unlocked the vault — a session
 that could already point an account at any folder on the machine by typing its
 path.
 
+### A folder of photos looks like one
+
+The list used to show the same `🖼` against every picture, so a folder of
+photos was a column of identical icons and a filename you had to read. Images
+and PDFs now carry a thumbnail: the picture itself, and for a PDF the first
+page, which is how anyone recognizes a document long before they read its name.
+
+The obvious way to do this would be ruinous. There is nothing small to fetch —
+drawing one row would mean gathering two parts of a 4 MB photo from two
+accounts and rebuilding the whole file, for a 52-pixel square. So the picture
+is made **once, when the file is uploaded**, and stored like everything else:
+compressed, split into three encrypted parts under the vault's data key, and
+scattered across the same accounts by the same placement rules.
+
+They are stored a folder at a time rather than a file at a time, and the reason
+is Argon2id. Sealing an archive derives a key once — 64 MB, three iterations —
+whatever the archive weighs, so a 9 KB thumbnail would cost exactly as much as
+a 4 GB video, on every write and every read. One pack per folder pays that once
+for the whole listing: opening a folder gathers a few hundred kilobytes, and
+every row draws from it.
+
+The pictures are made in the browser, because that is the only place they can
+be made at all. A static Go binary cannot rasterize a PDF page without a C
+library, cannot decode the HEIC most phone photos arrive as, and would ignore
+the EXIF orientation that leaves a third of them on their side. A tab can do
+all three. What it sends is decoded and re-encoded server-side before it is
+stored, so a thumbnail is always the vault's own JPEG at a known size rather
+than whatever bytes a caller supplied.
+
+Nothing about them is precious. A thumbnail is derived from a file that is
+still stored, so anything that goes wrong ends at the icon the list has always
+shown: a format that cannot be decoded, an account that has gone quiet, a file
+uploaded before this existed. Deleting a file drops its picture, moving one
+carries it, and changing your password erases them rather than paying to
+re-encrypt them — they come back as files are opened.
+
+Opening a picture that has no thumbnail stores one on the way past. The file
+has just been rebuilt and decoded on screen, so taking a copy of it costs a
+canvas and nothing else.
+
 ### The vault
 
 A single encrypted file (`~/.sand/vault.sand`, or `/var/lib/sand/vault.sand`

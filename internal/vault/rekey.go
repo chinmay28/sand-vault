@@ -69,6 +69,13 @@ type ProgressFunc func(path string, done, total int)
 // unlocked under the new password when this returns, whether or not it was
 // unlocked before.
 func (v *Vault) ChangePassword(ctx context.Context, oldPassword, newPassword string, migrate bool) (*MigrationReport, error) {
+	// Thumbnails are sealed under the key being retired. They are derived from
+	// files that are still stored, so they are erased here rather than
+	// migrated: making one again costs a resize, and re-encrypting one costs
+	// the same gather-and-scatter a real file does. Erasing them first means
+	// it happens while the old key is still the vault's own.
+	v.dropAllThumbs(ctx)
+
 	if err := v.rotate(oldPassword, newPassword); err != nil {
 		return nil, err
 	}
@@ -120,6 +127,13 @@ func (v *Vault) rotate(oldPassword, newPassword string) error {
 		return err
 	}
 	newVaultKey := crypto.DeriveKey(newPassword, salt, params)
+
+	// Any thumbnail pack ChangePassword did not manage to erase — the vault was
+	// locked, or an account was unreachable — is dropped from the index here.
+	// Its parts are sealed under a key that is about to be retired with nothing
+	// pointing at it, so keeping the pointer would only promise a picture that
+	// can no longer be drawn.
+	current.manifest.Thumbs = nil
 
 	// The keys the stored files are on have to survive the change, or the
 	// files become unreadable the moment the password is typed. Only the

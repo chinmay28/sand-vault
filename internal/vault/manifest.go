@@ -64,8 +64,14 @@ func (e *Entry) Providers() []string {
 // created explicitly. It is serialized as JSON and only ever written to disk
 // encrypted, because filenames and folder structure are themselves sensitive.
 type Manifest struct {
-	Entries   []*Entry  `json:"entries"`
-	Folders   []string  `json:"folders"`
+	Entries []*Entry `json:"entries"`
+	Folders []string `json:"folders"`
+
+	// Thumbs points at the stored thumbnails, one pack per folder. It lives
+	// here because it is exactly as sensitive as the rest of the index: which
+	// files have a picture, and which folder they are in.
+	Thumbs map[string]*ThumbPack `json:"thumbs,omitempty"`
+
 	UpdatedAt time.Time `json:"updated_at"`
 }
 

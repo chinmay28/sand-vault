@@ -373,7 +373,7 @@ func TestMoveRenamesWithoutTouchingShards(t *testing.T) {
 	}
 	before := append([]Shard(nil), entry.Shards...)
 
-	moved, err := v.Move(entry.ID, "/archive", "renamed.txt")
+	moved, err := v.Move(context.Background(), entry.ID, "/archive", "renamed.txt")
 	if err != nil {
 		t.Fatalf("Move: %v", err)
 	}

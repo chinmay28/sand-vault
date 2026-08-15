@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chinmay28/sand-vault/internal/thumb"
 	"github.com/chinmay28/sand-vault/internal/vault"
 )
 
@@ -127,7 +128,7 @@ func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 	results := make([]uploadResult, 0, len(uploads))
 	stored := 0
 
-	for _, fh := range uploads {
+	for i, fh := range uploads {
 		result := uploadResult{Name: fh.Filename}
 
 		f, err := fh.Open()
@@ -157,6 +158,18 @@ func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 
 		result.OK = true
 		result.File = entry
+
+		// The picture the browser made of this file, if it made one. A
+		// thumbnail that will not store is a warning and nothing more: the
+		// file itself is already scattered, and the list falls back to the
+		// icon it has always shown.
+		if thumb := formThumb(r, i); len(thumb) > 0 {
+			if err := storeThumb(ctx, v, entry.ID, thumb); err != nil {
+				result.Warnings = append(result.Warnings,
+					fmt.Sprintf("stored the file but not its preview image: %v", err))
+			}
+		}
+
 		results = append(results, result)
 		stored++
 	}
@@ -187,6 +200,100 @@ func formAccounts(r *http.Request) []string {
 	return out
 }
 
+// formThumb reads the preview image the browser generated for the nth file of
+// an upload. The field is named for the file's position because that is the
+// only thing in a multi-file upload that is unique — two files dropped
+// together can share a name, and only some of them will have a picture.
+func formThumb(r *http.Request, index int) []byte {
+	files := r.MultipartForm.File[fmt.Sprintf("thumb-%d", index)]
+	if len(files) == 0 {
+		return nil
+	}
+	if files[0].Size > thumb.MaxInputBytes {
+		return nil
+	}
+
+	f, err := files[0].Open()
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	data, err := io.ReadAll(io.LimitReader(f, thumb.MaxInputBytes))
+	if err != nil {
+		return nil
+	}
+	return data
+}
+
+// storeThumb normalizes an incoming preview image and stores it against a
+// file. Everything that reaches the vault goes through here, so a thumbnail is
+// always the vault's own JPEG at a known size rather than whatever bytes a
+// caller supplied.
+func storeThumb(ctx context.Context, v *vault.Vault, id string, data []byte) error {
+	normalized, err := thumb.Normalize(data)
+	if err != nil {
+		return err
+	}
+	return v.SetThumb(ctx, id, normalized)
+}
+
+// handleFileThumb serves a file's stored thumbnail. The first row of a folder
+// to ask for one gathers that folder's whole pack; every other row is answered
+// from memory.
+func (s *Server) handleFileThumb(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := contextWithTimeout(r, 2*time.Minute)
+	defer cancel()
+
+	v, _ := s.Vault()
+	data, err := v.Thumb(ctx, r.PathValue("id"))
+	if err != nil {
+		if errors.Is(err, vault.ErrNoThumb) {
+			writeError(w, http.StatusNotFound, err.Error(), "NO_THUMBNAIL")
+			return
+		}
+		vaultErrorResponse(w, err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "image/jpeg")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
+	// A thumbnail is a picture of a stored file, so it is treated as the file
+	// content is: never held by a shared cache, and gone when the vault locks.
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.WriteHeader(http.StatusOK)
+	w.Write(data)
+}
+
+// handleFileThumbSet stores a thumbnail for a file that has none — a file
+// uploaded before thumbnails existed, or from the command line, whose picture
+// the browser made the first time someone opened it.
+func (s *Server) handleFileThumbSet(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, thumb.MaxInputBytes)
+
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "could not read the image", "BAD_REQUEST")
+		return
+	}
+
+	ctx, cancel := contextWithTimeout(r, 5*time.Minute)
+	defer cancel()
+
+	v, _ := s.Vault()
+	if err := storeThumb(ctx, v, r.PathValue("id"), data); err != nil {
+		if errors.Is(err, vault.ErrLocked) {
+			vaultErrorResponse(w, err)
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error(), "BAD_THUMBNAIL")
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]string{"status": "stored"})
+}
+
 func (s *Server) handleFileDelete(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := contextWithTimeout(r, 5*time.Minute)
 	defer cancel()
@@ -213,7 +320,10 @@ func (s *Server) handleFileMove(w http.ResponseWriter, r *http.Request) {
 	}
 
 	v, _ := s.Vault()
-	entry, err := v.Move(r.PathValue("id"), req.Dir, req.Name)
+	ctx, cancel := contextWithTimeout(r, 5*time.Minute)
+	defer cancel()
+
+	entry, err := v.Move(ctx, r.PathValue("id"), req.Dir, req.Name)
 	if err != nil {
 		vaultErrorResponse(w, err)
 		return

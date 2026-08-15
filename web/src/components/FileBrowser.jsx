@@ -4,6 +4,7 @@ import { api, joinPath } from '../api'
 import { useDownload } from '../download'
 import { ActionSheet, Banner, Button, ConfirmDialog, Empty, IconButton, Modal, Spinner } from './ui'
 import { UploadDestination } from './CloudSelect'
+import { makeThumbnail } from '../thumbs'
 
 /* Name, size, modified, parts, actions. The four fixed columns come to nearly
    500px, which is why the phone layout stacks instead of shrinking them. */
@@ -92,8 +93,15 @@ export default function FileBrowser({
     setUploads((prev) => [...prev, batch])
 
     try {
+      /* Made here, before anything is sent, because this is the only place the
+         plaintext file exists in a browser. Each one resolves to null rather
+         than throwing, so a format we cannot draw never holds up its upload. */
+      const thumbs = await Promise.all(
+        [...files].map((file) => makeThumbnail(file, file.type, file.name)))
+
       const resp = await api.upload(files, path, {
         accounts,
+        thumbs,
         onProgress: (fraction) => setUploads((prev) =>
           prev.map((u) => (u.id === batch.id ? { ...u, progress: fraction } : u))),
       })
@@ -386,6 +394,7 @@ function SearchResults({
   }
 
   const hits = results.hits || []
+  const thumbs = new Set(results.thumbs || [])
   const scopeNote = path !== '/' && (
     <button
       onClick={() => onScopeChange(!scoped)}
@@ -447,7 +456,8 @@ function SearchResults({
               file={hit.file}
               location={hit.dir}
               mobile={mobile}
-              onPreview={() => onPreview(hit.file)}
+              hasThumb={thumbs.has(hit.file.id)}
+              onPreview={() => onPreview(hit.file, thumbs.has(hit.file.id))}
               onInspect={() => onInspect(hit.file)}
               onRefresh={onRefresh}
               onError={onError}
@@ -485,6 +495,9 @@ function Crumb({ label, mobile, onClick, active }) {
 function FileTable({ path, listing, canUpload, mobile, onNavigate, onPreview, onInspect, onRefresh, onError, onPickFiles }) {
   const folders = listing?.folders || []
   const files = listing?.files || []
+  // Which rows have a stored picture. The listing says so outright, so no row
+  // asks for a thumbnail that was never made.
+  const thumbs = new Set(listing?.thumbs || [])
 
   if (!folders.length && !files.length) {
     return (
@@ -548,7 +561,8 @@ function FileTable({ path, listing, canUpload, mobile, onNavigate, onPreview, on
           key={file.id}
           file={file}
           mobile={mobile}
-          onPreview={() => onPreview(file)}
+          hasThumb={thumbs.has(file.id)}
+          onPreview={() => onPreview(file, thumbs.has(file.id))}
           onInspect={() => onInspect(file)}
           onRefresh={onRefresh}
           onError={onError}
@@ -581,6 +595,49 @@ function Row({ children, mobile }) {
         minHeight: mobile ? '64px' : '38px',
       }}
     >{children}</div>
+  )
+}
+
+/* The picture in front of a file's name. It is a stored thumbnail — a small
+   JPEG the vault keeps a folder at a time — so drawing one costs nothing like
+   rebuilding the file it came from.
+
+   `size` is the edge in pixels: 52 on a phone, where the row is a stack and
+   the tile is the left column of it, and 26 on a desktop, where it stands in
+   for the emoji inside the Name column without changing the row's height.
+
+   It falls back to that same emoji, and does so on any failure — a file
+   uploaded before thumbnails existed, an account that has gone quiet, a pack
+   that could not be read. The list has always been readable without pictures. */
+function Thumb({ id, icon, size, expected }) {
+  const [failed, setFailed] = useState(false)
+
+  // A new file in the same row position must not inherit the old one's state.
+  useEffect(() => { setFailed(false) }, [id])
+
+  if (!expected || failed) {
+    return <span style={{ flexShrink: 0, fontSize: size >= 40 ? '26px' : '15px' }}>{icon}</span>
+  }
+
+  return (
+    <img
+      src={api.thumbURL(id)}
+      alt=""
+      width={size}
+      height={size}
+      loading="lazy"
+      decoding="async"
+      onError={() => setFailed(true)}
+      style={{
+        width: `${size}px`,
+        height: `${size}px`,
+        flexShrink: 0,
+        objectFit: 'cover',
+        borderRadius: size >= 40 ? '6px' : '4px',
+        background: COLORS.surfaceRaised,
+        border: `1px solid ${COLORS.border}`,
+      }}
+    />
   )
 }
 
@@ -630,7 +687,7 @@ function NameButton({ mobile, icon, label, location, chevron, disabled, title, o
   )
 }
 
-function FileRow({ file, location, mobile, onPreview, onInspect, onRefresh, onError }) {
+function FileRow({ file, location, mobile, hasThumb, onPreview, onInspect, onRefresh, onError }) {
   const [busy, setBusy] = useState(false)
   const [download, downloading] = useDownload(onError)
   const [menu, setMenu] = useState(false)
@@ -653,14 +710,19 @@ function FileRow({ file, location, mobile, onPreview, onInspect, onRefresh, onEr
     }
   }
 
+  const icon = fileIcon(file.mime, file.name)
+  const openTitle = dead ? 'Too few parts remain to rebuild this file' : 'Open'
+
   const name = (
     <NameButton
       mobile={mobile}
-      icon={fileIcon(file.mime, file.name)}
+      /* On a desktop the picture stands exactly where the emoji did, so the
+         Name column keeps its width and the row its height. */
+      icon={<Thumb id={file.id} icon={icon} size={26} expected={hasThumb} />}
       label={file.name}
       location={location}
       disabled={dead}
-      title={dead ? 'Too few parts remain to rebuild this file' : 'Open'}
+      title={openTitle}
       onClick={onPreview}
     />
   )
@@ -679,8 +741,12 @@ function FileRow({ file, location, mobile, onPreview, onInspect, onRefresh, onEr
             key={part}
             title={shard ? `Part ${part} on ${shard.provider_name}` : `Part ${part} not stored`}
             style={{
-              width: mobile ? '22px' : '19px',
-              height: mobile ? '17px' : '15px',
+              /* The badges share the phone's second line with the size and
+                 the date now that the picture has taken the left column, so
+                 they are the desktop's width there too — that is the
+                 difference between reading the date and truncating it. */
+              width: '19px',
+              height: mobile ? '16px' : '15px',
               borderRadius: '3px',
               fontFamily: FONT.mono,
               fontSize: mobile ? '9.5px' : '8.5px',
@@ -814,26 +880,64 @@ function FileRow({ file, location, mobile, onPreview, onInspect, onRefresh, onEr
   )
 
   if (mobile) {
+    /* The picture is the row's left column and the two lines of text sit
+       beside it, rather than the name being indented over a line of detail.
+       Six pixels taller than the row it replaces, and the tile is inside the
+       same tap target as the name — pointing at the photo is how anyone would
+       expect to open it. */
     return (
       <Row mobile>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          {name}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <button
+            onClick={onPreview}
+            disabled={dead}
+            title={openTitle}
+            style={{
+              display: 'flex', alignItems: 'center', gap: '10px',
+              flex: 1, minWidth: 0, minHeight: '52px',
+              background: 'none', border: 'none', padding: '0 2px',
+              borderRadius: '8px', textAlign: 'left',
+              cursor: dead ? 'not-allowed' : 'pointer',
+            }}
+          >
+            <Thumb id={file.id} icon={icon} size={52} expected={hasThumb} />
+
+            <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '3px' }}>
+              <span style={{
+                fontFamily: FONT.mono, fontSize: '13.5px',
+                color: dead ? COLORS.error : COLORS.text,
+                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              }}>{file.name}</span>
+
+              {/* Size, date and the part badges share the second line — the
+                  columns they came from are gone, so they carry their own
+                  separators. */}
+              {/* This line carries the part badges as well as the size and the
+                  date, and on a 390px screen it has 224px to do it in. Hence
+                  no "·" separator, unlike everywhere else, and hence the
+                  badges are pushed right with a margin rather than a spacer
+                  element — a spacer would cost a flex gap of its own, which is
+                  the difference between reading the time and truncating it. */}
+              <span style={{
+                display: 'flex', alignItems: 'center', gap: '6px',
+                fontFamily: FONT.mono, fontSize: '11px', color: COLORS.textMuted,
+              }}>
+                <span style={{ whiteSpace: 'nowrap', flexShrink: 0 }}>{formatBytes(file.size)}</span>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {formatDate(file.modified_at)}
+                </span>
+                {location && (
+                  <span
+                    title={location}
+                    style={{ minWidth: 0, flexShrink: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                  >in {location}</span>
+                )}
+                <span style={{ marginLeft: 'auto', display: 'flex', flexShrink: 0 }}>{parts}</span>
+              </span>
+            </span>
+          </button>
+
           {actions}
-        </div>
-        {/* Size, date and the part badges share the second line — the columns
-            they came from are gone, so they carry their own separators. The
-            line is indented to sit under the name, clear of the icon. */}
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: '8px',
-          paddingLeft: '23px', fontSize: '11px', color: COLORS.textMuted,
-        }}>
-          <span style={{ whiteSpace: 'nowrap' }}>{formatBytes(file.size)}</span>
-          <span>·</span>
-          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {formatDate(file.modified_at)}
-          </span>
-          <span style={{ flex: 1 }} />
-          {parts}
         </div>
         {dialogs}
       </Row>

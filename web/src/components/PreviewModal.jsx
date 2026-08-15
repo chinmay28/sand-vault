@@ -1,8 +1,9 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { COLORS, FONT, formatBytes, previewKind } from '../theme'
 import { useIsMobile } from '../hooks'
 import { api } from '../api'
 import { useDownload } from '../download'
+import { thumbnailFromElement } from '../thumbs'
 import { Banner, Button, Modal, Spinner } from './ui'
 
 /* How much of the visible viewport a preview may take before the modal's own
@@ -12,10 +13,11 @@ const PREVIEW_MAX = 'calc(var(--app-height) * 0.62)'
 /* Opening a file here is the whole point of the design: the server gathers two
    of its three parts from separate accounts, rebuilds the plaintext in memory
    and streams it back. Nothing decrypted is ever written to disk. */
-export default function PreviewModal({ file, onClose }) {
+export default function PreviewModal({ file, hasThumb, onClose, onThumbStored }) {
   const kind = previewKind(file.mime, file.name)
   const url = api.contentURL(file.id)
   const mobile = useIsMobile()
+  const captured = useRef(false)
 
   const [text, setText] = useState(null)
   const [error, setError] = useState(null)
@@ -43,6 +45,25 @@ export default function PreviewModal({ file, onClose }) {
     return () => { cancelled = true }
   }, [url, kind])
 
+  /* A file uploaded before thumbnails existed — or from the command line —
+     has no picture in the list. Opening it has just rebuilt and decoded the
+     whole thing on screen, so taking one now costs nothing but a canvas: no
+     second download, no second gather from the accounts. */
+  const captureThumb = async (el) => {
+    if (hasThumb || captured.current) return
+    captured.current = true
+
+    const blob = await thumbnailFromElement(el)
+    if (!blob) return
+    try {
+      await api.putThumb(file.id, blob)
+      onThumbStored?.()
+    } catch {
+      // The preview is what was asked for and it is on screen. Failing to
+      // keep a copy of it is not worth interrupting anyone over.
+    }
+  }
+
   return (
     <Modal
       title={file.name}
@@ -68,6 +89,7 @@ export default function PreviewModal({ file, onClose }) {
             src={url}
             alt={file.name}
             style={{ maxWidth: '100%', maxHeight: PREVIEW_MAX, display: 'block' }}
+            onLoad={(e) => captureThumb(e.currentTarget)}
             onError={() => setError('This file could not be rebuilt or is not a readable image.')}
           />
         )}

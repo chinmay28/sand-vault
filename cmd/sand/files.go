@@ -374,7 +374,7 @@ encrypted parts stay exactly where they are on your cloud accounts.`,
 				dir, name = vault.CleanDir(args[1]), entry.Name
 			}
 
-			moved, err := v.Move(entry.ID, dir, name)
+			moved, err := v.Move(context.Background(), entry.ID, dir, name)
 			if err != nil {
 				return err
 			}
