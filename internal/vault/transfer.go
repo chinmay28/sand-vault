@@ -9,12 +9,10 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/chinmay28/sand-vault/internal/archive"
 	"github.com/chinmay28/sand-vault/internal/crypto"
 	"github.com/chinmay28/sand-vault/internal/provider"
-	"github.com/google/uuid"
 )
 
 // UploadOptions is everything about an upload except the bytes themselves.
@@ -65,73 +63,7 @@ func (v *Vault) Upload(ctx context.Context, dir, name string, data []byte, opts 
 	if err != nil {
 		return nil, placed.warnings, err
 	}
-	shards, warnings := placed.shards, placed.warnings
-
-	now := time.Now().UTC()
-	entry := &Entry{
-		ID:         uuid.NewString(),
-		Dir:        dir,
-		Name:       name,
-		Size:       int64(len(data)),
-		Hash:       hex.EncodeToString(placed.originalHash[:]),
-		MIME:       DetectMIME(name, data),
-		ArchiveID:  placed.archiveID,
-		KeyID:      placed.keyID,
-		CreatedAt:  now,
-		ModifiedAt: now,
-		Shards:     shards,
-		ChunkSize:  placed.chunkSize,
-		ChunkCount: placed.chunkCount,
-	}
-
-	v.mu.Lock()
-	if v.dataKey == nil {
-		v.mu.Unlock()
-		v.deleteEntryShards(context.WithoutCancel(ctx), entry)
-		return nil, warnings, ErrLocked
-	}
-
-	var replaced *Entry
-	if existing := v.manifest.ByPath(JoinPath(dir, name)); existing != nil {
-		if opts.Overwrite {
-			replaced = existing
-			v.manifest.remove(existing.ID)
-		} else {
-			entry.Name = v.manifest.uniqueName(dir, name)
-		}
-	}
-
-	v.manifest.add(entry)
-	err = v.persistLocked()
-	if err != nil {
-		v.manifest.remove(entry.ID)
-		if replaced != nil {
-			v.manifest.add(replaced)
-		}
-	}
-	v.mu.Unlock()
-
-	if err != nil {
-		v.deleteEntryShards(context.WithoutCancel(ctx), entry)
-		return nil, warnings, err
-	}
-
-	// The replaced version's parts are now unreferenced; clean them up on a
-	// best-effort basis so a failure here does not fail the upload.
-	if replaced != nil {
-		v.deleteEntryShards(context.WithoutCancel(ctx), replaced)
-		// Its thumbnail showed the old contents and is keyed by an ID nothing
-		// points at any more.
-		v.removeThumbs(context.WithoutCancel(ctx), dir, replaced.ID)
-	}
-
-	if len(shards) < archive.PartCount {
-		warnings = append(warnings, fmt.Sprintf(
-			"stored %d of %d parts — the file is recoverable but has no spare copy",
-			len(shards), archive.PartCount))
-	}
-
-	return entry, warnings, nil
+	return v.commitUpload(ctx, dir, name, int64(len(data)), DetectMIME(name, data), placed, opts)
 }
 
 // resolveAccounts turns an explicit account selection into the list of IDs to
@@ -399,6 +331,9 @@ func (v *Vault) Fetch(ctx context.Context, id string) ([]byte, *Entry, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	// Served first, converted after: a read must not wait on a scatter, take
+	// the write lock, or push a manifest backup to every account. See rechunk.go.
+	v.queueRechunk(snapshot.ID)
 	return data, entry, nil
 }
 

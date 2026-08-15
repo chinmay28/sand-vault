@@ -78,7 +78,7 @@ func TestChunkedRoundTrip(t *testing.T) {
 }
 
 // Any two of the three parts rebuild a chunk, the same guarantee the whole-file
-// format gives — §4.3's truth table, now per chunk.
+// format gives — §4.4's truth table, now per chunk.
 func TestChunkedAnyTwoParts(t *testing.T) {
 	data := make([]byte, 3000)
 	if _, err := rand.Read(data); err != nil {

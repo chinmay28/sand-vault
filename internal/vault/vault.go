@@ -44,6 +44,12 @@ type Vault struct {
 	providers []provider.Config
 	manifest  *Manifest
 
+	// chunks caches decrypted chunks for readers, and flight collapses
+	// concurrent misses on the same chunk into one fetch. Both are leaf
+	// structures with their own locks, never taken while mu is held.
+	chunks *chunkCache
+	flight *chunkFlight
+
 	// chunkSize is the plaintext chunk length new uploads are cut into. It is
 	// per-vault rather than a constant because every file records the size it
 	// was written with, so changing it never invalidates what is already
@@ -84,6 +90,10 @@ type Vault struct {
 	// backupWarned remembers the accounts already reported as holding another
 	// vault's backup, so the warning is said once rather than on every change.
 	backupWarned map[string]bool
+
+	// rechunkState is the background converter that moves files stored whole
+	// onto the chunked format after they are read. See rechunk.go.
+	rechunkState
 }
 
 // Open returns a handle to the vault at path. The vault starts locked; if no
@@ -93,8 +103,11 @@ func Open(path string) (*Vault, error) {
 		path:      path,
 		live:      map[string]provider.Provider{},
 		chunkSize: archive.DefaultChunkSize,
+		chunks:    newChunkCache(DefaultChunkCacheBytes),
+		flight:    newChunkFlight(),
 	}
 	v.backupIdle.L = &v.backupMu
+	v.rechunkIdle.L = &v.rechunkMu
 
 	sf, err := readStore(path)
 	if err != nil && !errors.Is(err, ErrNotInitialized) {
@@ -293,8 +306,11 @@ func (v *Vault) Lock() {
 	v.manifest = nil
 
 	// Thumbnails are decrypted pictures of the user's files, so they go the
-	// same way the keys do.
+	// same way the keys do — and so do cached chunks, which are plaintext of
+	// the files themselves.
 	v.forgetAllThumbs()
+	v.chunks.clear()
+	v.forgetRechunkQueue()
 
 	v.liveMu.Lock()
 	v.live = map[string]provider.Provider{}
