@@ -154,3 +154,16 @@ func BuildPlan(providerIDs []string, policy Policy, seed uint64) (Plan, error) {
 func ShardKey(archiveID string, part int) string {
 	return fmt.Sprintf("%s-p%d.sand", archiveID, part)
 }
+
+// ChunkShardKey is the object key one part of one chunk is stored under. It is
+// ShardKey with the chunk index spliced in, zero-padded so that listing an
+// account lexically returns a file's chunks in order — which is what the
+// recovery path in §3.7 walks when it asks an account what it holds.
+//
+// The index is visible on the account, and that gives away no more than the
+// flat form already did. A file's objects were always groupable by their shared
+// archive ID, and its size was always readable from the part sizes; a chunk
+// count is the same fact arrived at by counting instead of adding.
+func ChunkShardKey(archiveID string, chunkIndex, part int) string {
+	return fmt.Sprintf("%s-c%07d-p%d.sand", archiveID, chunkIndex, part)
+}

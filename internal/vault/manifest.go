@@ -11,6 +11,15 @@ import (
 )
 
 // Shard records where one encrypted part of a file was placed.
+//
+// A chunked entry (see Entry.Chunked) places every chunk's matching part on the
+// same account, so one Shard still describes one part of one file — Key names
+// the object of chunk zero, the rest follow from ChunkShardKey, and Size is the
+// total this part occupies across every chunk. Keeping placement per file
+// rather than per chunk is what stops a large file adding thousands of records
+// to the index, and it keeps the guarantees in §5 exactly as they were: the
+// question of which accounts may hold a file is still answered once, for the
+// file.
 type Shard struct {
 	Part         int    `json:"part"` // 1, 2 or 3
 	ProviderID   string `json:"provider_id"`
@@ -38,6 +47,33 @@ type Entry struct {
 	// still re-encrypting; the empty string is the generation of a vault
 	// written before keys could be rotated.
 	KeyID string `json:"key_id,omitempty"`
+
+	// ChunkSize and ChunkCount describe a file stored in the chunked format,
+	// where each chunk is sealed on its own and can be opened without the rest.
+	// Both are absent on a file stored whole, which is every file written before
+	// the format existed — Chunked is the predicate to ask rather than either
+	// field on its own.
+	//
+	// ChunkSize is the plaintext length of every chunk but the last, so the
+	// chunk covering an offset is that offset divided by it. That is the whole
+	// reason the size is fixed and recorded rather than inferred: a seek must
+	// not have to consult a per-chunk index to find out where to look.
+	ChunkSize  int64 `json:"chunk_size,omitempty"`
+	ChunkCount int   `json:"chunk_count,omitempty"`
+}
+
+// Chunked reports whether the file is stored as independently readable chunks.
+// A file stored whole has to be gathered in full before any of it can be read.
+func (e *Entry) Chunked() bool { return e.ChunkCount > 0 && e.ChunkSize > 0 }
+
+// ChunkIndexAt returns the chunk holding the given plaintext offset. A file
+// stored whole is a single chunk covering all of it, which is the same way a
+// whole-file part reports itself once read.
+func (e *Entry) ChunkIndexAt(offset int64) int {
+	if !e.Chunked() {
+		return 0
+	}
+	return int(offset / e.ChunkSize)
 }
 
 // Path is the full browser path of the entry.
