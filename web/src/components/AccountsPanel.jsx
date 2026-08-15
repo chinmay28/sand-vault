@@ -8,6 +8,87 @@ import MountDrive from './MountDrive'
 import { DefaultClouds, PARTS_PER_FILE } from './CloudSelect'
 import { DevMark } from './Brand'
 
+/* One number and the word for what it counts. The figure carries the weight —
+   it is what someone glances down here to read — and the label under it is
+   small enough to stay out of the way once you know which is which. */
+function Figure({ value, label }) {
+  return (
+    <div>
+      <div style={{
+        fontFamily: FONT.mono,
+        fontSize: '17px',
+        fontWeight: 600,
+        color: COLORS.text,
+        lineHeight: 1.2,
+        letterSpacing: '-0.5px',
+      }}>{value}</div>
+      <div style={{
+        fontFamily: FONT.mono,
+        fontSize: '9px',
+        fontWeight: 600,
+        letterSpacing: '1.2px',
+        textTransform: 'uppercase',
+        color: COLORS.textMuted,
+        marginTop: '3px',
+      }}>{label}</div>
+    </div>
+  )
+}
+
+/* A vault-wide action. Two lines: what it is, and what it does — the second
+   line doubles as the place a status used to sit on its own above the button,
+   so "3 picked per upload" is read off the thing it describes rather than from
+   a line floating near it.
+
+   It grows to fill half a row and takes the whole row when it is alone, so one,
+   two or three of these all look deliberate. */
+function ActionTile({ label, hint, onClick }) {
+  const [hover, setHover] = useState(false)
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        flex: '1 1 calc(50% - 8px)',
+        minWidth: '112px',
+        // Comfortably past the 44px fingertip floor the rest of the app holds
+        // to, since two lines of text need the room anyway.
+        minHeight: '52px',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'flex-start',
+        justifyContent: 'center',
+        gap: '2px',
+        padding: '8px 10px',
+        background: COLORS.surfaceRaised,
+        border: `1px solid ${hover ? COLORS.borderBright : COLORS.border}`,
+        borderRadius: '8px',
+        cursor: 'pointer',
+        textAlign: 'left',
+        transition: 'border-color 0.15s ease, background 0.15s ease',
+        ...(hover ? { background: COLORS.surfaceHover } : null),
+      }}
+    >
+      <span style={{
+        fontFamily: FONT.mono,
+        fontSize: '11px',
+        fontWeight: 600,
+        letterSpacing: '0.5px',
+        color: COLORS.text,
+      }}>{label}</span>
+      <span style={{
+        fontFamily: FONT.mono,
+        fontSize: '9px',
+        color: COLORS.textMuted,
+        lineHeight: 1.4,
+      }}>{hint}</span>
+    </button>
+  )
+}
+
 /* The sidebar: every cloud account SAND is wired into, whether it is answering,
    and how much of the vault it is carrying. Below the two-pane breakpoint the
    same panel becomes a drawer over the file browser — the file list is what you
@@ -157,43 +238,33 @@ export default function AccountsPanel({
           style={{ width: '100%', justifyContent: 'center' }}
         >+ Connect a cloud</Button>
 
+        {/* What the vault weighs, as two figures rather than four sentences.
+            The numbers are the thing worth seeing from across the room; the
+            labels under them are only there to say which number is which. */}
         {stats && (
-          <div style={{
-            marginTop: '12px',
-            fontFamily: FONT.mono,
-            fontSize: '10px',
-            color: COLORS.textMuted,
-            lineHeight: 1.9,
-          }}>
-            <div>{stats.files} file{stats.files === 1 ? '' : 's'} · {formatBytes(stats.bytes)}</div>
-            <div>{formatBytes(stats.stored_bytes)} stored across accounts</div>
-            <div>placement: {stats.policy}</div>
-            {stats.degraded > 0 && (
-              <div style={{ color: COLORS.warn }}>{stats.degraded} file(s) missing a spare part</div>
-            )}
-          </div>
-        )}
-
-        {/* Which clouds an upload starts on. Every upload can still choose its
-            own, so this is the answer it opens with rather than a rule. */}
-        {providers.length > 0 && (
-          <div style={{ marginTop: '10px' }}>
+          <div style={{ marginTop: '16px' }}>
+            <div style={{ display: 'flex', gap: '18px' }}>
+              <Figure value={stats.files} label={stats.files === 1 ? 'file' : 'files'} />
+              <Figure value={formatBytes(stats.bytes)} label="in the vault" />
+            </div>
             <div style={{
+              marginTop: '8px',
               fontFamily: FONT.mono,
               fontSize: '10px',
               color: COLORS.textMuted,
-              lineHeight: 1.9,
+              lineHeight: 1.7,
             }}>
-              {defaults.length > 0
-                ? `default clouds: ${defaults.length} of ${providers.length}`
-                : `default clouds: ${PARTS_PER_FILE} picked per upload`}
+              {formatBytes(stats.stored_bytes)} across accounts · {stats.policy}
             </div>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => setChoosingDefaults(true)}
-              style={{ padding: '4px 0' }}
-            >{defaults.length > 0 ? 'Change default clouds' : 'Set default clouds'}</Button>
+            {stats.degraded > 0 && (
+              <div style={{
+                marginTop: '6px',
+                fontFamily: FONT.mono,
+                fontSize: '10px',
+                color: COLORS.warn,
+                lineHeight: 1.7,
+              }}>{stats.degraded} file{stats.degraded === 1 ? '' : 's'} missing a spare part</div>
+            )}
           </div>
         )}
 
@@ -205,32 +276,46 @@ export default function AccountsPanel({
           />
         )}
 
-        {/* Vault-wide rather than account-wide, but this is where the vault's
-            own state already lives, and the header has no room for it on a
-            phone. */}
-        <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
-          {/* Absent unless the server was started with --webdav, because
-              telling someone to mount a share that is not being served is
-              worse than not mentioning it. */}
+        {/* The three things you do to the vault itself rather than to an
+            account. They were ghost buttons in a column, which read as three
+            more lines of the grey text above them — nothing said they could be
+            pressed. As tiles they group, they say what they are for on a second
+            line, and they are a fingertip tall. */}
+        <div style={{
+          marginTop: '16px',
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: '8px',
+        }}>
+          {/* Absent unless the server was started with --webdav: telling
+              someone to mount a share that is not being served is worse than
+              not mentioning it. */}
           {webdav?.path && (
-            <Button
-              size="sm"
-              variant="ghost"
+            <ActionTile
+              label="Mount"
+              hint="as a drive"
               onClick={() => setMounting(true)}
-              style={{ padding: '4px 0' }}
-            >Mount as a drive</Button>
+            />
           )}
-          <Button
-            size="sm"
-            variant="ghost"
+          {providers.length > 0 && (
+            <ActionTile
+              label="Defaults"
+              hint={defaults.length > 0
+                ? `${defaults.length} of ${providers.length} clouds`
+                : `${PARTS_PER_FILE} picked per upload`}
+              onClick={() => setChoosingDefaults(true)}
+            />
+          )}
+          <ActionTile
+            label="Password"
+            hint="change it"
             onClick={() => setChangingPassword(true)}
-            style={{ padding: '4px 0' }}
-          >Change vault password</Button>
+          />
         </div>
 
         {/* Turned out of the header on a phone, it lands here. */}
         {mobile && (
-          <div style={{ display: 'flex', justifyContent: 'center', marginTop: '14px' }}>
+          <div style={{ display: 'flex', justifyContent: 'center', marginTop: '18px' }}>
             <DevMark bare />
           </div>
         )}

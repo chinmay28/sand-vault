@@ -446,7 +446,7 @@ class TestChoosingClouds:
 
     def _set_default_clouds(self, app, accounts):
         """Make `accounts` — and only those — the vault's default clouds."""
-        app.get_by_role("button", name=re.compile("(Set|Change) default clouds")).click()
+        app.get_by_role("button", name=re.compile(r"^Defaults")).click()
         dialog = app.get_by_role("heading", name="Default clouds")
         dialog.wait_for(timeout=20000)
         select_clouds(app, accounts)
@@ -485,7 +485,7 @@ class TestChoosingClouds:
     def test_a_default_is_marked_and_preselected(self, app, tmp_path):
         self._set_default_clouds(app, ["ui-one", "ui-two"])
         try:
-            app.wait_for_selector("text=/default clouds: 2 of \\d+/", timeout=20000)
+            app.wait_for_selector("text=/2 of \\d+ clouds/", timeout=20000)
             # The accounts carrying the default say so on their own card.
             assert app.get_by_text("default", exact=True).count() == 2
 
@@ -496,13 +496,13 @@ class TestChoosingClouds:
             app.wait_for_selector("text=/Upload to \\d+ cloud/", state="detached", timeout=20000)
         finally:
             # Back to picking per upload, so the rest of the suite is unaffected.
-            app.get_by_role("button", name=re.compile("(Set|Change) default clouds")).click()
+            app.get_by_role("button", name=re.compile(r"^Defaults")).click()
             dialog = app.get_by_role("heading", name="Default clouds")
             dialog.wait_for(timeout=20000)
             app.get_by_role("button", name="Pick per upload").click()
             dialog.wait_for(state="detached", timeout=20000)
 
-        app.wait_for_selector("text=default clouds: 3 picked per upload", timeout=20000)
+        app.wait_for_selector("text=3 picked per upload", timeout=20000)
         assert app.get_by_text("default", exact=True).count() == 0
 
 
@@ -623,7 +623,7 @@ class TestChangePassword:
     """
 
     def _change(self, app, current, new, migrate=True):
-        app.get_by_text("Change vault password").first.click()
+        app.get_by_role("button", name=re.compile(r"^Password")).first.click()
         app.wait_for_selector("text=Re-encrypt my files now", timeout=15000)
 
         app.get_by_label("Current password").fill(current)
@@ -670,7 +670,7 @@ class TestChangePassword:
                 self._dismiss(app)
 
     def test_a_wrong_current_password_is_reported(self, app, vault_password):
-        app.get_by_text("Change vault password").first.click()
+        app.get_by_role("button", name=re.compile(r"^Password")).first.click()
         app.wait_for_selector("text=Re-encrypt my files now", timeout=15000)
 
         app.get_by_label("Current password").fill("not-the-password")
@@ -682,7 +682,7 @@ class TestChangePassword:
         app.get_by_role("button", name="Cancel").click()
 
     def test_mismatched_new_passwords_never_reach_the_server(self, app, vault_password):
-        app.get_by_text("Change vault password").first.click()
+        app.get_by_role("button", name=re.compile(r"^Password")).first.click()
         app.wait_for_selector("text=Re-encrypt my files now", timeout=15000)
 
         app.get_by_label("Current password").fill(vault_password)

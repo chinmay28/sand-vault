@@ -31,6 +31,31 @@ type webdavStatus struct {
 	Path string `json:"path"`
 }
 
+// unlockedStatus describes a vault that the caller has just been given access
+// to, whether by unlocking it, creating it, or asking about one already open.
+//
+// It exists because those three answers used to be built separately and drifted:
+// the WebDAV share was added to the one behind GET /api/vault and not to the one
+// the unlock returns, so the browser — which takes its state straight from the
+// unlock response — never heard about the share until something else happened
+// to refetch. Anything the browser needs on sight of an open vault belongs here,
+// once.
+func (s *Server) unlockedStatus(v *vault.Vault) vaultStatus {
+	status := vaultStatus{
+		Initialized: true,
+		Unlocked:    true,
+		Path:        v.Path(),
+		Policy:      v.Policy(),
+	}
+	if stats, err := v.Stats(); err == nil {
+		status.Stats = &stats
+	}
+	if s.WebDAV {
+		status.WebDAV = &webdavStatus{Path: s.webdavPrefix() + "/"}
+	}
+	return status
+}
+
 func (s *Server) handleVaultStatus(w http.ResponseWriter, r *http.Request) {
 	v, err := s.Vault()
 	if err != nil {
@@ -45,13 +70,7 @@ func (s *Server) handleVaultStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	// Only an authenticated session gets to see what is inside.
 	if v.Unlocked() && s.sessions.validate(sessionToken(r)) {
-		status.Unlocked = true
-		if stats, err := v.Stats(); err == nil {
-			status.Stats = &stats
-		}
-		if s.WebDAV {
-			status.WebDAV = &webdavStatus{Path: s.webdavPrefix() + "/"}
-		}
+		status = s.unlockedStatus(v)
 	}
 
 	writeJSON(w, http.StatusOK, status)
@@ -83,12 +102,7 @@ func (s *Server) handleVaultInit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.startSession(w, r)
-	writeJSON(w, http.StatusCreated, vaultStatus{
-		Initialized: true,
-		Unlocked:    true,
-		Path:        v.Path(),
-		Policy:      v.Policy(),
-	})
+	writeJSON(w, http.StatusCreated, s.unlockedStatus(v))
 }
 
 type unlockRequest struct {
@@ -113,12 +127,7 @@ func (s *Server) handleVaultUnlock(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.startSession(w, r)
-
-	status := vaultStatus{Initialized: true, Unlocked: true, Path: v.Path(), Policy: v.Policy()}
-	if stats, err := v.Stats(); err == nil {
-		status.Stats = &stats
-	}
-	writeJSON(w, http.StatusOK, status)
+	writeJSON(w, http.StatusOK, s.unlockedStatus(v))
 }
 
 func (s *Server) handleVaultLock(w http.ResponseWriter, r *http.Request) {

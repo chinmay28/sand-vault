@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -186,4 +187,73 @@ func TestVaultStatusHidesTheShareFromStrangers(t *testing.T) {
 	if strings.Contains(w.Body.String(), "webdav") {
 		t.Errorf("an unauthenticated status mentions the share: %s", w.Body.String())
 	}
+}
+
+// The browser takes its state straight from what unlock hands back and does not
+// ask again, so anything missing from that answer is missing from the app until
+// something else happens to refetch. The share went unmentioned there for
+// exactly that reason; every door into an open vault has to describe it.
+func TestEveryUnlockedAnswerDescribesTheShare(t *testing.T) {
+	dir := t.TempDir()
+	s := &Server{VaultPath: filepath.Join(dir, "vault.sand"), WebDAV: true}
+	handler, err := s.Handler()
+	if err != nil {
+		t.Fatalf("Handler: %v", err)
+	}
+	v, err := s.Vault()
+	if err != nil {
+		t.Fatalf("Vault: %v", err)
+	}
+	t.Cleanup(v.AwaitBackupSync)
+
+	const password = "a perfectly ordinary password"
+
+	share := func(t *testing.T, what string, body *bytes.Buffer) {
+		t.Helper()
+		var status struct {
+			Unlocked bool `json:"unlocked"`
+			WebDAV   *struct {
+				Path string `json:"path"`
+			} `json:"webdav"`
+		}
+		if err := json.NewDecoder(body).Decode(&status); err != nil {
+			t.Fatalf("%s: decoding: %v", what, err)
+		}
+		if !status.Unlocked {
+			t.Fatalf("%s did not report an unlocked vault", what)
+		}
+		if status.WebDAV == nil {
+			t.Errorf("%s does not mention the share, so the app never learns about it", what)
+			return
+		}
+		if status.WebDAV.Path != "/dav/" {
+			t.Errorf("%s reports the share at %q, want /dav/", what, status.WebDAV.Path)
+		}
+	}
+
+	// Creating a vault hands the app its first status.
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, jsonRequest("POST", "/api/vault/init",
+		`{"password":"`+password+`","policy":"strict"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("init = %d: %s", w.Code, w.Body)
+	}
+	share(t, "init", w.Body)
+
+	v.Lock()
+
+	// And unlocking hands it the next one, which is the path a returning user
+	// actually takes.
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, jsonRequest("POST", "/api/vault/unlock", `{"password":"`+password+`"}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("unlock = %d: %s", w.Code, w.Body)
+	}
+	share(t, "unlock", w.Body)
+}
+
+func jsonRequest(method, path, body string) *http.Request {
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	return req
 }
