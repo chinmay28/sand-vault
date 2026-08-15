@@ -73,10 +73,15 @@ never lose data:**
   previous binary when it installed a release — and **restores the pre-upgrade
   vault snapshot**.
 
-Override defaults with env vars (`PORT`, `HOST`, `SAND_INSTALL`, `SAND_REF`,
-`SAND_RELEASE`, `SAND_DATA_DIR`, `SAND_PREFIX`, `SAND_USER`,
+Override defaults with env vars (`PORT`, `HOST`, `SAND_WEBDAV`, `SAND_INSTALL`,
+`SAND_REF`, `SAND_RELEASE`, `SAND_DATA_DIR`, `SAND_PREFIX`, `SAND_USER`,
 `SAND_LOCAL_PATHS`, …). Manage it with `systemctl status sand` and
 `journalctl -u sand -f`.
+
+`PORT`, `HOST` and `SAND_WEBDAV` are **remembered**: on an upgrade, leaving one
+unset keeps whatever the service is already running with rather than resetting
+it, so re-running the script to pick up a new version can't quietly move a
+loopback-only install back onto every interface.
 
 > **`HOST` defaults to `0.0.0.0`** — the service is reachable from your network
 > as soon as it is installed. Know what that exposes: this server is the one
@@ -641,6 +646,19 @@ or a player can open it as a drive instead of going through the browser. It's
 sand serve --webdav              # share at http://<host>:8123/dav/
 sand serve --webdav --webdav-path /share
 ```
+
+On the systemd service, turn it on with `SAND_WEBDAV=1` — either at install
+time or by re-running the quickstart, which keeps every other setting as it
+was:
+
+```bash
+curl -fsSL .../quickstart.sh | sudo SAND_WEBDAV=1 bash
+```
+
+Once it is on, the web UI's sidebar grows a **Mount as a drive** button with the
+address, a copy button, and where to paste it. The address it shows is the one
+you reached the app on, so behind Tailscale Serve or a reverse proxy it offers
+the `https://` address without being told about it.
 
 Mount it with **any username** and your **vault password**:
 
