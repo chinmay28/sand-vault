@@ -37,12 +37,12 @@ function Figure({ value, label }) {
 
 /* A vault-wide action. Two lines: what it is, and what it does — the second
    line doubles as the place a status used to sit on its own above the button,
-   so "3 picked per upload" is read off the thing it describes rather than from
+   so "3 per upload" is read off the thing it describes rather than from
    a line floating near it.
 
    It grows to fill half a row and takes the whole row when it is alone, so one,
    two or three of these all look deliberate. */
-function ActionTile({ label, hint, onClick }) {
+function ActionTile({ icon, label, hint, onClick }) {
   const [hover, setHover] = useState(false)
 
   return (
@@ -58,10 +58,8 @@ function ActionTile({ label, hint, onClick }) {
         // to, since two lines of text need the room anyway.
         minHeight: '52px',
         display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'flex-start',
-        justifyContent: 'center',
-        gap: '2px',
+        alignItems: 'center',
+        gap: '9px',
         padding: '8px 10px',
         background: COLORS.surfaceRaised,
         border: `1px solid ${hover ? COLORS.borderBright : COLORS.border}`,
@@ -72,19 +70,36 @@ function ActionTile({ label, hint, onClick }) {
         ...(hover ? { background: COLORS.surfaceHover } : null),
       }}
     >
-      <span style={{
-        fontFamily: FONT.mono,
-        fontSize: '11px',
-        fontWeight: 600,
-        letterSpacing: '0.5px',
-        color: COLORS.text,
-      }}>{label}</span>
-      <span style={{
-        fontFamily: FONT.mono,
-        fontSize: '9px',
-        color: COLORS.textMuted,
-        lineHeight: 1.4,
-      }}>{hint}</span>
+      {/* Hidden from the accessibility tree on purpose. The label beside it
+          already says what the button is, so announcing the glyph as well would
+          only be noise — and it would land in the button's accessible name,
+          which is what a screen reader reads out and what the browser tests
+          click by. */}
+      <span aria-hidden="true" style={{
+        fontSize: '15px',
+        lineHeight: 1,
+        flexShrink: 0,
+        // Muted until hovered, so a row of tiles reads as text with marks
+        // beside it rather than as a row of competing glyphs.
+        opacity: hover ? 1 : 0.75,
+        transition: 'opacity 0.15s ease',
+      }}>{icon}</span>
+
+      <span style={{ display: 'flex', flexDirection: 'column', gap: '2px', minWidth: 0 }}>
+        <span style={{
+          fontFamily: FONT.mono,
+          fontSize: '11px',
+          fontWeight: 600,
+          letterSpacing: '0.5px',
+          color: COLORS.text,
+        }}>{label}</span>
+        <span style={{
+          fontFamily: FONT.mono,
+          fontSize: '9px',
+          color: COLORS.textMuted,
+          lineHeight: 1.4,
+        }}>{hint}</span>
+      </span>
     </button>
   )
 }
@@ -292,6 +307,7 @@ export default function AccountsPanel({
               not mentioning it. */}
           {webdav?.path && (
             <ActionTile
+              icon="💾"
               label="Mount"
               hint="as a drive"
               onClick={() => setMounting(true)}
@@ -299,14 +315,16 @@ export default function AccountsPanel({
           )}
           {providers.length > 0 && (
             <ActionTile
+              icon="☁️"
               label="Defaults"
               hint={defaults.length > 0
                 ? `${defaults.length} of ${providers.length} clouds`
-                : `${PARTS_PER_FILE} picked per upload`}
+                : `${PARTS_PER_FILE} per upload`}
               onClick={() => setChoosingDefaults(true)}
             />
           )}
           <ActionTile
+            icon="🔑"
             label="Password"
             hint="change it"
             onClick={() => setChangingPassword(true)}

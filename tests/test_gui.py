@@ -502,7 +502,7 @@ class TestChoosingClouds:
             app.get_by_role("button", name="Pick per upload").click()
             dialog.wait_for(state="detached", timeout=20000)
 
-        app.wait_for_selector("text=3 picked per upload", timeout=20000)
+        app.wait_for_selector("text=3 per upload", timeout=20000)
         assert app.get_by_text("default", exact=True).count() == 0
 
 
