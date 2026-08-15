@@ -11,7 +11,7 @@
 #   sand-<version>-darwin-arm64
 #   sand-<version>-windows-amd64.exe
 #
-# Requirements: Go 1.22+, Node.js 18+
+# Requirements: Go 1.25+, Node.js 18+
 
 set -euo pipefail
 

@@ -1,12 +1,10 @@
 package crypto
 
 import (
+	"crypto/hkdf"
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
-	"io"
-
-	"golang.org/x/crypto/hkdf"
 )
 
 // MasterKeySize is the length of the key material chunk keys are derived from.
@@ -42,8 +40,12 @@ func DeriveChunkKey(master []byte, archiveID [16]byte, chunkIndex uint32) ([]byt
 	info = append(info, chunkKeyLabel...)
 	info = binary.BigEndian.AppendUint32(info, chunkIndex)
 
-	key := make([]byte, 32)
-	if _, err := io.ReadFull(hkdf.New(sha256.New, master, archiveID[:], info), key); err != nil {
+	// The standard library's HKDF rather than x/crypto's: the same RFC 5869
+	// construction, so the keys are identical and already-stored chunks keep
+	// opening. TestDeriveChunkKeyMatchesItsGoldenValues is what holds that
+	// claim to account.
+	key, err := hkdf.Key(sha256.New, master, archiveID[:], string(info), 32)
+	if err != nil {
 		return nil, fmt.Errorf("deriving key for chunk %d: %w", chunkIndex, err)
 	}
 	return key, nil

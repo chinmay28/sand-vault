@@ -12,7 +12,6 @@ package davfs
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"path"
@@ -161,13 +160,9 @@ func (fs *FileSystem) RemoveAll(ctx context.Context, name string) error {
 	return vaultError(err)
 }
 
-// Rename moves a file, which for the vault is an index change rather than a
-// transfer: the parts stay exactly where they are.
-//
-// Renaming a folder is refused. The index stores a file's folder on the file,
-// so moving one means rewriting every entry beneath it, and doing that halfway
-// would leave a tree split across two names. Until the vault offers it as one
-// operation, saying no is better than doing it partly.
+// Rename moves a file or a folder, which for the vault is an index change
+// rather than a transfer: the parts stay exactly where they are, and a folder
+// full of them moves in one write.
 func (fs *FileSystem) Rename(ctx context.Context, oldName, newName string) error {
 	oldClean, err := cleanName(oldName)
 	if err != nil {
@@ -180,8 +175,9 @@ func (fs *FileSystem) Rename(ctx context.Context, oldName, newName string) error
 	if oldClean == "/" || newClean == "/" {
 		return os.ErrPermission
 	}
+
 	if fs.Vault.FolderExists(oldClean) {
-		return fmt.Errorf("renaming a folder is not supported yet")
+		return vaultError(fs.Vault.MoveFolder(ctx, oldClean, newClean))
 	}
 
 	entry, err := fs.Vault.EntryByPath(oldClean)
@@ -212,13 +208,6 @@ func (fs *FileSystem) OpenFile(ctx context.Context, name string, flag int, perm 
 	if !writing {
 		return fs.openRead(ctx, clean)
 	}
-
-	// Appending would mean reading a stored file back, adding to it and storing
-	// the whole thing again, which is not what a caller asking to append
-	// expects to cost. The vault stores whole files.
-	if flag&os.O_APPEND != 0 {
-		return nil, fmt.Errorf("appending to a stored file is not supported")
-	}
 	if clean == "/" || fs.Vault.FolderExists(clean) {
 		return nil, os.ErrPermission
 	}
@@ -230,7 +219,24 @@ func (fs *FileSystem) OpenFile(ctx context.Context, name string, flag int, perm 
 	if base == "" {
 		return nil, os.ErrPermission
 	}
-	return newWriteFile(ctx, fs.Vault, dir, base), nil
+
+	// Appending stores the file again with the new bytes on the end, because
+	// the vault stores whole files. What it does not do is hold either half in
+	// memory: the existing file is read back as a stream and the new bytes
+	// follow it into the same streaming upload, so the cost is bandwidth rather
+	// than RAM. O_TRUNC wins if both are set, which is what os.OpenFile does.
+	var prefix io.Reader
+	if flag&os.O_APPEND != 0 && flag&os.O_TRUNC == 0 {
+		if existing, err := fs.Vault.EntryByPath(clean); err == nil {
+			body, _, err := fs.Vault.OpenReadSeeker(ctx, existing.ID)
+			if err != nil {
+				return nil, vaultError(err)
+			}
+			prefix = body
+		}
+	}
+
+	return newWriteFile(ctx, fs.Vault, dir, base, prefix), nil
 }
 
 // openRead opens a folder for listing or a file for reading.

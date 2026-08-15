@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -913,6 +914,72 @@ func (v *Vault) FolderExists(dir string) bool {
 		return false
 	}
 	return v.manifest.FolderExists(CleanDir(dir))
+}
+
+// MoveFolder renames a folder, carrying everything beneath it along.
+//
+// Nothing is transferred. A file records which folder it is in, so moving a
+// folder is a rewrite of the index and the stored parts never move — which is
+// also what makes it safe to offer: every entry beneath the folder changes in
+// the same write, so there is no moment where half a tree answers to its old
+// name and half to its new one. Thumbnails come too, since a pack is filed
+// under its folder rather than carrying the folder's name inside it.
+func (v *Vault) MoveFolder(ctx context.Context, oldDir, newDir string) error {
+	oldDir, newDir = CleanDir(oldDir), CleanDir(newDir)
+
+	if oldDir == "/" || newDir == "/" {
+		return fmt.Errorf("the root folder cannot be moved")
+	}
+	if oldDir == newDir {
+		return nil
+	}
+	// Moving a folder inside itself would rewrite the destination's own path as
+	// the rewrite walked it, leaving a tree that contains itself.
+	if strings.HasPrefix(newDir, oldDir+"/") {
+		return fmt.Errorf("cannot move %s inside itself", oldDir)
+	}
+	if _, err := SanitizeName(path.Base(newDir)); err != nil {
+		return err
+	}
+
+	v.mu.Lock()
+	if v.dataKey == nil {
+		v.mu.Unlock()
+		return ErrLocked
+	}
+	if !v.manifest.FolderExists(oldDir) {
+		v.mu.Unlock()
+		return fmt.Errorf("no such folder: %s", oldDir)
+	}
+	if v.manifest.FolderExists(newDir) {
+		v.mu.Unlock()
+		return fmt.Errorf("%s already exists", newDir)
+	}
+	if v.manifest.ByPath(newDir) != nil {
+		v.mu.Unlock()
+		return fmt.Errorf("a file already exists at %s", newDir)
+	}
+	if parent := CleanDir(path.Dir(newDir)); !v.manifest.FolderExists(parent) {
+		v.mu.Unlock()
+		return fmt.Errorf("no such folder: %s", parent)
+	}
+
+	undo := v.manifest.moveFolder(oldDir, newDir)
+	err := v.persistLocked()
+	if err != nil {
+		undo()
+	}
+	v.mu.Unlock()
+
+	if err != nil {
+		return err
+	}
+
+	// The decrypted thumbnails in memory are filed by folder too, and the
+	// cheapest correct thing is to let them be read again from the packs that
+	// just moved with the tree.
+	v.forgetAllThumbs()
+	return nil
 }
 
 // Mkdir creates a folder.

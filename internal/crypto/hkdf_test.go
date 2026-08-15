@@ -2,6 +2,7 @@ package crypto
 
 import (
 	"bytes"
+	"encoding/hex"
 	"testing"
 )
 
@@ -96,6 +97,38 @@ func TestDeriveChunkKeyRejectsWrongMasterSize(t *testing.T) {
 	for _, size := range []int{0, 16, 31, 33, 64} {
 		if _, err := DeriveChunkKey(bytes.Repeat([]byte{0x01}, size), id, 0); err == nil {
 			t.Errorf("accepted a %d-byte master key, want an error", size)
+		}
+	}
+}
+
+// The derived key is the thing every stored chunk is sealed under, so it must
+// not move — not when the HKDF implementation is swapped, not when the info
+// string is tidied, not ever. These values were taken from the derivation as it
+// first shipped; a change here means every chunk already on someone's accounts
+// has become unreadable.
+func TestDeriveChunkKeyMatchesItsGoldenValues(t *testing.T) {
+	master := make([]byte, MasterKeySize)
+	for i := range master {
+		master[i] = byte(i)
+	}
+	var archiveID [16]byte
+	for i := range archiveID {
+		archiveID[i] = byte(0xA0 + i)
+	}
+
+	golden := map[uint32]string{
+		0:    "138fc21e246cafa05b34fd24ab8d66538026c9cdf0a952aca5a19328cbbc0c59",
+		1:    "f6a4498ece51c35b9f8dc9ab378b3e11038275068af09f02eb30936e96191680",
+		4095: "a2c7b7fa3ab31a92800f8e9e2c6afcd303aa1b31554525e63527d332e7fdab85",
+	}
+	for index, want := range golden {
+		key, err := DeriveChunkKey(master, archiveID, index)
+		if err != nil {
+			t.Fatalf("chunk %d: %v", index, err)
+		}
+		if got := hex.EncodeToString(key); got != want {
+			t.Errorf("chunk %d derived %s, want %s — stored chunks would no longer open",
+				index, got, want)
 		}
 	}
 }

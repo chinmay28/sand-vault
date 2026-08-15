@@ -293,6 +293,84 @@ func (m *Manifest) Descendants(dir string) []*Entry {
 	return out
 }
 
+// underFolder reports whether a path is the folder itself or sits beneath it,
+// and rewrites it to sit under a new one.
+func underFolder(p, oldDir, newDir string) (string, bool) {
+	if p == oldDir {
+		return newDir, true
+	}
+	if strings.HasPrefix(p, oldDir+"/") {
+		return newDir + strings.TrimPrefix(p, oldDir), true
+	}
+	return p, false
+}
+
+// moveFolder rewrites every path at or under oldDir to sit under newDir, and
+// returns a function that puts everything back.
+//
+// The undo exists because the caller has to persist afterwards and that write
+// can fail. Doing the rewrite in memory first and rolling it back on failure is
+// what keeps the two halves of the tree from ever disagreeing about their own
+// name — the whole reason this is one operation rather than a loop over Move.
+func (m *Manifest) moveFolder(oldDir, newDir string) func() {
+	type moved struct {
+		entry *Entry
+		from  string
+	}
+
+	var changed []moved
+	for _, e := range m.Entries {
+		if to, ok := underFolder(e.Dir, oldDir, newDir); ok {
+			changed = append(changed, moved{entry: e, from: e.Dir})
+			e.Dir = to
+		}
+	}
+
+	previousFolders := append([]string(nil), m.Folders...)
+	folders := make([]string, 0, len(m.Folders)+1)
+	for _, f := range m.Folders {
+		to, _ := underFolder(f, oldDir, newDir)
+		folders = append(folders, to)
+	}
+	// The destination is a folder now whether or not the source was ever
+	// recorded as one — it may have existed only because files sat under it.
+	folders = append(folders, newDir)
+	m.Folders = dedupeFolders(folders)
+
+	// A thumbnail pack records nothing about which folder it belongs to; the
+	// folder is the key it is filed under. So the pictures travel with the
+	// folder for the price of rewriting a map, with no network work at all.
+	previousThumbs := m.Thumbs
+	if len(m.Thumbs) > 0 {
+		rekeyed := make(map[string]*ThumbPack, len(m.Thumbs))
+		for dir, pack := range m.Thumbs {
+			to, _ := underFolder(dir, oldDir, newDir)
+			rekeyed[to] = pack
+		}
+		m.Thumbs = rekeyed
+	}
+
+	return func() {
+		for _, m := range changed {
+			m.entry.Dir = m.from
+		}
+		m.Folders = previousFolders
+		m.Thumbs = previousThumbs
+	}
+}
+
+// dedupeFolders sorts a folder list and drops repeats.
+func dedupeFolders(folders []string) []string {
+	sort.Strings(folders)
+	out := folders[:0]
+	for i, f := range folders {
+		if i == 0 || f != folders[i-1] {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
 // add appends an entry, replacing any existing entry at the same path.
 func (m *Manifest) add(entry *Entry) {
 	for i, e := range m.Entries {

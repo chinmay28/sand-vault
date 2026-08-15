@@ -151,7 +151,7 @@ SERVICE_NAME="sand"
 UNIT_PATH="/etc/systemd/system/${SERVICE_NAME}.service"
 # Minimum Go release that can bootstrap the build; the go directive in go.mod
 # pins the real toolchain, which Go fetches automatically.
-GO_MIN_MINOR=22
+GO_MIN_MINOR=25
 GO_INSTALL_VERSION="1.25.0"
 NODE_MIN_MAJOR=18
 
