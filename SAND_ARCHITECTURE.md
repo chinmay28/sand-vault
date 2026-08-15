@@ -410,12 +410,19 @@ way. Without this every part 1 would pile onto the same account.
 ### 5.4 Object keys leak nothing
 
 ```
-<128-bit random archive id>-p<N>.sand
+<128-bit random archive id>-p<N>.sand              stored whole
+<128-bit random archive id>-c<index>-p<N>.sand     stored in chunks (§7.1)
 ```
 
 Derived only from a random ID. Someone with full access to one account learns
 how many objects you store and how big each part is — nothing about names,
 types, or folder structure.
+
+A chunked file's objects carry a zero-padded chunk index, so listing an account
+lexically returns them in order — which is what the recovery path of §3.7 walks.
+The index gives nothing away that the flat form did not: objects were already
+groupable by their shared archive ID, and a file's size was already readable by
+adding up its parts. A chunk count is the same fact reached by counting.
 
 Until format version 2 that last sentence was not true: the part header carried
 the original filename, its plaintext SHA-256 and its size in the clear, so a
@@ -435,9 +442,10 @@ everywhere else.
 
 ## 6. Cryptography
 
-Unchanged from v1, and deliberately so.
-
 ### 6.1 Key derivation — Argon2id
+
+Every **password** is stretched with Argon2id, and the parameters are unchanged
+from v1:
 
 | Parameter | Value |
 |---|---|
@@ -447,24 +455,63 @@ Unchanged from v1, and deliberately so.
 | Salt | 16 random bytes, unique per file and per vault |
 | Output | 32 bytes (AES-256) |
 
-### 6.2 Encryption — AES-256-GCM
+That covers the two places a password is actually involved: the vault key
+(§3.1), and standalone mode, which has no vault and derives a file's key
+straight from what the user typed.
+
+### 6.2 Chunk keys — HKDF-SHA256
+
+Argon2id is what makes guessing a low-entropy password expensive. It buys
+nothing against a key nobody typed, and until the chunked format arrived it was
+being run on one: `shardPasswordFor` is the hex of the vault's random 256-bit
+data key, and every part paid an Argon2id pass to stretch it. The cost was real
+enough that thumbnails are packed a folder at a time purely to amortize it
+(`internal/vault/thumbs.go`).
+
+A chunked file would pay that cost once per chunk — minutes of pure key
+derivation for one large video. So a chunk key is derived instead:
+
+```
+chunk key = HKDF-SHA256(
+    secret = the vault's data key,
+    salt   = the 128-bit archive ID,
+    info   = "sand-chunk-key-v3" ‖ chunk index)
+```
+
+The archive ID as salt separates files; the index in the info string separates
+chunks, so recovering one chunk's key says nothing about its neighbours. The
+security argument is that the input already has 256 bits of uniform entropy —
+stretching it was never what protected it.
+
+### 6.3 Encryption — AES-256-GCM
 
 - 12-byte random nonce, unique per part
 - The cleartext part header is passed as **associated data**, binding each
   ciphertext to its own part number and archive ID — a part cannot be swapped
   for another file's part, or re-labelled as a different part number, without
   the tag failing
+- In a chunked part the header also carries the **chunk index**, so the same
+  binding stops a chunk being replayed at a different offset of the file it
+  genuinely belongs to
 - 16-byte authentication tag
 
-### 6.3 Integrity
+### 6.4 Integrity
 
 | Layer | Mechanism | Catches |
 |---|---|---|
 | Per part | GCM tag | Tampering, truncation, bit rot |
 | Per part | Cleartext header as associated data | Part swapping, re-labelling |
 | Per part | Metadata sealed with the data | Edits to the name, hash or sizes |
+| Per chunk | Chunk index in the associated data | A chunk replayed at another offset |
+| Per chunk | Rebuilt length checked against the archive's chunking | A truncated or substituted chunk |
 | Whole file | SHA-256 recorded at upload, checked after rebuild | Any corruption that slipped through |
 | Vault | GCM tag on every section | A modified or truncated index |
+
+The whole-file SHA-256 is the one guarantee a chunked read cannot give: opening
+the chunk under an offset never touches the rest of the file, so there is
+nothing to hash. Reading a file end to end still verifies it. What a partial
+read gets instead is the per-part GCM tag bound to that chunk's index, which is
+what makes serving an arbitrary byte range honest rather than hopeful.
 
 ---
 
@@ -506,6 +553,57 @@ belongs to, and how big it is.
 written by older builds restore unchanged. Nothing writes version 1 any more, so
 the standalone `sand restore` from a v1 binary can no longer open parts written
 today — restore with a current build instead.
+
+### 7.1 Version 3 — one chunk per object
+
+A version 2 object is a whole file, which is why reading one byte of it means
+fetching all of it. Version 3 cuts the file into fixed-size chunks first and
+runs the pipeline of §4.1 over each chunk on its own, so the chunk covering an
+offset opens without the rest of the file existing.
+
+```
+Offset  Size   Field                          Cleartext header, also GCM
+──────────────────────────────────────────────  associated data
+0x00    4      Magic "SAND"
+0x04    1      Version (3)
+0x05    1      PartNumber (1..3)
+0x06    16     ArchiveID
+0x16    4      ChunkIndex
+0x1A    12     AES-GCM nonce
+──────────────────────────────────────────────
+0x26    4      PayloadSize
+0x2A    N      Ciphertext + 16-byte tag
+                 └─ 32   OriginalHash (SHA-256, the whole file)
+                    8    OriginalSize   (the whole file)
+                    8    CompressedSize (this chunk)
+                    1    WasPadded      (this chunk)
+                    4    ChunkCount
+                    4    ChunkSize      (plaintext, fixed)
+                    2    FilenameLength
+                    var  Filename
+                    var  this part's share of this chunk
+```
+
+The header loses the salt and the Argon2 parameters and gains the chunk index,
+because the two answer to different key management: version 2 stretches a
+password, version 3 derives from the vault's data key (§6.2). That is also why
+**standalone mode keeps writing version 2** — it has no vault and no data key,
+so a password is genuinely all it has.
+
+`ChunkSize` is the **plaintext** length of every chunk but the last, which makes
+the chunk holding an offset that offset divided by it. Recording it rather than
+inferring it is the point: a seek must not have to read an index to find out
+where to look.
+
+The archive description is repeated in every part of every chunk. That is
+`ChunkCount × 3` copies of about a hundred bytes — against a 16 MiB chunk,
+nothing — and it keeps the property the format had before: any two parts of any
+one chunk still say which file they came from.
+
+Two costs are worth naming. Per-chunk compression gives up whatever ratio a
+zstd stream would have found across a chunk boundary, which for the video this
+exists to serve is nothing and for a large text file is a little. And the
+whole-file hash can no longer be checked on a partial read — see §6.4.
 
 ---
 
@@ -851,7 +949,12 @@ sand/
 
 ## 15. Not Built
 
-- **Streaming / chunked processing** for files larger than available RAM
+- **Streaming / chunked processing** for files larger than available RAM. The
+  on-disk format for it exists (§7.1) and is tested, but nothing writes or reads
+  it yet: the vault still stores and gathers whole files, so an upload and a
+  read are both still bounded by RAM. The reader over it is the next piece.
+- **A filesystem view** — WebDAV, and a FUSE mount behind it for clients that
+  need a real path rather than a URL
 - **Repair** — re-uploading a missing part from the two that survive, rather
   than re-uploading the whole file
 - **Configurable N-of-M** via Reed–Solomon instead of fixed 2-of-3
