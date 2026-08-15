@@ -1,8 +1,10 @@
 package vault
 
 import (
+	"bytes"
 	"container/list"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -291,4 +293,44 @@ func (r *ChunkedReader) chunkAt(ctx context.Context, index int) ([]byte, error) 
 // the chunks it lands in.
 func (r *ChunkedReader) SectionReader() *io.SectionReader {
 	return io.NewSectionReader(r, 0, r.entry.Size)
+}
+
+// ctxReaderAt carries a caller's context into ReadAt, which io.SectionReader
+// has nowhere to put. Without it a client that hangs up mid-seek would leave
+// the gathers it started running to completion against three cloud accounts.
+type ctxReaderAt struct {
+	ctx    context.Context
+	reader *ChunkedReader
+}
+
+func (c ctxReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	return c.reader.ReadAtContext(c.ctx, p, off)
+}
+
+// OpenReadSeeker reads a stored file however it happens to be stored: at an
+// offset when it is chunked, and from a rebuilt copy when it is not.
+//
+// It exists because a caller serving HTTP ranges — or a filesystem — wants one
+// answer to "let me read this file", not a branch on a storage detail. OpenReader
+// stays the narrower door for a caller that specifically needs cheap seeks and
+// would rather be told when it cannot have them.
+//
+// A file still stored whole is gathered in full and served from memory, which
+// is what reading one has always cost. Reading it is also what schedules its
+// conversion, so the fallback stops being taken for that file shortly after.
+func (v *Vault) OpenReadSeeker(ctx context.Context, id string) (io.ReadSeeker, *Entry, error) {
+	reader, err := v.OpenReader(id)
+	if err == nil {
+		return io.NewSectionReader(
+			ctxReaderAt{ctx: ctx, reader: reader}, 0, reader.Size()), reader.Entry(), nil
+	}
+	if errors.Is(err, ErrLocked) {
+		return nil, nil, err
+	}
+
+	data, entry, err := v.Fetch(ctx, id)
+	if err != nil {
+		return nil, nil, err
+	}
+	return bytes.NewReader(data), entry, nil
 }

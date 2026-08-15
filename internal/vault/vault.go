@@ -288,6 +288,39 @@ func (v *Vault) Unlock(password string) error {
 	return nil
 }
 
+// VerifyPassword reports whether a password opens this vault, without changing
+// anything about it.
+//
+// Unlock is not a substitute. It adopts fresh keys, resets the provider cache
+// and schedules a manifest backup push to every connected account — reasonable
+// once, when someone signs in, and ruinous as the answer to "is this password
+// right?" on a request that arrives hundreds of times while a film plays.
+//
+// It still costs a full Argon2id pass, which is what makes guessing expensive
+// and is exactly why a caller checking repeatedly should remember the answer
+// rather than asking again.
+func (v *Vault) VerifyPassword(password string) error {
+	v.mu.RLock()
+	store := v.store
+	v.mu.RUnlock()
+
+	if store == nil {
+		sf, err := readStore(v.path)
+		if err != nil {
+			return err
+		}
+		store = sf
+	}
+
+	u, err := unsealStore(store, password)
+	if err != nil {
+		return err
+	}
+	// Nothing here is adopted, so every key it produced is wiped.
+	u.zero()
+	return nil
+}
+
 // Lock discards the in-memory keys and decrypted index.
 func (v *Vault) Lock() {
 	v.mu.Lock()
@@ -853,6 +886,33 @@ func (v *Vault) Entry(id string) (*Entry, error) {
 		return nil, fmt.Errorf("no such file: %s", id)
 	}
 	return e, nil
+}
+
+// EntryByPath looks a file up by its full browser path rather than its ID,
+// which is what a caller working in paths — a filesystem view — has to hand.
+func (v *Vault) EntryByPath(path string) (*Entry, error) {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	if v.dataKey == nil {
+		return nil, ErrLocked
+	}
+
+	e := v.manifest.ByPath(path)
+	if e == nil {
+		return nil, fmt.Errorf("no such file: %s", path)
+	}
+	return e, nil
+}
+
+// FolderExists reports whether a folder is in the index. A locked vault knows
+// nothing, so it answers false rather than guessing.
+func (v *Vault) FolderExists(dir string) bool {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	if v.dataKey == nil {
+		return false
+	}
+	return v.manifest.FolderExists(CleanDir(dir))
 }
 
 // Mkdir creates a folder.

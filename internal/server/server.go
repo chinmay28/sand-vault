@@ -22,8 +22,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/chinmay28/sand-vault/internal/davfs"
 	"github.com/chinmay28/sand-vault/internal/vault"
 	"github.com/chinmay28/sand-vault/internal/version"
 )
@@ -45,10 +47,30 @@ type Server struct {
 	// MaxUploadSize caps a single multipart upload request.
 	MaxUploadSize int64
 
+	// WebDAV mounts the vault as a WebDAV share at WebDAVPrefix.
+	//
+	// Off by default because it is a second way in, authenticated by the vault
+	// password over HTTP Basic — which on a plain listener crosses the network
+	// in the clear on every request, not only at sign-in.
+	WebDAV bool
+
+	// WebDAVPrefix is the path the share is mounted under. Empty uses
+	// DefaultWebDAVPrefix.
+	WebDAVPrefix string
+
 	vault      *vault.Vault
 	sessions   *sessionStore
 	oauthFlows *oauthFlowStore
+
+	// davActivity is when a WebDAV request last arrived. A mounted share has no
+	// browser session to keep it alive, so without this the vault would lock
+	// itself halfway through a film.
+	davMu       sync.Mutex
+	davActivity time.Time
 }
+
+// DefaultWebDAVPrefix is where the share is mounted unless told otherwise.
+const DefaultWebDAVPrefix = "/dav"
 
 // DefaultPort is the port `sand serve` binds unless told otherwise.
 const DefaultPort = 8123
@@ -117,7 +139,8 @@ func (s *Server) Vault() (*vault.Vault, error) {
 // Handler builds the full route table. It is exported so tests can drive the
 // server without binding a port.
 func (s *Server) Handler() (http.Handler, error) {
-	if _, err := s.Vault(); err != nil {
+	v, err := s.Vault()
+	if err != nil {
 		return nil, err
 	}
 	if s.sessions == nil {
@@ -128,6 +151,23 @@ func (s *Server) Handler() (http.Handler, error) {
 	}
 
 	mux := http.NewServeMux()
+
+	// --- WebDAV: the vault as a mountable share, off unless asked for -----
+	if s.WebDAV {
+		prefix := s.webdavPrefix()
+		dav, err := davfs.Handler(v, davfs.Options{
+			Prefix:     prefix,
+			Realm:      "SAND Vault",
+			OnActivity: s.noteDAVActivity,
+		})
+		if err != nil {
+			return nil, err
+		}
+		// Both forms: a client asking about the share itself sends the bare
+		// prefix, and everything inside it arrives with the trailing slash.
+		mux.Handle(prefix, dav)
+		mux.Handle(prefix+"/", dav)
+	}
 
 	// --- Public: no session required -------------------------------------
 	mux.HandleFunc("GET /api/health", handleHealth)
@@ -286,6 +326,15 @@ func (s *Server) Start() error {
 		log.Printf("WARNING: bound to %s — the vault password and decrypted files "+
 			"will cross the network in the clear unless you put TLS in front of it", s.Bind)
 	}
+	if s.WebDAV {
+		log.Printf("WebDAV share at http://%s%s/ — mount it with any username and the vault password",
+			addr, s.webdavPrefix())
+		if warnsOnBind(s.Bind) {
+			log.Print("WARNING: WebDAV sends the vault password on every single request, " +
+				"not once at sign-in, so serving it without TLS exposes the password far " +
+				"more than the browser does — see scripts/nginx-sand.conf, or Tailscale Serve")
+		}
+	}
 
 	server := &http.Server{
 		Addr:              addr,
@@ -315,11 +364,45 @@ func (s *Server) autoLockLoop() {
 		if err != nil || !v.Unlocked() {
 			continue
 		}
-		if s.sessions.sweep() == 0 {
-			v.Lock()
-			log.Print("vault auto-locked after idle timeout")
+		if s.sessions.sweep() > 0 || s.davActive() {
+			continue
 		}
+		v.Lock()
+		log.Print("vault auto-locked after idle timeout")
 	}
+}
+
+// webdavPrefix is the path the share is mounted under, normalized to have a
+// leading slash and no trailing one.
+func (s *Server) webdavPrefix() string {
+	prefix := s.WebDAVPrefix
+	if prefix == "" {
+		prefix = DefaultWebDAVPrefix
+	}
+	if !strings.HasPrefix(prefix, "/") {
+		prefix = "/" + prefix
+	}
+	return strings.TrimSuffix(prefix, "/")
+}
+
+// noteDAVActivity records that the share was used just now.
+func (s *Server) noteDAVActivity() {
+	s.davMu.Lock()
+	s.davActivity = time.Now()
+	s.davMu.Unlock()
+}
+
+// davActive reports whether the share has been used inside the idle timeout,
+// which counts as use in exactly the way a live browser session does.
+func (s *Server) davActive() bool {
+	idle := s.IdleTimeout
+	if idle <= 0 {
+		idle = DefaultIdleTimeout
+	}
+
+	s.davMu.Lock()
+	defer s.davMu.Unlock()
+	return !s.davActivity.IsZero() && time.Since(s.davActivity) < idle
 }
 
 // requireSession rejects requests without a valid session, or when the vault

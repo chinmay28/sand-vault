@@ -12,9 +12,11 @@ import (
 
 func serveCmd() *cobra.Command {
 	var (
-		port        int
-		bind        string
-		idleTimeout time.Duration
+		port         int
+		bind         string
+		idleTimeout  time.Duration
+		webdav       bool
+		webdavPrefix string
 	)
 
 	cmd := &cobra.Command{
@@ -22,10 +24,12 @@ func serveCmd() *cobra.Command {
 		Short: "Start the local web server and file browser",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s := &server.Server{
-				Bind:        bind,
-				Port:        port,
-				VaultPath:   vaultPath(cmd),
-				IdleTimeout: idleTimeout,
+				Bind:         bind,
+				Port:         port,
+				VaultPath:    vaultPath(cmd),
+				IdleTimeout:  idleTimeout,
+				WebDAV:       webdav,
+				WebDAVPrefix: webdavPrefix,
 			}
 			return s.Start()
 		},
@@ -38,6 +42,14 @@ func serveCmd() *cobra.Command {
 	cmd.Flags().StringVar(&bind, "bind", server.DefaultBind, "address to bind to")
 	cmd.Flags().DurationVar(&idleTimeout, "idle-timeout", server.DefaultIdleTimeout,
 		"re-lock the vault after this much inactivity")
+	// Off by default: it is a second way into the vault, authenticated by the
+	// vault password on every request rather than once at sign-in, so on a plain
+	// listener it crosses the network in the clear far more often than the web
+	// UI does. Start() says so when it is switched on without TLS.
+	cmd.Flags().BoolVar(&webdav, "webdav", false,
+		"also serve the vault as a WebDAV share, for mounting in a file manager or player")
+	cmd.Flags().StringVar(&webdavPrefix, "webdav-path", server.DefaultWebDAVPrefix,
+		"URL path to mount the WebDAV share under")
 	return cmd
 }
 
