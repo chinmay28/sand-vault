@@ -169,8 +169,11 @@ the parts that have not moved.
 ### 3.4 Locking
 
 Unlocking derives the vault key, decrypts every section, and holds the keys in
-memory. Locking zeroes them and drops the decrypted index. A locked vault can
-list nothing and fetch nothing — there is no cached view to fall back on.
+memory. Locking zeroes them and drops the decrypted index, the cached
+thumbnails, and the cached chunks (§4.3) — everything derived from the files
+themselves goes with the keys. A locked vault can list nothing and fetch
+nothing: there is no cached view to fall back on, and a reader opened before the
+lock stops answering rather than continuing from a key it captured.
 
 The server re-locks automatically once every browser session has been idle past
 the timeout (default 30 minutes, `--idle-timeout`).
@@ -339,7 +342,39 @@ Reads are a **race, not a sequence**. All parts are requested simultaneously and
 the fetch completes as soon as two have arrived, so a slow or unreachable
 account costs nothing on the read path — it simply loses the race.
 
-### 4.3 Reconstruction truth table
+### 4.3 Reading at an offset
+
+A chunked file (§7.1) can be read where it is wanted instead of from the start.
+`Vault.OpenReader` returns a `ChunkedReader`, which is an `io.ReaderAt`: given
+an offset it divides by the chunk size, gathers that one chunk by the race
+above, and returns the bytes inside it.
+
+`io.ReaderAt` rather than `io.ReadSeeker` on purpose. A FUSE mount is handed an
+offset and a length directly; an `http.File`'s seek-then-read is a thin wrapper
+over one, which `SectionReader` supplies. Making the primitive the narrower of
+the two means a filesystem layer stays an adapter rather than a second
+implementation of the same thing.
+
+Two things sit behind it:
+
+- **A bounded cache of decrypted chunks**, shared by every reader on the vault.
+  A player scrubbing through a film asks for the same chunk repeatedly, and
+  refetching it from two clouds each time would make seeking unusable. It is
+  measured in bytes rather than chunks, because chunk size is per file. It
+  holds plaintext, so locking the vault drops it (§3.4) — released rather than
+  overwritten, since a reader may still be copying out of a chunk it was handed.
+- **Single-flight per chunk**, because a player opens several connections at
+  once and would otherwise gather the same chunk once per connection.
+
+The reader holds no key. Every cache miss re-reads the vault's data key under
+the lock and zeroes its copy afterwards, so a reader left open across a lock
+stops being able to read rather than carrying on from a key it captured.
+
+A file stored whole has no chunks to fetch individually, so `OpenReader` refuses
+it rather than quietly rebuilding the whole thing behind an interface that
+promises cheap seeks.
+
+### 4.4 Reconstruction truth table
 
 | p1 | p2 | p3 | Method |
 |:--:|:--:|:--:|:---|
@@ -943,6 +978,12 @@ sand/
   commit. Browsing stays responsive while a large upload is in flight.
 - `liveMu` is a separate leaf lock over the cache of constructed providers, so
   warming that cache can never deadlock against `mu`.
+- The chunk cache, the per-chunk single-flight and the background rechunk queue
+  each carry their own leaf lock, on the same terms: taken after `mu` and never
+  around a call that takes it. The rechunk queue follows the manifest backup
+  syncer exactly — scheduling happens while `mu` is held, the work runs on its
+  own goroutine once it is released, and `AwaitRechunk` is how a caller waits
+  for it to settle.
 - Re-checks after re-acquiring: the vault may have been locked mid-transfer, in
   which case the freshly written parts are rolled back.
 
@@ -955,22 +996,27 @@ sand/
 - Disconnecting an account is refused when it would leave any file with fewer
   than two reachable parts, unless forced. Either way the shard records
   pointing at that account are pruned so the index keeps telling the truth.
-- A file is held entirely in memory during upload and rebuild. Streaming and
-  chunked processing for files larger than RAM is the main thing still on the
-  list (§15).
+- `Upload` and `Fetch` hold a file entirely in memory. `UploadStream` and
+  `OpenReader` (§4.3) do not — they are bounded by the chunk window — but the
+  HTTP API still goes through the older pair, so the browser is still the
+  whole-file path (§15).
+- Reading a file that is still stored whole converts it to chunks afterwards,
+  in the background, one file at a time. It costs a download and an upload of
+  whatever gets read, so `SetRechunkOnRead(false)` turns it off on a metered
+  connection.
 
 ---
 
 ## 15. Not Built
 
-- **Streaming** for files larger than available RAM. The vault now stores and
-  reads in chunks (§7.1), so the *format* no longer stands in the way — but
-  `Upload` still takes a whole `[]byte` and `Fetch` still returns one, so both
-  ends are bounded by RAM as before. What is missing is the API over the
-  format: a reader that answers an offset without rebuilding the file, and a
-  writer that takes an `io.Reader`.
 - **A filesystem view** — WebDAV, and a FUSE mount behind it for clients that
-  need a real path rather than a URL
+  need a real path rather than a URL. `ChunkedReader` (§4.3) is the primitive
+  both would sit on; nothing exposes it over a protocol yet.
+- **Whole-file `Upload` and `Fetch` are still whole-file.** `UploadStream` and
+  `ChunkedReader` bound their memory by the chunk window, but the older pair
+  still take and return a complete `[]byte`, and the HTTP API still uses them.
+  A file larger than RAM is storable and readable through the streaming pair
+  only.
 - **Repair** — re-uploading a missing part from the two that survive, rather
   than re-uploading the whole file
 - **Configurable N-of-M** via Reed–Solomon instead of fixed 2-of-3

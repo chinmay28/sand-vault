@@ -76,12 +76,14 @@ func (v *Vault) scatterChunked(ctx context.Context, name string, data []byte, pr
 	out.chunkSize = int64(chunks.ChunkSize)
 	out.chunkCount = int(chunks.ChunkCount)
 
-	written, failures, err := v.putChunks(ctx, target, plan, chunks, func(index uint32) ([]byte, error) {
-		size, err := chunks.PlaintextSize(index)
+	next := uint32(0)
+	written, failures, err := v.putChunks(ctx, target, plan, chunks, func() ([]byte, error) {
+		size, err := chunks.PlaintextSize(next)
 		if err != nil {
 			return nil, err
 		}
-		offset := uint64(index) * uint64(chunks.ChunkSize)
+		offset := uint64(next) * uint64(chunks.ChunkSize)
+		next++
 		return data[offset : offset+size], nil
 	})
 	if err != nil {
@@ -116,18 +118,24 @@ func (v *Vault) scatterChunked(ctx context.Context, name string, data []byte, pr
 }
 
 // putChunks encodes and pushes every chunk of an archive, drawing each chunk's
-// plaintext from chunkAt.
+// plaintext from next.
+//
+// next is called from this goroutine only, once per chunk and in order, so it
+// can be a read from a stream as easily as a slice of something already in
+// memory. Encoding and uploading then happen on a bounded window of goroutines
+// behind it, which is what keeps a large file from becoming a long sequence of
+// round trips without letting it become an unbounded number of them either.
 //
 // It returns one shard per part that landed on *every* chunk, and a reason per
 // part that did not. An error means the upload cannot be salvaged at all —
-// encoding failed, or the vault went away underneath it — and the caller erases
-// what was written.
+// reading or encoding failed, or the vault went away underneath it — and the
+// caller erases what was written.
 func (v *Vault) putChunks(
 	ctx context.Context,
 	target *transferTarget,
 	plan Plan,
 	chunks archive.ChunkPlan,
-	chunkAt func(index uint32) ([]byte, error),
+	next func() ([]byte, error),
 ) ([]Shard, map[int]string, error) {
 	var mu sync.Mutex
 	sizes := map[int]int64{}
@@ -148,30 +156,36 @@ func (v *Vault) putChunks(
 			break
 		}
 
-		outer.Add(1)
-		window <- struct{}{}
-
-		go func(index uint32) {
-			defer outer.Done()
-			defer func() { <-window }()
-
-			plaintext, err := chunkAt(index)
-			if err == nil {
-				var encoded *archive.EncodedChunk
-				encoded, err = archive.EncodeChunk(chunks, index, plaintext, target.dataKey)
-				if err == nil {
-					v.putChunkParts(putCtx, target, plan, chunks.ArchiveID, index, encoded, &mu, sizes, failures)
-					return
-				}
-			}
-
+		plaintext, err := next()
+		if err != nil {
 			mu.Lock()
 			if fatal == nil {
 				fatal = fmt.Errorf("chunk %d: %w", index, err)
 				cancel()
 			}
 			mu.Unlock()
-		}(index)
+			break
+		}
+
+		outer.Add(1)
+		window <- struct{}{}
+
+		go func(index uint32, plaintext []byte) {
+			defer outer.Done()
+			defer func() { <-window }()
+
+			encoded, err := archive.EncodeChunk(chunks, index, plaintext, target.dataKey)
+			if err != nil {
+				mu.Lock()
+				if fatal == nil {
+					fatal = fmt.Errorf("chunk %d: %w", index, err)
+					cancel()
+				}
+				mu.Unlock()
+				return
+			}
+			v.putChunkParts(putCtx, target, plan, chunks.ArchiveID, index, encoded, &mu, sizes, failures)
+		}(index, plaintext)
 	}
 
 	outer.Wait()
