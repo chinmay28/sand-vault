@@ -221,6 +221,10 @@ func TestRecoverAfterLosingTheVault(t *testing.T) {
 	if err := fresh.Init("a completely different password", PolicyStrict); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
+	// This second vault pushes its own manifest backups into the same folders,
+	// on its own goroutine; waiting on the original's is not enough to stop it
+	// writing into directories being cleaned up.
+	t.Cleanup(fresh.AwaitBackupSync)
 	for i, root := range roots {
 		if _, err := fresh.AddProvider(ctx, provider.Config{
 			Kind:    provider.KindLocal,
@@ -328,35 +332,42 @@ func TestSnapshotShardPasswordOpensStoredParts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenBackup: %v", err)
 	}
-	password, err := snapshot.ShardPassword()
+	dataKey, err := snapshot.DataKeyForEntry(entry)
 	if err != nil {
-		t.Fatalf("ShardPassword: %v", err)
+		t.Fatalf("DataKeyForEntry: %v", err)
 	}
 
 	// Read the parts straight off the "accounts", with no vault involved, the
-	// way an offline restore would.
-	var blobs [][]byte
-	for _, root := range roots {
-		for _, shard := range entry.Shards {
-			data, err := os.ReadFile(filepath.Join(root, shard.Key))
-			if err == nil {
-				blobs = append(blobs, data)
+	// way an offline restore would, and rebuild the file a chunk at a time.
+	var rebuilt []byte
+	for index := 0; index < entry.ChunkCount; index++ {
+		var blobs [][]byte
+		for _, root := range roots {
+			for _, shard := range entry.Shards {
+				data, err := os.ReadFile(filepath.Join(root,
+					ChunkShardKey(entry.ArchiveID, index, shard.Part)))
+				if err == nil {
+					blobs = append(blobs, data)
+				}
 			}
 		}
-	}
-	if len(blobs) < archive.MinPartsToRestore {
-		t.Fatalf("found %d parts on disk, need %d", len(blobs), archive.MinPartsToRestore)
+		if len(blobs) < archive.MinPartsToRestore {
+			t.Fatalf("chunk %d: found %d parts on disk, need %d",
+				index, len(blobs), archive.MinPartsToRestore)
+		}
+
+		decoded, err := archive.DecodeChunk(blobs[:archive.MinPartsToRestore], dataKey)
+		if err != nil {
+			t.Fatalf("chunk %d with the recovered key: %v", index, err)
+		}
+		if decoded.Meta.Filename != "offline.txt" {
+			t.Errorf("chunk %d names %q, want offline.txt", index, decoded.Meta.Filename)
+		}
+		rebuilt = append(rebuilt, decoded.Data...)
 	}
 
-	decoded, err := archive.DecodeBytes(blobs[:archive.MinPartsToRestore], password)
-	if err != nil {
-		t.Fatalf("DecodeBytes with the recovered secret: %v", err)
-	}
-	if !bytes.Equal(decoded.Data, payload) {
+	if !bytes.Equal(rebuilt, payload) {
 		t.Fatal("the offline restore does not match the original")
-	}
-	if decoded.Filename != "offline.txt" {
-		t.Errorf("filename = %q, want offline.txt", decoded.Filename)
 	}
 }
 

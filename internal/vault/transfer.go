@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/chinmay28/sand-vault/internal/archive"
+	"github.com/chinmay28/sand-vault/internal/crypto"
 	"github.com/chinmay28/sand-vault/internal/provider"
 	"github.com/google/uuid"
 )
@@ -58,8 +60,8 @@ func (v *Vault) Upload(ctx context.Context, dir, name string, data []byte, opts 
 
 	// Either the upload's own choice or, left to itself, the vault's default —
 	// and whichever it turns out to be is followed exactly. Only a vault with
-	// neither picks accounts of its own, inside scatter.
-	placed, err := v.scatter(ctx, name, data, opts.Accounts, true)
+	// neither picks accounts of its own, inside the scatter.
+	placed, err := v.scatterChunked(ctx, name, data, opts.Accounts, true, v.uploadChunkSize())
 	if err != nil {
 		return nil, placed.warnings, err
 	}
@@ -78,12 +80,14 @@ func (v *Vault) Upload(ctx context.Context, dir, name string, data []byte, opts 
 		CreatedAt:  now,
 		ModifiedAt: now,
 		Shards:     shards,
+		ChunkSize:  placed.chunkSize,
+		ChunkCount: placed.chunkCount,
 	}
 
 	v.mu.Lock()
 	if v.dataKey == nil {
 		v.mu.Unlock()
-		v.deleteShards(context.WithoutCancel(ctx), shards)
+		v.deleteEntryShards(context.WithoutCancel(ctx), entry)
 		return nil, warnings, ErrLocked
 	}
 
@@ -108,14 +112,14 @@ func (v *Vault) Upload(ctx context.Context, dir, name string, data []byte, opts 
 	v.mu.Unlock()
 
 	if err != nil {
-		v.deleteShards(context.WithoutCancel(ctx), shards)
+		v.deleteEntryShards(context.WithoutCancel(ctx), entry)
 		return nil, warnings, err
 	}
 
 	// The replaced version's parts are now unreferenced; clean them up on a
 	// best-effort basis so a failure here does not fail the upload.
 	if replaced != nil {
-		v.deleteShards(context.WithoutCancel(ctx), replaced.Shards)
+		v.deleteEntryShards(context.WithoutCancel(ctx), replaced)
 		// Its thumbnail showed the old contents and is keyed by an ID nothing
 		// points at any more.
 		v.removeThumbs(context.WithoutCancel(ctx), dir, replaced.ID)
@@ -163,6 +167,95 @@ type placement struct {
 	originalHash [32]byte
 	shards       []Shard
 	warnings     []string
+
+	// chunkSize and chunkCount describe how the file was cut up, and are set
+	// only by the chunked path. Zero means the file was stored whole.
+	chunkSize  int64
+	chunkCount int
+}
+
+// transferTarget is the snapshot a scatter works from: the keys in force and
+// the accounts in play, taken from the vault in one pass under the lock so that
+// the network round-trips which follow can run without holding it (§13).
+//
+// The two scatter paths share it because they must make the same decision.
+// Which accounts may hold a file is the question SAND exists to answer, and a
+// chunked upload has to answer it once for the file rather than once per chunk
+// — otherwise a large file would drift across every connected account as it
+// uploaded, which is precisely what the placement policy forbids.
+type transferTarget struct {
+	keyID         string
+	shardPassword string
+	dataKey       []byte
+	policy        Policy
+	ids           []string
+	byID          map[string]provider.Config
+	preferred     []string
+
+	// chosen is set only when the caller named accounts exactly, in which case
+	// it is the whole answer and nothing is added to it.
+	chosen []string
+}
+
+// snapshotTarget takes what a scatter needs from the vault and settles which
+// accounts are in play, before anything is encoded: a selection naming an
+// account that is not connected is a mistake to report, not work to do.
+func (v *Vault) snapshotTarget(preferred []string, exact bool) (*transferTarget, error) {
+	v.mu.RLock()
+	if v.dataKey == nil {
+		v.mu.RUnlock()
+		return nil, ErrLocked
+	}
+	t := &transferTarget{
+		keyID:         v.dataKeyID,
+		shardPassword: v.shardPasswordLocked(),
+		dataKey:       append([]byte(nil), v.dataKey...),
+		policy:        v.store.Policy,
+	}
+	defaults := append([]string(nil), v.store.DefaultAccounts...)
+	configs := append([]provider.Config(nil), v.providers...)
+	v.mu.RUnlock()
+
+	if len(configs) == 0 {
+		return nil, fmt.Errorf("connect at least one cloud account before uploading")
+	}
+
+	t.byID = make(map[string]provider.Config, len(configs))
+	t.ids = make([]string, 0, len(configs))
+	for _, cfg := range configs {
+		t.ids = append(t.ids, cfg.ID)
+		t.byID[cfg.ID] = cfg
+	}
+
+	t.preferred = preferred
+	if len(t.preferred) == 0 {
+		// Nothing was chosen for this file, so the vault's standing answer
+		// applies. Anything in it that has since been disconnected is dropped
+		// rather than failing the upload: it is a leftover, not a request.
+		for _, id := range defaults {
+			if _, ok := t.byID[id]; ok {
+				t.preferred = append(t.preferred, id)
+			}
+		}
+	}
+
+	if exact && len(t.preferred) > 0 {
+		var err error
+		if t.chosen, err = resolveAccounts(t.preferred, t.byID); err != nil {
+			return nil, err
+		}
+	}
+	return t, nil
+}
+
+// planFor decides which account holds which part. The seed rotates the starting
+// account per file; see SelectAccounts and BuildPlan.
+func (t *transferTarget) planFor(seed uint64) (Plan, error) {
+	chosen := t.chosen
+	if chosen == nil {
+		chosen = SelectAccounts(t.ids, t.preferred, seed)
+	}
+	return BuildPlan(chosen, t.policy, seed)
 }
 
 // scatter encodes data into encrypted parts under the vault's active data key
@@ -187,53 +280,16 @@ type placement struct {
 // landing it erases the ones that did and returns an error, so a caller never
 // has to clean up after a failure of its own.
 func (v *Vault) scatter(ctx context.Context, name string, data []byte, preferred []string, exact bool) (placement, error) {
-	// Snapshot everything the transfer needs, then release the lock: the
-	// network round-trips below must not block browsing.
-	v.mu.RLock()
-	if v.dataKey == nil {
-		v.mu.RUnlock()
-		return placement{}, ErrLocked
+	target, err := v.snapshotTarget(preferred, exact)
+	if err != nil {
+		return placement{}, err
 	}
-	out := placement{keyID: v.dataKeyID}
-	shardPassword := v.shardPasswordLocked()
-	policy := v.store.Policy
-	defaults := append([]string(nil), v.store.DefaultAccounts...)
-	configs := append([]provider.Config(nil), v.providers...)
-	v.mu.RUnlock()
+	defer crypto.ZeroBytes(target.dataKey)
 
-	if len(configs) == 0 {
-		return out, fmt.Errorf("connect at least one cloud account before uploading")
-	}
+	out := placement{keyID: target.keyID}
+	byID := target.byID
 
-	byID := make(map[string]provider.Config, len(configs))
-	ids := make([]string, 0, len(configs))
-	for _, cfg := range configs {
-		ids = append(ids, cfg.ID)
-		byID[cfg.ID] = cfg
-	}
-
-	if len(preferred) == 0 {
-		// Nothing was chosen for this file, so the vault's standing answer
-		// applies. Anything in it that has since been disconnected is dropped
-		// rather than failing the upload: it is a leftover, not a request.
-		for _, id := range defaults {
-			if _, ok := byID[id]; ok {
-				preferred = append(preferred, id)
-			}
-		}
-	}
-
-	// Checked before the file is encoded rather than after: a selection naming
-	// an account that is not connected is a mistake to report, not work to do.
-	var chosen []string
-	if exact && len(preferred) > 0 {
-		var err error
-		if chosen, err = resolveAccounts(preferred, byID); err != nil {
-			return out, err
-		}
-	}
-
-	encoded, err := archive.EncodeBytes(data, name, shardPassword)
+	encoded, err := archive.EncodeBytes(data, name, target.shardPassword)
 	if err != nil {
 		return out, err
 	}
@@ -244,11 +300,7 @@ func (v *Vault) scatter(ctx context.Context, name string, data []byte, preferred
 	// of them receives part 1, so load spreads evenly instead of every upload
 	// landing the same way on the same accounts.
 	seed := binary.BigEndian.Uint64(encoded.ArchiveID[:8])
-	if chosen == nil {
-		chosen = SelectAccounts(ids, preferred, seed)
-	}
-
-	plan, err := BuildPlan(chosen, policy, seed)
+	plan, err := target.planFor(seed)
 	if err != nil {
 		return out, err
 	}
@@ -331,11 +383,19 @@ func (v *Vault) Fetch(ctx context.Context, id string) ([]byte, *Entry, error) {
 		v.mu.RUnlock()
 		return nil, nil, fmt.Errorf("no such file: %s", id)
 	}
-	shards := append([]Shard(nil), entry.Shards...)
-	keyID, label := entry.KeyID, entry.Path()
+	snapshot := *entry
+	snapshot.Shards = append([]Shard(nil), entry.Shards...)
 	v.mu.RUnlock()
 
-	data, err := v.gather(ctx, shards, keyID, label)
+	if snapshot.Chunked() {
+		data, err := v.gatherChunkedFile(ctx, &snapshot)
+		if err != nil {
+			return nil, nil, err
+		}
+		return data, entry, nil
+	}
+
+	data, err := v.gather(ctx, snapshot.Shards, snapshot.KeyID, snapshot.Path())
 	if err != nil {
 		return nil, nil, err
 	}
@@ -439,11 +499,12 @@ func (v *Vault) Delete(ctx context.Context, id string) ([]string, error) {
 		v.mu.RUnlock()
 		return nil, fmt.Errorf("no such file: %s", id)
 	}
-	shards := append([]Shard(nil), entry.Shards...)
+	doomed := *entry
+	doomed.Shards = append([]Shard(nil), entry.Shards...)
 	dir := entry.Dir
 	v.mu.RUnlock()
 
-	warnings := v.deleteShards(ctx, shards)
+	warnings := v.deleteEntryShards(ctx, &doomed)
 
 	v.mu.Lock()
 	if v.dataKey == nil {
@@ -492,7 +553,7 @@ func (v *Vault) Rmdir(ctx context.Context, dir string, recursive bool) ([]string
 	var warnings []string
 	var ids []string
 	for _, e := range doomed {
-		warnings = append(warnings, v.deleteShards(ctx, e.Shards)...)
+		warnings = append(warnings, v.deleteEntryShards(ctx, e)...)
 		ids = append(ids, e.ID)
 	}
 
@@ -518,8 +579,26 @@ func (v *Vault) Rmdir(ctx context.Context, dir string, recursive bool) ([]string
 	return warnings, nil
 }
 
-// deleteShards erases a set of parts, returning a warning per failure.
+// deleteShards erases a set of parts of a file stored whole, returning a
+// warning per failure. A chunked file has more than one object per part, so it
+// goes through deleteEntryShards instead.
 func (v *Vault) deleteShards(ctx context.Context, shards []Shard) []string {
+	return v.deleteStoredShards(ctx, "", 0, shards)
+}
+
+// deleteEntryShards erases every object an entry occupies, whichever format it
+// was stored in.
+func (v *Vault) deleteEntryShards(ctx context.Context, entry *Entry) []string {
+	return v.deleteStoredShards(ctx, entry.ArchiveID, entry.ChunkCount, entry.Shards)
+}
+
+// deleteStoredShards erases the objects a set of parts occupies.
+//
+// A chunkCount of zero is a file stored whole: one object per part, named by
+// the shard itself. Anything higher is a chunked file, where a shard stands for
+// one object per chunk — all of which have to go, or disconnecting the account
+// later reports space held by a file that no longer exists.
+func (v *Vault) deleteStoredShards(ctx context.Context, archiveID string, chunkCount int, shards []Shard) []string {
 	if len(shards) == 0 {
 		return nil
 	}
@@ -552,7 +631,7 @@ func (v *Vault) deleteShards(ctx context.Context, shards []Shard) []string {
 
 			p, err := v.buildProvider(cfg)
 			if err == nil {
-				err = p.Delete(ctx, shard.Key)
+				err = deleteShardObjects(ctx, p, archiveID, chunkCount, shard)
 			}
 			if err != nil {
 				mu.Lock()
@@ -565,6 +644,43 @@ func (v *Vault) deleteShards(ctx context.Context, shards []Shard) []string {
 
 	wg.Wait()
 	return warnings
+}
+
+// deleteShardObjects erases the one object a whole-file shard names, or every
+// chunk's object when the file was stored chunked.
+//
+// An object that is already gone is not a failure: rollback runs over chunks
+// that may never have been written, and erasing twice must be safe.
+func deleteShardObjects(ctx context.Context, p provider.Provider, archiveID string, chunkCount int, shard Shard) error {
+	if chunkCount <= 0 {
+		return p.Delete(ctx, shard.Key)
+	}
+
+	var mu sync.Mutex
+	var firstErr error
+	var wg sync.WaitGroup
+	window := make(chan struct{}, chunkUploadWindow*archive.PartCount)
+
+	for index := 0; index < chunkCount; index++ {
+		wg.Add(1)
+		window <- struct{}{}
+		go func(index int) {
+			defer wg.Done()
+			defer func() { <-window }()
+
+			err := p.Delete(ctx, ChunkShardKey(archiveID, index, shard.Part))
+			if err == nil || errors.Is(err, provider.ErrNotFound) {
+				return
+			}
+			mu.Lock()
+			if firstErr == nil {
+				firstErr = fmt.Errorf("chunk %d: %w", index, err)
+			}
+			mu.Unlock()
+		}(index)
+	}
+	wg.Wait()
+	return firstErr
 }
 
 // ShardHealth is the observed state of one stored part.
@@ -581,10 +697,29 @@ type FileHealth struct {
 	Path        string        `json:"path"`
 	Recoverable bool          `json:"recoverable"`
 	Shards      []ShardHealth `json:"shards"`
+
+	// ChunksSampled is how many of a chunked file's chunks were actually
+	// checked, and ChunkCount how many it has. They are equal for a small file
+	// and for one stored whole; where they differ, the answer is drawn from a
+	// sample and Recoverable means "the sampled chunks can be rebuilt".
+	ChunksSampled int `json:"chunks_sampled,omitempty"`
+	ChunkCount    int `json:"chunk_count,omitempty"`
 }
 
-// Health checks every part of a file against the account holding it, without
-// downloading any data.
+// healthSampleLimit caps how many chunks one health check stats per part.
+//
+// Answering exactly would mean a request per chunk per part — for a 40 GB video
+// that is thousands of round trips to draw one row of badges, which is not a
+// question a file listing can afford to ask. A part is written to every chunk or
+// erased from all of them (scatterChunked), so a handful of chunks spread across
+// the file catches a part that never landed as well as a full scan would. What
+// it can miss is damage done later to the middle of a file by something other
+// than SAND; `sand check --all` is the exhaustive answer.
+const healthSampleLimit = 4
+
+// Health checks a file's parts against the accounts holding them, without
+// downloading any data. For a chunked file it samples chunks rather than
+// walking all of them — see healthSampleLimit.
 func (v *Vault) Health(ctx context.Context, id string) (*FileHealth, error) {
 	v.mu.RLock()
 	if v.dataKey == nil {
@@ -597,11 +732,20 @@ func (v *Vault) Health(ctx context.Context, id string) (*FileHealth, error) {
 		return nil, fmt.Errorf("no such file: %s", id)
 	}
 	shards := append([]Shard(nil), entry.Shards...)
-	path := entry.Path()
+	path, archiveID := entry.Path(), entry.ArchiveID
+	chunked, chunkCount := entry.Chunked(), entry.ChunkCount
 	configs := v.configsForLocked(shards)
 	v.mu.RUnlock()
 
-	health := &FileHealth{ID: id, Path: path, Shards: make([]ShardHealth, len(shards))}
+	sample := sampleChunks(chunked, chunkCount)
+	health := &FileHealth{
+		ID: id, Path: path,
+		Shards:        make([]ShardHealth, len(shards)),
+		ChunksSampled: len(sample),
+	}
+	if chunked {
+		health.ChunkCount = chunkCount
+	}
 
 	var wg sync.WaitGroup
 	for i, shard := range shards {
@@ -622,13 +766,27 @@ func (v *Vault) Health(ctx context.Context, id string) (*FileHealth, error) {
 				health.Shards[i].Error = err.Error()
 				return
 			}
-			info, err := p.Stat(ctx, shard.Key)
-			if err != nil {
-				health.Shards[i].Error = err.Error()
-				return
+
+			// A part counts as present only if every sampled chunk has it: one
+			// missing chunk is enough to make the part useless for that stretch
+			// of the file.
+			var total int64
+			for _, index := range sample {
+				key := shard.Key
+				if chunked {
+					key = ChunkShardKey(archiveID, index, shard.Part)
+				}
+				info, err := p.Stat(ctx, key)
+				if err != nil {
+					health.Shards[i].Error = err.Error()
+					return
+				}
+				total += info.Size
 			}
 			health.Shards[i].Present = true
-			health.Shards[i].Size = info.Size
+			// For a chunked file this is what the sample weighed, not the whole
+			// part; the recorded shard size is the figure for that.
+			health.Shards[i].Size = total
 		}(i, shard, cfg)
 	}
 	wg.Wait()
@@ -641,4 +799,27 @@ func (v *Vault) Health(ctx context.Context, id string) (*FileHealth, error) {
 	}
 	health.Recoverable = present >= archive.MinPartsToRestore
 	return health, nil
+}
+
+// sampleChunks picks which chunks a health check stats: all of them for a small
+// file, otherwise the first, the last, and an even spread between, so that a
+// part missing from one end is not missed.
+func sampleChunks(chunked bool, chunkCount int) []int {
+	if !chunked || chunkCount <= 1 {
+		return []int{0}
+	}
+	if chunkCount <= healthSampleLimit {
+		all := make([]int, chunkCount)
+		for i := range all {
+			all[i] = i
+		}
+		return all
+	}
+
+	sample := make([]int, healthSampleLimit)
+	last := healthSampleLimit - 1
+	for i := range sample {
+		sample[i] = i * (chunkCount - 1) / last
+	}
+	return sample
 }

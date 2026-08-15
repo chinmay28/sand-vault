@@ -447,6 +447,10 @@ func TestLockUnlockPersistsIndex(t *testing.T) {
 	if err := reopened.Unlock(testPassword); err != nil {
 		t.Fatalf("Unlock: %v", err)
 	}
+	// Unlocking pushes the manifest backup in the background, and this second
+	// vault has its own goroutine doing it — waiting on the first one is not
+	// enough to keep it from writing into directories being cleaned up.
+	t.Cleanup(reopened.AwaitBackupSync)
 
 	data, fetched, err := reopened.Fetch(ctx, entry.ID)
 	if err != nil {
@@ -503,6 +507,7 @@ func TestChangePasswordKeepsFilesReadable(t *testing.T) {
 	if err := reopened.Unlock("a brand new password"); err != nil {
 		t.Fatalf("Unlock with new password: %v", err)
 	}
+	t.Cleanup(reopened.AwaitBackupSync)
 
 	data, _, err := reopened.Fetch(ctx, entry.ID)
 	if err != nil {
@@ -628,8 +633,13 @@ func TestUploadedShardKeysMatchShardKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
+	if !entry.Chunked() {
+		t.Fatal("an upload should store the file in chunks")
+	}
+	// A shard names its first chunk; the rest follow from the same function, so
+	// nothing has to record a key per chunk.
 	for _, shard := range entry.Shards {
-		if want := ShardKey(entry.ArchiveID, shard.Part); shard.Key != want {
+		if want := ChunkShardKey(entry.ArchiveID, 0, shard.Part); shard.Key != want {
 			t.Errorf("part %d stored under %q, want %q", shard.Part, shard.Key, want)
 		}
 	}

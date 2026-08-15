@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/chinmay28/sand-vault/internal/crypto"
@@ -283,5 +286,95 @@ func TestChunkedPartsAreVersionThree(t *testing.T) {
 		if part.Header.PartNumber != uint8(i+1) {
 			t.Errorf("part at index %d numbers itself %d", i, part.Header.PartNumber)
 		}
+	}
+}
+
+func TestRestoreChunkedRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	data := make([]byte, 5000)
+	if _, err := rand.Read(data); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+
+	_, chunks := encodeAll(t, data, 1024)
+
+	// Two parts of each chunk, the way an offline restore finds them: enough to
+	// rebuild, and deliberately not the same two every time.
+	var paths []string
+	for _, chunk := range chunks {
+		for _, part := range []int{int(chunk.Index) % 3, (int(chunk.Index) + 1) % 3} {
+			path := filepath.Join(dir, fmt.Sprintf("c%d-p%d.sand", chunk.Index, part+1))
+			if err := os.WriteFile(path, chunk.Parts[part], 0o600); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+			paths = append(paths, path)
+		}
+	}
+
+	out := t.TempDir()
+	restored, err := RestoreChunked(paths, testMaster(), out)
+	if err != nil {
+		t.Fatalf("RestoreChunked: %v", err)
+	}
+	got, err := os.ReadFile(restored)
+	if err != nil {
+		t.Fatalf("reading restored file: %v", err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Error("the offline restore does not match the original")
+	}
+}
+
+// A chunk missing from the middle must be refused, not spliced over.
+func TestRestoreChunkedRefusesAGap(t *testing.T) {
+	dir := t.TempDir()
+	data := make([]byte, 4096)
+	_, chunks := encodeAll(t, data, 1024)
+
+	var paths []string
+	for _, chunk := range chunks {
+		if chunk.Index == 2 {
+			continue // the gap
+		}
+		for part := 0; part < 2; part++ {
+			path := filepath.Join(dir, fmt.Sprintf("c%d-p%d.sand", chunk.Index, part+1))
+			if err := os.WriteFile(path, chunk.Parts[part], 0o600); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+			paths = append(paths, path)
+		}
+	}
+
+	if _, err := RestoreChunked(paths, testMaster(), t.TempDir()); err == nil {
+		t.Error("restored an archive with a chunk missing, want an error")
+	}
+}
+
+func TestRestoreChunkedRejectsWholeFileParts(t *testing.T) {
+	dir := t.TempDir()
+	encoded, err := EncodeBytes([]byte("whole file"), "notes.txt", "a password")
+	if err != nil {
+		t.Fatalf("EncodeBytes: %v", err)
+	}
+
+	var paths []string
+	for i := 0; i < 2; i++ {
+		path := filepath.Join(dir, fmt.Sprintf("p%d.sand", i+1))
+		if err := os.WriteFile(path, encoded.Parts[i], 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		paths = append(paths, path)
+	}
+
+	if _, err := RestoreChunked(paths, testMaster(), t.TempDir()); err == nil {
+		t.Error("restored version 2 parts as chunks, want an error")
+	}
+
+	chunked, err := PartsAreChunked(paths[0])
+	if err != nil {
+		t.Fatalf("PartsAreChunked: %v", err)
+	}
+	if chunked {
+		t.Error("a whole-file part reports as chunked")
 	}
 }

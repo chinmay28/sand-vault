@@ -285,32 +285,47 @@ func openManifestFile(path string) (*vault.Snapshot, error) {
 // recovered file. It can carry more than one: a backup written while a password
 // change was still re-encrypting describes files on either side of the change,
 // so the key is chosen per file wherever the parts can be traced to one.
-func restoreWithManifest(manifestPath string, partPaths []string, preserveTree bool, outputDir string) (password, dir, vaultPath string, err error) {
+// manifestRestore is what a manifest backup yields for a restore: where to put
+// the file, what it was called in the vault, and the secret that opens its
+// parts — spelled as a password for a file stored whole, and as raw key
+// material for one stored in chunks, which derives a key per chunk from it.
+type manifestRestore struct {
+	password  string
+	dataKey   []byte
+	dir       string
+	vaultPath string
+}
+
+func restoreWithManifest(manifestPath string, partPaths []string, preserveTree bool, outputDir string) (*manifestRestore, error) {
 	snapshot, err := openManifestFile(manifestPath)
 	if err != nil {
-		return "", "", "", err
+		return nil, err
 	}
 
-	dir = outputDir
-	entry := entryForParts(snapshot, partPaths)
-	if entry != nil {
-		vaultPath = entry.Path()
+	out := &manifestRestore{dir: outputDir}
+	keyID := ""
+	if entry := entryForParts(snapshot, partPaths); entry != nil {
+		out.vaultPath = entry.Path()
+		keyID = entry.KeyID
 		if preserveTree && entry.Dir != "/" {
-			dir = filepath.Join(outputDir, filepath.FromSlash(strings.TrimPrefix(entry.Dir, "/")))
-			if err := os.MkdirAll(dir, 0700); err != nil {
-				return "", "", "", fmt.Errorf("creating %s: %w", dir, err)
+			out.dir = filepath.Join(outputDir, filepath.FromSlash(strings.TrimPrefix(entry.Dir, "/")))
+			if err := os.MkdirAll(out.dir, 0700); err != nil {
+				return nil, fmt.Errorf("creating %s: %w", out.dir, err)
 			}
 		}
-		if password, err = snapshot.ShardPasswordForEntry(entry); err != nil {
-			return "", "", "", err
-		}
-		return password, dir, vaultPath, nil
+	} else {
+		keyID = snapshot.KeyID
 	}
 
-	if password, err = snapshot.ShardPassword(); err != nil {
-		return "", "", "", err
+	// Both forms of the same key, because which one is needed depends on the
+	// format of the parts themselves rather than on anything the manifest says.
+	if out.password, err = snapshot.ShardPasswordFor(keyID); err != nil {
+		return nil, err
 	}
-	return password, dir, vaultPath, nil
+	if out.dataKey, err = snapshot.DataKeyFor(keyID); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // entryForParts finds the manifest entry the given part files belong to, by

@@ -45,11 +45,37 @@ func storedParts(t *testing.T, roots []string, shards []Shard) [][]byte {
 	return blobs
 }
 
+// storedChunkParts reads one chunk's parts straight off the "accounts".
+func storedChunkParts(t *testing.T, roots []string, e *Entry, index int) [][]byte {
+	t.Helper()
+
+	var blobs [][]byte
+	for _, shard := range e.Shards {
+		full := shardPath(roots, ChunkShardKey(e.ArchiveID, index, shard.Part))
+		if full == "" {
+			continue
+		}
+		data, err := os.ReadFile(full)
+		if err != nil {
+			t.Fatalf("reading chunk %d part %d: %v", index, shard.Part, err)
+		}
+		blobs = append(blobs, data)
+	}
+	return blobs
+}
+
 // activeSecret is the secret the vault is currently sealing parts with.
 func activeSecret(v *Vault) string {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 	return shardPasswordFor(v.dataKey)
+}
+
+// activeDataKey is the key material the vault currently derives chunk keys from.
+func activeDataKey(v *Vault) []byte {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	return append([]byte(nil), v.dataKey...)
 }
 
 func retiredCount(v *Vault) int {
@@ -70,11 +96,11 @@ func TestChangePasswordRotatesTheKeyThatOpensTheParts(t *testing.T) {
 
 	before := *entry
 	before.Shards = append([]Shard(nil), entry.Shards...)
-	oldSecret := activeSecret(v)
+	oldKey := activeDataKey(v)
 
-	// The old secret opens the parts as they stand — which is exactly what
-	// must stop being true.
-	if _, err := archive.DecodeBytes(storedParts(t, roots, before.Shards), oldSecret); err != nil {
+	// The old key opens the parts as they stand — which is exactly what must
+	// stop being true.
+	if _, err := archive.DecodeChunk(storedChunkParts(t, roots, &before, 0), oldKey); err != nil {
 		t.Fatalf("the stored parts should open under the key in force: %v", err)
 	}
 
@@ -98,21 +124,23 @@ func TestChangePasswordRotatesTheKeyThatOpensTheParts(t *testing.T) {
 	}
 
 	// The parts the old password could open are gone from the accounts, not
-	// merely unreferenced.
-	for _, shard := range before.Shards {
-		if full := shardPath(roots, shard.Key); full != "" {
-			t.Errorf("part %d is still on an account at %s", shard.Part, full)
+	// merely unreferenced — every chunk of them.
+	for index := 0; index < before.ChunkCount; index++ {
+		for _, shard := range before.Shards {
+			if full := shardPath(roots, ChunkShardKey(before.ArchiveID, index, shard.Part)); full != "" {
+				t.Errorf("chunk %d part %d is still on an account at %s", index, shard.Part, full)
+			}
 		}
 	}
 
-	newParts := storedParts(t, roots, after.Shards)
+	newParts := storedChunkParts(t, roots, after, 0)
 	if len(newParts) != archive.PartCount {
 		t.Fatalf("found %d parts on the accounts, want %d", len(newParts), archive.PartCount)
 	}
-	if _, err := archive.DecodeBytes(newParts, oldSecret); err == nil {
+	if _, err := archive.DecodeChunk(newParts, oldKey); err == nil {
 		t.Error("the old key still opens the stored parts — the rotation bought nothing")
 	}
-	decoded, err := archive.DecodeBytes(newParts, activeSecret(v))
+	decoded, err := archive.DecodeChunk(newParts, activeDataKey(v))
 	if err != nil {
 		t.Fatalf("the new key does not open the parts it wrote: %v", err)
 	}
