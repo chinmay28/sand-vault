@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { COLORS, FONT, formatBytes, previewKind } from '../theme'
+import { COLORS, FONT, accountColor, formatBytes, previewKind } from '../theme'
 import { useIsMobile } from '../hooks'
 import { api } from '../api'
 import { useDownload } from '../download'
@@ -233,6 +233,19 @@ export function ShardInspector({ file, onClose }) {
                 color: shard.present ? COLORS.success : COLORS.error,
                 fontSize: '13px',
               }}>{shard.present ? '✓' : '✗'}</span>
+
+              {/* The account's colour, so this list and the row's part badges
+                  can be read against each other. */}
+              <span
+                aria-hidden="true"
+                style={{
+                  width: '14px',
+                  height: '14px',
+                  flexShrink: 0,
+                  borderRadius: '3px',
+                  background: accountColor(shard.provider_id),
+                }}
+              />
 
               <span style={{ flex: 1, minWidth: 0 }}>
                 <span style={{ color: COLORS.text }}>Part {shard.part}</span>

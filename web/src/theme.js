@@ -26,18 +26,56 @@ export const FONT = {
   sans: "system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
 }
 
-/* Each connected account gets a stable colour so a file's three part badges
-   read as "which account holds this" at a glance. */
+/* Each connected account wears a colour no other account wears: the same colour
+   marks its card in the sidebar and every part badge for a file it holds, so
+   "which three clouds is this file on" is a question you answer by eye. */
 const ACCOUNT_COLORS = [
   '#38bdf8', '#a78bfa', '#34d399', '#fb7185',
   '#fbbf24', '#22d3ee', '#f472b6', '#a3e635',
+  '#818cf8', '#4ade80', '#e879f9', '#fb923c',
 ]
+
+function preferredIndex(id) {
+  let hash = 0
+  for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) >>> 0
+  return hash % ACCOUNT_COLORS.length
+}
+
+/* Account id → colour, rebuilt whenever the account list changes. */
+let assigned = new Map()
+
+/* Hand out the colours. Every account starts at the one its id hashes to — so
+   a colour stays put as other accounts come and go — and anything that would
+   land on a colour already spoken for walks forward to the next free one.
+   Sorted by id first, so which account keeps a contested colour does not depend
+   on the order the list happened to arrive in. */
+export function assignAccountColors(providers) {
+  const ids = (providers || []).map((p) => p.id).filter(Boolean).sort()
+  const taken = new Set()
+  const next = new Map()
+
+  for (const id of ids) {
+    const start = preferredIndex(id)
+    // Past the palette's length every colour is taken and the walk finds
+    // nothing free; the hashed colour repeats rather than a badge going blank.
+    let color = ACCOUNT_COLORS[start]
+    for (let step = 0; step < ACCOUNT_COLORS.length; step++) {
+      const candidate = ACCOUNT_COLORS[(start + step) % ACCOUNT_COLORS.length]
+      if (!taken.has(candidate)) { color = candidate; break }
+    }
+    taken.add(color)
+    next.set(id, color)
+  }
+
+  assigned = next
+}
 
 export function accountColor(id) {
   if (!id) return COLORS.textMuted
-  let hash = 0
-  for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) >>> 0
-  return ACCOUNT_COLORS[hash % ACCOUNT_COLORS.length]
+  // A part can name an account that is no longer connected, and the first
+  // render happens before the account list has arrived. Both fall back to the
+  // hashed colour, which is where the assignment above starts from anyway.
+  return assigned.get(id) || ACCOUNT_COLORS[preferredIndex(id)]
 }
 
 export const KIND_ICONS = {

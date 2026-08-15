@@ -249,6 +249,23 @@ Opening a picture that has no thumbnail stores one on the way past. The file
 has just been rebuilt and decoded on screen, so taking a copy of it costs a
 canvas and nothing else.
 
+### Every account has a colour of its own
+
+A file's three part badges have always been coloured by the account holding
+each part, but the colour came out of a hash of the account's id — so two of
+your accounts could land on the same one, and a row of badges would then claim
+a file was on two clouds when it was on three. Colours are now handed out
+against the whole account list instead: each account still starts at the colour
+its id hashes to, so a colour stays put as other accounts come and go, but
+anything that would collide takes the next free colour. No two connected
+accounts share one until you have more accounts than the palette has colours.
+
+The other half of the match is now drawn where it can be read. Each account's
+card in the sidebar carries its colour as a swatch beside the name, not only as
+the stripe down its edge, and the per-part health read-out carries the same
+swatch on each row. Which three clouds a file is on is a question you answer by
+looking from the badges to the sidebar.
+
 ### The vault
 
 A single encrypted file (`~/.sand/vault.sand`, or `/var/lib/sand/vault.sand`
@@ -329,8 +346,8 @@ already in memory.
 
 Lock screen, a sidebar of connected accounts with live status and how much each
 is holding, breadcrumbs, search, drag-and-drop upload with progress, part
-badges coloured per account, a per-part health read-out, and inline preview for
-images, video, audio, PDF and text — each one rebuilt on demand.
+badges in each account's own colour, a per-part health read-out, and inline
+preview for images, video, audio, PDF and text — each one rebuilt on demand.
 
 It loads no external fonts, scripts or styles: opening your vault makes zero
 third-party requests.
