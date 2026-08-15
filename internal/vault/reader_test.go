@@ -467,3 +467,77 @@ func TestRechunkOnReadCanBeTurnedOff(t *testing.T) {
 		t.Error("the file was converted despite conversion being turned off")
 	}
 }
+
+// OpenReadSeeker is the "read this file however it is stored" door, so it has
+// to answer for both forms — a caller serving HTTP ranges should not have to
+// branch on a storage detail.
+func TestOpenReadSeekerServesBothStorageForms(t *testing.T) {
+	v, _ := chunkedVault(t, 3, 1024)
+	ctx := context.Background()
+	v.SetRechunkOnRead(false)
+
+	chunkedPayload := readerPayload(5000)
+	chunked, _, err := v.Upload(ctx, "/", "chunked.bin", chunkedPayload, UploadOptions{})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+
+	wholePayload := readerPayload(3000)
+	placed, err := v.scatter(ctx, "whole.bin", wholePayload, nil, false)
+	if err != nil {
+		t.Fatalf("scatter: %v", err)
+	}
+	whole := &Entry{
+		ID: "whole", Dir: "/", Name: "whole.bin",
+		Size:      int64(len(wholePayload)),
+		Hash:      hex.EncodeToString(placed.originalHash[:]),
+		ArchiveID: placed.archiveID,
+		KeyID:     placed.keyID,
+		Shards:    placed.shards,
+	}
+	v.mu.Lock()
+	v.manifest.add(whole)
+	v.mu.Unlock()
+
+	for _, tc := range []struct {
+		name    string
+		id      string
+		payload []byte
+	}{
+		{"chunked", chunked.ID, chunkedPayload},
+		{"whole", whole.ID, wholePayload},
+	} {
+		body, entry, err := v.OpenReadSeeker(ctx, tc.id)
+		if err != nil {
+			t.Fatalf("%s: OpenReadSeeker: %v", tc.name, err)
+		}
+		if entry.Size != int64(len(tc.payload)) {
+			t.Errorf("%s: size = %d, want %d", tc.name, entry.Size, len(tc.payload))
+		}
+
+		got, err := io.ReadAll(body)
+		if err != nil {
+			t.Fatalf("%s: ReadAll: %v", tc.name, err)
+		}
+		if !bytes.Equal(got, tc.payload) {
+			t.Errorf("%s: read the wrong bytes end to end", tc.name)
+		}
+
+		// And a seek into the middle, which is what a range request becomes.
+		if _, err := body.Seek(1200, io.SeekStart); err != nil {
+			t.Fatalf("%s: Seek: %v", tc.name, err)
+		}
+		buf := make([]byte, 300)
+		if _, err := io.ReadFull(body, buf); err != nil {
+			t.Fatalf("%s: ReadFull after seek: %v", tc.name, err)
+		}
+		if !bytes.Equal(buf, tc.payload[1200:1500]) {
+			t.Errorf("%s: the seeked range returned the wrong bytes", tc.name)
+		}
+	}
+
+	v.Lock()
+	if _, _, err := v.OpenReadSeeker(ctx, chunked.ID); !errors.Is(err, ErrLocked) {
+		t.Errorf("OpenReadSeeker on a locked vault = %v, want ErrLocked", err)
+	}
+}

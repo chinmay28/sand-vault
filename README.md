@@ -631,6 +631,54 @@ another site in your browser can't drive the local API.
 
 ---
 
+## Mount it as a drive
+
+`sand serve --webdav` also serves the vault as a WebDAV share, so a file manager
+or a player can open it as a drive instead of going through the browser. It's
+**off by default** — see the warning below.
+
+```bash
+sand serve --webdav              # share at http://<host>:8123/dav/
+sand serve --webdav --webdav-path /share
+```
+
+Mount it with **any username** and your **vault password**:
+
+| | |
+|---|---|
+| macOS | Finder → Go → Connect to Server → `https://host:8123/dav/` |
+| Linux | `gio mount dav://host:8123/dav/`, or Files → Other Locations |
+| Windows | Map network drive → `https://host:8123/dav/` |
+| VLC | Open Network Stream → `https://host:8123/dav/film.mkv` |
+| iOS / tvOS | VLC or Infuse → Add Network Share → WebDAV |
+
+Seeking works properly: a player asking for the middle of a film fetches the
+chunks that range covers, not the whole file. Copying files in and out streams
+rather than buffering, so size is bounded by disk, not memory.
+
+Two things it won't do yet: **renaming a folder** (a file records its own
+folder, so moving one means rewriting every entry beneath it) and **appending to
+a file** (the vault stores whole files). Renaming and moving *files* is fine and
+costs nothing — the parts stay where they are.
+
+> [!WARNING]
+> WebDAV authenticates with HTTP Basic, which sends your vault password on
+> **every request** rather than once at sign-in. On plain HTTP that is far more
+> exposure than the web UI, which is why the share is opt-in. Put TLS in front
+> of it — Tailscale Serve, or `scripts/nginx-sand.conf` — and use `https://` in
+> the URLs above. Windows refuses Basic auth over plain HTTP by default anyway,
+> and caps files at 50 MB until `FileSizeLimitInBytes` is raised.
+
+A correct password against a locked vault unlocks it, which is what keeps a
+mount alive past the idle timeout instead of going dead until you open a
+browser. Requests to the share count as activity, so the auto-lock won't fire
+halfway through a film.
+
+Jellyfin and Plex want a real filesystem rather than a URL, so they need a FUSE
+mount — not built yet.
+
+---
+
 ## Security
 
 | Threat | Mitigation |

@@ -870,6 +870,59 @@ browser forever.
 `LOCKED · WRONG_PASSWORD · NO_VAULT · NOT_FOUND · CROSS_ORIGIN · VAULT_ERROR ·
 PARSE_ERROR · MISSING_FILE`
 
+### 9.4 The WebDAV share
+
+`sand serve --webdav` mounts the same vault at `/dav` as a WebDAV filesystem, so
+a file manager or a player can open it as a drive instead of driving the API.
+It is off by default: it is a second way in, and one that carries the password
+far more often than the browser does.
+
+`internal/davfs` is an adapter over five methods and nothing more. Reads go
+through `ChunkedReader` (§4.3), so a player seeking into a film fetches the
+chunk it lands in; writes go through `UploadStream`, so a PUT is piped into the
+vault as it arrives rather than collected first. Where a file may be stored, how
+it is split and what encrypts it are all still decided in `internal/vault`.
+
+| WebDAV | Vault |
+|---|---|
+| `GET` with `Range` | `OpenReadSeeker` → seek → the chunks that range covers |
+| `PUT` | `UploadStream`, overwriting a file already at that path |
+| `PROPFIND` | `List` |
+| `MKCOL` | `Mkdir`, and only one level: the parent must exist |
+| `DELETE` | `Delete`, or `Rmdir` recursively for a folder |
+| `MOVE` | `Move` — an index change, the parts do not travel |
+
+**Authentication is the vault password over HTTP Basic**, and the username is
+not checked: a vault has one owner (§15), so a name would distinguish nothing
+and pretending otherwise invites treating it as a second secret.
+
+Basic auth is stateless, so the password arrives on *every* request and a
+playing film sends hundreds. Verifying each one properly is a 64 MB Argon2id
+pass — a denial of service aimed at oneself — so a verified credential is
+remembered for a minute, keyed by an HMAC of it under a key minted for this
+process. The HMAC is what keeps the map from being a list of passwords; being
+per-process makes the remembered form useless anywhere else. A remembered
+credential still has to meet an unlocked vault, so locking takes access away
+rather than being papered over by the cache.
+
+A correct password against a *locked* vault unlocks it. A mount outlives the
+idle timeout, and the alternative is a share that goes dead until someone opens
+a browser. It is the same surface `/api/vault/unlock` already presents to
+anyone who can reach the port. Requests to the share also count as use, so the
+auto-lock does not fire halfway through a film.
+
+**Two things it does not do.** Renaming a folder is refused: the index stores a
+file's folder on the file, so moving one means rewriting every entry beneath it,
+and doing that halfway would leave a tree split across two names. Appending is
+refused: the vault stores whole files, so an append means reading one back and
+storing all of it again, which is not what a caller asking to append expects to
+pay.
+
+**On a plain listener the password crosses the network in the clear on every
+request.** That is worse than the browser, which sends it once at sign-in, and
+is why the share is opt-in and why `Start` says so. Put TLS in front of it —
+`scripts/nginx-sand.conf`, or Tailscale Serve.
+
 ---
 
 ## 10. Standalone Mode
@@ -1009,9 +1062,12 @@ sand/
 
 ## 15. Not Built
 
-- **A filesystem view** — WebDAV, and a FUSE mount behind it for clients that
-  need a real path rather than a URL. `ChunkedReader` (§4.3) is the primitive
-  both would sit on; nothing exposes it over a protocol yet.
+- **A FUSE mount.** WebDAV (§9.4) covers a file manager and a player; a media
+  server like Jellyfin wants a real path rather than a URL, and that needs a
+  filesystem. `ChunkedReader` (§4.3) is the primitive it would sit on, the same
+  one the share already uses, so it is a binding rather than a second
+  implementation. A library scan would also need throttling: it reads the head
+  of every file, which is a burst of requests against APIs that rate-limit.
 - **Whole-file `Upload` and `Fetch` are still whole-file.** `UploadStream` and
   `ChunkedReader` bound their memory by the chunk window, but the older pair
   still take and return a complete `[]byte`, and the HTTP API still uses them.
