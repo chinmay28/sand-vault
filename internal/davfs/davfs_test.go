@@ -542,3 +542,149 @@ func TestMkdirNeedsItsParent(t *testing.T) {
 		t.Errorf("Mkdir over an existing folder = %v, want an exists error", err)
 	}
 }
+
+// Renaming a folder over the share moves everything beneath it, in one write
+// and without transferring a byte.
+func TestMoveOnACollection(t *testing.T) {
+	v := newTestVault(t)
+	srv := newTestServer(t, v)
+
+	if resp := do(t, srv, "MKCOL", "/dav/media", nil, nil); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("MKCOL = %d", resp.StatusCode)
+	}
+	if resp := do(t, srv, "MKCOL", "/dav/media/films", nil, nil); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("MKCOL = %d", resp.StatusCode)
+	}
+	body := payload(4000)
+	if resp := do(t, srv, "PUT", "/dav/media/films/one.mkv", bytes.NewReader(body), nil); resp.StatusCode > 299 {
+		t.Fatalf("PUT = %d", resp.StatusCode)
+	}
+
+	resp := do(t, srv, "MOVE", "/dav/media", nil, map[string]string{
+		"Destination": srv.URL + "/dav/library",
+	})
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("MOVE of a collection = %d", resp.StatusCode)
+	}
+
+	if !v.FolderExists("/library/films") {
+		t.Error("the subfolder did not move with its parent")
+	}
+	if v.FolderExists("/media") {
+		t.Error("the old folder is still there")
+	}
+
+	// And the file inside it still reads, at its new path.
+	got := do(t, srv, "GET", "/dav/library/films/one.mkv", nil, nil)
+	if got.StatusCode != http.StatusOK {
+		t.Fatalf("GET after the move = %d", got.StatusCode)
+	}
+	data, err := io.ReadAll(got.Body)
+	if err != nil {
+		t.Fatalf("reading the body: %v", err)
+	}
+	if !bytes.Equal(data, body) {
+		t.Error("the moved file does not read back the same")
+	}
+}
+
+// Appending is exercised through the FileSystem rather than over HTTP, because
+// WebDAV has no append verb — PUT always opens with O_TRUNC. It is the
+// filesystem contract that has to hold, for whatever calls it.
+func TestOpenFileAppends(t *testing.T) {
+	v := newTestVault(t)
+	fs := New(v)
+	ctx := context.Background()
+
+	first := payload(3000)
+	if _, _, err := v.Upload(ctx, "/", "log.bin", first, vault.UploadOptions{}); err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+
+	second := []byte("...and this came later")
+	f, err := fs.OpenFile(ctx, "/log.bin", os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatalf("OpenFile for append: %v", err)
+	}
+	if _, err := f.Write(second); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	entry, err := v.EntryByPath("/log.bin")
+	if err != nil {
+		t.Fatalf("EntryByPath: %v", err)
+	}
+	if entry.Size != int64(len(first)+len(second)) {
+		t.Errorf("size = %d, want %d", entry.Size, len(first)+len(second))
+	}
+
+	got, _, err := v.Fetch(ctx, entry.ID)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if !bytes.Equal(got, append(append([]byte{}, first...), second...)) {
+		t.Error("the appended file is not the original followed by the new bytes")
+	}
+}
+
+// O_TRUNC beside O_APPEND truncates, which is what os.OpenFile does — and is
+// what keeps a PUT from accidentally appending to what it means to replace.
+func TestOpenFileTruncateWinsOverAppend(t *testing.T) {
+	v := newTestVault(t)
+	fs := New(v)
+	ctx := context.Background()
+
+	if _, _, err := v.Upload(ctx, "/", "notes.bin", payload(5000), vault.UploadOptions{}); err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+
+	replacement := []byte("all of it, replaced")
+	f, err := fs.OpenFile(ctx, "/notes.bin", os.O_RDWR|os.O_CREATE|os.O_TRUNC|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	if _, err := f.Write(replacement); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	entry, err := v.EntryByPath("/notes.bin")
+	if err != nil {
+		t.Fatalf("EntryByPath: %v", err)
+	}
+	if entry.Size != int64(len(replacement)) {
+		t.Errorf("size = %d, want the replacement's %d", entry.Size, len(replacement))
+	}
+}
+
+// Appending to a path that holds nothing yet simply creates it.
+func TestOpenFileAppendsToANewFile(t *testing.T) {
+	v := newTestVault(t)
+	fs := New(v)
+	ctx := context.Background()
+
+	body := []byte("the first thing written")
+	f, err := fs.OpenFile(ctx, "/fresh.bin", os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	if _, err := f.Write(body); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	entry, err := v.EntryByPath("/fresh.bin")
+	if err != nil {
+		t.Fatalf("EntryByPath: %v", err)
+	}
+	if entry.Size != int64(len(body)) {
+		t.Errorf("size = %d, want %d", entry.Size, len(body))
+	}
+}

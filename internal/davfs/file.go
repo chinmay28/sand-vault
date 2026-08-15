@@ -70,14 +70,22 @@ type uploadResult struct {
 	err      error
 }
 
-func newWriteFile(ctx context.Context, v *vault.Vault, dir, base string) *writeFile {
+// newWriteFile begins storing a file. A non-nil prefix is read into the upload
+// ahead of anything written, which is how appending works: the file already
+// stored goes in first, the new bytes follow, and neither is held in memory.
+func newWriteFile(ctx context.Context, v *vault.Vault, dir, base string, prefix io.Reader) *writeFile {
 	pr, pw := io.Pipe()
 	f := &writeFile{name: base, pw: pw, done: make(chan uploadResult, 1)}
+
+	var source io.Reader = pr
+	if prefix != nil {
+		source = io.MultiReader(prefix, pr)
+	}
 
 	go func() {
 		// PUT to a path that already holds a file replaces it, which is what
 		// WebDAV means by it.
-		entry, warnings, err := v.UploadStream(ctx, dir, base, pr, vault.UploadOptions{Overwrite: true})
+		entry, warnings, err := v.UploadStream(ctx, dir, base, source, vault.UploadOptions{Overwrite: true})
 		// Draining matters when the upload gives up early: without it the
 		// handler's io.Copy would block forever on a pipe nobody reads.
 		if err != nil {

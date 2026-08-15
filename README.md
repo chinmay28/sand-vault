@@ -90,7 +90,7 @@ Override defaults with env vars (`PORT`, `HOST`, `SAND_INSTALL`, `SAND_REF`,
 ## Quick start from source
 
 ```bash
-# 1. Build (requires Go 1.22+ and Node.js 18+)
+# 1. Build (requires Go 1.25+ and Node.js 18+)
 make build
 
 # 2. Create your vault — this password protects the file index and your
@@ -656,10 +656,10 @@ Seeking works properly: a player asking for the middle of a film fetches the
 chunks that range covers, not the whole file. Copying files in and out streams
 rather than buffering, so size is bounded by disk, not memory.
 
-Two things it won't do yet: **renaming a folder** (a file records its own
-folder, so moving one means rewriting every entry beneath it) and **appending to
-a file** (the vault stores whole files). Renaming and moving *files* is fine and
-costs nothing — the parts stay where they are.
+Renaming and moving cost nothing — a file records which folder it is in, so the
+index changes and the stored parts never move. That holds for a whole folder
+too: renaming one carries everything beneath it, thumbnails included, in a
+single write.
 
 > [!WARNING]
 > WebDAV authenticates with HTTP Basic, which sends your vault password on

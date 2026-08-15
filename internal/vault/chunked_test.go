@@ -340,3 +340,150 @@ func TestSampleChunks(t *testing.T) {
 		t.Errorf("sample ends at %d, want the last chunk", got[len(got)-1])
 	}
 }
+
+func TestMoveFolderCarriesEverythingBeneathIt(t *testing.T) {
+	v, _ := chunkedVault(t, 3, 1024)
+	ctx := context.Background()
+
+	for _, dir := range []string{"/media", "/media/films", "/media/films/2024"} {
+		if err := v.Mkdir(dir); err != nil {
+			t.Fatalf("Mkdir %s: %v", dir, err)
+		}
+	}
+	top, _, err := v.Upload(ctx, "/media", "readme.txt", []byte("at the top"), UploadOptions{})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	deep, _, err := v.Upload(ctx, "/media/films/2024", "film.mkv", bytes.Repeat([]byte("deep "), 500), UploadOptions{})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	deepShards := append([]Shard(nil), deep.Shards...)
+
+	if err := v.MoveFolder(ctx, "/media", "/library"); err != nil {
+		t.Fatalf("MoveFolder: %v", err)
+	}
+
+	// Everything answers to the new name, at every depth.
+	for _, want := range []string{"/library", "/library/films", "/library/films/2024"} {
+		if !v.FolderExists(want) {
+			t.Errorf("%s does not exist after the move", want)
+		}
+	}
+	if v.FolderExists("/media") {
+		t.Error("the old folder is still there")
+	}
+	for path, id := range map[string]string{
+		"/library/readme.txt":          top.ID,
+		"/library/films/2024/film.mkv": deep.ID,
+	} {
+		moved, err := v.EntryByPath(path)
+		if err != nil {
+			t.Errorf("%s: %v", path, err)
+			continue
+		}
+		if moved.ID != id {
+			t.Errorf("%s is a different file than the one that moved there", path)
+		}
+	}
+	if _, err := v.EntryByPath("/media/films/2024/film.mkv"); err == nil {
+		t.Error("the file is still at its old path too")
+	}
+
+	// Nothing was transferred: the parts are on the same accounts under the
+	// same keys they were before.
+	after, err := v.Entry(deep.ID)
+	if err != nil {
+		t.Fatalf("Entry: %v", err)
+	}
+	if len(after.Shards) != len(deepShards) {
+		t.Fatalf("shard count changed from %d to %d", len(deepShards), len(after.Shards))
+	}
+	for i, s := range after.Shards {
+		if s.Key != deepShards[i].Key || s.ProviderID != deepShards[i].ProviderID {
+			t.Errorf("part %d moved: %s on %s, was %s on %s",
+				s.Part, s.Key, s.ProviderID, deepShards[i].Key, deepShards[i].ProviderID)
+		}
+	}
+
+	// And the file still reads.
+	got, _, err := v.Fetch(ctx, deep.ID)
+	if err != nil {
+		t.Fatalf("Fetch after the move: %v", err)
+	}
+	if !bytes.Equal(got, bytes.Repeat([]byte("deep "), 500)) {
+		t.Error("the moved file does not read back the same")
+	}
+}
+
+func TestMoveFolderRefusesTheImpossible(t *testing.T) {
+	v, _ := chunkedVault(t, 3, 1024)
+	ctx := context.Background()
+
+	if err := v.Mkdir("/films"); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	if err := v.Mkdir("/shows"); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	if _, _, err := v.Upload(ctx, "/", "taken.txt", []byte("x"), UploadOptions{}); err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+
+	cases := map[string][2]string{
+		"the root as the source":          {"/", "/elsewhere"},
+		"the root as the destination":     {"/films", "/"},
+		"a folder into itself":            {"/films", "/films/inner"},
+		"onto an existing folder":         {"/films", "/shows"},
+		"onto an existing file":           {"/films", "/taken.txt"},
+		"a folder that is not there":      {"/nothing", "/somewhere"},
+		"into a folder that is not there": {"/films", "/missing/films"},
+	}
+	for name, paths := range cases {
+		if err := v.MoveFolder(ctx, paths[0], paths[1]); err == nil {
+			t.Errorf("moving %s was allowed, want a refusal", name)
+		}
+	}
+
+	// None of that should have disturbed anything.
+	if !v.FolderExists("/films") || !v.FolderExists("/shows") {
+		t.Error("a refused move changed the tree")
+	}
+}
+
+// A thumbnail pack is filed under its folder rather than carrying the folder's
+// name, so the pictures move with the tree for the price of rewriting a map.
+func TestMoveFolderCarriesThumbnails(t *testing.T) {
+	v, _ := chunkedVault(t, 3, 1024)
+	ctx := context.Background()
+
+	if err := v.Mkdir("/pics"); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	entry, _, err := v.Upload(ctx, "/pics", "shot.jpg", []byte("not really a jpeg"), UploadOptions{})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if err := v.SetThumb(ctx, entry.ID, bytes.Repeat([]byte{0xFF}, 64)); err != nil {
+		t.Fatalf("SetThumb: %v", err)
+	}
+
+	if err := v.MoveFolder(ctx, "/pics", "/photos"); err != nil {
+		t.Fatalf("MoveFolder: %v", err)
+	}
+
+	listing, err := v.List("/photos")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(listing.Thumbs) != 1 || listing.Thumbs[0] != entry.ID {
+		t.Errorf("the moved folder reports thumbs %v, want the one file's", listing.Thumbs)
+	}
+	thumb, err := v.Thumb(ctx, entry.ID)
+	if err != nil {
+		t.Fatalf("Thumb after the move: %v", err)
+	}
+	if len(thumb) == 0 {
+		t.Error("the thumbnail did not survive the move")
+	}
+}

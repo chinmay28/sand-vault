@@ -890,7 +890,7 @@ it is split and what encrypts it are all still decided in `internal/vault`.
 | `PROPFIND` | `List` |
 | `MKCOL` | `Mkdir`, and only one level: the parent must exist |
 | `DELETE` | `Delete`, or `Rmdir` recursively for a folder |
-| `MOVE` | `Move` — an index change, the parts do not travel |
+| `MOVE` | `Move`, or `MoveFolder` for a collection — an index change, the parts do not travel |
 
 **Authentication is the vault password over HTTP Basic**, and the username is
 not checked: a vault has one owner (§15), so a name would distinguish nothing
@@ -911,12 +911,21 @@ a browser. It is the same surface `/api/vault/unlock` already presents to
 anyone who can reach the port. Requests to the share also count as use, so the
 auto-lock does not fire halfway through a film.
 
-**Two things it does not do.** Renaming a folder is refused: the index stores a
-file's folder on the file, so moving one means rewriting every entry beneath it,
-and doing that halfway would leave a tree split across two names. Appending is
-refused: the vault stores whole files, so an append means reading one back and
-storing all of it again, which is not what a caller asking to append expects to
-pay.
+**Renaming a folder** goes through `Vault.MoveFolder`, which rewrites every
+entry beneath it in one index write. Doing it as a loop over `Move` would have
+left a window where half a tree answered to its old name and half to its new
+one; doing it as a single write means there is no such window, and a failure to
+persist rolls the whole rewrite back. Thumbnails travel with it for free: a pack
+is filed under its folder rather than carrying the folder's name, so the move is
+a rewritten map key and no network work at all.
+
+**Appending** stores the file again with the new bytes on the end, because the
+vault stores whole files. What it does not do is hold either half in memory —
+the stored file is read back as a stream and the new bytes follow it into the
+same streaming upload, so the cost is bandwidth rather than RAM. WebDAV has no
+append verb, so this is reached through the filesystem interface rather than
+over the wire; `PUT` always truncates, and `O_TRUNC` beside `O_APPEND` truncates
+too, as `os.OpenFile` does.
 
 **On a plain listener the password crosses the network in the clear on every
 request.** That is worse than the browser, which sends it once at sign-in, and
