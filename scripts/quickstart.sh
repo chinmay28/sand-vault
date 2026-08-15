@@ -79,6 +79,16 @@
 #                    also be granted later with scripts/allow-local-path.sh.
 #   PORT             port to listen on       (default: 8123)
 #   HOST             bind address            (default: 0.0.0.0 — see the warning below)
+#   SAND_WEBDAV      1 | 0                   also serve the vault as a mountable
+#                    WebDAV share at /dav (default: 0). Mount it with any
+#                    username and the vault password. It sends that password on
+#                    every request rather than once at sign-in, so put TLS in
+#                    front before turning it on anywhere but loopback.
+#
+# PORT, HOST and SAND_WEBDAV are remembered. On an upgrade, leaving one unset
+# keeps whatever the service is already running with rather than resetting it
+# to the default — so re-running this script to pick up a new version cannot
+# quietly move a loopback-only install back onto every interface.
 #   INSTALL_NODE     auto | never            install Node 22 if missing/old (default: auto; build-time only)
 #   INSTALL_GO       auto | never            install Go if missing/old (default: auto; build-time only)
 #   BACKUP_KEEP      pre-upgrade backups kept (default: 10)
@@ -132,8 +142,53 @@ RELEASE_TAG="${SAND_RELEASE:-latest}"
 SVC_USER="${SAND_USER:-sand}"
 PREFIX="${SAND_PREFIX:-/opt/sand}"
 DATA_DIR="${SAND_DATA_DIR:-/var/lib/sand}"
+SERVICE_NAME="sand"
+UNIT_PATH="/etc/systemd/system/${SERVICE_NAME}.service"
+
+# How the service is already running, if it is. The unit is rewritten from
+# scratch on every run, so without reading it back an upgrade would silently
+# reset anything the env did not name again — re-running this script to pick up
+# a new version would move a loopback-only install back onto every interface,
+# which is the last thing an upgrade should do quietly. An unset variable
+# therefore means "keep what it runs with now", and only a fresh install falls
+# through to the defaults below.
+PRIOR_EXEC=""
+[ -f "$UNIT_PATH" ] && PRIOR_EXEC="$(sed -n 's/^ExecStart=//p' "$UNIT_PATH" | head -n 1)"
+
+# The value of --flag in the running unit, or nothing.
+prior_flag() {
+  printf '%s' "$PRIOR_EXEC" | sed -n "s/.*--$1[= ]\([^ ]*\).*/\1/p" | head -n 1
+}
+# Whether a valueless --flag is in the running unit.
+prior_switch() {
+  case " $PRIOR_EXEC " in
+    *" --$1 "* | *" --$1="*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+PORT="${PORT:-$(prior_flag port)}"
 PORT="${PORT:-8123}"
+HOST="${HOST:-$(prior_flag bind)}"
 HOST="${HOST:-0.0.0.0}"
+
+# The WebDAV share, off unless asked for. It is a second way in, authenticated
+# by the vault password on every request rather than once at sign-in, so a bare
+# HTTP listener exposes the password far more than the browser does.
+if [ -n "${SAND_WEBDAV:-}" ]; then
+  case "$SAND_WEBDAV" in
+    1 | true | yes | on) WEBDAV=1 ;;
+    0 | false | no | off) WEBDAV=0 ;;
+    *) die "SAND_WEBDAV must be 1 or 0 (got '$SAND_WEBDAV')." ;;
+  esac
+elif prior_switch webdav; then
+  WEBDAV=1
+else
+  WEBDAV=0
+fi
+WEBDAV_ARGS=""
+[ "$WEBDAV" = 1 ] && WEBDAV_ARGS=" --webdav"
+
 INSTALL_NODE="${INSTALL_NODE:-auto}"
 INSTALL_GO="${INSTALL_GO:-auto}"
 BACKUP_KEEP="${BACKUP_KEEP:-10}"
@@ -147,8 +202,6 @@ SRC_DIR="$PREFIX/src"
 BUILD_HOME="$PREFIX/.build-home"
 VAULT_PATH="$DATA_DIR/vault.sand"
 BACKUP_DIR="$DATA_DIR/backups"
-SERVICE_NAME="sand"
-UNIT_PATH="/etc/systemd/system/${SERVICE_NAME}.service"
 # Minimum Go release that can bootstrap the build; the go directive in go.mod
 # pins the real toolchain, which Go fetches automatically.
 GO_MIN_MINOR=25
@@ -210,6 +263,7 @@ printf '  %-10s %s\n' "data"     "$DATA_DIR"
 printf '  %-10s %s\n' "vault"    "$VAULT_PATH"
 printf '  %-10s %s\n' "service"  "${SERVICE_NAME}.service (user: $SVC_USER)"
 printf '  %-10s %s\n' "listen"   "http://$HOST:$PORT"
+[ "$WEBDAV" = 1 ] && printf '  %-10s %s\n' "webdav"   "http://$HOST:$PORT/dav/"
 
 # Run npm/git/go as the service user so the tree stays owned by them, and so the
 # build matches the runtime account. Falls back to plain exec before the user exists.
@@ -575,7 +629,7 @@ Type=simple
 User=$SVC_USER
 Group=$SVC_USER
 WorkingDirectory=$WORK_DIR
-ExecStart=$SERVER_BIN serve --port $PORT --bind $HOST --vault $VAULT_PATH
+ExecStart=$SERVER_BIN serve --port $PORT --bind $HOST --vault $VAULT_PATH$WEBDAV_ARGS
 Environment=SAND_VAULT=$VAULT_PATH
 Restart=on-failure
 RestartSec=3
