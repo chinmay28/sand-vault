@@ -23,14 +23,34 @@ import requests
 # Helpers
 # ---------------------------------------------------------------------------
 
-def upload(session, server, name, content, path="/", overwrite=False):
+def upload(session, server, name, content, path="/", overwrite=False, accounts=None):
+    data = {"path": path, "overwrite": "true" if overwrite else "false"}
+    if accounts:
+        data["accounts"] = list(accounts)
     return session.post(
         f"{server}/api/files",
         files=[("files[]", (name, content, "application/octet-stream"))],
-        data={"path": path, "overwrite": "true" if overwrite else "false"},
+        data=data,
         headers={"Origin": server},
         timeout=120,
     )
+
+
+def account_ids(session, server, *names):
+    """The ids of accounts connected under the given names.
+
+    Needed by any test that goes looking for a part on disk. Placement picks
+    accounts at random, the browser suite shares this vault and connects
+    accounts of its own — at paths of its own choosing — so a part can perfectly
+    well land somewhere `clouds(name)` does not describe. Naming the accounts on
+    the way in is what makes the file's location knowable on the way out.
+    """
+    r = session.get(f"{server}/api/providers", timeout=30)
+    assert r.status_code == 200, r.text
+    by_name = {p["name"]: p["id"] for p in r.json()["providers"]}
+    missing = [n for n in names if n not in by_name]
+    assert not missing, f"accounts not connected: {missing}"
+    return [by_name[n] for n in names]
 
 
 def listing(session, server, path="/"):
@@ -229,7 +249,12 @@ class TestStoreAndRetrieve:
 
     def test_file_survives_an_account_going_offline(self, server, unlocked, clouds, tmp_path):
         payload = os.urandom(80_000)
-        r = upload(unlocked, server, "resilient.bin", payload)
+        # Pinned, so that the directory this moves away is really the one
+        # holding part 1. Against an account connected elsewhere, clouds(name)
+        # makes an empty folder and renaming it takes nothing offline — the test
+        # would pass without having tested anything.
+        accounts = account_ids(unlocked, server, "cloud-one", "cloud-two", "cloud-three")
+        r = upload(unlocked, server, "resilient.bin", payload, accounts=accounts)
         entry = r.json()["results"][0]["file"]
         file_id = entry["id"]
 
@@ -254,7 +279,12 @@ class TestStoreAndRetrieve:
                 os.rename(stashed, account_root)
 
     def test_health_flags_a_missing_part(self, server, unlocked, clouds, tmp_path):
-        r = upload(unlocked, server, "damaged.bin", os.urandom(20_000))
+        # Pinned to the three accounts this suite created, because the test then
+        # goes and deletes a part off disk: left to pick at random, placement can
+        # land it on an account the browser suite connected somewhere else
+        # entirely, and clouds(name) would describe the wrong folder.
+        accounts = account_ids(unlocked, server, "cloud-one", "cloud-two", "cloud-three")
+        r = upload(unlocked, server, "damaged.bin", os.urandom(20_000), accounts=accounts)
         entry = r.json()["results"][0]["file"]
         file_id = entry["id"]
 
@@ -290,7 +320,11 @@ class TestStoreAndRetrieve:
         assert got.content == b"new"
 
     def test_delete_removes_the_parts_from_every_account(self, server, unlocked, clouds):
-        r = upload(unlocked, server, "ephemeral.bin", os.urandom(9_000))
+        # Pinned: this asserts the parts are *absent* afterwards, and a path
+        # pointing at an account connected somewhere else is absent whether the
+        # delete worked or not.
+        accounts = account_ids(unlocked, server, "cloud-one", "cloud-two", "cloud-three")
+        r = upload(unlocked, server, "ephemeral.bin", os.urandom(9_000), accounts=accounts)
         entry = r.json()["results"][0]["file"]
 
         d = unlocked.delete(f"{server}/api/files/{entry['id']}",
