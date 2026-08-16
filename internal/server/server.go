@@ -237,6 +237,11 @@ func (s *Server) Handler() (http.Handler, error) {
 
 		"POST /api/folders":   s.handleFolderCreate,
 		"DELETE /api/folders": s.handleFolderDelete,
+
+		// Moving a file or a folder onto other clouds. One endpoint for both,
+		// because it is one operation over a set of files and the only
+		// difference is how the set was named.
+		"POST /api/relocate": s.handleRelocate,
 	}
 	for pattern, handler := range protected {
 		mux.HandleFunc(pattern, s.requireSession(handler))

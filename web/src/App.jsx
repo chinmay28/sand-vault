@@ -217,7 +217,15 @@ export default function App() {
           onThumbStored={() => refreshListing()}
         />
       )}
-      {inspecting && <ShardInspector file={inspecting} onClose={() => setInspecting(null)} />}
+      {inspecting && (
+        <ShardInspector
+          file={inspecting}
+          providers={providers}
+          onClose={() => setInspecting(null)}
+          /* Moving the parts changes the badges the listing draws. */
+          onChanged={refreshAll}
+        />
+      )}
     </Shell>
   )
 }

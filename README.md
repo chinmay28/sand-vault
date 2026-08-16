@@ -320,6 +320,52 @@ two parts and says that the file has no spare, instead of quietly putting the
 third somewhere you did not choose. Disconnecting an account drops it from the
 default.
 
+### Moving something to different clouds
+
+A file already stored can be picked up and set down on other accounts, and so
+can a whole folder:
+
+```bash
+./sand relocate /photos --accounts box,r2-cold,nextcloud
+./sand relocate /taxes/2024.pdf --accounts box,nextcloud --dry-run
+```
+
+**Only what has to move moves.** A part already sitting on one of the clouds you
+chose stays exactly where it is, so swapping one of three copies one part rather
+than rewriting the file. And what does move is carried across as the encrypted
+blob it already is — an object's name is derived from the file's random archive
+ID and the part number, never from the account holding it, so moving a part is a
+download and an upload of the same bytes under the same name. Nothing is
+decrypted on the way, and the file keeps its identity, its hash and its chunk
+layout.
+
+`--dry-run` prints what would travel and stops:
+
+```
+folder /photos: 37 file(s), 0 already in place
+4 part(s) to move, 1.2 GB in all
+  /photos/rome.mov   part 3   dropbox → box   612 MB
+  …
+```
+
+The browser offers the same thing on any row: click the part badges for *Where
+this file lives* and the **⇄ Move to other clouds** button sits beside the
+read-out, or use *Move to other clouds* in the phone's menu. A folder's row has
+the **⇄** button directly on it. Either way the change is priced live as you
+pick the clouds, from the index alone, without contacting a single account.
+
+Two things worth knowing before you press it:
+
+- **A move can erase a spare part.** Sending a three-part file to two clouds
+  under the `strict` policy leaves one part with nowhere to live, since no
+  account may hold two parts of the same file. It is dropped, and both the CLI
+  and the dialog say so first.
+- **It is resumable.** Each file commits on its own, so an interrupted move — a
+  cloud that stops answering, a laptop that sleeps — costs the file in flight and
+  nothing else. Nothing is ever erased before its replacement is confirmed to be
+  in place, so a half-finished move leaves every file readable. Run it again to
+  finish it.
+
 ---
 
 ## Changing the password
@@ -488,9 +534,16 @@ sand put <file>... [--path /dir] [--overwrite] [--accounts a,b,c]
 sand get <path-or-id> [-o out]     Rebuild and decrypt
 sand mkdir <path>
 sand mv <path> <new-path>          Index only — parts never move
+sand relocate <path> --accounts a,b,c [--dry-run]
+                                   Move a file or folder onto other clouds
 sand rm <path> [-r]                Erases every part from every account
 sand check [path] [--all]          Verify parts are still there; non-zero if not
 ```
+
+`sand relocate` moves only the parts that have to move: anything already on one
+of the accounts you named stays where it is, and what travels is copied across
+still encrypted rather than rebuilt. A folder takes everything under it. See
+[Moving something to different clouds](#moving-something-to-different-clouds).
 
 `sand check --all` exits non-zero when anything is degraded or unrecoverable,
 which makes it a reasonable cron job.
@@ -643,6 +696,7 @@ its home screen gets the password prompt like any other browser would.
 | POST | `/api/files/{id}/move` | Rename / move |
 | DELETE | `/api/files/{id}` | Erase every part |
 | POST · DELETE | `/api/folders` | Create / delete folders |
+| POST | `/api/relocate` | Move a file (`id`) or folder (`path`) onto other `accounts`; `preview` prices it without moving anything |
 | GET | `/api/system/folders?path=` | Folders on this machine, for the folder picker |
 | POST | `/api/archive` · `/api/restore` | Standalone mode |
 

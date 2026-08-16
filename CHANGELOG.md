@@ -325,6 +325,44 @@ On the command line it is `sand put report.pdf --accounts usb-drive,nextcloud`
 for one upload and `sand vault defaults` for the standing answer; over HTTP,
 an `accounts` field on the upload and `POST /api/vault/defaults`.
 
+### Moving what is already stored to different clouds
+
+Choosing where a file goes was a decision you made once, at upload, and could
+not revisit. Now a file — or a whole folder — can be picked up and set down on
+other accounts: `sand relocate /photos --accounts box,r2-cold,nextcloud`, the
+**⇄ Move to other clouds** button in the browser's parts inspector, or
+`POST /api/relocate`.
+
+**Only the parts that have to move move.** Placement is a set of accounts, not a
+sequence, so anything already sitting on a cloud you kept stays exactly where it
+is — swapping one of three copies one part rather than rewriting the file, and
+naming the same three in a different order does nothing at all.
+
+What does move is carried across as the encrypted blob it already is. A part's
+object name is derived from the file's random archive ID and the part number,
+never from the account holding it, so moving one is a download and an upload of
+the same bytes under the same name. Nothing is decrypted on the way, no data key
+is touched, and the file keeps its identity, its plaintext hash and its chunk
+layout. That is the difference between this and re-encrypting after a password
+change, which has to rebuild every file it touches.
+
+The order is copy, then commit, then erase, one file at a time. So an
+interrupted move — a cloud that stops answering, a laptop that sleeps — costs
+the file in flight and nothing else, leaves every file readable, and is finished
+by running it again. A part that will not copy is reported and left where it
+was.
+
+Two things it says out loud before doing them. Sending a three-part file to two
+clouds under the `strict` policy erases the spare, because no account may hold
+two parts of one file — a relocation is not allowed to produce a placement an
+upload could not have produced. And `--dry-run`, or the browser dialog as you
+pick, prices the whole thing first: how many parts travel, how many bytes, and
+how much of it is already where you are sending it. That answer comes out of the
+encrypted index alone, without contacting a single account.
+
+A folder's stored thumbnails come along too, so moving a folder off an account
+really does move it off.
+
 ### Finding a file again
 
 A vault deep enough to be worth having is one you cannot click through, so the

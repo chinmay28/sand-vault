@@ -5,7 +5,7 @@ import { useDownload } from '../download'
 import { ActionSheet, Banner, Button, ConfirmDialog, Empty, IconButton, Modal, Spinner } from './ui'
 import StreamLink from './StreamLink'
 import ConvertFile from './ConvertFile'
-import { UploadDestination } from './CloudSelect'
+import { RelocateClouds, UploadDestination } from './CloudSelect'
 import { makeThumbnail } from '../thumbs'
 
 /* Name, size, modified, parts, actions. The four fixed columns come to nearly
@@ -248,6 +248,7 @@ export default function FileBrowser({
             path={path}
             scoped={scoped}
             mobile={mobile}
+            providers={providers}
             onScopeChange={setScoped}
             onNavigate={onNavigate}
             onPreview={onPreview}
@@ -263,6 +264,7 @@ export default function FileBrowser({
             listing={listing}
             canUpload={canUpload}
             mobile={mobile}
+            providers={providers}
             onNavigate={onNavigate}
             onPreview={onPreview}
             onInspect={onInspect}
@@ -387,7 +389,7 @@ function SearchField({ value, busy, mobile, onChange }) {
    lives in spelled out — a name on its own means nothing once the answer can
    come from anywhere in the vault. */
 function SearchResults({
-  term, results, searching, error, path, scoped, mobile,
+  term, results, searching, error, path, scoped, mobile, providers,
   onScopeChange, onNavigate, onPreview, onInspect, onRefresh, onError,
 }) {
   if (error) return <Banner tone="error">{error}</Banner>
@@ -448,6 +450,7 @@ function SearchResults({
               path={hit.path}
               location={hit.dir}
               mobile={mobile}
+              providers={providers}
               onNavigate={onNavigate}
               onRefresh={onRefresh}
               onError={onError}
@@ -458,6 +461,7 @@ function SearchResults({
               file={hit.file}
               location={hit.dir}
               mobile={mobile}
+              providers={providers}
               hasThumb={thumbs.has(hit.file.id)}
               onPreview={() => onPreview(hit.file, thumbs.has(hit.file.id))}
               onInspect={() => onInspect(hit.file)}
@@ -494,7 +498,7 @@ function Crumb({ label, mobile, onClick, active }) {
   )
 }
 
-function FileTable({ path, listing, canUpload, mobile, onNavigate, onPreview, onInspect, onRefresh, onError, onPickFiles }) {
+function FileTable({ path, listing, canUpload, mobile, providers, onNavigate, onPreview, onInspect, onRefresh, onError, onPickFiles }) {
   const folders = listing?.folders || []
   const files = listing?.files || []
   // Which rows have a stored picture. The listing says so outright, so no row
@@ -552,6 +556,7 @@ function FileTable({ path, listing, canUpload, mobile, onNavigate, onPreview, on
           name={folder}
           path={joinPath(path, folder)}
           mobile={mobile}
+          providers={providers}
           onNavigate={onNavigate}
           onRefresh={onRefresh}
           onError={onError}
@@ -563,6 +568,7 @@ function FileTable({ path, listing, canUpload, mobile, onNavigate, onPreview, on
           key={file.id}
           file={file}
           mobile={mobile}
+          providers={providers}
           hasThumb={thumbs.has(file.id)}
           onPreview={() => onPreview(file, thumbs.has(file.id))}
           onInspect={() => onInspect(file)}
@@ -689,7 +695,7 @@ function NameButton({ mobile, icon, label, location, chevron, disabled, title, o
   )
 }
 
-function FileRow({ file, location, mobile, hasThumb, onPreview, onInspect, onRefresh, onError }) {
+function FileRow({ file, location, mobile, providers, hasThumb, onPreview, onInspect, onRefresh, onError }) {
   const [busy, setBusy] = useState(false)
   const [download, downloading] = useDownload(onError)
   const [menu, setMenu] = useState(false)
@@ -698,6 +704,7 @@ function FileRow({ file, location, mobile, hasThumb, onPreview, onInspect, onRef
      and 'link' when it should just show the address. */
   const [streaming, setStreaming] = useState(null)
   const [converting, setConverting] = useState(null)
+  const [relocating, setRelocating] = useState(false)
   /* A file stored before chunked storage existed. It cannot be read at an
      offset, so nothing opens or streams it until it has been converted — the
      row says so rather than letting a click fail. */
@@ -842,6 +849,10 @@ function FileRow({ file, location, mobile, hasThumb, onPreview, onInspect, onRef
         disabled={downloading}
         onClick={() => download(file)}
       />
+      {/* Moving the parts to other clouds would be a fourth control here, and
+          there is room for three. It lives in the parts inspector instead —
+          one click away through the badges, and beside the read-out of where
+          they are now, which is the question it answers. */}
       <IconButton
         glyph={busy ? '…' : '✕'}
         label="Delete everywhere"
@@ -912,6 +923,13 @@ function FileRow({ file, location, mobile, hasThumb, onPreview, onInspect, onRef
               onSelect: onInspect,
             },
             {
+              key: 'relocate',
+              glyph: '⇄',
+              label: 'Move to other clouds',
+              hint: 'Only the parts that have to move are copied',
+              onSelect: () => setRelocating(true),
+            },
+            {
               key: 'delete',
               glyph: '✕',
               label: 'Delete',
@@ -948,6 +966,20 @@ function FileRow({ file, location, mobile, hasThumb, onPreview, onInspect, onRef
         >
           Every part is erased from the accounts holding it. This cannot be undone.
         </ConfirmDialog>
+      )}
+
+      {relocating && (
+        <RelocateClouds
+          target={{ id: file.id }}
+          title={`Move ${file.name}`}
+          subtitle={`${formatBytes(file.size)} — pick the clouds its ${file.shards.length} part(s) should live on`}
+          /* Already selected: where the parts are now, so the dialog opens on
+             the truth and a swap is one click rather than four. */
+          current={file.shards.map((s) => s.provider_id)}
+          providers={providers}
+          onClose={() => setRelocating(false)}
+          onDone={onRefresh}
+        />
       )}
     </>
   )
@@ -1029,9 +1061,10 @@ function FileRow({ file, location, mobile, hasThumb, onPreview, onInspect, onRef
   )
 }
 
-function FolderRow({ name, path, location, mobile, onNavigate, onRefresh, onError }) {
+function FolderRow({ name, path, location, mobile, providers, onNavigate, onRefresh, onError }) {
   const [menu, setMenu] = useState(false)
   const [confirming, setConfirming] = useState(false)
+  const [relocating, setRelocating] = useState(false)
   const [busy, setBusy] = useState(false)
 
   const open = () => onNavigate(path)
@@ -1064,7 +1097,13 @@ function FolderRow({ name, path, location, mobile, onNavigate, onRefresh, onErro
       style={{ background: COLORS.surfaceRaised, border: `1px solid ${COLORS.border}`, fontSize: '18px' }}
     />
   ) : (
-    <span style={{ display: 'flex', justifyContent: 'flex-end' }}>
+    <span style={{ display: 'flex', gap: '2px', justifyContent: 'flex-end' }}>
+      <IconButton
+        glyph="⇄"
+        label={`Move ${name} to other clouds`}
+        title="Move every file in this folder to other clouds"
+        onClick={() => setRelocating(true)}
+      />
       <IconButton glyph="✕" label="Delete folder" tone="muted" onClick={() => setConfirming(true)} />
     </span>
   )
@@ -1078,6 +1117,13 @@ function FolderRow({ name, path, location, mobile, onNavigate, onRefresh, onErro
           onClose={() => setMenu(false)}
           items={[
             { key: 'open', glyph: '▸', label: 'Open folder', onSelect: open },
+            {
+              key: 'relocate',
+              glyph: '⇄',
+              label: 'Move to other clouds',
+              hint: 'Everything inside it, and only the parts that have to move',
+              onSelect: () => setRelocating(true),
+            },
             {
               key: 'delete',
               glyph: '✕',
@@ -1101,6 +1147,22 @@ function FolderRow({ name, path, location, mobile, onNavigate, onRefresh, onErro
         >
           The folder and everything inside it goes: all parts are erased from every account. This cannot be undone.
         </ConfirmDialog>
+      )}
+
+      {relocating && (
+        <RelocateClouds
+          target={{ path }}
+          title={`Move ${name}`}
+          subtitle={`Everything under ${path} — pick the clouds its parts should live on`}
+          /* A folder has no placement of its own; its files each have one. So
+             the dialog opens on nothing chosen and the preview says, as soon as
+             there is something to price, how much of the folder is already
+             where it is being sent. */
+          current={[]}
+          providers={providers}
+          onClose={() => setRelocating(false)}
+          onDone={onRefresh}
+        />
       )}
     </>
   )

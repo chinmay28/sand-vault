@@ -5,6 +5,7 @@ import { api } from '../api'
 import { useDownload } from '../download'
 import { thumbnailFromElement } from '../thumbs'
 import StreamLink from './StreamLink'
+import { RelocateClouds } from './CloudSelect'
 import { Banner, Button, Modal, Spinner } from './ui'
 
 /* How much of the visible viewport a preview may take before the modal's own
@@ -214,9 +215,10 @@ export default function PreviewModal({ file, hasThumb, onClose, onThumbStored })
 
 /* A read-out of exactly where a file's parts are and whether each one is still
    answering — the thing you want when an account starts misbehaving. */
-export function ShardInspector({ file, onClose }) {
+export function ShardInspector({ file, providers = [], onClose, onChanged }) {
   const [health, setHealth] = useState(null)
   const [error, setError] = useState(null)
+  const [relocating, setRelocating] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -306,9 +308,32 @@ export function ShardInspector({ file, onClose }) {
         </>
       )}
 
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '4px' }}>
+      <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', marginTop: '4px' }}>
         <Button variant="ghost" onClick={onClose}>Close</Button>
+        {/* The read-out above says where the parts are; this is how they go
+            somewhere else. The row itself has no room for a fourth control,
+            and this is the question it would have been answering anyway. */}
+        <Button
+          variant="primary"
+          onClick={() => setRelocating(true)}
+          disabled={providers.length === 0}
+          title="Move the parts to other clouds"
+        >⇄ Move to other clouds</Button>
       </div>
+
+      {relocating && (
+        <RelocateClouds
+          target={{ id: file.id }}
+          title={`Move ${file.name}`}
+          subtitle={`${formatBytes(file.size)} — pick the clouds its ${file.shards.length} part(s) should live on`}
+          /* Already selected: where the parts are now, so the dialog opens on
+             the truth and a swap is one click rather than four. */
+          current={file.shards.map((s) => s.provider_id)}
+          providers={providers}
+          onClose={() => setRelocating(false)}
+          onDone={() => { onChanged?.(); onClose() }}
+        />
+      )}
     </Modal>
   )
 }

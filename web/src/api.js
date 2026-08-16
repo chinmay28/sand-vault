@@ -113,6 +113,14 @@ export const api = {
   moveFile: (id, dir, name) =>
     request(`/api/files/${encodeURIComponent(id)}/move`, { method: 'POST', body: { dir, name } }),
 
+  /* Move a file, or a folder and everything under it, onto other clouds.
+     Only the parts that are not already on one of the chosen accounts are
+     copied — swapping one cloud out of three moves one part, not the file — so
+     `preview` is worth asking first: it answers out of the index alone, without
+     contacting a single account, and says exactly how much would travel. */
+  relocate: ({ id, path, accounts, preview = false, signal } = {}) =>
+    request('/api/relocate', { method: 'POST', body: { id, path, accounts, preview }, signal }),
+
   createFolder: (path) => request('/api/folders', { method: 'POST', body: { path } }),
   deleteFolder: (path, recursive) =>
     request(`/api/folders?path=${encodeURIComponent(path)}${recursive ? '&recursive=1' : ''}`,

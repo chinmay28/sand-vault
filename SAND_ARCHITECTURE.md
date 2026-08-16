@@ -499,6 +499,64 @@ deeper for no gain. Staying flat also makes Google Drive, which has no paths
 and stores each part as a plain file, land on exactly the same part names as
 everywhere else.
 
+### 5.5 Changing which accounts hold something already stored
+
+Placement is decided when a file is uploaded, and it is not the last word: a
+cloud account gets expensive, or fills up, or stops being one you want holding
+your things. `Vault.Relocate` moves a file — or a folder and everything under it
+— onto a chosen set of accounts, and `Vault.PlanRelocation` answers what that
+would cost without contacting any of them.
+
+**A part is portable because its name does not mention where it lives.** The
+object key above is derived from the file's random archive ID and the part
+number alone. So moving part 3 from Dropbox to Box is a `Get` and a `Put` of the
+same bytes under the same key: no data key is touched, nothing is decompressed
+or re-encoded, and the file comes out the other side with the same archive ID,
+the same plaintext hash, the same chunk layout and the same key generation. The
+vault has to be unlocked to know what to copy and to read the accounts'
+credentials, and that is all the unlock is for.
+
+**Only what has to move moves.** Placement is a set of accounts, not a sequence,
+so the planner starts by letting every part already sitting on an account that is
+being kept claim it, and only then hands out what is left:
+
+| Currently on | Asked for | What happens |
+|---|---|---|
+| A, B, C | A, B, D | Part on C moves to D. The other two are not read, and their index rows are not rewritten. |
+| A, B, C | C, A, B | Nothing. A different order is the same answer. |
+| A, B, C | D, E, F | All three move — the expensive case, and the only one that is. |
+| A, B, C | A, B | Parts on A and B stay; the third is erased, because under `strict` no account may hold two parts of one file. |
+
+That last row is the one worth saying out loud, and both the CLI and the browser
+do before anything happens: narrowing the accounts a file may live on costs it
+its spare part. The redundant policy has room for all three on two accounts and
+doubles up instead, exactly as an upload to those accounts would — a relocation
+is not allowed to produce a placement that could not have been uploaded.
+
+**Copy, commit, erase, one file at a time.** Between the copy and the commit both
+accounts hold the part and the index still names the old one, so a read during
+the move works; after the commit the index names an account that certainly has
+the bytes. Only then is the original erased. What that ordering buys:
+
+- An interruption leaves an unreferenced copy — litter — rather than a file
+  missing a part.
+- A part that will not copy is reported and left exactly where it was. The file
+  is still whole, just not yet all in the right place, and running the
+  relocation again moves precisely that part.
+- A commit is refused if it would drop a file below the two parts it takes to
+  rebuild it, which the plan cannot ask for on its own but a failed copy can
+  bring about.
+- A file rewritten underneath the move — by a password change's re-encryption,
+  say — is spotted by its archive ID and left alone, and the copies made for it
+  are erased.
+
+A folder's thumbnail pack (§4.3's cousin, stored one archive per folder) is
+carried along at the end of a folder relocation. It does not move the same way:
+a pack is small and derived, so it is gathered and re-scattered onto the chosen
+accounts rather than growing a second copy of the placement machinery. A pack
+that will not move is a warning — it is a picture, and the browser can draw
+another.
+
 ---
 
 ## 6. Cryptography
@@ -866,6 +924,7 @@ reveals only whether a vault exists.
 | DELETE | `/api/files/{id}` | Erase every part, drop the entry |
 | POST | `/api/folders` | Create a folder |
 | DELETE | `/api/folders?path=&recursive=` | Delete a folder |
+| POST | `/api/relocate` | Move a file (`id`) or a folder (`path`) onto other `accounts` (§5.5); `"preview": true` prices it out of the index and moves nothing |
 | GET | `/api/system/folders?path=` | Folders on the machine SAND runs on, for the folder picker (§8.5) |
 | POST | `/api/archive` | Standalone mode (§10) |
 | POST | `/api/restore` | Standalone mode (§10) |
@@ -1083,7 +1142,7 @@ in front of it (`scripts/nginx-sand.conf`, or Tailscale Serve), or set
 
 ```
 sand/
-├── cmd/sand/                  # CLI: serve, vault, remote, ls/find/put/get/rm,
+├── cmd/sand/                  # CLI: serve, vault, remote, ls/find/put/get/rm/relocate,
 │                              #   archive/restore, manifest ls,
 │                              #   vault backup/recover
 ├── internal/
@@ -1093,7 +1152,8 @@ sand/
 │   ├── splitter/              # split, XOR, reconstruct
 │   ├── sandfile/              # binary .sand part format
 │   ├── provider/              # provider.go, local, s3, webdav, gdrive, dropbox
-│   ├── vault/                 # store (encrypted file), manifest, placement, transfer, backup
+│   ├── vault/                 # store (encrypted file), manifest, placement, transfer,
+│   │                          #   relocate (moving parts between accounts), backup
 │   └── server/                # sessions, handlers, embedded SPA
 ├── web/src/                   # React file browser
 │   ├── api.js  theme.js  App.jsx

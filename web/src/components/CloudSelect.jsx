@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { COLORS, FONT, KIND_ICONS, accountColor, formatBytes } from '../theme'
 import { api } from '../api'
 import { Banner, Button, Modal, Spinner } from './ui'
@@ -147,8 +147,13 @@ export function CloudChoice({ providers, selected, onChange }) {
   )
 }
 
-/* What a selection means, said before the upload rather than after it. */
-function SelectionNote({ providers, selected }) {
+/* What a selection means, said before the upload rather than after it.
+
+   `moving` switches the two sentences that differ between putting a file
+   somewhere for the first time and picking it up off one cloud and setting it
+   down on another — the second of which can also erase a spare part, because
+   the file already has three and the chosen clouds may not have room. */
+function SelectionNote({ providers, selected, moving = false }) {
   if (selected.length < MIN_ACCOUNTS) {
     return (
       <Banner tone="error">
@@ -161,8 +166,8 @@ function SelectionNote({ providers, selected }) {
     return (
       <Banner tone="warn">
         With {selected.length} clouds only {selected.length} of the {PARTS_PER_FILE} parts are
-        stored. The file is recoverable and still unreadable to either cloud alone, but it has no
-        spare part if one of them goes away.
+        stored{moving ? ', so the spare part is erased' : ''}. The file is recoverable and still
+        unreadable to either cloud alone, but it has no spare part if one of them goes away.
       </Banner>
     )
   }
@@ -171,7 +176,9 @@ function SelectionNote({ providers, selected }) {
     return (
       <Banner tone="warn">
         {offline.map((p) => p.name).join(', ')} {offline.length === 1 ? 'is' : 'are'} not answering.
-        The upload will go ahead if the others accept their parts, and that part will be missing.
+        {moving
+          ? ' Parts bound for it will stay where they are, and nothing is lost — run the move again once it is back.'
+          : ' The upload will go ahead if the others accept their parts, and that part will be missing.'}
       </Banner>
     )
   }
@@ -342,5 +349,232 @@ export function DefaultClouds({ providers, defaults, onClose, onChanged }) {
         </Button>
       </div>
     </Modal>
+  )
+}
+
+/* How long to sit on a change of selection before asking the server what it
+   would cost. Clicking through four clouds should be one question, not four. */
+const PREVIEW_DEBOUNCE_MS = 220
+
+/* Moving something that is already stored onto a different set of clouds.
+
+   The same three rows as an upload, with one thing added that only makes sense
+   here: what the change would actually cost. A part already sitting on a cloud
+   that is staying does not move, so swapping one of three is one part on the
+   wire rather than a whole file — and that is worth saying before the button is
+   pressed rather than after. The server answers it out of the encrypted index
+   alone, without contacting any account, so the estimate is free and exact. */
+export function RelocateClouds({ target, title, subtitle, current, providers, onClose, onDone }) {
+  const [selected, setSelected] = useState(() => (current || []).filter(
+    (id) => providers.some((p) => p.id === id)))
+  const [plan, setPlan] = useState(null)
+  const [planning, setPlanning] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+  const [report, setReport] = useState(null)
+
+  const enough = selected.length >= MIN_ACCOUNTS
+  const key = selected.join(',')
+
+  useEffect(() => {
+    if (!enough || report) {
+      setPlan(null)
+      return undefined
+    }
+
+    /* Every change cancels the question the last one asked, so a slow answer
+       can never arrive after — and describe — a selection that has moved on. */
+    const controller = new AbortController()
+    setPlanning(true)
+    const timer = setTimeout(() => {
+      api.relocate({ ...target, accounts: selected, preview: true, signal: controller.signal })
+        .then((resp) => { setPlan(resp); setError(null) })
+        .catch((err) => {
+          if (err.name === 'AbortError') return
+          setPlan(null)
+          setError(err.message)
+        })
+        .finally(() => { if (!controller.signal.aborted) setPlanning(false) })
+    }, PREVIEW_DEBOUNCE_MS)
+
+    return () => { clearTimeout(timer); controller.abort() }
+    // The selection is compared by value: a new array holding the same ids is
+    // the same question.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, enough, report])
+
+  const submit = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      setReport(await api.relocate({ ...target, accounts: selected }))
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const close = () => {
+    // The listing's part badges are drawn from the index, which has changed.
+    if (report) onDone?.()
+    onClose()
+  }
+
+  return (
+    <Modal
+      title={title}
+      subtitle={subtitle}
+      onClose={busy ? undefined : close}
+      width={480}
+    >
+      {error && <Banner tone="error">{error}</Banner>}
+
+      {report ? (
+        <RelocationOutcome report={report} onClose={close} />
+      ) : (
+        <>
+          <p style={{
+            margin: '0 0 12px',
+            fontFamily: FONT.sans,
+            fontSize: '12px',
+            color: COLORS.textMuted,
+            lineHeight: 1.6,
+          }}>
+            Parts already on a cloud you keep stay exactly where they are — only the rest are
+            carried across, still encrypted, without ever being rebuilt.
+          </p>
+
+          <CloudChoice providers={providers} selected={selected} onChange={setSelected} />
+
+          <div style={{ marginTop: '14px' }}>
+            <SelectionNote providers={providers} selected={selected} moving />
+          </div>
+
+          {enough && <RelocationCost plan={plan} planning={planning} />}
+
+          <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', marginTop: '16px' }}>
+            <Button type="button" variant="ghost" onClick={close} disabled={busy}>Cancel</Button>
+            <Button
+              type="button"
+              variant="primary"
+              onClick={submit}
+              disabled={busy || !enough || (plan !== null && plan.moves === 0 && plan.drops === 0)}
+            >
+              {busy ? <><Spinner size={10} color={COLORS.bg} /> Moving…</> : '⇄ Move the parts'}
+            </Button>
+          </div>
+        </>
+      )}
+    </Modal>
+  )
+}
+
+/* What the chosen clouds would cost, from the index alone. */
+function RelocationCost({ plan, planning }) {
+  if (!plan) {
+    return (
+      <p style={{
+        margin: '12px 0 0', display: 'flex', alignItems: 'center', gap: '7px',
+        fontFamily: FONT.mono, fontSize: '11px', color: COLORS.textMuted,
+      }}>
+        {planning ? <><Spinner size={10} /> working out what would move…</> : ' '}
+      </p>
+    )
+  }
+
+  if (plan.moves === 0 && plan.drops === 0) {
+    return (
+      <div style={{ marginTop: '12px' }}>
+        <Banner tone="success">
+          Already there — every part is on one of those clouds. Nothing to move.
+        </Banner>
+      </div>
+    )
+  }
+
+  return (
+    <div style={{
+      marginTop: '12px',
+      padding: '11px 13px',
+      background: COLORS.bg,
+      border: `1px solid ${COLORS.border}`,
+      borderRadius: '6px',
+      fontFamily: FONT.mono,
+      fontSize: '11px',
+      color: COLORS.textDim,
+      lineHeight: 1.7,
+    }}>
+      <div style={{ color: COLORS.text }}>
+        {/* With nothing to move but a part to erase — narrowing three clouds to
+            two — "0 parts to move" is not what the change is, so it leads with
+            what actually happens instead. */}
+        {plan.moves > 0
+          ? <>{plan.moves} part{plan.moves === 1 ? '' : 's'} to move{plan.bytes > 0 && <> · {formatBytes(plan.bytes)}</>}</>
+          : <>Nothing to move</>}
+        {planning && <> …</>}
+      </div>
+      <div style={{ color: COLORS.textMuted }}>
+        {plan.total} file{plan.total === 1 ? '' : 's'} in scope
+        {plan.unchanged > 0 && <>, {plan.unchanged} already in place</>}
+        {plan.drops > 0 && (
+          <span style={{ color: COLORS.warn }}>
+            {' '}· {plan.drops} spare part{plan.drops === 1 ? '' : 's'} erased
+          </span>
+        )}
+      </div>
+      {(plan.warnings || []).slice(0, 3).map((w, i) => (
+        <div key={i} style={{ color: COLORS.warn }}>{w}</div>
+      ))}
+    </div>
+  )
+}
+
+/* What the move actually did. It stays on screen rather than closing on
+   success, because a partial move — one cloud not answering — is a normal
+   outcome worth reading, and running it again is what finishes it. */
+function RelocationOutcome({ report, onClose }) {
+  const stuck = report.partial + report.failed
+
+  return (
+    <>
+      <Banner tone={stuck ? 'warn' : 'success'}>
+        {stuck
+          ? `${stuck} file(s) did not fully move. Nothing was lost — their parts are still where
+             they were. Try again once the accounts are answering.`
+          : `Moved ${report.parts_moved} part(s)${report.bytes ? `, ${formatBytes(report.bytes)}` : ''},
+             across ${report.relocated} file(s).`}
+      </Banner>
+
+      <div style={{
+        padding: '11px 13px',
+        background: COLORS.bg,
+        border: `1px solid ${COLORS.border}`,
+        borderRadius: '6px',
+        fontFamily: FONT.mono,
+        fontSize: '11px',
+        color: COLORS.textDim,
+        lineHeight: 1.7,
+      }}>
+        <div>{report.total} file(s) in scope · {report.unchanged} already in place</div>
+        {report.parts_dropped > 0 && (
+          <div style={{ color: COLORS.warn }}>
+            {report.parts_dropped} spare part(s) erased — the chosen clouds had no room for them.
+          </div>
+        )}
+      </div>
+
+      {(report.warnings || []).length > 0 && (
+        <div style={{ marginTop: '10px', maxHeight: '160px', overflowY: 'auto' }}>
+          <Banner tone="warn">
+            {report.warnings.map((w, i) => <div key={i}>{w}</div>)}
+          </Banner>
+        </div>
+      )}
+
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '4px' }}>
+        <Button type="button" variant="primary" onClick={onClose}>Done</Button>
+      </div>
+    </>
   )
 }

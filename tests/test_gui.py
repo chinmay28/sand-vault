@@ -61,6 +61,22 @@ def app(page, server, vault_password, clouds):
     return page
 
 
+def connect_cloud(page, name, clouds):
+    """Connect one more local-folder account through the UI, if it is not
+    already there. Moving something between clouds needs somewhere to move it
+    to that it is not already on."""
+    if page.get_by_text(name, exact=True).count() > 0:
+        return
+    page.get_by_text("+ Connect a cloud").click()
+    page.wait_for_selector("text=Local folder")
+    page.get_by_text("Local folder").click()
+    form = page.locator("form")
+    form.locator("input").nth(0).fill(name)
+    form.locator("input").nth(1).fill(clouds(name))
+    form.locator('button[type=submit]').click()
+    page.wait_for_selector(f"text={name}", timeout=30000)
+
+
 def select_clouds(page, names):
     """Leave exactly `names` selected in whichever cloud picker is open.
 
@@ -394,6 +410,48 @@ class TestUploadAndPreview:
         assert "Part 1" in body and "Part 2" in body and "Part 3" in body
         # Each part must name the account holding it.
         assert re.search(r"ui-(one|two|three)", body)
+
+    def test_moving_a_file_to_other_clouds_moves_only_what_it_has_to(self, app, tmp_path, clouds):
+        """The parts inspector prices the change before it happens, and moving
+        one cloud out of three leaves the other two parts exactly where they
+        are."""
+        connect_cloud(app, "ui-four", clouds)
+
+        source = tmp_path / "travel.txt"
+        source.write_text("carried, not rebuilt")
+        upload_and_settle(app, source, choose=["ui-one", "ui-two", "ui-three"])
+
+        # Reached through the badges, beside the read-out of where the parts
+        # are now — the row itself has only three controls' worth of room.
+        travel = app.locator('button[title="Open"]', has_text="travel.txt").locator("xpath=..")
+        travel.locator('button[title="Where the parts live"]').click()
+        app.wait_for_selector("text=Where this file lives", timeout=20000)
+        app.get_by_role("button", name=re.compile("Move to other clouds")).click()
+        app.wait_for_selector("text=Move travel.txt", timeout=20000)
+
+        # The clouds it is already on are what the dialog opens on, so asking
+        # for them again is asking for nothing.
+        app.wait_for_selector("text=Already there", timeout=20000)
+
+        # Swap the third for the fourth: one part, and only one, travels.
+        select_clouds(app, ["ui-one", "ui-two", "ui-four"])
+        app.wait_for_selector("text=1 part to move", timeout=20000)
+
+        app.get_by_role("button", name=re.compile("Move the parts")).click()
+        app.wait_for_selector("text=Moved 1 part", timeout=90000)
+        app.get_by_role("button", name="Done").click()
+
+        # The row now names the fourth cloud and no longer names the third.
+        # Waited for rather than read straight off: closing the dialog is what
+        # asks the listing to refresh.
+        row = app.locator('button[title="Open"]', has_text="travel.txt").locator("xpath=..")
+        expect(row.get_by_title(re.compile(r"Part \d on ui-four$"))).to_have_count(1, timeout=20000)
+        expect(row.get_by_title(re.compile(r"Part \d on ui-three$"))).to_have_count(0)
+        expect(row.get_by_title(re.compile(r"Part \d on ui-(one|two)$"))).to_have_count(2)
+
+        # And it still rebuilds.
+        app.locator('button[title="Open"]', has_text="travel.txt").click()
+        app.wait_for_selector("text=carried, not rebuilt", timeout=60000)
 
     def test_downloading_a_file_hands_back_the_plaintext(self, app, tmp_path):
         source = tmp_path / "dl.txt"

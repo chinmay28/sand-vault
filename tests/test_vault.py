@@ -315,6 +315,34 @@ class TestStoreAndRetrieve:
         assert [f["name"] for f in nested["files"]] == ["q1.txt"]
         assert nested["parent"] == "/reports"
 
+    def test_relocating_to_the_same_clouds_moves_nothing(self, server, unlocked):
+        """Placement is a set of accounts, not a sequence — naming the three a
+        file is already on, in a different order, is not a change."""
+        r = upload(unlocked, server, "settled.txt", b"already where it belongs")
+        entry = r.json()["results"][0]["file"]
+        before = {(s["part"], s["provider_id"], s["key"]) for s in entry["shards"]}
+        accounts = [s["provider_id"] for s in entry["shards"]][::-1]
+
+        preview = unlocked.post(
+            f"{server}/api/relocate",
+            json={"id": entry["id"], "accounts": accounts, "preview": True},
+            headers={"Origin": server}, timeout=60,
+        )
+        assert preview.status_code == 200, preview.text
+        assert preview.json()["moves"] == 0
+        assert preview.json()["unchanged"] == 1
+
+        done = unlocked.post(
+            f"{server}/api/relocate",
+            json={"id": entry["id"], "accounts": accounts},
+            headers={"Origin": server}, timeout=120,
+        )
+        assert done.status_code == 200, done.text
+        assert done.json()["parts_moved"] == 0
+
+        meta = unlocked.get(f"{server}/api/files/{entry['id']}", timeout=30).json()["file"]
+        assert {(s["part"], s["provider_id"], s["key"]) for s in meta["shards"]} == before
+
     def test_move_keeps_the_parts_where_they_are(self, server, unlocked):
         r = upload(unlocked, server, "mover.txt", b"contents that must survive")
         entry = r.json()["results"][0]["file"]
@@ -479,6 +507,51 @@ class TestCLI:
         out = tmp_path / "recovered.txt"
         cli(sand_bin, vault_dir, "get", "/fragile.txt", "-o", str(out))
         assert out.read_text() == "one part will vanish"
+
+    def test_relocate_moves_only_the_part_that_has_to(self, sand_bin, vault_dir, tmp_path):
+        """Swapping one cloud out of three copies one part across, byte for
+        byte, and leaves the other two exactly where they are."""
+        fourth = os.path.join(vault_dir, "cli-clouds", "cli-d")
+        cli(sand_bin, vault_dir, "remote", "add", "local", "--name", "cli-d",
+            "--set", f"path={fourth}", check=False)
+
+        leaving = os.path.join(vault_dir, "cli-clouds", "cli-c")
+
+        def parts_on(directory):
+            """The stored parts in an account, ignoring the manifest backup and
+            the scratch files an atomic write leaves behind."""
+            return {n for n in os.listdir(directory)
+                    if n.endswith(".sand") and n != "manifest.sand"}
+
+        untouched = parts_on(leaving)
+
+        source = tmp_path / "relocatable.bin"
+        payload = os.urandom(40_000)
+        source.write_bytes(payload)
+        cli(sand_bin, vault_dir, "put", str(source), "--accounts", "cli-a,cli-b,cli-c")
+        assert parts_on(leaving) > untouched, "the put did not reach cli-c"
+
+        dry = cli(sand_bin, vault_dir, "relocate", "/relocatable.bin",
+                  "--accounts", "cli-a,cli-b,cli-d", "--dry-run")
+        assert "1 part(s) to move" in dry.stdout, dry.stdout
+        assert "cli-c → cli-d" in dry.stdout, dry.stdout
+        # A dry run really is dry.
+        assert parts_on(leaving) > untouched
+
+        cli(sand_bin, vault_dir, "relocate", "/relocatable.bin",
+            "--accounts", "cli-a,cli-b,cli-d")
+
+        listed = cli(sand_bin, vault_dir, "ls").stdout
+        row = next(line for line in listed.splitlines() if "relocatable.bin" in line)
+        assert "cli-d" in row and "cli-c" not in row, row
+
+        # cli-c is back to exactly what it held before the file existed: the
+        # part it lost was erased, and nothing else was disturbed.
+        assert parts_on(leaving) == untouched
+
+        out = tmp_path / "relocated-back.bin"
+        cli(sand_bin, vault_dir, "get", "/relocatable.bin", "-o", str(out))
+        assert out.read_bytes() == payload
 
     def test_rm_removes_the_file(self, sand_bin, vault_dir, tmp_path):
         source = tmp_path / "doomed.txt"

@@ -330,6 +330,75 @@ func (s *Server) handleFileMove(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"file": entry, "path": entry.Path()})
 }
 
+// relocateRequest asks for a file, or a folder and everything under it, to be
+// moved onto a different set of cloud accounts.
+type relocateRequest struct {
+	// ID names a single file; Path names either a file or a folder. One of
+	// them is required, and ID wins if both are given.
+	ID   string `json:"id"`
+	Path string `json:"path"`
+
+	// Accounts is where the parts should end up — at most one per part.
+	Accounts []string `json:"accounts"`
+
+	// Preview asks what the move would do without doing any of it. The answer
+	// comes out of the index alone, so it costs nothing and no account is
+	// contacted.
+	Preview bool `json:"preview"`
+}
+
+// relocateTimeout is the ceiling on one relocation request.
+//
+// It is hours rather than minutes because moving a folder is a copy between two
+// clouds for every part of every chunk of every file in it, and a request that
+// gave up halfway would be indistinguishable from one that never started. It can
+// afford to be this long precisely because a relocation is resumable: each file
+// commits on its own, so a timeout costs the file in flight and nothing else,
+// and asking again picks up whatever is still in the wrong place.
+const relocateTimeout = 6 * time.Hour
+
+// handleRelocate moves a file or a folder onto other clouds. Only the parts
+// that are not already on one of the chosen accounts are copied — see
+// vault.Relocate.
+func (s *Server) handleRelocate(w http.ResponseWriter, r *http.Request) {
+	var req relocateRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
+		return
+	}
+
+	target := strings.TrimSpace(req.ID)
+	if target == "" {
+		target = strings.TrimSpace(req.Path)
+	}
+	if target == "" {
+		writeError(w, http.StatusBadRequest, "name the file or folder to move", "BAD_REQUEST")
+		return
+	}
+
+	v, _ := s.Vault()
+
+	if req.Preview {
+		plan, err := v.PlanRelocation(target, req.Accounts)
+		if err != nil {
+			vaultErrorResponse(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, plan)
+		return
+	}
+
+	ctx, cancel := contextWithTimeout(r, relocateTimeout)
+	defer cancel()
+
+	report, err := v.Relocate(ctx, target, req.Accounts, nil)
+	if err != nil {
+		vaultErrorResponse(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, report)
+}
+
 func (s *Server) handleFileHealth(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := contextWithTimeout(r, 2*time.Minute)
 	defer cancel()

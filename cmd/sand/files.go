@@ -11,6 +11,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/chinmay28/sand-vault/internal/vault"
 )
@@ -401,6 +402,124 @@ encrypted parts stay exactly where they are on your cloud accounts.`,
 	}
 }
 
+func relocateCmd() *cobra.Command {
+	var (
+		accounts []string
+		dryRun   bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "relocate <path-or-id>",
+		Short: "Move a file or a folder onto different cloud accounts",
+		Long: `Move a file — or a folder and everything under it — onto the cloud accounts
+you name.
+
+Only what has to move moves. A part already on one of the chosen accounts stays
+exactly where it is, so swapping one cloud out of three copies one part rather
+than rewriting the file. What does move is carried across as the encrypted blob
+it already is: nothing is decrypted, nothing is re-encrypted, and the file keeps
+its identity, its hash and its chunk layout.
+
+Each file is committed on its own, so this is safe to interrupt and safe to
+repeat — run it again and it moves whatever is still in the wrong place.
+
+  sand relocate /photos --accounts box,s3,drive
+  sand relocate /notes.txt --accounts box,s3 --dry-run`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(accounts) == 0 {
+				return fmt.Errorf("name the accounts to move onto with --accounts")
+			}
+
+			v, err := openVault(cmd)
+			if err != nil {
+				return err
+			}
+			defer v.Lock()
+
+			chosen, err := resolveAccountNames(v, accounts)
+			if err != nil {
+				return err
+			}
+
+			plan, err := v.PlanRelocation(args[0], chosen)
+			if err != nil {
+				return err
+			}
+			printRelocationPlan(plan)
+
+			if dryRun {
+				// Only the dry run prints the plan's warnings here. The real
+				// run carries every one of them into its report, and saying
+				// them twice reads as two problems.
+				printWarnings(plan.Warnings)
+				return nil
+			}
+			if plan.Moves == 0 && plan.Drops == 0 {
+				return nil
+			}
+
+			report, err := v.Relocate(cmd.Context(), args[0], chosen, progressLine)
+			clearProgressLine()
+			printWarnings(report.Warnings)
+			if err != nil {
+				return err
+			}
+
+			fmt.Printf("Moved %d part(s), %s, across %d file(s).\n",
+				report.PartsMoved, formatBytes(report.Bytes), report.Relocated)
+			if report.PartsDrop > 0 {
+				fmt.Printf("Erased %d spare part(s) the chosen accounts had no room for.\n", report.PartsDrop)
+			}
+			if !report.Done() {
+				return fmt.Errorf("%d file(s) did not fully move — run it again once the accounts are answering",
+					report.Partial+report.Failed)
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().StringSliceVar(&accounts, "accounts", nil,
+		"the accounts to move onto, by name or id (at most one per part)")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "say what would move, and move nothing")
+	return cmd
+}
+
+// printRelocationPlan says what a move comes to before it starts: how much of
+// the work is already done, what has to travel, and what it will cost on each
+// account.
+func printRelocationPlan(plan *vault.RelocationPlan) {
+	what := "file"
+	if plan.Folder {
+		what = "folder"
+	}
+	fmt.Printf("%s %s: %d file(s), %d already in place\n", what, plan.Path, plan.Total, plan.Unchanged)
+
+	switch {
+	case plan.Moves == 0 && plan.Drops == 0:
+		fmt.Println("Nothing to move — every part is already on one of those accounts.")
+		return
+	case plan.Moves == 0:
+		// Narrowing the accounts rather than changing them: nothing travels,
+		// and "0 parts to move" is not what is about to happen.
+		fmt.Printf("Nothing to move, %d spare part(s) to erase\n", plan.Drops)
+	default:
+		fmt.Printf("%d part(s) to move, %s in all\n", plan.Moves, formatBytes(plan.Bytes))
+	}
+
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	for _, f := range plan.Files {
+		for _, m := range f.Moves {
+			fmt.Fprintf(tw, "  %s\tpart %d\t%s → %s\t%s\n",
+				f.Path, m.Part, m.FromName, m.ToName, formatBytes(m.Bytes))
+		}
+	}
+	tw.Flush()
+	if plan.Truncated {
+		fmt.Printf("  … and more (showing the first %d file(s))\n", len(plan.Files))
+	}
+}
+
 func checkCmd() *cobra.Command {
 	var all bool
 
@@ -503,5 +622,25 @@ func collectAll(v *vault.Vault, dir string) ([]*vault.Entry, error) {
 func printWarnings(warnings []string) {
 	for _, warning := range warnings {
 		fmt.Fprintf(os.Stderr, "warning: %s\n", warning)
+	}
+}
+
+// progressLine redraws a one-line "where it has got to" on stderr.
+//
+// Piped or redirected, it prints nothing at all rather than a page of half-
+// overwritten lines and a stray escape sequence: a progress indicator is for
+// somebody watching, and the report at the end is what a script reads.
+func progressLine(path string, done, total int) {
+	if !term.IsTerminal(int(os.Stderr.Fd())) {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "\r\033[K[%d/%d] %s", done, total, path)
+}
+
+// clearProgressLine takes the progress line back off the screen, so whatever
+// is printed next starts on a line of its own.
+func clearProgressLine() {
+	if term.IsTerminal(int(os.Stderr.Fd())) {
+		fmt.Fprint(os.Stderr, "\r\033[K")
 	}
 }

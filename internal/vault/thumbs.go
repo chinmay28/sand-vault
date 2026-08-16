@@ -390,13 +390,23 @@ func (v *Vault) loadPack(ctx context.Context, dir string) (map[string][]byte, er
 // savePack scatters a folder's thumbnails as one archive and points the index
 // at it, erasing whatever the folder's previous pack was stored as.
 func (v *Vault) savePack(ctx context.Context, dir string, items map[string][]byte) error {
+	return v.savePackOn(ctx, dir, items, nil)
+}
+
+// savePackOn is savePack onto a named set of accounts, which is what moving a
+// folder to different clouds needs: a pack belongs to a folder rather than to
+// any one file, so it does not follow a file's placement and has to be told.
+//
+// Empty accounts is the ordinary case — the vault's default, and failing that a
+// pick of its own, exactly as an upload does.
+func (v *Vault) savePackOn(ctx context.Context, dir string, items map[string][]byte, accounts []string) error {
 	dir = CleanDir(dir)
 	if len(items) == 0 {
 		v.dropPack(ctx, dir)
 		return nil
 	}
 
-	placed, err := v.scatter(ctx, thumbArchiveName, encodePack(items), nil, false)
+	placed, err := v.scatter(ctx, thumbArchiveName, encodePack(items), accounts, len(accounts) > 0)
 	if err != nil {
 		return err
 	}
