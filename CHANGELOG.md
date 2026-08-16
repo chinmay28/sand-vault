@@ -363,6 +363,36 @@ encrypted index alone, without contacting a single account.
 A folder's stored thumbnails come along too, so moving a folder off an account
 really does move it off.
 
+### Naming an account, and choosing its colour
+
+A connected account is yours to label. **Edit** on its card in the sidebar opens
+a dialog for what it is called and the colour it wears — the same colour on the
+card, on every part badge in the file list, and in the cloud picker, which is
+what makes "which three clouds is this file on" a question you answer by eye.
+Twelve named colours are the shortlist, **All shades** opens the whole palette —
+the same twelve hues in three shades each, a hue per column, so "the same blue
+but deeper" is a move downwards rather than a hunt — a native picker takes any
+colour at all, and **Automatic** hands the choice back: the browser then picks
+one and keeps it stable as other accounts come and go. Every colour in the
+palette is light enough to carry the app's dark text and dark enough to hold
+against the surface behind it, since a part badge is a number drawn *on* the
+account's colour.
+
+A chosen colour is claimed before the automatic ones are handed out, so nothing
+else drifts onto it — your Google Drive can be the blue one because that is what
+it is to you.
+
+Neither field reaches the cloud. Nothing is uploaded, downloaded or
+re-encrypted, no credential is touched, and not one part moves. A rename does
+travel through the index, though: every part records the name of the account
+holding it, which is what the file list, the health read-out and a recovery from
+a manifest backup all read, so the new name lands on all of them in the same
+write.
+
+On the command line it is `sand remote edit r2-cold --name r2-archive
+--color '#38bdf8'` (and `--color auto` to hand it back), with the colour shown
+in `sand remote list`; over HTTP, `PATCH /api/providers/{id}` with either field.
+
 ### Finding a file again
 
 A vault deep enough to be worth having is one you cannot click through, so the
@@ -386,6 +416,26 @@ Lock screen, a sidebar of connected accounts with live status and how much each
 is holding, breadcrumbs, search, drag-and-drop upload with progress, part
 badges in each account's own colour, a per-part health read-out, and inline
 preview for images, video, audio, PDF and text — each one rebuilt on demand.
+
+The wordmark is set in two hands: SAND in the tracked-out monospace it has
+always had, and *Vault* written beside it in a monoline hand.
+
+That hand is **3.4 KB and in this repository** — five glyphs, `V a u l t`,
+subset from [Caveat](https://fonts.google.com/specimen/Caveat) by Pablo
+Impallari under the SIL Open Font License and pinned to one weight, travelling
+with its `OFL.txt`. Everyone sees the same mark, including a Linux browser with
+no handwriting face installed, which is what the old system-font stack could not
+promise — and Caveat's large x-height keeps it legible at the 17px the header
+sets it in.
+
+It is never linked. The build reads whatever face is in `web/fonts/` and embeds
+it in the page as a `data:` URI, so it is one request fewer than a system font
+rather than one more, and it cannot become a call to somebody's CDN however the
+app is deployed. **Nefelibata Script** — a *nefelibata* is a cloud-walker, which
+is a fair description of a vault living on other people's clouds — is asked for
+first and picked up the same way if a licensed copy is dropped in; the
+repository cannot carry one. Behind both, the platform's own handwriting faces
+still stand. See [`web/fonts/README.md`](./web/fonts/README.md).
 
 It loads no external fonts, scripts or styles: opening your vault makes zero
 third-party requests.

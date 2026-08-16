@@ -24,7 +24,7 @@ Ships as a **single static Go binary** with a CLI and an embedded web UI.
 │ ● nas-backup      │  📕 lease.pdf      880 KB    Jul 29 16:04  ①②③   │
 │   webdav · 41 pts │  🎬 clip.mp4       88 MB     Jul 12 09:41  ①②③   │
 └───────────────────┴───────────────────────────────────────────────────┘
-   each ①②③ is coloured by the account holding that part
+   each ①②③ is coloured by the account holding that part — a colour you pick
 ```
 
 ---
@@ -269,6 +269,44 @@ account between machines:
 > is `SameSite=Strict` and deliberately does not survive a cross-site
 > navigation. Box and Microsoft retire a refresh token as it is spent; SAND
 > writes the replacement back into the vault as it goes.
+
+---
+
+## Naming an account and choosing its colour
+
+Every connected account wears a colour: the stripe down its card in the
+sidebar, every part badge for a file it holds, and its row in the cloud picker
+are all the same shade. That is what makes *which three clouds is this file on*
+a question you answer by eye rather than by opening an inspector.
+
+**Edit** on an account's card opens the menu for both fields — what it is
+called, and which colour it wears. Twelve named colours are the shortlist;
+**All shades** opens the whole palette — the same twelve hues in three shades
+each, a hue per column — and a native picker takes any colour at all for a
+cloud with a brand colour of its own. **Automatic** hands the choice back to the
+browser. A swatch another account is already wearing is marked as such before
+you pick it, and a chosen colour is claimed before the automatic ones are handed
+out, so nothing else drifts onto it.
+
+Every colour in the palette is light enough to carry the app's dark text and
+dark enough to hold against the surface behind it, because a part badge is a
+number drawn *on* the account's colour — a navy or a pastel would be a colour
+you could pick and then not be able to read.
+
+```bash
+./sand remote edit r2-cold --name r2-archive       # rename it
+./sand remote edit r2-cold --color '#38bdf8'       # or any hex colour
+./sand remote edit r2-cold --color auto            # back to the browser's pick
+```
+
+Neither field reaches the cloud. Nothing is uploaded, downloaded or
+re-encrypted, no credential is touched, and not one part moves — the account
+answers to exactly what it did before. A rename does travel through the index:
+every part records the name of the account holding it, which is what the file
+list, the health read-out and a recovery from a `manifest.sand` all read, so
+the new name lands on all of them in the same write.
+
+Two accounts may not share a name, whether it is set at connect time or later.
 
 ---
 
@@ -520,10 +558,17 @@ sand restore --parts A,B --manifest M         Rebuild a file offline from loose 
 ```
 sand remote kinds                             List backends and their settings
 sand remote add <kind> --name N --set k=v …   Connect an account (pings first)
-sand remote list                              Status, parts held, bytes stored
+sand remote list                              Status, parts held, bytes stored, colour
+sand remote edit <name-or-id> [--name N] [--color '#38bdf8'|auto]
+                                              Rename it, or change the colour it wears
 sand remote test <name-or-id>                 Re-check reachability
 sand remote remove <name-or-id> [--force]     Disconnect
 ```
+
+`sand remote edit` changes what an account is called and the colour it wears in
+the browser. Neither reaches the cloud: no credential is touched and not one
+part moves. See [Naming an account and choosing its
+colour](#naming-an-account-and-choosing-its-colour).
 
 ### Files
 
@@ -607,6 +652,8 @@ pipe the password on stdin.
   looks there first and offers to widen to the whole vault
 - **Part badges** — `①②③` coloured per account; click for a live per-part
   health read-out
+- **Edit an account** — rename a cloud, or pick the colour it wears everywhere
+  in the app; neither touches its credentials or the parts on it
 - **Thumbnails** — images and PDFs show a picture rather than an icon, the PDF's
   being its first page. Made in the browser when the file is uploaded, then
   stored the way everything else is: split into three encrypted parts across
@@ -622,6 +669,17 @@ pipe the password on stdin.
 
 The UI loads no external fonts, scripts or styles. Opening your vault makes zero
 third-party requests.
+
+The wordmark is the one piece of typography that is not the system's own:
+*Vault* is written in a monoline hand that ships in the repository at **3.4
+KB** — five glyphs and nothing else, subset from
+[Caveat](https://fonts.google.com/specimen/Caveat) under the SIL Open Font
+License (see [`web/fonts/`](./web/fonts/README.md)). It is never linked:
+the build embeds it in the page as a `data:` URI, so it costs one request fewer
+than a system font rather than one more. **Nefelibata Script** — a *nefelibata*
+is a cloud-walker — is asked for ahead of it and embedded the same way if you
+drop a licensed copy in, and the platform's own handwriting faces stand behind
+both.
 
 Asset filenames carry a content hash and are cached for a year; `index.html`,
 which names the current bundle, revalidates on every load against an ETag. An
@@ -682,6 +740,7 @@ its home screen gets the password prompt like any other browser would.
 | GET | `/api/providers/specs` | Backend descriptions for the connect form |
 | GET · POST | `/api/providers` | List / connect accounts |
 | POST | `/api/providers/{id}/test` | Re-check an account |
+| PATCH | `/api/providers/{id}` | Rename it / set its colour (`name`, `color`; `""` for automatic) |
 | DELETE | `/api/providers/{id}` | Disconnect (`?force=1`) |
 | GET | `/api/files?path=` | List a folder |
 | GET | `/api/search?q=` | Find files and folders by name (`&path=` to scope, `&type=file\|folder`, `&limit=`) |

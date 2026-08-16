@@ -443,6 +443,36 @@ func TestNormalizePrefix(t *testing.T) {
 	}
 }
 
+func TestNormalizeColor(t *testing.T) {
+	cases := map[string]string{
+		"":        "",
+		"   ":     "",
+		"#38bdf8": "#38bdf8",
+		"#38BDF8": "#38bdf8",
+		"38bdf8":  "#38bdf8",
+		" #abc ":  "#aabbcc",
+		"#ABC":    "#aabbcc",
+	}
+	for in, want := range cases {
+		got, err := NormalizeColor(in)
+		if err != nil {
+			t.Errorf("NormalizeColor(%q): %v", in, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("NormalizeColor(%q) = %q, want %q", in, got, want)
+		}
+	}
+
+	// A colour that is not one has to be refused rather than stored and drawn
+	// as nothing: the browser paints this straight into a style.
+	for _, bad := range []string{"chartreuse", "#12345", "#ggg", "rgb(1,2,3)", "#38bdf8;"} {
+		if _, err := NormalizeColor(bad); err == nil {
+			t.Errorf("NormalizeColor(%q) was accepted", bad)
+		}
+	}
+}
+
 func keysOf(m map[string][]byte) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {

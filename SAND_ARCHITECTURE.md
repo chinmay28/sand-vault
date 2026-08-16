@@ -280,6 +280,37 @@ the same read lock a listing takes:
 - a file hit carries its whole index entry, so a result row draws its size,
   placement and redundancy without a second round trip
 
+### 3.9 An account's name and colour are index state
+
+`provider.Config` carries two fields the backend has no opinion about: `Name`,
+the label an account answers to, and `Color`, the shade it wears in the browser
+— the card's stripe, every part badge for a file it holds, and its row in the
+cloud picker. `Vault.UpdateProvider` is the only writer of either, and it is the
+one write against an account that never opens a connection to it: no credential
+changes, no object is read or written, and no part moves.
+
+Two properties are worth stating.
+
+**A colour is validated, not trusted.** `provider.NormalizeColor` accepts
+`#rgb`, `#rrggbb` and either without the `#`, and stores lower-case `#rrggbb`
+— one length and one case, so nothing downstream compares two spellings of the
+same colour. Anything else is refused, because the value ends up in a style the
+browser paints. The empty string is a value rather than a failure: it means
+*no choice*, and the browser goes back to assigning one from its palette,
+claiming the colours accounts have chosen first so an automatic pick never
+lands on one.
+
+**A rename travels through the manifest.** Every `Shard` records
+`ProviderName` alongside `ProviderID` — it is what the file list, the health
+read-out and `RecoverFromBackup` read, the last of which matches a backup's
+accounts to the connected ones on kind and name. So the rename and the shards
+it touches are one write under one lock: the config, the index, and the vault
+file all move together or none of them do.
+
+Names stay unique, case-insensitively, whether they are set by `AddProvider` or
+changed here — two accounts answering to one name would make `--accounts a,b,c`
+and every CLI lookup ambiguous.
+
 ---
 
 ## 4. The Data Pipeline
@@ -909,6 +940,7 @@ reveals only whether a vault exists.
 | POST | `/api/providers/oauth/exchange` | Finish a sign-in from a pasted redirect URL |
 | POST | `/api/providers/oauth/complete` | Turn a finished sign-in into an account |
 | POST | `/api/providers/{id}/test` | Re-check one account |
+| PATCH | `/api/providers/{id}` | Rename it / set its colour — index only, the backend is never contacted (§3.9) |
 | DELETE | `/api/providers/{id}` | Disconnect (`?force=1` to override the guard) |
 | GET | `/api/files?path=` | List a folder |
 | GET | `/api/search?q=` | Find files and folders by name (`&path=` scopes to a subtree, `&type=file\|folder`, `&limit=`) |

@@ -64,6 +64,19 @@ export const api = {
   addProvider: (kind, name, options) =>
     request('/api/providers', { method: 'POST', body: { kind, name, options } }),
   testProvider: (id) => request(`/api/providers/${encodeURIComponent(id)}/test`, { method: 'POST' }),
+  /* What an account is called and what colour it wears. Only the fields passed
+     change — an absent one is left alone — and neither touches the credentials
+     or the parts sitting on the account: nothing is uploaded, downloaded or
+     re-encrypted by renaming a cloud. A color of '' hands the choice back to
+     the browser. */
+  updateProvider: (id, { name, color } = {}) =>
+    request(`/api/providers/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: {
+        ...(name === undefined ? null : { name }),
+        ...(color === undefined ? null : { color }),
+      },
+    }),
 
   /* Browser sign-in. The server holds the tokens; all the app ever sees is
      where to send the user and how far along the flow is. */

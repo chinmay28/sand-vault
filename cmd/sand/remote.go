@@ -19,7 +19,8 @@ func remoteCmd() *cobra.Command {
 		Aliases: []string{"account", "cloud"},
 		Short:   "Connect and manage cloud accounts",
 	}
-	cmd.AddCommand(remoteKindsCmd(), remoteAddCmd(), remoteListCmd(), remoteTestCmd(), remoteRemoveCmd())
+	cmd.AddCommand(remoteKindsCmd(), remoteAddCmd(), remoteListCmd(), remoteEditCmd(),
+		remoteTestCmd(), remoteRemoveCmd())
 	return cmd
 }
 
@@ -145,7 +146,7 @@ func remoteListCmd() *cobra.Command {
 			}
 
 			tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(tw, "NAME\tKIND\tSTATUS\tPARTS\tSTORED\tID")
+			fmt.Fprintln(tw, "NAME\tKIND\tSTATUS\tPARTS\tSTORED\tCOLOUR\tID")
 			for _, s := range statuses {
 				status := "online"
 				if !s.Online {
@@ -154,12 +155,92 @@ func remoteListCmd() *cobra.Command {
 						status = "OFFLINE: " + firstLine(s.Error)
 					}
 				}
-				fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%s\n",
-					s.Name, s.Kind, status, s.Shards, formatBytes(s.Stored), s.ID)
+				// An account with no colour of its own is not colourless in the
+				// browser — one is picked for it — so say "auto" rather than
+				// leaving a blank that reads like a missing setting.
+				colour := s.Color
+				if colour == "" {
+					colour = "auto"
+				}
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
+					s.Name, s.Kind, status, s.Shards, formatBytes(s.Stored), colour, s.ID)
 			}
 			return tw.Flush()
 		},
 	}
+}
+
+func remoteEditCmd() *cobra.Command {
+	var (
+		name  string
+		color string
+	)
+
+	cmd := &cobra.Command{
+		Use:     "edit <name-or-id>",
+		Aliases: []string{"rename", "set"},
+		Short:   "Change an account's name or its colour",
+		Long: `Change what a connected account is called, or the colour it wears.
+
+The colour is the stripe down the account's card in the browser and the shade
+of every part badge for a file it holds, which is what makes "which clouds is
+this file on" a question you answer by eye. Give it as a hex value; without one
+the browser picks a colour and keeps it as accounts come and go.
+
+  sand remote edit r2-cold --name r2-archive
+  sand remote edit r2-cold --color '#38bdf8'
+  sand remote edit r2-cold --color auto
+
+Neither touches the credentials or the parts on the account: nothing is
+uploaded, downloaded or re-encrypted by renaming a cloud.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !cmd.Flags().Changed("name") && !cmd.Flags().Changed("color") {
+				return fmt.Errorf("nothing to change — pass --name, --color, or --color auto")
+			}
+
+			v, err := openVault(cmd)
+			if err != nil {
+				return err
+			}
+			defer v.Lock()
+
+			cfg, err := findProvider(v, args[0])
+			if err != nil {
+				return err
+			}
+
+			var edit vault.ProviderEdit
+			if cmd.Flags().Changed("name") {
+				edit.Name = &name
+			}
+			if cmd.Flags().Changed("color") {
+				// "auto" is how you say "no colour of my own" on a command line,
+				// where an empty --color= is easy to type by accident.
+				chosen := color
+				if strings.EqualFold(strings.TrimSpace(chosen), "auto") {
+					chosen = ""
+				}
+				edit.Color = &chosen
+			}
+
+			updated, err := v.UpdateProvider(cfg.ID, edit)
+			if err != nil {
+				return err
+			}
+
+			shade := updated.Color
+			if shade == "" {
+				shade = "auto"
+			}
+			fmt.Printf("%s (%s) — colour %s\n", updated.Name, updated.Kind, shade)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&name, "name", "", "a new label for this account")
+	cmd.Flags().StringVar(&color, "color", "", "hex colour such as '#38bdf8', or 'auto' to let the browser pick")
+	return cmd
 }
 
 func remoteTestCmd() *cobra.Command {

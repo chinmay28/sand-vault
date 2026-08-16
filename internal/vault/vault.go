@@ -639,6 +639,100 @@ func (v *Vault) AddProvider(ctx context.Context, cfg provider.Config) (provider.
 	return cfg.Redacted(), nil
 }
 
+// ProviderEdit names what can be changed about an account after it is
+// connected. A nil field is left exactly as it was, so recolouring an account
+// cannot disturb its name and renaming one cannot disturb its colour.
+type ProviderEdit struct {
+	Name  *string
+	Color *string
+}
+
+// UpdateProvider changes a connected account's label or its colour. Neither
+// touches the credentials, the backend or the parts sitting on it: this is what
+// the account is called and what colour it wears, and nothing is uploaded,
+// downloaded or re-encrypted by changing either.
+//
+// A rename is carried across the index as well. Every shard records the name of
+// the account holding it — that is what the file list and the health read-out
+// show, and what a recovery from a manifest backup matches accounts on — so
+// leaving those behind would make the vault answer with a name that no longer
+// exists.
+func (v *Vault) UpdateProvider(id string, edit ProviderEdit) (provider.Config, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	if v.dataKey == nil {
+		return provider.Config{}, ErrLocked
+	}
+
+	idx := -1
+	for i := range v.providers {
+		if v.providers[i].ID == id {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return provider.Config{}, fmt.Errorf("no connected account with id %s", id)
+	}
+
+	before := v.providers[idx]
+	after := before
+
+	if edit.Name != nil {
+		name := strings.TrimSpace(*edit.Name)
+		if name == "" {
+			return provider.Config{}, errors.New("an account needs a name")
+		}
+		for i, existing := range v.providers {
+			if i != idx && strings.EqualFold(existing.Name, name) {
+				return provider.Config{}, fmt.Errorf("an account named %q is already connected", name)
+			}
+		}
+		after.Name = name
+	}
+
+	if edit.Color != nil {
+		color, err := provider.NormalizeColor(*edit.Color)
+		if err != nil {
+			return provider.Config{}, err
+		}
+		after.Color = color
+	}
+
+	if after.Name == before.Name && after.Color == before.Color {
+		return after.Redacted(), nil
+	}
+
+	v.providers[idx] = after
+	if after.Name != before.Name {
+		v.renameShardsLocked(id, after.Name)
+	}
+
+	if err := v.persistLocked(); err != nil {
+		// Put the in-memory state back the way the file on disk still has it,
+		// index included, rather than leaving the two disagreeing.
+		v.providers[idx] = before
+		if after.Name != before.Name {
+			v.renameShardsLocked(id, before.Name)
+		}
+		return provider.Config{}, err
+	}
+	return after.Redacted(), nil
+}
+
+// renameShardsLocked writes a new account name onto every shard held by that
+// account. The caller must hold the write lock.
+func (v *Vault) renameShardsLocked(id, name string) {
+	for _, e := range v.manifest.Entries {
+		for i := range e.Shards {
+			if e.Shards[i].ProviderID == id {
+				e.Shards[i].ProviderName = name
+			}
+		}
+	}
+}
+
 // RemoveProvider disconnects an account. Unless force is set, it refuses when
 // files would be left with too few reachable parts to reconstruct.
 func (v *Vault) RemoveProvider(id string, force bool) error {

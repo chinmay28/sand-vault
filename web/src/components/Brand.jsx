@@ -30,22 +30,53 @@ export function Brand({ size = 'md' }) {
         }}
       />
       <span style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.15 }}>
-        {/* Two-tone wordmark: SAND carries the accent it has always had, VAULT
-            sits back in the text colour so the pair reads as one name rather
-            than two competing words.
+        {/* Two-tone wordmark, in two hands. SAND keeps the tracked-out
+            monospace and the accent it has always had — the machine half of the
+            name. Vault is written, in the handwriting face the platform has, and
+            sits back in the text colour: the pair reads as one name, and the
+            join between them is the point rather than a coincidence.
+
+            A script is drawn joined, so the tracking that spaces SAND out has
+            to come off it — letters set 5px apart stop being handwriting. It is
+            set larger to compensate for a script's smaller x-height, and hangs
+            on the same baseline via `alignItems: baseline` rather than being
+            nudged with a magic number.
 
             The wordmark never wraps, so on a narrow screen it is the thing
             that decides how wide the header has to be — size and tracking come
             down with the viewport rather than pushing everything else off. */}
         <span style={{
-          fontFamily: FONT.mono,
+          display: 'inline-flex',
+          alignItems: 'baseline',
           fontSize: large ? 'clamp(20px, 6.4vw, 26px)' : 'clamp(13.5px, 4.4vw, 17px)',
-          fontWeight: 700,
-          letterSpacing: large ? 'clamp(4px, 1.7vw, 7px)' : 'clamp(2px, 1vw, 4px)',
           whiteSpace: 'nowrap',
         }}>
-          <span style={{ color: COLORS.accent }}>SAND</span>
-          <span style={{ color: COLORS.textDim, marginLeft: large ? '7px' : '4px' }}>VAULT</span>
+          <span style={{
+            fontFamily: FONT.mono,
+            fontWeight: 700,
+            letterSpacing: large ? 'clamp(4px, 1.7vw, 7px)' : 'clamp(2px, 1vw, 4px)',
+            color: COLORS.accent,
+          }}>SAND</span>
+          <span style={{
+            fontFamily: FONT.script,
+            // Scripts sit small for their point size, and a swash can start
+            // left of where the glyph is measured from — hence the size bump
+            // and the room on the left for it to lean into. Tuned against the
+            // face in web/fonts, where this lands the script's x-height near
+            // SAND's cap height without letting it shout the mono down. It is
+            // the one number to touch if the face ever changes — a script with
+            // a smaller x-height wants noticeably more.
+            fontSize: '1.35em',
+            fontWeight: 500,
+            // Deliberately not italic. Every face in the stack is already
+            // written on a slant, so asking for italic on top of that makes
+            // the browser synthesise a second one — a script sheared over
+            // again, which is exactly as bad as it sounds.
+            letterSpacing: '0.01em',
+            paddingLeft: '0.08em',
+            marginLeft: large ? '5px' : '3px',
+            color: COLORS.textDim,
+          }}>Vault</span>
         </span>
         <span style={{
           fontFamily: FONT.mono,
