@@ -91,6 +91,12 @@ func vaultError(err error) error {
 		return nil
 	case errors.Is(err, vault.ErrLocked):
 		return err
+	case errors.Is(err, vault.ErrNeedsConversion):
+		// Refused rather than served, which is the point: rebuilding a
+		// pre-chunking film in full to answer one range request is what took
+		// the machine down. A player gets a failure it can show; converting the
+		// file is done from the browser or the CLI, not implicitly by a read.
+		return os.ErrPermission
 	case strings.HasPrefix(err.Error(), "no such file"),
 		strings.HasPrefix(err.Error(), "no such folder"):
 		return os.ErrNotExist

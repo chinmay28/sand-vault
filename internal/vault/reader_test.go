@@ -363,35 +363,21 @@ func TestUploadStreamLeavesNoSpoolBehind(t *testing.T) {
 	}
 }
 
-// Reading a file stored whole serves it and converts it afterwards, rather than
-// making the read wait on a scatter.
-func TestReadingAWholeFileEntryConvertsItInTheBackground(t *testing.T) {
+// A pre-chunking file is left exactly as it is by a read. Converting one costs a
+// download and a re-upload of the whole thing, which is not something a read
+// should start on your behalf — see convert.go.
+func TestReadingAWholeFileEntryLeavesItAlone(t *testing.T) {
 	v, roots := chunkedVault(t, 3, 1024)
 	ctx := context.Background()
 
 	payload := readerPayload(4000)
-	placed, err := v.scatter(ctx, "legacy.bin", payload, nil, false)
-	if err != nil {
-		t.Fatalf("scatter: %v", err)
-	}
-	entry := &Entry{
-		ID: "legacy", Dir: "/", Name: "legacy.bin",
-		Size:      int64(len(payload)),
-		Hash:      hex.EncodeToString(placed.originalHash[:]),
-		ArchiveID: placed.archiveID,
-		KeyID:     placed.keyID,
-		Shards:    placed.shards,
-	}
-	v.mu.Lock()
-	v.manifest.add(entry)
-	v.mu.Unlock()
+	entry := addWholeEntry(t, v, "legacy", "legacy.bin", payload)
 
-	staleKeys := make([]string, 0, len(placed.shards))
-	for _, s := range placed.shards {
-		staleKeys = append(staleKeys, s.Key)
+	originalKeys := make([]string, 0, len(entry.Shards))
+	for _, s := range entry.Shards {
+		originalKeys = append(originalKeys, s.Key)
 	}
 
-	// The read itself returns the file, unchanged and without waiting.
 	got, _, err := v.Fetch(ctx, entry.ID)
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
@@ -400,50 +386,31 @@ func TestReadingAWholeFileEntryConvertsItInTheBackground(t *testing.T) {
 		t.Fatal("the whole-file read did not match")
 	}
 
-	v.AwaitRechunk()
-
-	converted, err := v.Entry(entry.ID)
+	after, err := v.Entry(entry.ID)
 	if err != nil {
 		t.Fatalf("Entry: %v", err)
 	}
-	if !converted.Chunked() {
-		t.Fatal("the file was not converted to chunks")
+	if after.Chunked() {
+		t.Error("a read converted the file; conversion is meant to be asked for")
 	}
-	if converted.Hash != entry.Hash {
-		t.Error("conversion changed the file's hash")
-	}
-	for _, key := range staleKeys {
-		if full := shardPath(roots, key); full != "" {
-			t.Errorf("a whole-file part survived the conversion at %s", full)
+	for _, key := range originalKeys {
+		if full := shardPath(roots, key); full == "" {
+			t.Errorf("a read erased the file's original part %s", key)
 		}
-	}
-
-	// And it reads back the same, now at an offset.
-	r, err := v.OpenReader(entry.ID)
-	if err != nil {
-		t.Fatalf("OpenReader after conversion: %v", err)
-	}
-	buf := make([]byte, 200)
-	if _, err := r.ReadAt(buf, 1500); err != nil {
-		t.Fatalf("ReadAt after conversion: %v", err)
-	}
-	if !bytes.Equal(buf, payload[1500:1700]) {
-		t.Error("the converted file reads back wrong at an offset")
 	}
 }
 
-func TestRechunkOnReadCanBeTurnedOff(t *testing.T) {
-	v, _ := chunkedVault(t, 3, 1024)
-	ctx := context.Background()
-	v.SetRechunkOnRead(false)
+// addWholeEntry stores a file in the pre-chunking format and indexes it, which
+// is what every file uploaded before chunking existed looks like.
+func addWholeEntry(t *testing.T, v *Vault, id, name string, payload []byte) *Entry {
+	t.Helper()
 
-	payload := readerPayload(3000)
-	placed, err := v.scatter(ctx, "left-alone.bin", payload, nil, false)
+	placed, err := v.scatter(context.Background(), name, payload, nil, false)
 	if err != nil {
 		t.Fatalf("scatter: %v", err)
 	}
 	entry := &Entry{
-		ID: "left-alone", Dir: "/", Name: "left-alone.bin",
+		ID: id, Dir: "/", Name: name,
 		Size:      int64(len(payload)),
 		Hash:      hex.EncodeToString(placed.originalHash[:]),
 		ArchiveID: placed.archiveID,
@@ -454,27 +421,18 @@ func TestRechunkOnReadCanBeTurnedOff(t *testing.T) {
 	v.manifest.add(entry)
 	v.mu.Unlock()
 
-	if _, _, err := v.Fetch(ctx, entry.ID); err != nil {
-		t.Fatalf("Fetch: %v", err)
+	if entry.Chunked() {
+		t.Fatal("the fixture was meant to be stored whole")
 	}
-	v.AwaitRechunk()
-
-	after, err := v.Entry(entry.ID)
-	if err != nil {
-		t.Fatalf("Entry: %v", err)
-	}
-	if after.Chunked() {
-		t.Error("the file was converted despite conversion being turned off")
-	}
+	return entry
 }
 
-// OpenReadSeeker is the "read this file however it is stored" door, so it has
-// to answer for both forms — a caller serving HTTP ranges should not have to
-// branch on a storage detail.
-func TestOpenReadSeekerServesBothStorageForms(t *testing.T) {
+// OpenReadSeeker is the random-access door, and a pre-chunking file cannot be
+// opened through it — that format has no seams, so answering for a byte in the
+// middle means rebuilding all of it. It says so rather than doing it.
+func TestOpenReadSeekerRefusesAPreChunkingFile(t *testing.T) {
 	v, _ := chunkedVault(t, 3, 1024)
 	ctx := context.Background()
-	v.SetRechunkOnRead(false)
 
 	chunkedPayload := readerPayload(5000)
 	chunked, _, err := v.Upload(ctx, "/", "chunked.bin", chunkedPayload, UploadOptions{})
@@ -499,45 +457,40 @@ func TestOpenReadSeekerServesBothStorageForms(t *testing.T) {
 	v.manifest.add(whole)
 	v.mu.Unlock()
 
-	for _, tc := range []struct {
-		name    string
-		id      string
-		payload []byte
-	}{
-		{"chunked", chunked.ID, chunkedPayload},
-		{"whole", whole.ID, wholePayload},
-	} {
-		body, entry, err := v.OpenReadSeeker(ctx, tc.id)
-		if err != nil {
-			t.Fatalf("%s: OpenReadSeeker: %v", tc.name, err)
-		}
-		if entry.Size != int64(len(tc.payload)) {
-			t.Errorf("%s: size = %d, want %d", tc.name, entry.Size, len(tc.payload))
-		}
-
-		got, err := io.ReadAll(body)
-		if err != nil {
-			t.Fatalf("%s: ReadAll: %v", tc.name, err)
-		}
-		if !bytes.Equal(got, tc.payload) {
-			t.Errorf("%s: read the wrong bytes end to end", tc.name)
-		}
-
-		// And a seek into the middle, which is what a range request becomes.
-		if _, err := body.Seek(1200, io.SeekStart); err != nil {
-			t.Fatalf("%s: Seek: %v", tc.name, err)
-		}
-		buf := make([]byte, 300)
-		if _, err := io.ReadFull(body, buf); err != nil {
-			t.Fatalf("%s: ReadFull after seek: %v", tc.name, err)
-		}
-		if !bytes.Equal(buf, tc.payload[1200:1500]) {
-			t.Errorf("%s: the seeked range returned the wrong bytes", tc.name)
-		}
+	// The chunked one opens, reads end to end, and seeks into the middle —
+	// which is what a range request becomes.
+	body, entry, err := v.OpenReadSeeker(ctx, chunked.ID)
+	if err != nil {
+		t.Fatalf("OpenReadSeeker on a chunked file: %v", err)
+	}
+	if entry.Size != int64(len(chunkedPayload)) {
+		t.Errorf("size = %d, want %d", entry.Size, len(chunkedPayload))
+	}
+	got, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if !bytes.Equal(got, chunkedPayload) {
+		t.Error("read the wrong bytes end to end")
+	}
+	if _, err := body.Seek(1200, io.SeekStart); err != nil {
+		t.Fatalf("Seek: %v", err)
+	}
+	buf := make([]byte, 300)
+	if _, err := io.ReadFull(body, buf); err != nil {
+		t.Fatalf("ReadFull after seek: %v", err)
+	}
+	if !bytes.Equal(buf, chunkedPayload[1200:1500]) {
+		t.Error("the seek landed in the wrong place")
 	}
 
-	v.Lock()
-	if _, _, err := v.OpenReadSeeker(ctx, chunked.ID); !errors.Is(err, ErrLocked) {
-		t.Errorf("OpenReadSeeker on a locked vault = %v, want ErrLocked", err)
+	// The pre-chunking one is refused, and the refusal says which answer it
+	// wants: convert, not retry.
+	if _, _, err := v.OpenReadSeeker(ctx, whole.ID); err == nil {
+		t.Fatal("a pre-chunking file was opened for random access")
+	} else if !errors.Is(err, ErrNeedsConversion) {
+		t.Errorf("refusal was %v, want ErrNeedsConversion so callers can offer to convert", err)
+	} else if !strings.Contains(err.Error(), "whole.bin") {
+		t.Errorf("the refusal does not name the file: %v", err)
 	}
 }

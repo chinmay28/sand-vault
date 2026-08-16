@@ -372,7 +372,33 @@ stops being able to read rather than carrying on from a key it captured.
 
 A file stored whole has no chunks to fetch individually, so `OpenReader` refuses
 it rather than quietly rebuilding the whole thing behind an interface that
-promises cheap seeks.
+promises cheap seeks. That refusal is `ErrNeedsConversion`, and §4.5 is what
+answers it.
+
+### 4.5 One stored format, and a way out of the other
+
+Everything SAND writes is chunked — `Upload` and `UploadStream` both go through
+`scatterChunked`, and the only remaining caller of the whole-file writer is the
+thumbnail pack. Everything that *serves* a file reads it chunked too, at an
+offset, for a cost that does not grow with the file.
+
+Files stored before chunking existed cannot join that. Their parts are halves of
+one AES-GCM-sealed blob, and GCM will not release any plaintext before the tag
+over all of it verifies — so the format cannot be read at an offset at all. This
+is not an implementation shortcut; it is why chunking replaced it.
+
+So the read path refuses them rather than rebuilding them whole, and `Convert`
+(`internal/vault/convert.go`) is how they leave the old format:
+
+| | |
+|---|---|
+| Asked for | Never triggered by a read. Converting is a download and a re-upload of the whole file; a read that started one on your behalf, at the worst moment, is how a 16 GB machine was taken down repeatedly — and an interrupted conversion commits nothing, so the next read started it again |
+| Bounded | It reads the old format the one way that format supports — sequentially. Parts decrypt in place (`DecryptInPlace`), the halves concatenate through an `io.MultiReader` rather than a third buffer, and decompression streams into the chunked writer |
+| Measured | 0.41 bytes of memory per byte of file, against about 3 for `DecodeBytes` |
+| In place | The index moves onto the new parts in one write; the file is readable throughout, and the old parts are erased only after |
+
+`DecodeBytes` stays for what it is good at — payloads already in hand and small:
+thumbnail packs, and standalone restore.
 
 ### 4.4 Reconstruction truth table
 
@@ -830,7 +856,9 @@ reveals only whether a vault exists.
 | GET | `/api/search?q=` | Find files and folders by name (`&path=` scopes to a subtree, `&type=file\|folder`, `&limit=`) |
 | POST | `/api/files` | Upload (multipart `files[]`, `path`, `overwrite`, `accounts`) |
 | GET | `/api/files/{id}` | Metadata including part placement |
-| GET | `/api/files/{id}/content` | **Rebuild and stream** (`?download=1` to save) |
+| GET | `/api/files/{id}/content` | **Serve at an offset** through `ChunkedReader` (`?download=1` to save) |
+| GET | `/api/conversions` | Files still in the pre-chunking format |
+| POST | `/api/files/{id}/convert` | Move one out of it (§4.5) |
 | POST | `/api/files/{id}/stream` | Mint a stream ticket for one file (§9.5) |
 | GET | `/stream/{token}/{name}` | Play it — public, ranged; the token is the credential |
 | GET | `/api/files/{id}/health` | Per-part reachability, without downloading |

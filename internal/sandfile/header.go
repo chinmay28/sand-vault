@@ -577,3 +577,29 @@ func (p *Part) Open(key []byte) (*Metadata, []byte, error) {
 	}
 	return meta, partData, nil
 }
+
+// OpenInPlace is Open writing the plaintext over the ciphertext, for a caller
+// rebuilding something too large to hold twice. The part is unusable afterwards.
+func (p *Part) OpenInPlace(key []byte) (*Metadata, []byte, error) {
+	plaintext, err := crypto.DecryptInPlace(key, p.Header.Nonce, p.Ciphertext, p.AAD)
+	if err != nil {
+		return nil, nil, err
+	}
+	if plaintext == nil {
+		plaintext = []byte{}
+	}
+
+	if p.Header.Version == LegacyFormatVersion {
+		return p.legacyMetadata, plaintext, nil
+	}
+
+	unmarshal := unmarshalMetadata
+	if p.Header.Version == ChunkedFormatVersion {
+		unmarshal = unmarshalChunkMetadata
+	}
+	meta, partData, err := unmarshal(plaintext)
+	if err != nil {
+		return nil, nil, fmt.Errorf("reading part metadata: %w", err)
+	}
+	return meta, partData, nil
+}

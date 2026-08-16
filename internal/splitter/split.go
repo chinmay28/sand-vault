@@ -48,50 +48,51 @@ func XOR(a, b []byte) ([]byte, error) {
 //   - parts 1+2: concatenate directly
 //   - parts 1+3: part2 = XOR(part1, part3), then concatenate
 //   - parts 2+3: part1 = XOR(part2, part3), then concatenate
-func Reconstruct(parts map[int][]byte, wasPadded bool) ([]byte, error) {
+//
+// Halves returns the file's two halves in order, computing whichever one is
+// missing from the parity part.
+//
+// It is Reconstruct without the concatenation, for a caller that would rather
+// read the two halves one after the other than have them copied into a third
+// buffer the length of the whole file. Converting a large archive is exactly
+// that caller: the copy it avoids is the file itself.
+//
+// Padding is the caller's to deal with, because only it knows whether it is
+// trimming a slice or limiting a stream.
+func Halves(parts map[int][]byte) (first, second []byte, err error) {
 	has1 := parts[1] != nil
 	has2 := parts[2] != nil
 	has3 := parts[3] != nil
 
-	count := 0
-	if has1 {
-		count++
-	}
-	if has2 {
-		count++
-	}
-	if has3 {
-		count++
-	}
-	if count < 2 {
-		return nil, errors.New("reconstruct requires at least 2 of 3 parts")
-	}
-
-	var part1, part2 []byte
-	var err error
-
 	switch {
 	case has1 && has2:
-		part1 = parts[1]
-		part2 = parts[2]
+		first, second = parts[1], parts[2]
 	case has1 && has3:
-		part1 = parts[1]
-		part2, err = XOR(parts[1], parts[3])
+		first = parts[1]
+		second, err = XOR(parts[1], parts[3])
 		if err != nil {
-			return nil, fmt.Errorf("failed to reconstruct part2: %w", err)
+			return nil, nil, fmt.Errorf("failed to reconstruct part2: %w", err)
 		}
 	case has2 && has3:
-		part1, err = XOR(parts[2], parts[3])
+		first, err = XOR(parts[2], parts[3])
 		if err != nil {
-			return nil, fmt.Errorf("failed to reconstruct part1: %w", err)
+			return nil, nil, fmt.Errorf("failed to reconstruct part1: %w", err)
 		}
-		part2 = parts[2]
+		second = parts[2]
 	default:
-		return nil, errors.New("invalid part combination")
+		return nil, nil, errors.New("reconstruct requires at least 2 of 3 parts")
 	}
 
-	if len(part1) != len(part2) {
-		return nil, fmt.Errorf("parts have mismatched lengths (%d vs %d)", len(part1), len(part2))
+	if len(first) != len(second) {
+		return nil, nil, fmt.Errorf("parts have mismatched lengths (%d vs %d)", len(first), len(second))
+	}
+	return first, second, nil
+}
+
+func Reconstruct(parts map[int][]byte, wasPadded bool) ([]byte, error) {
+	part1, part2, err := Halves(parts)
+	if err != nil {
+		return nil, err
 	}
 
 	// Concatenate part1 + part2

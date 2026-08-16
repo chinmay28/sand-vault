@@ -4,6 +4,7 @@ import { api, joinPath } from '../api'
 import { useDownload } from '../download'
 import { ActionSheet, Banner, Button, ConfirmDialog, Empty, IconButton, Modal, Spinner } from './ui'
 import StreamLink from './StreamLink'
+import ConvertFile from './ConvertFile'
 import { UploadDestination } from './CloudSelect'
 import { makeThumbnail } from '../thumbs'
 
@@ -696,6 +697,11 @@ function FileRow({ file, location, mobile, hasThumb, onPreview, onInspect, onRef
   /* null, or 'play' when the stream dialog should reach for VLC on the way in
      and 'link' when it should just show the address. */
   const [streaming, setStreaming] = useState(null)
+  const [converting, setConverting] = useState(null)
+  /* A file stored before chunked storage existed. It cannot be read at an
+     offset, so nothing opens or streams it until it has been converted — the
+     row says so rather than letting a click fail. */
+  const legacy = !file.chunk_count
   const degraded = file.shards.length < 3
   const dead = file.shards.length < 2
   // Only what a player is any use for gets offered one.
@@ -717,7 +723,9 @@ function FileRow({ file, location, mobile, hasThumb, onPreview, onInspect, onRef
   }
 
   const icon = fileIcon(file.mime, file.name)
-  const openTitle = dead ? 'Too few parts remain to rebuild this file' : 'Open'
+  const openTitle = dead
+    ? 'Too few parts remain to rebuild this file'
+    : legacy ? 'Stored in the old format — convert it before it can be opened' : 'Open'
 
   const name = (
     <NameButton
@@ -729,7 +737,7 @@ function FileRow({ file, location, mobile, hasThumb, onPreview, onInspect, onRef
       location={location}
       disabled={dead}
       title={openTitle}
-      onClick={onPreview}
+      onClick={legacy ? () => setConverting('open') : onPreview}
     />
   )
 
@@ -809,7 +817,15 @@ function FileRow({ file, location, mobile, hasThumb, onPreview, onInspect, onRef
     <span style={{ display: 'flex', gap: '2px', justifyContent: 'flex-end', flexShrink: 0 }}>
       {/* Three controls is what the column has room for, so this one is on the
           rows it means something on: a player is no use on a PDF. */}
-      {playable && !dead && (
+      {legacy ? (
+        <IconButton
+          glyph="◈"
+          label={`Convert ${file.name}`}
+          title="Stored in the old format — convert it to open or stream it"
+          tone="muted"
+          onClick={() => setConverting('open')}
+        />
+      ) : playable && !dead && (
         <IconButton
           glyph="▶"
           label={`Stream ${file.name}`}
@@ -844,7 +860,14 @@ function FileRow({ file, location, mobile, hasThumb, onPreview, onInspect, onRef
           subtitle={`${formatBytes(file.size)} · ${formatDate(file.modified_at)}`}
           onClose={() => setMenu(false)}
           items={[
-            {
+            legacy ? {
+              key: 'convert',
+              glyph: '◈',
+              label: 'Convert to chunks',
+              hint: 'Stored in the old format, which cannot be opened or streamed until converted',
+              disabled: dead,
+              onSelect: () => setConverting('open'),
+            } : {
               key: 'open',
               glyph: '◱',
               label: 'Open',
@@ -854,7 +877,7 @@ function FileRow({ file, location, mobile, hasThumb, onPreview, onInspect, onRef
             },
             // Sits under Open because it is the same intent aimed elsewhere:
             // watch this, but in the player that can actually seek it.
-            playable && {
+            playable && !legacy && {
               key: 'stream',
               glyph: '▶',
               label: 'Stream in VLC',
@@ -862,7 +885,7 @@ function FileRow({ file, location, mobile, hasThumb, onPreview, onInspect, onRef
               disabled: dead,
               onSelect: () => setStreaming('play'),
             },
-            {
+            !legacy && {
               key: 'copy-link',
               glyph: '⧉',
               label: 'Copy the address',
@@ -870,7 +893,7 @@ function FileRow({ file, location, mobile, hasThumb, onPreview, onInspect, onRef
               disabled: dead,
               onSelect: () => setStreaming('link'),
             },
-            {
+            !legacy && {
               key: 'download',
               glyph: '↓',
               // The sheet closes on the way out and the fetch carries on
@@ -908,6 +931,14 @@ function FileRow({ file, location, mobile, hasThumb, onPreview, onInspect, onRef
         />
       )}
 
+      {converting && (
+        <ConvertFile
+          file={file}
+          onClose={() => setConverting(null)}
+          onConverted={onRefresh}
+        />
+      )}
+
       {confirming && (
         <ConfirmDialog
           title={`Delete ${file.name}?`}
@@ -931,7 +962,7 @@ function FileRow({ file, location, mobile, hasThumb, onPreview, onInspect, onRef
       <Row mobile>
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
           <button
-            onClick={onPreview}
+            onClick={legacy ? () => setConverting('open') : onPreview}
             disabled={dead}
             title={openTitle}
             style={{

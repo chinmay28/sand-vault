@@ -100,6 +100,14 @@ export const api = {
     return request(`/api/search?${params.toString()}`, { signal })
   },
   fileMeta: (id) => request(`/api/files/${encodeURIComponent(id)}`),
+
+  /* Files still stored in the format SAND used before chunking. Such a file
+     cannot be read at an offset — the whole thing would have to be rebuilt to
+     answer for any of it — so nothing streams one until it has been converted. */
+  pendingConversions: () => request('/api/conversions'),
+  /* Long: a download and a re-upload of the whole file. The dialog says so
+     before it starts, and holds the connection for the duration. */
+  convertFile: (id) => request(`/api/files/${encodeURIComponent(id)}/convert`, { method: 'POST' }),
   fileHealth: (id) => request(`/api/files/${encodeURIComponent(id)}/health`),
   deleteFile: (id) => request(`/api/files/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   moveFile: (id, dir, name) =>

@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -254,11 +256,6 @@ func getCmd() *cobra.Command {
 				return err
 			}
 
-			data, _, err := v.Fetch(context.Background(), entry.ID)
-			if err != nil {
-				return err
-			}
-
 			target := output
 			if target == "" {
 				target = entry.Name
@@ -266,10 +263,30 @@ func getCmd() *cobra.Command {
 				target = filepath.Join(target, entry.Name)
 			}
 
-			if err := os.WriteFile(target, data, 0600); err != nil {
+			// Copied chunk by chunk into the file rather than rebuilt in memory
+			// and written out: a 4 GB film should cost a 4 GB file on disk and
+			// not 4 GB of RAM on the way there.
+			body, _, err := v.OpenReadSeeker(context.Background(), entry.ID)
+			if err != nil {
+				if errors.Is(err, vault.ErrNeedsConversion) {
+					return fmt.Errorf("%w\n\nConvert it first: sand vault convert %q", err, entry.Path())
+				}
+				return err
+			}
+
+			out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+			if err != nil {
 				return fmt.Errorf("writing %s: %w", target, err)
 			}
-			fmt.Printf("Wrote %s (%s)\n", target, formatBytes(int64(len(data))))
+			written, err := io.Copy(out, body)
+			if closeErr := out.Close(); err == nil {
+				err = closeErr
+			}
+			if err != nil {
+				os.Remove(target)
+				return fmt.Errorf("writing %s: %w", target, err)
+			}
+			fmt.Printf("Wrote %s (%s)\n", target, formatBytes(written))
 			return nil
 		},
 	}
