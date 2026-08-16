@@ -8,6 +8,7 @@ import AccountsPanel from './components/AccountsPanel'
 import FileBrowser from './components/FileBrowser'
 import PreviewModal, { ShardInspector } from './components/PreviewModal'
 import RecoverVault from './components/RecoverVault'
+import FilmDetails from './components/FilmDetails'
 import { Brand, DevMark } from './components/Brand'
 import { Banner, Button } from './components/ui'
 
@@ -27,6 +28,7 @@ export default function App() {
   const [error, setError] = useState(null)
   const [preview, setPreview] = useState(null)
   const [inspecting, setInspecting] = useState(null)
+  const [filming, setFilming] = useState(null)
   const [accountsOpen, setAccountsOpen] = useState(false)
   const [recovery, setRecovery] = useState(null)
   const [recovering, setRecovering] = useState(false)
@@ -157,6 +159,7 @@ export default function App() {
     setProviders([])
     setPreview(null)
     setInspecting(null)
+    setFilming(null)
     setAccountsOpen(false)
     setRecovery(null)
     openRecovery(false)
@@ -288,8 +291,9 @@ export default function App() {
             defaultAccounts={status.stats?.default_accounts || []}
             mobile={mobile}
             onRefresh={refreshAll}
-            onPreview={(file, hasThumb) => setPreview({ file, hasThumb })}
+            onPreview={(file, hasThumb, film) => setPreview({ file, hasThumb, film })}
             onInspect={setInspecting}
+            onFilm={setFilming}
             onError={setError}
           />
         </div>
@@ -299,9 +303,21 @@ export default function App() {
         <PreviewModal
           file={preview.file}
           hasThumb={preview.hasThumb}
+          film={preview.film}
           onClose={() => setPreview(null)}
           /* A file that had no picture in the list has one now. */
           onThumbStored={() => refreshListing()}
+          /* And a match made from in there changes the same listing. */
+          onFilmChanged={() => refreshListing()}
+        />
+      )}
+      {filming && (
+        <FilmDetails
+          file={filming}
+          onClose={() => setFilming(null)}
+          /* A match changes the row's caption and its picture, both of which
+             the listing carries. */
+          onChanged={() => refreshListing()}
         />
       )}
       {recovering && recovery && (

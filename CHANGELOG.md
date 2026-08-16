@@ -686,6 +686,66 @@ been drawn and costs nothing to keep.
 Still no third-party requests: the renderer, its worker and every byte it reads
 come from the binary and the vault.
 
+### Films look like films
+
+A folder of films is a folder whose file names say nothing.
+`The.Thing.1982.REMASTERED.1080p.BluRay.x265-RARBG.mkv` is a fine thing to
+store and a terrible thing to read, and until now a folder of forty of them was
+a column of `🎬` and forty strings to squint at. A folder can now be told its
+videos are films, and then they get what Plex and Jellyfin would give them: the
+poster, the summary, the score, the runtime, the genres, the director and the
+top of the cast.
+
+The `🎬` button in the toolbar turns it on for the folder you are standing in
+and everything under it — a films folder is a library, and libraries have
+folders inside them. Sweeping it reads each video's name for a title and a
+year, looks that up, and stores what comes back. From then on the grid is a
+wall of posters captioned with the films' names rather than the files', a row
+draws the poster where its icon was, and `🎬` on the row — or the strip above a
+video you are watching — opens the rest.
+
+**It is off until a folder asks for it, and that is the whole design.**
+Everything else in SAND stays between your machine and the accounts you
+connected. A lookup does not: it sends a title guessed from a file name, this
+machine's address and your own API key to The Movie Database. So it is a switch
+per folder rather than a setting, it records which folder it was made on, and
+turning it on sends nothing at all — the sweep is a second button. Nothing
+about the file itself ever leaves: not its contents, not its size, not its
+hash, not which clouds its parts are on. And each film is looked up once —
+after that the answer is in your vault, and opening the folder contacts nobody.
+
+The key is yours, free, from themoviedb.org; the v3 key and the v4 read token
+both work. It lives in the vault file sealed under your password, and
+pointedly **not** in the manifest — that is replicated to every connected
+account, and a credential for somebody else's service has no business being
+copied onto three clouds.
+
+What comes back is stored the way everything else in the vault is. The text
+goes into the encrypted index. The poster becomes the file's thumbnail, which
+means it is compressed, split into three encrypted parts and scattered across
+your accounts like any other picture — and it is why the browser still fetches
+from nowhere but your own server, even in a folder with this on.
+
+Names are read the way every media server reads them: cut at the year if there
+is one, cut at the first `1080p`/`BluRay`/`x265` if there is not, and fall back
+to the folder's name when the file's says nothing, so
+`Blade Runner (1982)/title00.mkv` is matched from its folder. Where two films
+share a name, the year in the file name decides which — `The Thing (1982)` is
+not the 2011 one. It still guesses wrong sometimes, so the details view always
+says what it searched for, **Fix the match** picks the right film out of a
+list, and a film chosen by hand survives every later sweep.
+
+A sweep is one search, one record and one poster per film, so a large folder
+takes a while — but it is resumable, and nothing already matched is looked up
+twice. Posters are written one pack per folder rather than one per film, which
+is the difference between two hundred films costing two hundred uploads and
+costing one. Changing your password still erases every thumbnail, posters
+included; the film's record keeps the artwork's address, so sweeping again
+brings them back for one image fetch each and no searching.
+
+Details and artwork come from The Movie Database. SAND uses the TMDB API but is
+not endorsed or certified by TMDB.
+
 ### Quick start
 
 One command installs SAND as a hardened systemd service, building from source

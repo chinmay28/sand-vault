@@ -444,6 +444,10 @@ func (v *Vault) Delete(ctx context.Context, id string) ([]string, error) {
 		return warnings, ErrLocked
 	}
 	v.manifest.remove(id)
+	// Whatever film it was matched to goes with it, in the same write: a
+	// stored title outliving the file it described would show up as a phantom
+	// in nothing at all, but it would sit in the index forever.
+	v.manifest.forgetMovies(id)
 	err := v.persistLocked()
 	v.mu.Unlock()
 
@@ -497,7 +501,9 @@ func (v *Vault) Rmdir(ctx context.Context, dir string, recursive bool) ([]string
 	for _, id := range ids {
 		v.manifest.remove(id)
 	}
+	v.manifest.forgetMovies(ids...)
 	v.manifest.removeFolders(dir)
+	v.manifest.dropMovieFolders(dir)
 	err := v.persistLocked()
 	v.mu.Unlock()
 

@@ -58,6 +58,13 @@ type Server struct {
 	// DefaultWebDAVPrefix.
 	WebDAVPrefix string
 
+	// MovieBaseURL and MovieImageBaseURL point the film lookup somewhere other
+	// than the real database. Empty — which is everything but a test — means
+	// the addresses in internal/movie, and a test that left them empty would be
+	// a test that calls a stranger's API.
+	MovieBaseURL      string
+	MovieImageBaseURL string
+
 	vault      *vault.Vault
 	sessions   *sessionStore
 	streams    *streamStore
@@ -251,6 +258,19 @@ func (s *Server) Handler() (http.Handler, error) {
 
 		"POST /api/folders":   s.handleFolderCreate,
 		"DELETE /api/folders": s.handleFolderDelete,
+
+		// Film details for the folders that ask for them. The only part of SAND
+		// that talks to anything but the user's own accounts, which is why the
+		// switch is per folder and why the sweep is a request of its own rather
+		// than something turning the switch on sets going. See movies.go.
+		"GET /api/movies":                      s.handleMovieSettings,
+		"POST /api/movies/key":                 s.handleMovieKey,
+		"POST /api/movies/lookup":              s.handleMovieLookup,
+		"POST /api/movies/scan":                s.handleMovieScan,
+		"GET /api/files/{id}/movie":            s.handleMovieGet,
+		"POST /api/files/{id}/movie":           s.handleMovieMatch,
+		"DELETE /api/files/{id}/movie":         s.handleMovieForget,
+		"GET /api/files/{id}/movie/candidates": s.handleMovieCandidates,
 
 		// Moving a file or a folder onto other clouds. One endpoint for both,
 		// because it is one operation over a set of files and the only

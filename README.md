@@ -785,6 +785,11 @@ pipe the password on stdin.
   being its first page. Made in the browser when the file is uploaded, then
   stored the way everything else is: split into three encrypted parts across
   your accounts, one small pack per folder. Anything without one keeps its icon
+- **Film details** — a folder can be told its videos are films, and then they
+  get the poster, the summary, the cast and the score, the way Plex or Jellyfin
+  would show them. Off everywhere until a folder asks for it, because it is the
+  one thing in SAND that talks to anyone but your own accounts — see
+  [Film details](#film-details)
 - **Preview** — images, video, audio, PDF and text render inline, rebuilt on
   demand; anything else downloads
 - **PDF viewer** — pages are drawn by the app itself rather than handed to the
@@ -800,7 +805,10 @@ pipe the password on stdin.
 - **Auto-lock** — the vault re-locks after the idle timeout
 
 The UI loads no external fonts, scripts or styles. Opening your vault makes zero
-third-party requests.
+third-party requests — including in a folder with film details on, since the
+poster and the summary are stored in the vault and served by your own server
+like everything else. The one request that does leave is the lookup itself, made
+by the server, only for a folder you turned on, and only when you ask for it.
 
 The wordmark is the one piece of typography that is not the system's own:
 *Vault* is written in a monoline hand that ships in the repository at **3.4
@@ -860,6 +868,85 @@ its home screen gets the password prompt like any other browser would.
 
 ---
 
+## Film details
+
+A folder of films is a folder whose file names say nothing.
+`The.Thing.1982.REMASTERED.1080p.BluRay.x265-RARBG.mkv` is a perfectly good
+thing to store and a terrible thing to read. Plex and Jellyfin solve that by
+looking each file up and showing you the poster, and SAND can now do the same —
+for the folders you say so.
+
+Turn it on with the `🎬` button in the toolbar, which acts on the folder you are
+standing in and everything underneath it. Then **Look up new films** sweeps it:
+each video's name is read for a title and a year, that is searched for, and what
+comes back is stored — the summary, the score, the runtime, the genres, the
+director and the top of the cast in the vault's encrypted index, and the poster
+as the file's thumbnail.
+
+From then on the grid is a wall of posters captioned with the films' names
+rather than the files', a row shows the poster where its icon was, and `🎬` on
+the row — or **Film details** in the phone's row menu, or the strip above a
+video you are watching — opens everything that was found.
+
+### It is off until you turn it on, and here is why
+
+Everything else in SAND stays between this machine and the accounts you
+connected. This does not. Looking a film up sends a title guessed from a file
+name, plus this machine's address and your own API key, to
+[The Movie Database](https://www.themoviedb.org) — the same service Plex and
+Jellyfin use.
+
+So it is a per-folder switch rather than a setting, it names the folder it was
+made on, and turning it on **sends nothing**: the sweep is a second button you
+have to press. Nothing about the file itself ever goes — not its contents, not
+its size, not its hash, not which clouds its parts are on. And a film is looked
+up once: after that the answer is in your vault, and opening the folder again
+contacts nobody.
+
+You need a free key of your own, from **themoviedb.org → Settings → API**.
+Either the v3 key or the v4 read access token works. It is stored in the vault
+file, sealed under your password like your cloud credentials — and deliberately
+*not* in the manifest, which is replicated to every connected account, because a
+credential for someone else's service has no business being copied onto three
+clouds.
+
+### When it guesses wrong
+
+It will, sometimes. Names are read the way every media server reads them: cut at
+the year if there is one, cut at the first `1080p`/`BluRay`/`x265` if there is
+not, and fall back to the folder's name when the file's says nothing —
+`Blade Runner (1982)/title00.mkv` is matched from the folder. Where two films
+share a name, the year in the file name decides.
+
+Open the file's details and **Fix the match**: search by title, and pick the
+right film from the list. A film chosen by hand is marked as such, and a later
+sweep — even **Look up everything again** — leaves it alone. **Forget** drops the
+details for a file entirely.
+
+### What it costs, and what it survives
+
+A sweep is one search, one record and one poster per film, so a large folder
+takes a while — but it is safe to stop and run again, since every film is stored
+the moment it is matched and nothing already matched is looked up twice. Posters
+are written one pack per folder rather than one per film, which is the
+difference between a folder of two hundred films costing two hundred uploads and
+costing one.
+
+Changing your vault password drops every stored thumbnail — they are sealed
+under the key being retired, and regenerating derived data beats re-encrypting
+it. A photograph's thumbnail comes back the next time you open it; a poster has
+no such source, so the film's record keeps the artwork's address. Sweep the
+folder again afterwards and the posters come back for one image fetch each, with
+no searching at all.
+
+Turning the switch back off stops any further lookups and leaves what was
+already found exactly where it is.
+
+Details and artwork come from The Movie Database. SAND uses the TMDB API but is
+not endorsed or certified by TMDB.
+
+---
+
 ## HTTP API
 
 | Method | Path | Purpose |
@@ -888,6 +975,12 @@ its home screen gets the password prompt like any other browser would.
 | POST | `/api/files/{id}/stream` | Mint a link a media player can open — see below |
 | GET | `/stream/{token}/{name}` | Play that link (no session; the token is the credential) |
 | GET · PUT | `/api/files/{id}/thumb` | The stored thumbnail; PUT stores one for a file that has none |
+| GET | `/api/movies` | Whether a film database key is stored, and which folders are opted in |
+| POST | `/api/movies/key` | Store the key (checked against the database first); `""` clears it |
+| POST | `/api/movies/lookup` | Turn film details on or off for a `path` and everything under it |
+| POST | `/api/movies/scan` | Look up every unmatched video under a `path` (`refresh` to redo the matched ones) |
+| GET · POST · DELETE | `/api/files/{id}/movie` | What film this is / look it up (`query`, `year`, `tmdb_id`) / forget it |
+| GET | `/api/files/{id}/movie/candidates?q=` | Search the database without storing anything, to correct a match |
 | GET | `/api/files/{id}/health` | Per-part reachability |
 | POST | `/api/files/{id}/move` | Rename / move |
 | DELETE | `/api/files/{id}` | Erase every part |
@@ -1040,6 +1133,7 @@ mount — not built yet.
 | Plaintext cached by a proxy | `Cache-Control: private, no-store` |
 | Walking away from the machine | Idle timeout re-locks the vault |
 | Metadata leaking to a provider | Object keys derived only from a random ID |
+| The film database learning what you have | Off until a folder is opted in by name; sends a title guessed from a file name and nothing else, once per film, and never the file, its size or where its parts live |
 
 **Two keys, not one.** File parts are encrypted under a random 256-bit data key,
 which is itself wrapped by your password — so part encryption doesn't inherit a
@@ -1270,6 +1364,8 @@ sand/
 │   ├── sandfile/                # binary .sand part format
 │   ├── provider/                # local, s3 (SigV4), webdav, gdrive, dropbox,
 │   │                            #   onedrive, box, proton + the OAuth sign-in flow
+│   ├── movie/                   # file name → film, and the film database client —
+│   │                            #   the only package that talks to a third party
 │   ├── vault/                   # encrypted store, manifest, placement, scatter/gather,
 │   │                            #   the replicated manifest backup and recovery
 │   └── server/                  # sessions, OAuth flows, handlers, embedded SPA
@@ -1278,8 +1374,8 @@ sand/
 │   ├── navigation.js  view.js   # the trail of folders walked; view + sort prefs
 │   └── components/              # LockScreen, AccountsPanel, ConnectCloud,
 │                                #   FileBrowser, Toolbar, FileEntry, BulkActions,
-│                                #   PreviewModal, PdfPreview, StreamLink,
-│                                #   RecoverVault, ReclaimVault, ui
+│                                #   PreviewModal, PdfPreview, FilmDetails,
+│                                #   StreamLink, RecoverVault, ReclaimVault, ui
 │   ├── public/                  # app icon, home-screen icons + manifest,
 │   │                            #   developer badge
 │   └── build-version.js         # feeds the version into the bundle

@@ -7,6 +7,7 @@ import { thumbnailFromElement } from '../thumbs'
 import PdfPreview from './PdfPreview'
 import StreamLink from './StreamLink'
 import { RelocateClouds } from './CloudSelect'
+import FilmDetails, { filmLabel } from './FilmDetails'
 import { Banner, Button, Modal, Spinner } from './ui'
 
 /* How much of the visible viewport a preview may take before the modal's own
@@ -16,7 +17,7 @@ const PREVIEW_MAX = 'calc(var(--app-height) * 0.62)'
 /* Opening a file here is the whole point of the design: the server gathers two
    of its three parts from separate accounts, rebuilds the plaintext in memory
    and streams it back. Nothing decrypted is ever written to disk. */
-export default function PreviewModal({ file, hasThumb, onClose, onThumbStored }) {
+export default function PreviewModal({ file, hasThumb, film, onClose, onThumbStored, onFilmChanged }) {
   const kind = previewKind(file.mime, file.name)
   const url = api.contentURL(file.id)
   const mobile = useIsMobile()
@@ -37,6 +38,11 @@ export default function PreviewModal({ file, hasThumb, onClose, onThumbStored })
      answer — so the offer sits beside it rather than somewhere else. */
   const [streaming, setStreaming] = useState(null)
   const playable = isPlayable(file.mime, file.name)
+
+  /* A film this file has already been matched to. Watching something is when
+     "what is this, again?" gets asked, so the answer is offered here rather
+     than only back in the list. */
+  const [details, setDetails] = useState(false)
 
   useEffect(() => {
     if (kind !== 'text') return
@@ -155,6 +161,29 @@ export default function PreviewModal({ file, hasThumb, onClose, onThumbStored })
         )}
       </div>
 
+      {film && (
+        <button
+          onClick={() => setDetails(true)}
+          title="Cast, summary, and how this file was matched"
+          style={{
+            display: 'flex', alignItems: 'center', gap: '10px', width: '100%',
+            padding: '9px 12px', marginBottom: '14px',
+            background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: '6px',
+            cursor: 'pointer', textAlign: 'left',
+          }}
+        >
+          <span style={{ fontSize: '15px' }}>🎬</span>
+          <span style={{
+            flex: 1, minWidth: 0,
+            fontFamily: FONT.mono, fontSize: '12px', color: COLORS.text,
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          }}>{filmLabel(film)}</span>
+          <span style={{ fontFamily: FONT.mono, fontSize: '10.5px', color: COLORS.accent }}>
+            Film details →
+          </span>
+        </button>
+      )}
+
       {downloadError && (
         <Banner tone="error" onDismiss={() => setDownloadError(null)}>{downloadError}</Banner>
       )}
@@ -192,6 +221,15 @@ export default function PreviewModal({ file, hasThumb, onClose, onThumbStored })
              opened it rather than wherever the portal happened to put it. */
           zIndex={120}
           onClose={() => setStreaming(null)}
+        />
+      )}
+
+      {details && (
+        <FilmDetails
+          file={file}
+          zIndex={120}
+          onClose={() => setDetails(false)}
+          onChanged={onFilmChanged}
         />
       )}
     </Modal>

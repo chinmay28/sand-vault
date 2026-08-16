@@ -45,6 +45,11 @@ type Vault struct {
 	providers []provider.Config
 	manifest  *Manifest
 
+	// settings is the sealed preferences section: the film database key, and
+	// anything else that is a secret rather than a knob. nil while locked, like
+	// everything else a password opens.
+	settings *vaultSettings
+
 	// chunks caches decrypted chunks for readers, and flight collapses
 	// concurrent misses on the same chunk into one fetch. Both are leaf
 	// structures with their own locks, never taken while mu is held.
@@ -255,6 +260,7 @@ func (v *Vault) Init(password string, policy Policy) error {
 	v.retired = map[string][]byte{}
 	v.providers = []provider.Config{}
 	v.manifest = newManifest()
+	v.settings = &vaultSettings{}
 	v.resetLiveCache()
 	return nil
 }
@@ -337,6 +343,7 @@ func (v *Vault) Lock() {
 	v.retired = nil
 	v.providers = nil
 	v.manifest = nil
+	v.settings = nil
 
 	// Thumbnails are decrypted pictures of the user's files, so they go the
 	// same way the keys do — and so do cached chunks, which are plaintext of
@@ -361,6 +368,10 @@ func (v *Vault) adoptLocked(u *unsealed) {
 	}
 	v.providers = u.providers
 	v.manifest = u.manifest
+	v.settings = u.settings
+	if v.settings == nil {
+		v.settings = &vaultSettings{}
+	}
 }
 
 // shardPasswordLocked is the secret used to encrypt the parts of new uploads.
@@ -430,6 +441,19 @@ func (v *Vault) persistLocked() error {
 
 	v.store.Providers = providers
 	v.store.Manifest = manifest
+
+	// Written only once there is something in it, so a vault that has never set
+	// a preference carries no settings section at all.
+	if v.settings.empty() {
+		v.store.Settings = nil
+	} else {
+		settings, err := sealJSON(v.vaultKey, v.settings)
+		if err != nil {
+			return err
+		}
+		v.store.Settings = &settings
+	}
+
 	if err := writeStore(v.path, v.store); err != nil {
 		return err
 	}
@@ -924,6 +948,17 @@ type Listing struct {
 	// the browser knows which rows to draw a picture for without asking for
 	// one it will not get.
 	Thumbs []string `json:"thumbs"`
+
+	// Movies titles the files that have been matched against the film database,
+	// so a grid of posters can say what each one is rather than what its file
+	// is called. Titles only — the rest of a film's record is a request per
+	// film, made when somebody opens one.
+	Movies map[string]MovieBrief `json:"movies,omitempty"`
+
+	// MovieLookup says whether this folder's videos are matched at all, and
+	// which folder carries the setting. Off by default and everywhere: a lookup
+	// is the only thing in SAND that talks to a third party.
+	MovieLookup MovieLookup `json:"movie_lookup"`
 }
 
 // List returns the contents of a folder.
@@ -958,11 +993,13 @@ func (v *Vault) List(dir string) (*Listing, error) {
 	}
 
 	return &Listing{
-		Path:    dir,
-		Parent:  parent,
-		Folders: folders,
-		Files:   append([]*Entry{}, files...),
-		Thumbs:  thumbs,
+		Path:        dir,
+		Parent:      parent,
+		Folders:     folders,
+		Files:       append([]*Entry{}, files...),
+		Thumbs:      thumbs,
+		Movies:      v.movieBriefsForLocked(files),
+		MovieLookup: v.movieLookupLocked(dir),
 	}, nil
 }
 
@@ -979,6 +1016,23 @@ func (v *Vault) Entry(id string) (*Entry, error) {
 		return nil, fmt.Errorf("no such file: %s", id)
 	}
 	return e, nil
+}
+
+// Descendants returns every file stored at or below a folder, in no particular
+// order. It is what an operation over a subtree walks — matching a films folder
+// against the film database, say — and it answers from the index alone.
+func (v *Vault) Descendants(dir string) ([]*Entry, error) {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	if v.dataKey == nil {
+		return nil, ErrLocked
+	}
+
+	dir = CleanDir(dir)
+	if !v.manifest.FolderExists(dir) {
+		return nil, fmt.Errorf("no such folder: %s", dir)
+	}
+	return append([]*Entry{}, v.manifest.Descendants(dir)...), nil
 }
 
 // EntryByPath looks a file up by its full browser path rather than its ID,

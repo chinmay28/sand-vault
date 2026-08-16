@@ -112,7 +112,7 @@ function Crumb({ label, mobile, onClick, active }) {
    which is readable four folders deep where crumbs are not, and carries
    Forward when there is somewhere to go forward to. */
 export function FolderHeader({
-  nav, path, stats, prefs, view, selecting, canUpload, search,
+  nav, path, stats, prefs, view, selecting, canUpload, search, film,
   onSelecting, onSearch, onNewFolder, onUpload,
 }) {
   const [jumping, setJumping] = useState(false)
@@ -252,6 +252,12 @@ export function FolderHeader({
             color: selecting ? COLORS.accent : undefined,
           }}
         />
+
+        {/* Whatever the folder itself offers — today, whether its videos are
+            matched against the film database. It arrives drawn rather than
+            described, so this strip stays a strip and does not have to learn
+            what a film is. */}
+        {film}
 
         <span style={{ flex: 1 }} />
 

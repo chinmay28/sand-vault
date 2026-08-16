@@ -173,6 +173,66 @@ func (v *Vault) SetThumb(ctx context.Context, id string, thumb []byte) error {
 	return v.savePack(ctx, dir, next)
 }
 
+// SetThumbs stores a batch of thumbnails at once, all of them for files in the
+// same folder, and writes that folder's pack a single time.
+//
+// SetThumb in a loop would be correct and ruinous. A pack is one stored object:
+// each call gathers it, adds one picture, and scatters the whole thing again
+// across three accounts — so matching a folder of two hundred films against the
+// film database would upload the growing pack two hundred times, which is
+// quadratic in the size of the folder and measured in tens of gigabytes. This
+// pays that cost once.
+//
+// Files outside dir are skipped rather than refused: a caller sweeping a tree
+// has already grouped them, and one stray entry should not throw away a folder
+// of good pictures.
+func (v *Vault) SetThumbs(ctx context.Context, dir string, thumbs map[string][]byte) error {
+	if len(thumbs) == 0 {
+		return nil
+	}
+	dir = CleanDir(dir)
+
+	v.mu.RLock()
+	if v.dataKey == nil {
+		v.mu.RUnlock()
+		return ErrLocked
+	}
+	wanted := make(map[string][]byte, len(thumbs))
+	for id, data := range thumbs {
+		if len(data) == 0 || len(data) > MaxThumbBytes {
+			continue
+		}
+		if entry := v.manifest.ByID(id); entry != nil && entry.Dir == dir {
+			wanted[id] = data
+		}
+	}
+	v.mu.RUnlock()
+
+	if len(wanted) == 0 {
+		return nil
+	}
+
+	items, err := v.loadPack(ctx, dir)
+	if err != nil {
+		// An unreadable pack is not a reason to refuse new pictures; the rest
+		// are made again as files are opened. Same rule as SetThumb.
+		items = map[string][]byte{}
+	}
+
+	next := make(map[string][]byte, len(items)+len(wanted))
+	for k, val := range items {
+		next[k] = val
+	}
+	var last string
+	for id, data := range wanted {
+		next[id] = data
+		last = id
+	}
+	v.trimPack(dir, next, last)
+
+	return v.savePack(ctx, dir, next)
+}
+
 // trimPack keeps a pack under the entry ceiling, dropping the thumbnails of
 // whichever files are no longer in the folder first and then the ones the
 // folder lists last. keep is never dropped — it is the one just stored.
