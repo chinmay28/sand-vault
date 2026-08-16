@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import { COLORS, FONT, assignAccountColors } from './theme'
 import { useIsMobile } from './hooks'
+import { useNavigator } from './navigation'
 import { api } from './api'
 import LockScreen from './components/LockScreen'
 import AccountsPanel from './components/AccountsPanel'
@@ -14,7 +15,10 @@ import { Banner, Button } from './components/ui'
    separate cloud accounts. Opening one gathers the parts back and rebuilds it. */
 export default function App() {
   const [status, setStatus] = useState(null)
-  const [path, setPath] = useState('/')
+  /* Not a single path but the trail of folders walked through, so Back and
+     Forward have somewhere to step. See navigation.js. */
+  const nav = useNavigator()
+  const path = nav.path
   const [listing, setListing] = useState(null)
   const [providers, setProviders] = useState([])
   const [loadingList, setLoadingList] = useState(false)
@@ -66,15 +70,17 @@ export default function App() {
       if (err.code === 'LOCKED') {
         setStatus((s) => ({ ...s, unlocked: false }))
       } else if (err.code === 'NOT_FOUND' && target !== '/') {
-        // The folder went away underneath us — fall back to the root.
-        setPath('/')
+        // The folder went away underneath us — fall back to the root. It
+        // replaces the step rather than adding one, because a folder that is
+        // no longer there is not somewhere Back should lead.
+        nav.replace('/')
       } else {
         setError(err.message)
       }
     } finally {
       setLoadingList(false)
     }
-  }, [path])
+  }, [path, nav])
 
   const refreshAll = useCallback(async () => {
     const fresh = await api.vaultStatus().catch(() => null)
@@ -100,7 +106,9 @@ export default function App() {
     setPreview(null)
     setInspecting(null)
     setAccountsOpen(false)
-    setPath('/')
+    // The trail is a list of folder names, which is the file index — locking
+    // the vault has to put that away with everything else.
+    nav.reset()
   }
 
   if (!status) {
@@ -192,14 +200,13 @@ export default function App() {
           />
 
           <FileBrowser
-            path={path}
+            nav={nav}
             listing={listing}
             loading={loadingList}
             error={error}
             providers={providers}
             defaultAccounts={status.stats?.default_accounts || []}
             mobile={mobile}
-            onNavigate={setPath}
             onRefresh={refreshAll}
             onPreview={(file, hasThumb) => setPreview({ file, hasThumb })}
             onInspect={setInspecting}

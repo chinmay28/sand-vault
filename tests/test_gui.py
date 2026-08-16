@@ -116,6 +116,28 @@ def upload_and_settle(page, source, choose=None):
     page.wait_for_load_state("networkidle")
 
 
+def make_folder(page, name):
+    """Create a folder in the current one and wait for it to be listed."""
+    page.get_by_text("+ Folder").click()
+    page.wait_for_selector("text=New folder")
+    page.fill('input[placeholder="Folder name"]', name)
+    page.locator('button[type=submit]:has-text("Create")').click()
+    page.wait_for_selector(f"text={name}", timeout=20000)
+
+
+def listed_files(page):
+    """The file names on screen, in the order the browser drew them.
+
+    Read off the per-row Download control, whose spoken name has to say which
+    file it belongs to and therefore names every row exactly once.
+    """
+    labels = page.eval_on_selector_all(
+        'button[aria-label^="Download "]',
+        "els => els.map((e) => e.getAttribute('aria-label'))",
+    )
+    return [label[len("Download "):] for label in labels]
+
+
 class TestLockScreen:
     def test_lock_screen_is_shown_before_unlocking(self, page, server):
         page.goto(server)
@@ -886,6 +908,222 @@ class TestFolders:
         app.get_by_text("gui-folder").first.click()
         # Breadcrumb reflects the folder we walked into.
         app.wait_for_selector("text=gui-folder", timeout=10000)
+
+
+class TestNavigationControls:
+    """Back, Forward and Up — the trail of folders walked through.
+
+    The breadcrumb only ever pointed up the tree it is showing. These three
+    remember where you have been, which is the difference between a listing and
+    a file manager.
+    """
+
+    def test_back_and_forward_walk_the_trail(self, app):
+        make_folder(app, "nav-trail")
+
+        # Nothing has been walked yet, so neither arrow leads anywhere.
+        expect(app.locator('button[aria-label="Back"]')).to_be_disabled()
+        expect(app.locator('button[aria-label="Forward"]')).to_be_disabled()
+
+        app.get_by_text("nav-trail").first.click()
+        app.wait_for_load_state("networkidle")
+        expect(app.locator('button[aria-label="Back"]')).to_be_enabled()
+        expect(app.locator('button[aria-label="Forward"]')).to_be_disabled()
+
+        app.locator('button[aria-label="Back"]').click()
+        app.wait_for_selector("text=nav-trail", timeout=20000)
+        expect(app.locator('button[aria-label="Back"]')).to_be_disabled()
+        # Going back is what gives Forward somewhere to go.
+        expect(app.locator('button[aria-label="Forward"]')).to_be_enabled()
+
+        app.locator('button[aria-label="Forward"]').click()
+        app.wait_for_selector("text=This folder is empty", timeout=20000)
+
+    def test_up_climbs_out_of_a_folder(self, app):
+        make_folder(app, "nav-outer")
+        app.get_by_text("nav-outer").first.click()
+        app.wait_for_load_state("networkidle")
+        make_folder(app, "nav-inner")
+        app.get_by_text("nav-inner").first.click()
+        app.wait_for_load_state("networkidle")
+
+        app.locator('button[aria-label="Up"]').click()
+        app.wait_for_selector("text=nav-inner", timeout=20000)
+        app.locator('button[aria-label="Up"]').click()
+        app.wait_for_selector("text=nav-outer", timeout=20000)
+
+        # The root has nowhere above it.
+        expect(app.locator('button[aria-label="Up"]')).to_be_disabled()
+
+    def test_alt_arrows_do_the_same_from_the_keyboard(self, app):
+        make_folder(app, "nav-keys")
+        app.get_by_text("nav-keys").first.click()
+        app.wait_for_load_state("networkidle")
+
+        app.keyboard.press("Alt+ArrowLeft")
+        app.wait_for_selector("text=nav-keys", timeout=20000)
+        expect(app.locator('button[aria-label="Back"]')).to_be_disabled()
+
+        app.keyboard.press("Alt+ArrowRight")
+        app.wait_for_load_state("networkidle")
+        expect(app.locator('button[aria-label="Forward"]')).to_be_disabled()
+
+    def test_a_folder_that_goes_away_drops_the_browser_at_the_root(self, app):
+        """A folder deleted from under the browser is not a step to walk back
+        into, so falling back to the root replaces it rather than adding to the
+        trail — and Up, which only the root disables, says which one we are on."""
+        make_folder(app, "nav-doomed")
+        app.get_by_text("nav-doomed").first.click()
+        app.wait_for_selector("text=This folder is empty", timeout=20000)
+
+        app.evaluate(
+            """async () => {
+                await fetch('/api/folders?path=' + encodeURIComponent('/nav-doomed')
+                            + '&recursive=1', {method: 'DELETE', credentials: 'same-origin'})
+            }"""
+        )
+        app.get_by_role("button", name="Refresh").click()
+
+        expect(app.locator('button[aria-label="Up"]')).to_be_disabled(timeout=20000)
+        assert app.get_by_text("nav-doomed").count() == 0
+
+
+class TestViewAndSort:
+    """Rows or tiles, and in what order — both remembered between visits."""
+
+    def test_the_grid_draws_the_same_entries(self, app, tmp_path):
+        make_folder(app, "view-grid")
+        app.get_by_text("view-grid").first.click()
+        app.wait_for_load_state("networkidle")
+
+        source = tmp_path / "tiled.txt"
+        source.write_text("a tile")
+        upload_and_settle(app, source)
+
+        app.locator('button[aria-label="Show as a grid"]').click()
+        app.wait_for_timeout(400)
+        assert app.get_by_text("tiled.txt").count() > 0
+        # The row's paired controls are gone; the tile carries the same menu.
+        assert app.locator('button[aria-label="Actions for tiled.txt"]').count() == 1
+
+        app.locator('button[aria-label="Show as a list"]').click()
+        app.wait_for_selector('button[aria-label="Download tiled.txt"]', timeout=20000)
+
+    def test_the_view_survives_a_reload(self, app, tmp_path):
+        app.locator('button[aria-label="Show as a grid"]').click()
+        app.wait_for_timeout(300)
+
+        app.reload()
+        app.wait_for_selector("text=Connected clouds", timeout=20000)
+        # It opens back on the grid, so the toggle offers the list.
+        app.wait_for_selector('button[aria-label="Show as a list"]', timeout=20000)
+
+        app.locator('button[aria-label="Show as a list"]').click()
+        app.wait_for_timeout(300)
+
+    def test_sorting_by_size_reverses_on_a_second_choice(self, app, tmp_path):
+        make_folder(app, "view-sort")
+        app.get_by_text("view-sort").first.click()
+        app.wait_for_load_state("networkidle")
+
+        for name, size in (("small.txt", 10), ("medium.txt", 2000), ("large.txt", 60000)):
+            source = tmp_path / name
+            source.write_text("x" * size)
+            upload_and_settle(app, source)
+
+        assert listed_files(app) == ["large.txt", "medium.txt", "small.txt"]
+
+        app.locator('button[aria-label="Sort"]').click()
+        app.wait_for_selector("text=Sort by", timeout=10000)
+        # The sheet row's spoken name leads with its arrow, so match inside it.
+        app.get_by_role("button", name=re.compile("Size")).click()
+        app.wait_for_timeout(300)
+        # Size opens on the biggest first, which is what anyone sorting by it
+        # is looking for.
+        assert listed_files(app) == ["large.txt", "medium.txt", "small.txt"]
+
+        app.locator('button[aria-label="Sort"]').click()
+        app.wait_for_selector("text=Sort by", timeout=10000)
+        # The sheet row's spoken name leads with its arrow, so match inside it.
+        app.get_by_role("button", name=re.compile("Size")).click()
+        app.wait_for_timeout(300)
+        assert listed_files(app) == ["small.txt", "medium.txt", "large.txt"]
+
+
+class TestSelection:
+    """Picking several rows and acting on all of them at once."""
+
+    def test_ticks_only_appear_once_selecting(self, app, tmp_path):
+        make_folder(app, "pick-ticks")
+        app.get_by_text("pick-ticks").first.click()
+        app.wait_for_load_state("networkidle")
+
+        source = tmp_path / "pickable.txt"
+        source.write_text("pick me")
+        upload_and_settle(app, source)
+
+        assert app.get_by_role("checkbox").count() == 0
+
+        app.locator('button[aria-label="Select files and folders"]').click()
+        app.wait_for_selector("text=Nothing selected", timeout=10000)
+        # One over the listing to take the lot, one on the row.
+        assert app.get_by_role("checkbox").count() == 2
+
+        app.get_by_role("button", name="Done").click()
+        app.wait_for_timeout(300)
+        assert app.get_by_role("checkbox").count() == 0
+
+    def test_shift_takes_the_run_between_two_ticks(self, app, tmp_path):
+        make_folder(app, "pick-run")
+        app.get_by_text("pick-run").first.click()
+        app.wait_for_load_state("networkidle")
+
+        for name in ("run-a.txt", "run-b.txt", "run-c.txt"):
+            source = tmp_path / name
+            source.write_text(name)
+            upload_and_settle(app, source)
+
+        app.locator('button[aria-label="Select files and folders"]').click()
+        app.wait_for_selector("text=Nothing selected", timeout=10000)
+
+        # The first tick is the select-everything one above the columns.
+        app.get_by_role("checkbox").nth(1).click()
+        app.get_by_role("checkbox").nth(3).click(modifiers=["Shift"])
+        app.wait_for_selector("text=3 of 3 selected", timeout=10000)
+
+    def test_select_all_then_delete_empties_the_folder(self, app, tmp_path):
+        make_folder(app, "pick-doomed")
+        app.get_by_text("pick-doomed").first.click()
+        app.wait_for_load_state("networkidle")
+
+        for name in ("doomed-a.txt", "doomed-b.txt"):
+            source = tmp_path / name
+            source.write_text(name)
+            upload_and_settle(app, source)
+
+        app.locator('button[aria-label="Select files and folders"]').click()
+        app.get_by_role("button", name="Select all").click()
+        app.wait_for_selector("text=2 of 2 selected", timeout=10000)
+
+        app.get_by_role("button", name=re.compile("^✕ Delete")).click()
+        dialog = app.get_by_role("dialog", name="Delete 2 items?")
+        dialog.wait_for(timeout=10000)
+
+        # Backing out leaves both where they were.
+        dialog.get_by_role("button", name="Cancel").click()
+        app.wait_for_timeout(300)
+        assert app.get_by_text("doomed-a.txt").count() > 0
+
+        app.get_by_role("button", name=re.compile("^✕ Delete")).click()
+        dialog = app.get_by_role("dialog", name="Delete 2 items?")
+        dialog.wait_for(timeout=10000)
+        dialog.get_by_role("button", name="Delete 2").click()
+        app.wait_for_selector("text=2 deleted", timeout=60000)
+        # Two "Done" buttons are on the page — the dialog's and the selection
+        # bar's behind it — so this one is asked for by the dialog it is in.
+        app.get_by_role("dialog").get_by_role("button", name="Done").click()
+
+        app.wait_for_selector("text=This folder is empty", timeout=20000)
 
 
 class TestSearch:

@@ -647,6 +647,17 @@ pipe the password on stdin.
 - **Connect dialog** — generated from each backend's own field spec, so new
   backends appear without frontend changes
 - **Browser** — folders, breadcrumbs, drag-and-drop upload with progress
+- **Navigation** — Back, Forward and Up lead the toolbar and step along the
+  trail of folders you have walked through, as does `Alt+←` / `Alt+→` / `Alt+↑`.
+  The trail is held in memory only and goes when the vault locks
+- **List or grid** — rows with columns, or tiles built round the stored
+  thumbnail, for the folder of photographs whose file names say nothing
+- **Sorting** — by name, size, date or kind, each opening the way round it is
+  normally wanted and reversing when chosen again; folders always lead. The view
+  and the sort are remembered between visits
+- **Selection** — tick rows singly, in a run with `Shift`, or all of them with
+  `Ctrl+A`, then download, move to other clouds, or delete the lot. A move
+  prices the whole selection as one number before it starts
 - **Search** — a box in the toolbar finds a file or folder anywhere in the
   vault, each hit shown with the folder it lives in; searching inside a folder
   looks there first and offers to widen to the whole vault
@@ -698,7 +709,8 @@ often as from a desk, so the layout folds rather than shrinks. Under 860px wide
 the sidebar becomes a drawer behind `☰`, the file table drops its columns for
 stacked rows — the thumbnail or icon down the left, the name beside it, and
 size, date and part badges underneath — and the toolbar gives the breadcrumb
-trail a row of its own. Heights are
+trail a row of its own, under the row carrying Back, Forward, Up and the view
+controls. Sorting opens in the same bottom sheet a row's menu does. Heights are
 measured against the visible viewport, so a phone's collapsing address bar never
 hides the last row.
 
@@ -1136,9 +1148,10 @@ sand/
 │   └── server/                  # sessions, OAuth flows, handlers, embedded SPA
 ├── web/src/                     # React file browser
 │   ├── api.js  theme.js  App.jsx
+│   ├── navigation.js  view.js   # the trail of folders walked; view + sort prefs
 │   └── components/              # LockScreen, AccountsPanel, ConnectCloud,
-│                                #   FileBrowser, PreviewModal, PdfPreview,
-│                                #   StreamLink, ui
+│                                #   FileBrowser, Toolbar, FileEntry, BulkActions,
+│                                #   PreviewModal, PdfPreview, StreamLink, ui
 │   ├── public/                  # app icon, home-screen icons + manifest,
 │   │                            #   developer badge
 │   └── build-version.js         # feeds the version into the bundle

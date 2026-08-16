@@ -363,18 +363,26 @@ const PREVIEW_DEBOUNCE_MS = 220
    that is staying does not move, so swapping one of three is one part on the
    wire rather than a whole file — and that is worth saying before the button is
    pressed rather than after. The server answers it out of the encrypted index
-   alone, without contacting any account, so the estimate is free and exact. */
-export function RelocateClouds({ target, title, subtitle, current, providers, onClose, onDone }) {
+   alone, without contacting any account, so the estimate is free and exact.
+
+   `target` is one file or folder; `targets` is a list of them, which is what a
+   selection of rows comes to. Both are the same dialog: the estimates are
+   priced together and read as one number, because "what would this cost" is
+   one question however many things were picked. */
+export function RelocateClouds({ target, targets, title, subtitle, current, providers, onClose, onDone }) {
   const [selected, setSelected] = useState(() => (current || []).filter(
     (id) => providers.some((p) => p.id === id)))
   const [plan, setPlan] = useState(null)
   const [planning, setPlanning] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [moved, setMoved] = useState(0)
   const [error, setError] = useState(null)
   const [report, setReport] = useState(null)
 
+  const scope = (targets && targets.length ? targets : [target]).filter(Boolean)
   const enough = selected.length >= MIN_ACCOUNTS
   const key = selected.join(',')
+  const scopeKey = scope.map((t) => t.id || t.path).join('\n')
 
   useEffect(() => {
     if (!enough || report) {
@@ -387,8 +395,13 @@ export function RelocateClouds({ target, title, subtitle, current, providers, on
     const controller = new AbortController()
     setPlanning(true)
     const timer = setTimeout(() => {
-      api.relocate({ ...target, accounts: selected, preview: true, signal: controller.signal })
-        .then((resp) => { setPlan(resp); setError(null) })
+      /* Together rather than one after another: each estimate is read out of
+         the index with no account contacted, so a selection of thirty is
+         thirty cheap answers and no reason to wait for them in turn. */
+      Promise.all(scope.map((t) => api.relocate({
+        ...t, accounts: selected, preview: true, signal: controller.signal,
+      })))
+        .then((plans) => { setPlan(mergePlans(plans)); setError(null) })
         .catch((err) => {
           if (err.name === 'AbortError') return
           setPlan(null)
@@ -398,16 +411,27 @@ export function RelocateClouds({ target, title, subtitle, current, providers, on
     }, PREVIEW_DEBOUNCE_MS)
 
     return () => { clearTimeout(timer); controller.abort() }
-    // The selection is compared by value: a new array holding the same ids is
-    // the same question.
+    // The selection and the scope are compared by value: a new array holding
+    // the same ids is the same question.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, enough, report])
+  }, [key, scopeKey, enough, report])
 
   const submit = async () => {
     setBusy(true)
+    setMoved(0)
     setError(null)
     try {
-      setReport(await api.relocate({ ...target, accounts: selected }))
+      /* One at a time, unlike the estimates: this one really does copy parts
+         between accounts, and running the whole selection at once is how a
+         provider starts refusing. Each file commits on its own, so a failure
+         partway leaves everything before it moved and everything after it
+         where it was — which is exactly what running it again then finishes. */
+      const reports = []
+      for (const t of scope) {
+        reports.push(await api.relocate({ ...t, accounts: selected }))
+        setMoved(reports.length)
+      }
+      setReport(mergeReports(reports))
     } catch (err) {
       setError(err.message)
     } finally {
@@ -461,13 +485,49 @@ export function RelocateClouds({ target, title, subtitle, current, providers, on
               onClick={submit}
               disabled={busy || !enough || (plan !== null && plan.moves === 0 && plan.drops === 0)}
             >
-              {busy ? <><Spinner size={10} color={COLORS.bg} /> Moving…</> : '⇄ Move the parts'}
+              {busy ? (
+                <>
+                  <Spinner size={10} color={COLORS.bg} />
+                  {scope.length > 1 ? ` Moving ${moved + 1} of ${scope.length}…` : ' Moving…'}
+                </>
+              ) : '⇄ Move the parts'}
             </Button>
           </div>
         </>
       )}
     </Modal>
   )
+}
+
+/* Several estimates read as one. Every field is a count of files, of parts or
+   of bytes, so they add — and the whole point of pricing a selection together
+   is a single "12 parts to move, 400 MB" rather than a column of them. */
+function mergePlans(plans) {
+  return plans.reduce((all, plan) => ({
+    moves: all.moves + (plan.moves || 0),
+    bytes: all.bytes + (plan.bytes || 0),
+    total: all.total + (plan.total || 0),
+    unchanged: all.unchanged + (plan.unchanged || 0),
+    drops: all.drops + (plan.drops || 0),
+    warnings: [...all.warnings, ...(plan.warnings || [])],
+  }), { moves: 0, bytes: 0, total: 0, unchanged: 0, drops: 0, warnings: [] })
+}
+
+function mergeReports(reports) {
+  return reports.reduce((all, report) => ({
+    relocated: all.relocated + (report.relocated || 0),
+    parts_moved: all.parts_moved + (report.parts_moved || 0),
+    parts_dropped: all.parts_dropped + (report.parts_dropped || 0),
+    bytes: all.bytes + (report.bytes || 0),
+    total: all.total + (report.total || 0),
+    unchanged: all.unchanged + (report.unchanged || 0),
+    partial: all.partial + (report.partial || 0),
+    failed: all.failed + (report.failed || 0),
+    warnings: [...all.warnings, ...(report.warnings || [])],
+  }), {
+    relocated: 0, parts_moved: 0, parts_dropped: 0, bytes: 0,
+    total: 0, unchanged: 0, partial: 0, failed: 0, warnings: [],
+  })
 }
 
 /* What the chosen clouds would cost, from the index alone. */
