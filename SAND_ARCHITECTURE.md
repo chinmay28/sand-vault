@@ -372,41 +372,7 @@ stops being able to read rather than carrying on from a key it captured.
 
 A file stored whole has no chunks to fetch individually, so `OpenReader` refuses
 it rather than quietly rebuilding the whole thing behind an interface that
-promises cheap seeks. `OpenReadSeeker` is the door that serves both forms, and
-what it does for that one is §4.5.
-
-### 4.5 Reading a file that is still stored whole
-
-The pre-chunking format has no seams: its parts are halves of one compressed,
-encrypted blob, so reading a byte in the middle means rebuilding all of it.
-Until the background conversion (§8.6) has been through such a file, every read
-still pays that.
-
-Paying it *in memory* was the problem. `webdav.Handler` opens a file per HTTP
-request and a player opens a fresh connection on every seek, so one film became
-several copies of itself resident at once — on a machine that may have less RAM
-than the film has bytes. A Raspberry Pi serving a 2 GB film went to swap and
-took the whole system with it, ssh included.
-
-So it is rebuilt onto local disk, beside the vault (`spool.go`):
-
-| | |
-|---|---|
-| Once | Concurrent readers of one file join the rebuild in flight rather than starting their own — the same reasoning as the per-chunk single-flight |
-| Shared | Each reader gets its own descriptor, so two seeks do not move each other's offset |
-| Released | Unlinked when the last reader closes; `Close` on the reader is what says so |
-| Dropped on lock | It is decrypted plaintext, so it goes the way cached chunks and thumbnails go. A reader already holding a descriptor keeps reading — unlinking does not disturb an open file — for the same reason the chunk cache releases rather than zeroes |
-| Swept at startup | A process killed holding one leaves it behind, and nothing else writes that name |
-
-Beside the vault rather than in the system temp directory for the reason
-`UploadStream` spools there — it holds plaintext, so it should inherit whatever
-protects the vault file — and for one more: on a Pi `/tmp` is commonly a tmpfs,
-which would put the file straight back into the RAM this exists to keep it out
-of.
-
-This does not make the gather cheap. One rebuild still passes through memory,
-because the format cannot be read in pieces. What it removes is paying that per
-request, and holding the result afterwards.
+promises cheap seeks.
 
 ### 4.4 Reconstruction truth table
 
@@ -1142,16 +1108,9 @@ sand/
   HTTP API still goes through the older pair, so the browser is still the
   whole-file path (§15).
 - Reading a file that is still stored whole converts it to chunks afterwards,
-  in the background, one file at a time. The conversion reads at an offset
-  rather than buffering — from the chunks in place when only the key is
-  changing, and from the rebuilt copy on disk (§4.5) when the file is still
-  whole — so it is bounded by the chunk window rather than by the file. It costs
-  a download and an upload of whatever gets read, so `sand serve
-  --rechunk-on-read=false` turns it off on a metered connection.
-- A conversion that does not finish is not free: nothing commits, so the file
-  stays whole and the next read queues it again. That is why its memory cost
-  has to be bounded rather than merely usually survivable — on a machine where
-  it gets killed, the same file takes the machine down every time it is played.
+  in the background, one file at a time. It costs a download and an upload of
+  whatever gets read, so `SetRechunkOnRead(false)` turns it off on a metered
+  connection.
 
 ---
 
