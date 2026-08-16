@@ -135,10 +135,9 @@ func vaultStatusCmd() *cobra.Command {
 			// A recovery adopts the key of the vault it rebuilt, so until these
 			// files are re-encrypted the password that opened that vault still
 			// opens their parts.
-			if stats.InheritedKey && stats.Files > 0 {
-				fmt.Printf("Inherited key:    %d file(s) came back from a recovery and are still on the\n"+
-					"                  lost vault's key, which its password opens — run 'sand vault reclaim'\n",
-					stats.Files)
+			if stats.InheritedKey {
+				fmt.Printf("Inherited key:    still the one a recovery adopted, so the lost vault's password\n" +
+					"                  opens every part — new uploads included. Run 'sand vault reclaim'\n")
 			}
 			// What a recovery run before every account was back leaves behind:
 			// an index that knows about parts it cannot reach.

@@ -303,8 +303,8 @@ export default function AccountsPanel({
             moment the recovery finishes. */}
         {stats?.inherited_key && (
           <Banner tone="warn">
-            These files came back from a recovery and are still on the lost vault&apos;s key —
-            its password opens their parts.
+            This vault is still using the key it recovered, so the lost vault&apos;s password
+            opens every part on your clouds — including anything you upload until you change it.
             <Button
               size="sm"
               variant="ghost"

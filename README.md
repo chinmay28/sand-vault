@@ -577,9 +577,13 @@ this vault existed, which no amount of overwriting can reach.
 So the vault says so, and keeps saying so, until you finish the job:
 
 ```
-Inherited key:    2 file(s) came back from a recovery and are still on the
-                  lost vault's key, which its password opens — run 'sand vault reclaim'
+Inherited key:    still the one a recovery adopted, so the lost vault's password
+                  opens every part — new uploads included. Run 'sand vault reclaim'
 ```
+
+Note the *new uploads included*: the adopted key is the vault's active key, so
+anything stored after the recovery is sealed under it too. Waiting widens what
+the old password reaches rather than holding it still.
 
 ```bash
 sand vault reclaim                                  # onto the clouds they are on

@@ -87,7 +87,9 @@ export default function ReclaimVault({ stats, providers, onClose, onDone }) {
         Recovery had to adopt that key — it is the only thing that opens the parts already on your
         clouds. But it is derived from the password of the vault that died, and every copy of that
         vault&apos;s index backup carries it, including any taken off an account before this vault
-        existed. Until these files move, whoever could read them before still can.
+        existed. Until these files move, whoever could read them before still can — and anything
+        you upload in the meantime is sealed under the same key, so waiting widens that rather
+        than holding it still.
       </p>
 
       <p style={paragraph}>
