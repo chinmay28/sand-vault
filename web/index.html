@@ -8,10 +8,16 @@
     <meta name="theme-color" content="#0a0e17" />
     <title>SAND Vault — Secure Archival Network Distribution</title>
     <!--
-      No external fonts, styles or scripts. The app is served entirely from the
-      local binary: fetching a webfont would announce every time you open your
+      Nothing is fetched from anywhere. The app is served entirely from the
+      local binary: linking a webfont would announce every time you open your
       vault to a third party, which is exactly the kind of leak SAND exists to
-      avoid. Typography falls back to whatever the system provides.
+      avoid. Typography is whatever the system provides.
+
+      The one exception proves the rule. The wordmark's script face, when the
+      machine that built this had a licensed copy, is embedded in the page
+      itself as a data: URI by the build (see web/vite.config.js) rather than
+      linked — so it is one fewer request than a system font would be, not one
+      more, and it can never become a request to somebody else's CDN.
     -->
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
 

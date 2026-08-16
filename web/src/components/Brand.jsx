@@ -61,10 +61,14 @@ export function Brand({ size = 'md' }) {
             fontFamily: FONT.script,
             // Scripts sit small for their point size, and a swash can start
             // left of where the glyph is measured from — hence the size bump
-            // and the room on the left for it to lean into.
+            // and the room on the left for it to lean into. This is the one
+            // number to touch if the face ever changes.
             fontSize: '1.5em',
             fontWeight: 500,
-            fontStyle: 'italic',
+            // Deliberately not italic. Every face in the stack is already
+            // written on a slant, so asking for italic on top of that makes
+            // the browser synthesise a second one — a script sheared over
+            // again, which is exactly as bad as it sounds.
             letterSpacing: '0.01em',
             paddingLeft: '0.08em',
             marginLeft: large ? '5px' : '3px',

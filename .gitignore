@@ -10,6 +10,15 @@
 web/node_modules/
 web/dist/
 
+# The wordmark's script face. A webfont licence covers your own sites, not
+# redistribution, and a public repository redistributes everything in it — so
+# the file stays on the machine that builds, and a build without it falls back
+# to the platform's own handwriting face. See web/fonts/README.md.
+web/fonts/*.woff
+web/fonts/*.woff2
+web/fonts/*.otf
+web/fonts/*.ttf
+
 # IDE
 .idea/
 .vscode/

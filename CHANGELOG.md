@@ -418,8 +418,18 @@ badges in each account's own colour, a per-part health read-out, and inline
 preview for images, video, audio, PDF and text — each one rebuilt on demand.
 
 The wordmark is set in two hands: SAND in the tracked-out monospace it has
-always had, and *Vault* written beside it in the handwriting face the platform
-already has — which is the only way to letter it without fetching a font.
+always had, and *Vault* written beside it — in **Nefelibata Script** where the
+build has a licensed copy of it, and otherwise in the handwriting face the
+platform already ships. The name is the reason for the choice: a *nefelibata*
+is a cloud-walker.
+
+The font is never linked. A licensed copy dropped in `web/fonts/` is read at
+build time and embedded in the page as a `data:` URI, so it is one request
+fewer than a system font rather than one more, and it cannot become a call to
+somebody's CDN however the app is deployed. Without one the build says so and
+the wordmark falls back — nothing depends on it being there. See
+[`web/fonts/README.md`](./web/fonts/README.md), including how to subset the
+face down to the five letters it actually draws.
 
 It loads no external fonts, scripts or styles: opening your vault makes zero
 third-party requests.

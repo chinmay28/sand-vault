@@ -670,6 +670,14 @@ pipe the password on stdin.
 The UI loads no external fonts, scripts or styles. Opening your vault makes zero
 third-party requests.
 
+The wordmark is the one piece of typography that is not the system's own: *Vault*
+is written in **Nefelibata Script** — a *nefelibata* is a cloud-walker — where
+the machine that built the bundle had a licensed copy of the face. It is never
+linked. A copy in [`web/fonts/`](./web/fonts/README.md) is read at build time
+and embedded in the page as a `data:` URI, so it costs one request fewer than a
+system font rather than one more; without one, the build says so and the mark
+falls back to whatever handwriting face the platform ships.
+
 Asset filenames carry a content hash and are cached for a year; `index.html`,
 which names the current bundle, revalidates on every load against an ETag. An
 upgrade therefore reaches a browser the next time it is opened, without the page
