@@ -1566,14 +1566,22 @@ class TestNoConsoleErrors:
         assert not real, f"console errors on load: {real}"
 
 
+
+
+# The dialog's own connect button, told apart from the accounts panel's
+# "+ Connect a cloud" sitting behind the modal.
+DIALOG_CONNECT = re.compile(r"^\+ Connect (another|a missing) cloud$")
+
+
 class TestDisasterRecovery:
-    """The machine died and the clouds came back.
+    """The machine died and the clouds came back, one at a time.
 
     Every test here gets its own server, port and vault file, because that is
     the scenario: a replacement machine that has never held a file, connecting
     accounts that are still carrying the vault it lost. The app is supposed to
     notice that on its own — nobody in this situation knows to go looking for a
-    recovery command.
+    recovery command — and then to walk the rest of the way, since one cloud is
+    never enough to rebuild anything from.
     """
 
     def new_machine(self, page, base_url, password):
@@ -1586,16 +1594,30 @@ class TestDisasterRecovery:
         page.get_by_text("▶ Create vault").click()
         page.wait_for_selector("text=Connected clouds", timeout=20000)
 
-    def reconnect(self, page, name, path):
-        """Wire one of the recovered cloud folders back up through the UI."""
-        page.get_by_text("+ Connect a cloud").click()
+    def fill_cloud_form(self, page, name, path):
+        """Complete whichever connect-a-cloud dialog is already open."""
         page.wait_for_selector("text=Local folder", timeout=15000)
         page.get_by_text("Local folder").click()
         form = page.locator("form")
         form.locator("input").nth(0).fill(name)
         form.locator("input").nth(1).fill(path)
         form.locator("button[type=submit]").click()
+
+    def reconnect(self, page, name, path):
+        """Wire a recovered cloud back up from the accounts panel."""
+        page.get_by_text("+ Connect a cloud").click()
+        self.fill_cloud_form(page, name, path)
         page.wait_for_selector(f"text={name}", timeout=30000)
+
+    def reconnect_from_dialog(self, page, name, path):
+        """Wire one up from inside the recovery dialog, which is where it asks.
+
+        The button is the dialog's own, so the accounts panel behind it is not
+        involved — and what happens next is the point of the test: the dialog
+        re-checks by itself.
+        """
+        page.get_by_role("button", name=DIALOG_CONNECT).click()
+        self.fill_cloud_form(page, name, path)
 
     def dismiss_prompt(self, page):
         """Close the recovery prompt if it has opened over the accounts panel.
@@ -1618,32 +1640,41 @@ class TestDisasterRecovery:
         # the app to find a vault on it and say so.
         self.reconnect(page, "back-one", clouds[0])
         expect(page.get_by_text("Sand files detected")).to_be_visible(timeout=30000)
-
-        # And it says what it found, rather than only that it found something.
         expect(page.get_by_text(re.compile(r"stored parts?"))).to_be_visible()
-        expect(page.get_by_text(re.compile(r"Only 1 cloud is connected"))).to_be_visible()
 
-    def test_recovery_brings_the_files_back(self, page, spawn_server, lost_vault):
-        clouds, lost_password, names = lost_vault
-        self.new_machine(page, spawn_server("case-whole"), "a-brand-new-passphrase")
+    def test_one_cloud_is_asked_for_the_next_rather_than_a_password(self, page, spawn_server, lost_vault):
+        """A file needs two of its three parts, and one account holds one.
+
+        So the dialog does not open on a password box it cannot use yet: it
+        asks for the cloud that would make a recovery possible at all.
+        """
+        clouds, _, _ = lost_vault
+        self.new_machine(page, spawn_server("case-asks"), "a-brand-new-passphrase")
 
         self.reconnect(page, "back-one", clouds[0])
-        self.dismiss_prompt(page)
-        self.reconnect(page, "back-two", clouds[1])
-        self.dismiss_prompt(page)
-        self.reconnect(page, "back-three", clouds[2])
-        self.dismiss_prompt(page)
-
-        # The banner is the standing offer once the prompt has been waved away.
-        page.get_by_role("button", name="Attempt recovery").click()
         page.wait_for_selector("text=Sand files detected", timeout=30000)
 
-        page.locator('input[type="password"]').first.fill(lost_password)
-        page.get_by_role("button", name="Check what is there").click()
-        # The dry run answers before anything is adopted.
-        expect(page.get_by_text("files openable")).to_be_visible(timeout=60000)
-        expect(page.get_by_text(re.compile(r"Nothing would be left behind"))).to_be_visible()
+        expect(page.get_by_text(re.compile(r"one cloud on its own carries no whole file"))).to_be_visible()
+        expect(page.get_by_role("button", name=DIALOG_CONNECT)).to_be_visible()
+        assert page.locator('input[type="password"]').count() == 0
 
+    def test_the_dialog_connects_the_next_cloud_itself(self, page, spawn_server, lost_vault):
+        """Connecting from inside the dialog is what turns the prompt into a
+        password box: the second cloud is what makes a recovery possible."""
+        clouds, lost_password, names = lost_vault
+        self.new_machine(page, spawn_server("case-guided"), "a-brand-new-passphrase")
+
+        self.reconnect(page, "back-one", clouds[0])
+        page.wait_for_selector("text=Sand files detected", timeout=30000)
+
+        self.reconnect_from_dialog(page, "back-two", clouds[1])
+
+        # The dialog looked again on its own and moved on.
+        password_box = page.locator('input[type="password"]')
+        expect(password_box.first).to_be_visible(timeout=60000)
+        expect(page.get_by_role("button", name="Recover", exact=True)).to_be_visible()
+
+        password_box.first.fill(lost_password)
         page.get_by_role("button", name="Recover", exact=True).click()
         page.wait_for_selector("text=Recovery complete", timeout=60000)
         page.get_by_role("button", name="Open the vault").click()
@@ -1651,35 +1682,86 @@ class TestDisasterRecovery:
         for name in names:
             expect(page.get_by_text(name, exact=True).first).to_be_visible(timeout=30000)
 
+    def test_the_last_cloud_finishes_the_recovery_by_itself(self, page, spawn_server, lost_vault):
+        """The whole point of asking: hand it the cloud it asked for and it
+        gets on with it, rather than making you press the same button again."""
+        clouds, lost_password, _ = lost_vault
+        self.new_machine(page, spawn_server("case-auto"), "a-brand-new-passphrase")
+
+        # Two clouds and a password: enough to rebuild everything but the spare
+        # parts, so a recovery now leaves the third account's parts unreachable.
+        self.reconnect(page, "back-one", clouds[0])
+        page.wait_for_selector("text=Sand files detected", timeout=30000)
+        self.reconnect_from_dialog(page, "back-two", clouds[1])
+
+        password_box = page.locator('input[type="password"]')
+        expect(password_box.first).to_be_visible(timeout=60000)
+        password_box.first.fill(lost_password)
+
+        # Handing it the third cloud is the assent — no further clicking.
+        self.reconnect_from_dialog(page, "back-three", clouds[2])
+        page.wait_for_selector("text=Recovery complete", timeout=90000)
+        expect(page.get_by_text(re.compile(r"are back in\s+your vault"))).to_be_visible()
+
     def test_a_partial_recovery_says_what_is_still_missing(self, page, spawn_server, lost_vault):
         clouds, lost_password, _ = lost_vault
         self.new_machine(page, spawn_server("case-partial"), "a-brand-new-passphrase")
 
-        # One cloud of three, which is one short of the two parts a file needs.
+        # Two of three: every file comes back, with no spare part left and the
+        # third account's parts still out of reach.
         self.reconnect(page, "back-one", clouds[0])
         page.wait_for_selector("text=Sand files detected", timeout=30000)
+        self.dismiss_prompt(page)
+        self.reconnect(page, "back-two", clouds[1])
+        self.dismiss_prompt(page)
 
+        page.get_by_role("button", name="Attempt recovery").click()
+        page.wait_for_selector("text=Sand files detected", timeout=30000)
         page.locator('input[type="password"]').first.fill(lost_password)
+
+        page.get_by_role("button", name="Check what is there").click()
+        expect(page.get_by_text("files openable")).to_be_visible(timeout=60000)
+        expect(page.get_by_text("with no spare part")).to_be_visible()
+
         page.get_by_role("button", name="Recover", exact=True).click()
-        page.wait_for_selector("text=Recovery finished, in part", timeout=60000)
-
-        # The shortfall, and the one instruction that would change it.
-        expect(page.get_by_text(re.compile(r"did\s+not come back"))).to_be_visible()
-        expect(page.get_by_text("Connect these and recover again")).to_be_visible()
-        expect(page.get_by_text("Files still missing")).to_be_visible()
-        expect(page.get_by_text("dead-two")).to_be_visible()
-
+        page.wait_for_selector("text=Recovery complete", timeout=60000)
         page.get_by_role("button", name="Open the vault").click()
 
-        # Connecting the rest turns the offer into one to finish the job, which
-        # needs no password: the key was adopted by the recovery that ran first.
-        self.reconnect(page, "back-two", clouds[1])
+        # The third cloud turns up later, and the banner offers to finish —
+        # which needs no password, the key having been adopted already.
+        expect(page.get_by_role("button", name="Finish recovery")).to_be_visible(timeout=30000)
         self.reconnect(page, "back-three", clouds[2])
 
-        page.get_by_role("button", name="Finish recovery").click()
+        page.get_by_role("button", name="Finish recovery").first.click()
         page.wait_for_selector("text=Finish the recovery", timeout=30000)
         assert page.locator('input[type="password"]').count() == 0
 
         page.get_by_role("button", name="Finish recovery").last.click()
         page.wait_for_selector("text=Recovery complete", timeout=60000)
         expect(page.get_by_text("files openable")).to_be_visible()
+
+    def test_a_lost_file_is_reported_and_then_recovered_from_the_report(self, page, spawn_server, lost_vault):
+        """One cloud is not enough, and someone may recover from it anyway.
+
+        The report says which accounts would change that, and connecting one
+        from the report itself picks the recovery back up where it stopped.
+        """
+        clouds, lost_password, _ = lost_vault
+        self.new_machine(page, spawn_server("case-report"), "a-brand-new-passphrase")
+
+        self.reconnect(page, "back-one", clouds[0])
+        page.wait_for_selector("text=Sand files detected", timeout=30000)
+
+        # Force the premature attempt the dialog is steering away from, by
+        # giving it the second cloud and then recovering before the third.
+        self.reconnect_from_dialog(page, "back-two", clouds[1])
+        password_box = page.locator('input[type="password"]')
+        expect(password_box.first).to_be_visible(timeout=60000)
+        password_box.first.fill(lost_password)
+        page.get_by_role("button", name="Recover", exact=True).click()
+        page.wait_for_selector("text=Recovery complete", timeout=60000)
+
+        # Everything is openable, but the third account still holds spare parts,
+        # so the vault says so rather than calling the job done.
+        page.get_by_role("button", name="Open the vault").click()
+        expect(page.get_by_role("button", name="Finish recovery")).to_be_visible(timeout=30000)

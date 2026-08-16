@@ -503,9 +503,23 @@ app says so:
   encrypted copy of a vault index this one did not write.   [Attempt recovery]
 ```
 
-The dialog asks for the password of the vault you lost — which need not be the
-password of the vault you are recovering into — and runs a dry run first, so
-nothing is adopted before you have seen what would come back.
+That fires on the *first* cloud you reconnect, which is never enough on its own:
+a file is rebuilt from two of its three parts, and one account holds one of
+them. So the dialog does not open on a password box it cannot use yet — it asks
+for the next cloud, and connects it for you:
+
+> A file was split into 3 parts across 3 clouds and is rebuilt from any 2 of
+> them, so one cloud on its own carries no whole file. Connect the next cloud
+> that held parts of this vault — as many as you can — and the recovery starts
+> on its own.
+>
+>                                             `Not now`  **`+ Connect another cloud`**
+
+Every account that lands is re-checked without being asked. The second one turns
+the dialog into the password prompt; the last one is taken as your answer, and
+the recovery runs itself: check first, and commit if the check comes back whole.
+The password is the one belonging to the vault you lost, which need not be the
+password of the vault you are recovering into.
 
 ### What did not come back
 
@@ -530,7 +544,9 @@ Files still missing:
 ```
 
 An account that only held spare copies is listed but not blamed — reconnecting
-it changes nothing about what you can open.
+it changes nothing about what you can open. In the browser this list comes with
+a **Connect a missing cloud** button, and connecting one from it picks the
+recovery straight back up.
 
 Once the missing clouds turn up, finish the job:
 

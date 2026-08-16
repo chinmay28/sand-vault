@@ -39,6 +39,13 @@ export default function App() {
   // that saying "not now" does not itself re-run the scan.
   const recoveryDismissed = useRef(false)
 
+  // The recovery dialog connects clouds of its own, so the accounts it is
+  // working through change underneath this component while it is open. It owns
+  // its own copy of the scan from the moment it mounts; this ref is what stops
+  // the scan out here being cleared from under it and unmounting it mid-flow.
+  const recoveringRef = useRef(false)
+  const openRecovery = (open) => { recoveringRef.current = open; setRecovering(open) }
+
   // Which account owns which colour can only be decided against the whole list,
   // and every pane below reads the answer back by id — so settle it here, in
   // the render that owns the list, before any of them draw a badge.
@@ -123,6 +130,7 @@ export default function App() {
   const unresolved = status?.stats?.unresolved ?? 0
 
   useEffect(() => {
+    if (recoveringRef.current) return
     if (!unlocked || providerKey === '' || (fileCount > 0 && unresolved === 0)) {
       setRecovery(null)
       return
@@ -134,7 +142,7 @@ export default function App() {
       // Only the disaster interrupts. Resuming is offered from the banner
       // instead: it is not news — the vault has been in that state since the
       // recovery that made it — and a modal on every load would be a nag.
-      if (scan.available && !recoveryDismissed.current) setRecovering(true)
+      if (scan.available && !recoveryDismissed.current) openRecovery(true)
     }).catch(() => {
       // An account that will not answer is the accounts panel's story to tell;
       // it should not put an error over an otherwise working vault.
@@ -151,7 +159,7 @@ export default function App() {
     setInspecting(null)
     setAccountsOpen(false)
     setRecovery(null)
-    setRecovering(false)
+    openRecovery(false)
     recoveryDismissed.current = false
     // The trail is a list of folder names, which is the file index — locking
     // the vault has to put that away with everything else.
@@ -250,7 +258,7 @@ export default function App() {
                 <span>
                   {recoveryNotice(recovery)}
                 </span>
-                <Button size="sm" variant="ghost" onClick={() => setRecovering(true)}>
+                <Button size="sm" variant="ghost" onClick={() => openRecovery(true)}>
                   {recovery.available ? 'Attempt recovery' : 'Finish recovery'}
                 </Button>
               </span>
@@ -299,12 +307,16 @@ export default function App() {
       {recovering && recovery && (
         <RecoverVault
           scan={recovery}
-          onClose={() => { setRecovering(false); recoveryDismissed.current = true }}
+          onClose={() => { openRecovery(false); recoveryDismissed.current = true }}
           onRecovered={() => {
-            setRecovering(false)
+            openRecovery(false)
             setRecovery(null)
             refreshAll()
           }}
+          /* The dialog connects clouds of its own, so the accounts panel has
+             to hear about them the moment they land rather than when it
+             closes. */
+          onAccountsChanged={refreshProviders}
         />
       )}
       {inspecting && (

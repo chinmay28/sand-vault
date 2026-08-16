@@ -268,6 +268,16 @@ exactly this disaster, and the browser prompts on it. The scan runs only where
 it could matter — an empty vault, or one carrying shard records that point
 nowhere — so it never sits on the path of a vault that is simply in use.
 
+**And the prompt is an errand, not a form.** It fires on the first account
+reconnected, which is by definition one short of `MinPartsToRestore`, so what it
+asks for is the *next* cloud rather than a password it could not use yet.
+Connecting happens inside the dialog, every account that lands re-runs the scan,
+and the step that follows is chosen from what came back: still short, and it
+asks again; enough, with the index already adopted, and it re-points; enough
+with a password given, and it checks and then commits. Being handed the account
+the dialog asked for is the assent — the alternative is a second button meaning
+the same thing.
+
 **The report leads on the shortfall.** `MinPartsToRestore` is two of three, so
 one cloud you have not got back yet costs nothing and two costs you the file.
 `RecoveryReport` therefore counts in pairs — `Recoverable` against `Files`,

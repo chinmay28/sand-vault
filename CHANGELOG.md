@@ -133,9 +133,17 @@ prompt:
 > **Sand files detected** — 412 parts (3.1 GB) and an encrypted copy of a vault
 > index this one did not write.
 
-From there it asks for the password of the vault that is gone — not this one's,
-which is a distinction the dialog makes rather than leaving you to discover —
-and offers a dry run before anything is adopted.
+And then it walks the rest of the way, because that prompt fires on the *first*
+cloud you reconnect and one cloud is never enough: a file is rebuilt from two of
+its three parts. So the dialog does not open on a password box it cannot use
+yet. It asks for the next cloud, connects it without leaving the dialog, and
+re-checks by itself when it lands — the second account turns it into the
+password prompt, and the last one is taken as the answer to the question it
+asked, running the recovery rather than making you press the same button again.
+It still checks before it commits.
+
+The password it asks for is the one belonging to the vault that is gone, not
+this one's — a distinction the dialog makes rather than leaving you to discover.
 
 **And it says what did not come back.** A recovery is only as complete as the
 accounts you managed to reconnect: a file is rebuilt from any two of its three

@@ -1,62 +1,145 @@
-import React, { useState } from 'react'
+import React, { useCallback, useState } from 'react'
 import { COLORS, FONT, KIND_ICONS, formatBytes } from '../theme'
 import { api } from '../api'
 import { Banner, Button, Modal, PasswordInput, Spinner } from './ui'
 import { PARTS_PER_FILE } from './CloudSelect'
+import ConnectCloud from './ConnectCloud'
 
 /* The dialog for the day the machine died.
 
    Every connected account carries an encrypted copy of the index, so a fresh
    install that reconnects those accounts is sitting on everything it needs to
    rebuild the vault — it just does not know it yet. The app notices, and this is
-   what it opens: what was found, the password of the vault that is gone, a dry
-   run, and then the rebuild.
+   what it opens.
 
-   The dry run is not a nicety. A recovery is only as complete as the accounts
-   that were reconnected, and finding out which files did not come back *after*
-   adopting the index is far worse than being told first.
+   It opens on the *first* cloud you reconnect, which is never enough on its
+   own: a file is rebuilt from two of its three parts, and one account holds one
+   of them. So this is not a form, it is an errand — connect a cloud, see what
+   that bought you, connect the next one — and it runs the errand rather than
+   describing it. Connecting is a button in here, and every account that lands
+   re-checks by itself and goes on to recover the moment there is enough to
+   recover with.
 
-   Which is also why this dialog has two shapes. Recovering with two of your
-   three clouds back leaves an index that knows about files it cannot reach; when
-   the third turns up there is nothing left to adopt and everything left to
-   re-point, so the same dialog resumes instead — no password, because the key
-   was adopted the first time round. */
-export default function RecoverVault({ scan, onClose, onRecovered }) {
+   The check before the commit is not a nicety either. A recovery is only as
+   complete as the accounts that came back, and finding out which files did not
+   *after* adopting the index is far worse than being told first.
+
+   Two shapes, because there are two situations. An empty vault adopts the index
+   outright. A vault that already did that, with a cloud still missing, has
+   nothing left to adopt and everything left to re-point — so the same dialog
+   resumes instead, and asks for no password, the key having been adopted the
+   first time round. */
+export default function RecoverVault({ scan: initialScan, onClose, onRecovered, onAccountsChanged }) {
+  const [scan, setScan] = useState(initialScan)
   const [password, setPassword] = useState('')
-  const [source, setSource] = useState(() => preferredSource(scan))
-  const [busy, setBusy] = useState(null) // 'preview' | 'recover'
+  const [source, setSource] = useState(() => preferredSource(initialScan))
+  const [busy, setBusy] = useState(null) // 'preview' | 'recover' | 'scanning'
   const [error, setError] = useState(null)
   const [preview, setPreview] = useState(null)
   const [result, setResult] = useState(null)
+  const [connecting, setConnecting] = useState(false)
 
   const resuming = !scan?.available && !!scan?.resumable
   const holders = (scan?.sources || []).filter((s) => s.backup && s.foreign)
+  // Accounts that turned out to be carrying something. Two is what it takes to
+  // rebuild a file, so below that there is nothing worth attempting yet.
+  const carrying = (scan?.sources || []).filter((s) => s.parts > 0).length
 
-  const run = async (dryRun) => {
+  /* One attempt, as a check or for real.
+     `mode` is passed explicitly rather than read off `resuming` so that the
+     step which connects a cloud can act on the scan it has just fetched. That
+     scan is exactly what decides the mode — connecting the last cloud is what
+     turns "adopt this index" into "re-point the one we already have" — and the
+     value closed over here is a render behind it. */
+  const run = useCallback(async (dryRun, mode) => {
     setError(null)
     setBusy(dryRun ? 'preview' : 'recover')
     try {
-      const resp = resuming
+      const resp = mode === 'resume'
         ? await api.resumeRecovery({ dryRun })
         : await api.recover({ providerId: source, password, dryRun })
       if (dryRun) setPreview(resp)
       else setResult(resp)
+      return resp
     } catch (err) {
       setError(err.code === 'WRONG_PASSWORD'
         ? 'That password does not open the backup on this account. It is the password of the vault you lost, which may not be the one this vault uses.'
         : err.message)
       if (!dryRun) setPreview(null)
+      return null
     } finally {
       setBusy(null)
     }
-  }
+  }, [source, password])
+
+  // What the dialog is doing right now, for the buttons that are already on the
+  // step that decided it.
+  const mode = resuming ? 'resume' : 'recover'
+
+  /* A cloud has just been connected from inside this dialog, which is the whole
+     reason the dialog asked. Look again, and carry straight on:
+
+     - Still short of what it takes to rebuild anything, so there is nothing to
+       try yet — the dialog asks for the next cloud instead.
+     - Enough now, and the vault is already carrying the index: re-point it,
+       for real. Nothing is at risk in doing that — it is the same reachability
+       question the check asks, answered by writing it down.
+     - Enough now, and a password has been given: check first, then recover if
+       the check comes back whole. Being handed the cloud that was asked for is
+       the assent; making someone press the same button again is ceremony. */
+  const afterConnect = useCallback(async () => {
+    setConnecting(false)
+    onAccountsChanged?.()
+
+    setBusy('scanning')
+    let fresh = scan
+    try {
+      fresh = await api.recoveryScan()
+      setScan(fresh)
+      if (!source) setSource(preferredSource(fresh))
+    } catch (err) {
+      setError(err.message)
+      return
+    } finally {
+      setBusy(null)
+    }
+
+    const holding = (fresh.sources || []).filter((s) => s.parts > 0).length
+    if (holding < MIN_PARTS_TO_RESTORE) return
+
+    if (!fresh.available && fresh.resumable) {
+      await run(false, 'resume')
+      return
+    }
+    if (!password) return
+
+    const checked = await run(true, 'recover')
+    if (checked && checked.report.lost === 0) await run(false, 'recover')
+  }, [scan, source, password, run, onAccountsChanged])
+
+  /* One more cloud, asked for from wherever the shortfall was reported.
+
+     Primary only where it is the way forward — with too few clouds to rebuild
+     anything, or a report saying what is still missing. Once a recovery can go
+     ahead it steps back to an ordinary button, so there are not two of them
+     competing to look like the thing to press. */
+  const connectButton = (label = 'Connect another cloud', variant = 'primary') => (
+    <Button variant={variant} onClick={() => setConnecting(true)} disabled={!!busy}>
+      {busy === 'scanning' ? <Spinner size={12} color={variant === 'primary' ? COLORS.bg : COLORS.accent} /> : null}
+      {busy === 'scanning' ? 'Looking…' : `+ ${label}`}
+    </Button>
+  )
+
+  const cloudDialog = connecting && (
+    <ConnectCloud onClose={() => setConnecting(false)} onConnected={afterConnect} />
+  )
 
   /* ---- After the rebuild: what came back, and what did not ---- */
   if (result) {
     const report = result.report
     return (
       <Modal title={report.lost > 0 ? 'Recovery finished, in part' : 'Recovery complete'}
-        onClose={onClose} width={620}>
+        onClose={busy ? undefined : onClose} width={620}>
         {report.recoverable > 0 ? (
           <Banner tone={report.lost > 0 ? 'warn' : 'success'}>
             {report.recoverable} of {report.files} file{report.files === 1 ? '' : 's'} are back in
@@ -82,13 +165,22 @@ export default function RecoverVault({ scan, onClose, onRecovered }) {
 
         <p style={paragraph}>
           {report.lost > 0
-            ? 'Nothing has been thrown away: the index knows these files exist and where their parts went, and connecting the accounts above brings them back within reach.'
+            ? 'Nothing has been thrown away: the index knows these files exist and where their parts went. Connect one of the clouds above and this picks up where it left off — no password needed the second time.'
             : 'The accounts now carry a copy of the index under this vault’s password, so this machine can be lost too.'}
         </p>
 
-        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-          <Button variant="primary" onClick={onRecovered}>Open the vault</Button>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', flexWrap: 'wrap' }}>
+          {report.lost > 0 ? (
+            <>
+              <Button variant="ghost" onClick={onRecovered} disabled={!!busy}>Leave it for now</Button>
+              {connectButton('Connect a missing cloud')}
+            </>
+          ) : (
+            <Button variant="primary" onClick={onRecovered} disabled={!!busy}>Open the vault</Button>
+          )}
         </div>
+
+        {cloudDialog}
       </Modal>
     )
   }
@@ -108,32 +200,42 @@ export default function RecoverVault({ scan, onClose, onRecovered }) {
           {scan.stranded > 0
             ? `${scan.stranded} file${scan.stranded === 1 ? '' : 's'} in this vault cannot be opened: ${scan.unresolved} of their parts sit on accounts this vault is not connected to. `
             : `${scan.unresolved} part${scan.unresolved === 1 ? '' : 's'} of your files sit on accounts this vault is not connected to. `}
-          Connect them, then run this — it asks every account what it holds and re-points the
-          index at whichever one answers. No password: the key is already here.
+          Connect them here and this finishes by itself — it asks every account what it holds and
+          re-points the index at whichever one answers. No password: the key is already here.
         </p>
 
         {preview && <PreviewReport report={preview.report} />}
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', flexWrap: 'wrap' }}>
           <Button variant="ghost" onClick={onClose} disabled={!!busy}>Not now</Button>
-          <Button onClick={() => run(true)} disabled={!!busy}>
+          <Button onClick={() => run(true, mode)} disabled={!!busy}>
             {busy === 'preview' ? <Spinner size={12} /> : null}
             {busy === 'preview' ? 'Checking…' : 'Check what is reachable'}
           </Button>
-          <Button variant="primary" onClick={() => run(false)} disabled={!!busy}>
+          <Button variant="primary" onClick={() => run(false, mode)} disabled={!!busy}>
             {busy === 'recover' ? <Spinner size={12} color={COLORS.bg} /> : null}
             {busy === 'recover' ? 'Finishing…' : 'Finish recovery'}
           </Button>
         </div>
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '10px' }}>
+          {connectButton('Connect another cloud', 'default')}
+        </div>
+
+        {cloudDialog}
       </Modal>
     )
   }
 
-  /* ---- Before: what was found, and what a recovery would bring back ---- */
+  /* ---- Not enough clouds yet to rebuild anything from ---- */
+  const short = carrying < MIN_PARTS_TO_RESTORE
+
   return (
     <Modal
       title="Sand files detected"
-      subtitle="These accounts are still carrying a vault. This one is empty, so it can take it over."
+      subtitle={short
+        ? 'This cloud is carrying a vault. One cloud is not enough to rebuild a file from — connect the rest.'
+        : 'These accounts are still carrying a vault. This one is empty, so it can take it over.'}
       onClose={busy ? undefined : onClose}
       width={620}
     >
@@ -164,51 +266,80 @@ export default function RecoverVault({ scan, onClose, onRecovered }) {
         </p>
       )}
 
-      {/* The prompt fires on the first cloud you reconnect, which is rarely the
-          last one you mean to. Recovering now is not a mistake — the index
-          comes back whole and the parts that were out of reach are picked up
-          later — but it is worth knowing before rather than after. */}
-      {(scan.sources || []).length < PARTS_PER_FILE && (
+      {/* Below two clouds there is nothing to attempt, so the dialog does not
+          pretend otherwise: it asks for the next one and stops there. */}
+      {short ? (
+        <Banner tone="warn">
+          A file was split into {PARTS_PER_FILE} parts across {PARTS_PER_FILE} clouds and is
+          rebuilt from any {MIN_PARTS_TO_RESTORE} of them, so
+          {carrying === 1 ? ' one cloud on its own carries no whole file' : ' nothing here carries a whole file'}.
+          Connect the next cloud that held parts of this vault — as many as you can — and the
+          recovery starts on its own.
+        </Banner>
+      ) : (scan.sources || []).length < PARTS_PER_FILE && (
         <Banner tone="info">
-          Only {scan.sources.length} cloud{scan.sources.length === 1 ? ' is' : 's are'} connected.
-          A file is rebuilt from two of its three parts, so connect the rest first if you can —
-          or recover now and finish once they turn up.
+          {scan.sources.length} clouds are connected, which is enough to rebuild every file — but
+          not to bring back the third part each one was stored with. Connect the last{' '}
+          {PARTS_PER_FILE - scan.sources.length === 1
+            ? 'cloud'
+            : `${PARTS_PER_FILE - scan.sources.length} clouds`} first and nothing comes back
+          without its spare; recover now and they are picked up when it turns up.
         </Banner>
       )}
 
-      <PasswordInput
-        label="Password of the vault you lost"
-        value={password}
-        autoFocus
-        autoComplete="off"
-        placeholder="The password that wrote this backup"
-        disabled={!!busy}
-        help="Not this vault's password, unless they happen to be the same one."
-        onChange={(e) => { setPassword(e.target.value); setPreview(null) }}
-      />
+      {!short && (
+        <PasswordInput
+          label="Password of the vault you lost"
+          value={password}
+          autoFocus
+          autoComplete="off"
+          placeholder="The password that wrote this backup"
+          disabled={!!busy}
+          help="Not this vault's password, unless they happen to be the same one."
+          onChange={(e) => { setPassword(e.target.value); setPreview(null) }}
+        />
+      )}
 
       {preview && <PreviewReport report={preview.report} at={preview.backup_at} />}
 
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', flexWrap: 'wrap' }}>
         <Button variant="ghost" onClick={onClose} disabled={!!busy}>Not now</Button>
-        <Button onClick={() => run(true)} disabled={!!busy || !password}>
-          {busy === 'preview' ? <Spinner size={12} /> : null}
-          {busy === 'preview' ? 'Checking…' : 'Check what is there'}
-        </Button>
-        <Button variant="primary" onClick={() => run(false)} disabled={!!busy || !password}>
-          {busy === 'recover' ? <Spinner size={12} color={COLORS.bg} /> : null}
-          {busy === 'recover' ? 'Recovering…' : 'Recover'}
-        </Button>
+        {short ? connectButton() : (
+          <>
+            <Button onClick={() => run(true, mode)} disabled={!!busy || !password}>
+              {busy === 'preview' ? <Spinner size={12} /> : null}
+              {busy === 'preview' ? 'Checking…' : 'Check what is there'}
+            </Button>
+            <Button variant="primary" onClick={() => run(false, mode)} disabled={!!busy || !password}>
+              {busy === 'recover' ? <Spinner size={12} color={COLORS.bg} /> : null}
+              {busy === 'recover' ? 'Recovering…' : 'Recover'}
+            </Button>
+          </>
+        )}
       </div>
+
+      {/* Still reachable once there is enough to recover with: more clouds is
+          always the better answer, right up until every part is back. */}
+      {!short && (scan.sources || []).length < PARTS_PER_FILE && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '10px' }}>
+          {connectButton('Connect another cloud', 'default')}
+        </div>
+      )}
 
       <p style={{ ...paragraph, margin: '14px 0 0' }}>
         Recovering adopts the lost vault&apos;s encryption key, which is what makes the parts on
         those accounts readable again. It only runs against an empty vault, so nothing here can
         be overwritten.
       </p>
+
+      {cloudDialog}
     </Modal>
   )
 }
+
+/* Two of a file's three parts rebuild it, so two accounts is the floor below
+   which a recovery has nothing to work with. Mirrors archive.MinPartsToRestore. */
+const MIN_PARTS_TO_RESTORE = 2
 
 /* One connected account, and what it turned out to be holding. Doubles as the
    picker when more than one account carries a backup — but only then, because a
