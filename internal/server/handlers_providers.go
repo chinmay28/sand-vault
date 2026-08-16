@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/chinmay28/sand-vault/internal/provider"
+	"github.com/chinmay28/sand-vault/internal/vault"
 )
 
 // handleProviderSpecs describes every backend SAND can connect to, including
@@ -59,6 +60,34 @@ func (s *Server) handleProviderAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"provider": cfg})
+}
+
+// editProviderRequest carries the fields of a connected account the edit menu
+// can change. Both are pointers so that an absent field means "leave it alone"
+// and a present empty one means something: "" is a colour cleared back to the
+// automatic one, and a name that is blank is a mistake the vault rejects.
+type editProviderRequest struct {
+	Name  *string `json:"name"`
+	Color *string `json:"color"`
+}
+
+func (s *Server) handleProviderUpdate(w http.ResponseWriter, r *http.Request) {
+	var req editProviderRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
+		return
+	}
+
+	v, _ := s.Vault()
+	cfg, err := v.UpdateProvider(r.PathValue("id"), vault.ProviderEdit{
+		Name:  req.Name,
+		Color: req.Color,
+	})
+	if err != nil {
+		vaultErrorResponse(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"provider": cfg})
 }
 
 func (s *Server) handleProviderTest(w http.ResponseWriter, r *http.Request) {

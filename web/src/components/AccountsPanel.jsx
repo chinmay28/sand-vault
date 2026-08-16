@@ -3,6 +3,7 @@ import { COLORS, FONT, KIND_ICONS, accountColor, formatBytes } from '../theme'
 import { api } from '../api'
 import { Banner, Button, IconButton, Spinner } from './ui'
 import ConnectCloud, { pendingOAuthFlow } from './ConnectCloud'
+import EditAccount from './EditAccount'
 import ChangePassword from './ChangePassword'
 import MountDrive from './MountDrive'
 import { DefaultClouds, PARTS_PER_FILE } from './CloudSelect'
@@ -233,8 +234,10 @@ export default function AccountsPanel({
           <AccountCard
             key={provider.id}
             provider={provider}
+            providers={providers}
             isDefault={defaults.includes(provider.id)}
             onRemove={() => remove(provider)}
+            onChanged={onChanged}
           />
         ))}
 
@@ -430,9 +433,10 @@ function PendingMigration({ count, onDone, onError }) {
   )
 }
 
-function AccountCard({ provider, isDefault, onRemove }) {
+function AccountCard({ provider, providers, isDefault, onRemove, onChanged }) {
   const [testing, setTesting] = useState(false)
   const [result, setResult] = useState(null)
+  const [editing, setEditing] = useState(false)
   const color = accountColor(provider.id)
 
   const test = async () => {
@@ -531,13 +535,23 @@ function AccountCard({ provider, isDefault, onRemove }) {
         )}
       </div>
 
-      <div style={{ display: 'flex', gap: '6px', marginTop: '8px' }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '8px' }}>
+        <Button size="sm" variant="ghost" onClick={() => setEditing(true)}>Edit</Button>
         <Button size="sm" variant="ghost" onClick={test} disabled={testing}>
           {testing ? <Spinner size={10} /> : null}{testing ? 'Testing' : 'Test'}
         </Button>
         <Button size="sm" variant="ghost" onClick={onRemove}
           style={{ color: COLORS.error }}>Disconnect</Button>
       </div>
+
+      {editing && (
+        <EditAccount
+          provider={provider}
+          providers={providers}
+          onClose={() => setEditing(false)}
+          onChanged={onChanged}
+        />
+      )}
     </div>
   )
 }

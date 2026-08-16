@@ -645,3 +645,143 @@ func TestUploadedShardKeysMatchShardKey(t *testing.T) {
 		}
 	}
 }
+
+func TestUpdateProviderRenamesAndRecolours(t *testing.T) {
+	v, _ := newTestVault(t, 3)
+	ctx := context.Background()
+
+	entry, _, err := v.Upload(ctx, "/", "labelled.txt", []byte("hello"), UploadOptions{})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	held := entry.Shards[0].ProviderID
+
+	name, colour := "the blue one", "#38BDF8"
+	updated, err := v.UpdateProvider(held, ProviderEdit{Name: &name, Color: &colour})
+	if err != nil {
+		t.Fatalf("UpdateProvider: %v", err)
+	}
+	if updated.Name != name {
+		t.Errorf("Name = %q, want %q", updated.Name, name)
+	}
+	// Stored the way every other colour in the vault is stored, whatever case
+	// it was typed in.
+	if updated.Color != "#38bdf8" {
+		t.Errorf("Color = %q, want #38bdf8", updated.Color)
+	}
+
+	// The index records the name of the account holding each part, and that is
+	// what the file list and the health read-out show — so a rename has to
+	// reach it, or the vault keeps answering with a name nothing is called.
+	after, err := v.Entry(entry.ID)
+	if err != nil {
+		t.Fatalf("Entry: %v", err)
+	}
+	for _, shard := range after.Shards {
+		if shard.ProviderID == held && shard.ProviderName != name {
+			t.Errorf("shard still names the account %q, want %q", shard.ProviderName, name)
+		}
+	}
+
+	// And all of it survives a lock and an unlock, which is the only proof the
+	// change reached the file rather than just the map in memory.
+	v.Lock()
+	if err := v.Unlock(testPassword); err != nil {
+		t.Fatalf("Unlock: %v", err)
+	}
+	accounts, err := v.Providers()
+	if err != nil {
+		t.Fatalf("Providers: %v", err)
+	}
+	found := false
+	for _, cfg := range accounts {
+		if cfg.ID != held {
+			continue
+		}
+		found = true
+		if cfg.Name != name || cfg.Color != "#38bdf8" {
+			t.Errorf("reopened as %q/%q, want %q/#38bdf8", cfg.Name, cfg.Color, name)
+		}
+	}
+	if !found {
+		t.Error("the edited account is missing after a reopen")
+	}
+}
+
+func TestUpdateProviderRejectsNonsense(t *testing.T) {
+	v, _ := newTestVault(t, 2)
+
+	accounts, err := v.Providers()
+	if err != nil {
+		t.Fatalf("Providers: %v", err)
+	}
+	first, second := accounts[0], accounts[1]
+
+	blank := "   "
+	if _, err := v.UpdateProvider(first.ID, ProviderEdit{Name: &blank}); err == nil {
+		t.Error("a blank name should be refused")
+	}
+
+	// Two accounts answering to one name is what the connect path already
+	// refuses; renaming must not be the way around it.
+	taken := strings.ToUpper(second.Name)
+	if _, err := v.UpdateProvider(first.ID, ProviderEdit{Name: &taken}); err == nil {
+		t.Error("a name another account already answers to should be refused")
+	}
+
+	notAColour := "cerulean"
+	if _, err := v.UpdateProvider(first.ID, ProviderEdit{Name: &notAColour, Color: &notAColour}); err == nil {
+		t.Error("a colour that is not a colour should be refused")
+	}
+	// Refused whole: the name in that same call must not have landed either.
+	reread, err := v.Providers()
+	if err != nil {
+		t.Fatalf("Providers: %v", err)
+	}
+	if reread[0].Name != first.Name {
+		t.Errorf("a rejected edit renamed the account to %q", reread[0].Name)
+	}
+
+	// An account keeping its own name is not a clash with itself.
+	same := first.Name
+	if _, err := v.UpdateProvider(first.ID, ProviderEdit{Name: &same}); err != nil {
+		t.Errorf("renaming an account to what it is already called: %v", err)
+	}
+
+	// And "" is a colour choice — the one that hands the pick back to the
+	// browser — rather than an invalid one.
+	auto := ""
+	if _, err := v.UpdateProvider(first.ID, ProviderEdit{Color: &auto}); err != nil {
+		t.Errorf("clearing a colour: %v", err)
+	}
+
+	if _, err := v.UpdateProvider("no-such-account", ProviderEdit{Name: &same}); err == nil {
+		t.Error("editing an account that is not connected should be refused")
+	}
+}
+
+func TestUpdateProviderLeavesTheOtherFieldAlone(t *testing.T) {
+	v, _ := newTestVault(t, 1)
+
+	accounts, _ := v.Providers()
+	id, original := accounts[0].ID, accounts[0].Name
+
+	colour := "#abc"
+	if _, err := v.UpdateProvider(id, ProviderEdit{Color: &colour}); err != nil {
+		t.Fatalf("UpdateProvider: %v", err)
+	}
+
+	renamed := "still coloured"
+	updated, err := v.UpdateProvider(id, ProviderEdit{Name: &renamed})
+	if err != nil {
+		t.Fatalf("UpdateProvider: %v", err)
+	}
+	// The shorthand is expanded on the way in, so nothing downstream ever has
+	// to compare a three-digit colour with a six-digit one.
+	if updated.Color != "#aabbcc" {
+		t.Errorf("Color = %q, want #aabbcc — a rename should not disturb it", updated.Color)
+	}
+	if updated.Name != renamed || original == renamed {
+		t.Errorf("Name = %q, want %q", updated.Name, renamed)
+	}
+}

@@ -24,7 +24,7 @@ Ships as a **single static Go binary** with a CLI and an embedded web UI.
 │ ● nas-backup      │  📕 lease.pdf      880 KB    Jul 29 16:04  ①②③   │
 │   webdav · 41 pts │  🎬 clip.mp4       88 MB     Jul 12 09:41  ①②③   │
 └───────────────────┴───────────────────────────────────────────────────┘
-   each ①②③ is coloured by the account holding that part
+   each ①②③ is coloured by the account holding that part — a colour you pick
 ```
 
 ---
@@ -269,6 +269,37 @@ account between machines:
 > is `SameSite=Strict` and deliberately does not survive a cross-site
 > navigation. Box and Microsoft retire a refresh token as it is spent; SAND
 > writes the replacement back into the vault as it goes.
+
+---
+
+## Naming an account and choosing its colour
+
+Every connected account wears a colour: the stripe down its card in the
+sidebar, every part badge for a file it holds, and its row in the cloud picker
+are all the same shade. That is what makes *which three clouds is this file on*
+a question you answer by eye rather than by opening an inspector.
+
+**Edit** on an account's card opens the menu for both fields — what it is
+called, and which colour it wears. There are twelve palette colours, a native
+picker for anything else, and **Automatic**, which hands the choice back to the
+browser; a swatch another account is already wearing is marked as such before
+you pick it. A chosen colour is claimed before the automatic ones are handed
+out, so nothing else drifts onto it.
+
+```bash
+./sand remote edit r2-cold --name r2-archive       # rename it
+./sand remote edit r2-cold --color '#38bdf8'       # or any hex colour
+./sand remote edit r2-cold --color auto            # back to the browser's pick
+```
+
+Neither field reaches the cloud. Nothing is uploaded, downloaded or
+re-encrypted, no credential is touched, and not one part moves — the account
+answers to exactly what it did before. A rename does travel through the index:
+every part records the name of the account holding it, which is what the file
+list, the health read-out and a recovery from a `manifest.sand` all read, so
+the new name lands on all of them in the same write.
+
+Two accounts may not share a name, whether it is set at connect time or later.
 
 ---
 
@@ -520,10 +551,17 @@ sand restore --parts A,B --manifest M         Rebuild a file offline from loose 
 ```
 sand remote kinds                             List backends and their settings
 sand remote add <kind> --name N --set k=v …   Connect an account (pings first)
-sand remote list                              Status, parts held, bytes stored
+sand remote list                              Status, parts held, bytes stored, colour
+sand remote edit <name-or-id> [--name N] [--color '#38bdf8'|auto]
+                                              Rename it, or change the colour it wears
 sand remote test <name-or-id>                 Re-check reachability
 sand remote remove <name-or-id> [--force]     Disconnect
 ```
+
+`sand remote edit` changes what an account is called and the colour it wears in
+the browser. Neither reaches the cloud: no credential is touched and not one
+part moves. See [Naming an account and choosing its
+colour](#naming-an-account-and-choosing-its-colour).
 
 ### Files
 
@@ -607,6 +645,8 @@ pipe the password on stdin.
   looks there first and offers to widen to the whole vault
 - **Part badges** — `①②③` coloured per account; click for a live per-part
   health read-out
+- **Edit an account** — rename a cloud, or pick the colour it wears everywhere
+  in the app; neither touches its credentials or the parts on it
 - **Thumbnails** — images and PDFs show a picture rather than an icon, the PDF's
   being its first page. Made in the browser when the file is uploaded, then
   stored the way everything else is: split into three encrypted parts across
@@ -682,6 +722,7 @@ its home screen gets the password prompt like any other browser would.
 | GET | `/api/providers/specs` | Backend descriptions for the connect form |
 | GET · POST | `/api/providers` | List / connect accounts |
 | POST | `/api/providers/{id}/test` | Re-check an account |
+| PATCH | `/api/providers/{id}` | Rename it / set its colour (`name`, `color`; `""` for automatic) |
 | DELETE | `/api/providers/{id}` | Disconnect (`?force=1`) |
 | GET | `/api/files?path=` | List a folder |
 | GET | `/api/search?q=` | Find files and folders by name (`&path=` to scope, `&type=file\|folder`, `&limit=`) |

@@ -363,6 +363,31 @@ encrypted index alone, without contacting a single account.
 A folder's stored thumbnails come along too, so moving a folder off an account
 really does move it off.
 
+### Naming an account, and choosing its colour
+
+A connected account is yours to label. **Edit** on its card in the sidebar opens
+a dialog for what it is called and the colour it wears — the same colour on the
+card, on every part badge in the file list, and in the cloud picker, which is
+what makes "which three clouds is this file on" a question you answer by eye.
+Twelve palette colours, a native picker for anything else, and **Automatic**,
+which hands the choice back: the browser then picks one and keeps it stable as
+other accounts come and go.
+
+A chosen colour is claimed before the automatic ones are handed out, so nothing
+else drifts onto it — your Google Drive can be the blue one because that is what
+it is to you.
+
+Neither field reaches the cloud. Nothing is uploaded, downloaded or
+re-encrypted, no credential is touched, and not one part moves. A rename does
+travel through the index, though: every part records the name of the account
+holding it, which is what the file list, the health read-out and a recovery from
+a manifest backup all read, so the new name lands on all of them in the same
+write.
+
+On the command line it is `sand remote edit r2-cold --name r2-archive
+--color '#38bdf8'` (and `--color auto` to hand it back), with the colour shown
+in `sand remote list`; over HTTP, `PATCH /api/providers/{id}` with either field.
+
 ### Finding a file again
 
 A vault deep enough to be worth having is one you cannot click through, so the
@@ -386,6 +411,10 @@ Lock screen, a sidebar of connected accounts with live status and how much each
 is holding, breadcrumbs, search, drag-and-drop upload with progress, part
 badges in each account's own colour, a per-part health read-out, and inline
 preview for images, video, audio, PDF and text — each one rebuilt on demand.
+
+The wordmark is set in two hands: SAND in the tracked-out monospace it has
+always had, and *Vault* written beside it in the handwriting face the platform
+already has — which is the only way to letter it without fetching a font.
 
 It loads no external fonts, scripts or styles: opening your vault makes zero
 third-party requests.

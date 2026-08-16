@@ -209,7 +209,11 @@ func (s *Server) Handler() (http.Handler, error) {
 		"GET /api/providers":            s.handleProvidersList,
 		"POST /api/providers":           s.handleProviderAdd,
 		"POST /api/providers/{id}/test": s.handleProviderTest,
-		"DELETE /api/providers/{id}":    s.handleProviderRemove,
+		// What an account is called and what colour it wears. Neither is a
+		// credential and neither moves a byte, so this is the one write against
+		// an account that never touches the backend holding it.
+		"PATCH /api/providers/{id}":  s.handleProviderUpdate,
+		"DELETE /api/providers/{id}": s.handleProviderRemove,
 
 		// Folders on this machine, for the backends configured with a path.
 		"GET /api/system/folders": s.handleSystemFolders,

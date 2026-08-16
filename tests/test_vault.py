@@ -433,6 +433,50 @@ class TestCLI:
             assert name in result.stdout
         assert result.stdout.count("online") >= 3
 
+    def test_remote_edit_renames_and_recolours_an_account(self, sand_bin, vault_dir, tmp_path):
+        """An account's label and its colour are yours to change, and neither
+        touches the parts it is holding."""
+        path = os.path.join(vault_dir, "cli-clouds", "cli-edit")
+        cli(sand_bin, vault_dir, "remote", "add", "local", "--name", "cli-edit",
+            "--set", f"path={path}")
+
+        source = tmp_path / "on-the-edited-cloud.bin"
+        payload = os.urandom(20_000)
+        source.write_bytes(payload)
+        cli(sand_bin, vault_dir, "put", str(source), "--accounts", "cli-a,cli-b,cli-edit")
+
+        stored = sorted(os.listdir(path))
+
+        cli(sand_bin, vault_dir, "remote", "edit", "cli-edit",
+            "--name", "cli-edited", "--color", "#38BDF8")
+
+        listed = cli(sand_bin, vault_dir, "remote", "list").stdout
+        row = next(line for line in listed.splitlines() if "cli-edited" in line)
+        assert "#38bdf8" in row, row
+        assert "cli-edit " not in listed
+
+        # The file still says where its parts are, under the account's new name.
+        ls_row = next(line for line in cli(sand_bin, vault_dir, "ls", "-l").stdout.splitlines()
+                      if "on-the-edited-cloud.bin" in line)
+        assert "cli-edited" in ls_row, ls_row
+
+        # Nothing moved, and the file still reads back byte for byte.
+        assert sorted(os.listdir(path)) == stored
+        out = tmp_path / "still-here.bin"
+        cli(sand_bin, vault_dir, "get", "/on-the-edited-cloud.bin", "-o", str(out))
+        assert out.read_bytes() == payload
+
+        # A colour handed back, and a name another account already answers to.
+        cli(sand_bin, vault_dir, "remote", "edit", "cli-edited", "--color", "auto")
+        assert "auto" in next(line for line in
+                              cli(sand_bin, vault_dir, "remote", "list").stdout.splitlines()
+                              if "cli-edited" in line)
+
+        clash = cli(sand_bin, vault_dir, "remote", "edit", "cli-edited",
+                    "--name", "CLI-A", check=False)
+        assert clash.returncode != 0
+        assert "already connected" in (clash.stderr + clash.stdout)
+
     def test_put_get_round_trip(self, sand_bin, vault_dir, tmp_path):
         source = tmp_path / "cli-round-trip.bin"
         payload = os.urandom(64_000)

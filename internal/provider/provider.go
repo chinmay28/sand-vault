@@ -43,6 +43,40 @@ type Config struct {
 	Name    string            `json:"name"`
 	Options map[string]string `json:"options"`
 	AddedAt time.Time         `json:"added_at"`
+
+	// Color is the account's colour in the browser — the stripe down its card
+	// and every part badge for a file it holds. Empty means nobody has chosen
+	// one and the UI picks; a "#rrggbb" string is a choice, and it stays put as
+	// other accounts come and go.
+	Color string `json:"color,omitempty"`
+}
+
+// NormalizeColor validates a chosen account colour and returns it in the one
+// form the vault stores: lower-case "#rrggbb". The shorthand "#abc" and a
+// missing "#" are both accepted, since they are what someone types. An empty
+// string is valid and means "no choice" — the browser goes back to picking.
+func NormalizeColor(value string) (string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", nil
+	}
+	hex := strings.ToLower(strings.TrimPrefix(trimmed, "#"))
+	for _, c := range hex {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return "", fmt.Errorf("%q is not a colour — use a hex value like #38bdf8", trimmed)
+		}
+	}
+	switch len(hex) {
+	case 6:
+		return "#" + hex, nil
+	case 3:
+		// #abc is #aabbcc. Expanding it here means everything downstream — the
+		// stored value, the swatch, a comparison between two accounts — only
+		// ever deals with one length.
+		return fmt.Sprintf("#%c%c%c%c%c%c", hex[0], hex[0], hex[1], hex[1], hex[2], hex[2]), nil
+	default:
+		return "", fmt.Errorf("%q is not a colour — use a hex value like #38bdf8", trimmed)
+	}
 }
 
 // Option returns the named option, or "" when unset.

@@ -279,6 +279,85 @@ class TestConnectingAnAccount:
         app.keyboard.press("Escape")
 
 
+class TestEditingAnAccount:
+    """What a cloud is called, and the colour it wears.
+
+    The colour is the same shade on the account's card and on every part badge
+    for a file it holds, which is what makes "which clouds is this file on" a
+    question you answer by eye. Both are stored in the vault, so both survive a
+    reload — and neither reaches the account itself.
+    """
+
+    def open_editor(self, app, name):
+        # The innermost element holding both the account's name and its own Edit
+        # button is the card: the panel around it holds every other one too.
+        card = (app.locator("div")
+                .filter(has=app.get_by_text(name, exact=True))
+                .filter(has=app.get_by_role("button", name="Edit"))
+                .last)
+        card.get_by_role("button", name="Edit").click()
+        app.wait_for_selector("text=Edit account", timeout=10000)
+
+    def stripe_colour(self, app, name):
+        """The colour of the card's edge stripe, read off what is drawn."""
+        return app.evaluate(
+            """(name) => {
+                const label = [...document.querySelectorAll('span')]
+                  .find((el) => el.textContent === name)
+                let el = label
+                while (el && getComputedStyle(el).borderLeftWidth !== '3px') el = el.parentElement
+                return el ? getComputedStyle(el).borderLeftColor : null
+            }""",
+            name,
+        )
+
+    def test_an_account_can_be_renamed_and_recoloured(self, app, clouds):
+        connect_cloud(app, "ui-editable", clouds)
+
+        self.open_editor(app, "ui-editable")
+        app.get_by_label("Name").fill("ui-renamed")
+        app.get_by_role("radio", name="Mint").click()
+        app.get_by_role("button", name="Save").click()
+
+        app.wait_for_selector("text=ui-renamed", timeout=20000)
+        assert self.stripe_colour(app, "ui-renamed") == "rgb(52, 211, 153)"
+
+        # Stored in the vault rather than held in the tab: both survive a
+        # reload, which is the only proof the server was told.
+        app.reload()
+        app.wait_for_selector("text=ui-renamed", timeout=20000)
+        assert app.get_by_text("ui-editable", exact=True).count() == 0
+        assert self.stripe_colour(app, "ui-renamed") == "rgb(52, 211, 153)"
+
+        # The dialog opens on the colour that was chosen rather than on
+        # whatever the account happens to be wearing.
+        self.open_editor(app, "ui-renamed")
+        expect(app.get_by_role("radio", name="Mint")).to_have_attribute("aria-checked", "true")
+
+        # And handing the choice back to the browser sticks too. The account
+        # may well keep the same shade — that is the automatic assignment doing
+        # its job — so what is checked here is that the choice itself is gone.
+        app.get_by_role("radio", name="Automatic").click()
+        app.get_by_role("button", name="Save").click()
+        app.wait_for_selector("text=Edit account", state="detached", timeout=20000)
+
+        app.reload()
+        app.wait_for_selector("text=ui-renamed", timeout=20000)
+        self.open_editor(app, "ui-renamed")
+        expect(app.get_by_role("radio", name="Automatic")).to_have_attribute("aria-checked", "true")
+        app.keyboard.press("Escape")
+
+    def test_a_name_another_account_already_has_is_refused(self, app):
+        self.open_editor(app, "ui-one")
+        app.get_by_label("Name").fill("ui-two")
+        app.get_by_role("button", name="Save").click()
+
+        app.wait_for_selector("text=already connected", timeout=20000)
+        # The dialog stays open on the failed edit rather than closing over it.
+        assert app.get_by_text("Edit account").count() > 0
+        app.keyboard.press("Escape")
+
+
 class TestPickingAFolder:
     """A local folder is chosen by walking to it, not by typing it out.
 
