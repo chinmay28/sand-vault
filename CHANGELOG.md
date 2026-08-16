@@ -460,6 +460,20 @@ index carries a name and nothing else to sort on. Both are preferences and are
 remembered, in three words in the browser's own storage and nothing about the
 vault.
 
+**On a phone that toolbar becomes a heading.** The desk's row of arrows, trail
+and view icons does not survive a 390px screen — half of it is empty and the
+trail takes a line of its own to draw a slash — so rather than squeezing that
+row, the phone puts something in it worth the space: the folder's name, and
+under it the one line only this app can write. A file here is three encrypted
+parts on three separate accounts, so `3 files · 42.5 KB · 3 clouds` is the vault
+saying what this folder holds and how far it is spread, counted off the index
+that already arrived rather than asked of anyone. Uploading sits beside the
+name, since it is what people came to do; search, the view, the order, selecting
+and a new folder sit on a hairline strip below it, each at a full target.
+Tapping the name drops the trail as a list — readable four folders deep, where
+crumbs are not, and fewer taps than walking them. The desk's layout is
+unchanged.
+
 **Rows can be picked**, singly, in a run with `Shift`, or the lot with the tick
 above the columns or `Ctrl+A`. What is picked can be downloaded, moved onto
 other clouds, or deleted, in one go. Moving a selection prices the whole thing
@@ -472,7 +486,8 @@ inside it.
 ### The browser
 
 Lock screen, a sidebar of connected accounts with live status and how much each
-is holding, navigation controls and breadcrumbs, search, list or grid, sorting,
+is holding, navigation controls and breadcrumbs — a folder heading on a phone,
+saying what it holds and over how many clouds — search, list or grid, sorting,
 selection with bulk actions, drag-and-drop upload with progress, part badges in
 each account's own colour, a per-part health read-out, and inline preview for
 images, video, audio, PDF and text — each one rebuilt on demand.

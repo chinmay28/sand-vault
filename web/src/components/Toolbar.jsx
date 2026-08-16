@@ -91,18 +91,230 @@ function Crumb({ label, mobile, onClick, active }) {
   )
 }
 
+/* The phone's toolbar: a heading for the folder you are standing in, and a
+   strip of everything you can do to it.
+
+   The desk's row of arrows, trail and view icons does not survive a 390px
+   screen — half of it is empty, the trail gets a line to itself to render a
+   slash, and none of the six icons sharing the top line is worth aiming at. The
+   answer is not to squeeze that row but to put something in it worth the space:
+   the folder's name, and under it the one line only this app can write. A file
+   here is three encrypted parts on three different accounts, so "23 files ·
+   1.4 GB · 3 clouds" is the vault saying what it is holding and where — which
+   is the thing a file list cannot tell you, and the reason the empty band above
+   the listing was worth filling rather than shrinking.
+
+   Uploading is the one action set beside the heading, because it is the one
+   people came to do. The rest — search, the view, the order, selecting, and a
+   new folder — sit on a hairline strip below it, each at a full target.
+
+   Walking back up is the heading itself: tapping it drops the trail as a list,
+   which is readable four folders deep where crumbs are not, and carries
+   Forward when there is somewhere to go forward to. */
+export function FolderHeader({
+  nav, path, stats, prefs, view, selecting, canUpload, search,
+  onSelecting, onSearch, onNewFolder, onUpload,
+}) {
+  const [jumping, setJumping] = useState(false)
+  const [sorting, setSorting] = useState(false)
+
+  const segments = path === '/' ? [] : path.slice(1).split('/')
+  const here = segments.length ? segments[segments.length - 1] : 'Vault'
+  const grid = prefs.view === 'grid'
+  // Nothing to drop at the root of an unwalked vault: no folders above this
+  // one, and nowhere forward to go either.
+  const canJump = segments.length > 0 || nav.canForward
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+        <IconButton
+          glyph="◀"
+          label="Back"
+          title={nav.canBack ? `Back — ${nav.behind}` : 'Nowhere to go back to yet'}
+          size={44}
+          disabled={!nav.canBack}
+          onClick={nav.back}
+          style={{
+            fontSize: '16px',
+            opacity: nav.canBack ? 1 : 0.32,
+            cursor: nav.canBack ? 'pointer' : 'default',
+          }}
+        />
+
+        <button
+          onClick={() => canJump && setJumping(true)}
+          disabled={!canJump}
+          aria-label={canJump ? `${here} — open the folder trail` : 'The root of the vault'}
+          title={path}
+          style={{
+            flex: 1,
+            minWidth: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'flex-start',
+            gap: '3px',
+            minHeight: '44px',
+            justifyContent: 'center',
+            padding: '2px 2px',
+            background: 'none',
+            border: 'none',
+            cursor: canJump ? 'pointer' : 'default',
+            textAlign: 'left',
+          }}
+        >
+          <span style={{
+            display: 'flex', alignItems: 'center', gap: '7px',
+            maxWidth: '100%', minWidth: 0,
+          }}>
+            <span aria-hidden="true" style={{ fontSize: '14px', color: COLORS.accent, flexShrink: 0 }}>▣</span>
+            <span style={{
+              minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              fontFamily: FONT.mono, fontSize: '17px', fontWeight: 700, color: COLORS.text,
+            }}>{here}</span>
+            {canJump && (
+              <span aria-hidden="true" style={{ fontSize: '10px', color: COLORS.textMuted, flexShrink: 0 }}>▾</span>
+            )}
+          </span>
+          {/* Blank until the index has been read, rather than a zero that would
+              be wrong for the moment it is on screen. */}
+          {stats && (
+            <span style={{
+              maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              fontFamily: FONT.mono, fontSize: '10.5px', color: COLORS.textMuted,
+            }}>
+              {stats.summary}
+              {stats.clouds > 0 && (
+                <span style={{ color: COLORS.accent }}> · {stats.clouds} cloud{stats.clouds === 1 ? '' : 's'}</span>
+              )}
+            </span>
+          )}
+        </button>
+
+        <Button
+          size="md"
+          variant="primary"
+          onClick={onUpload}
+          disabled={!canUpload}
+          title={canUpload ? `Upload into ${path}` : 'Connect a cloud account first'}
+          style={{ flexShrink: 0, minHeight: '44px', fontSize: '13px' }}
+        >↑ Upload</Button>
+      </div>
+
+      {/* Everything else, at a full target each. Set against the listing by a
+          hairline that runs the width of the screen rather than a box, so the
+          strip reads as the floor of the heading and not a second toolbar.
+
+          Searching happens here rather than over the heading: the field takes
+          the strip and the folder stays named above it, which is the whole
+          question a result answers — "4 matches for IMG" means nothing without
+          somewhere it was asked from. */}
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: search ? '6px' : '2px',
+        margin: '0 -12px -10px',
+        padding: search ? '6px 12px' : '1px 8px',
+        borderTop: `1px solid ${COLORS.border}`,
+      }}>
+        {search || <>
+        <IconButton
+          glyph="⌕"
+          label="Search"
+          title="Search files and folders"
+          size={44}
+          onClick={onSearch}
+          style={{ fontSize: '22px' }}
+        />
+        <IconButton
+          glyph={grid ? '▤' : '▦'}
+          label={grid ? 'Show as a list' : 'Show as a grid'}
+          size={44}
+          onClick={() => view.setView(grid ? 'list' : 'grid')}
+          style={{ fontSize: '18px' }}
+        />
+        <IconButton
+          glyph="⇅"
+          label="Sort"
+          title={`Sorted by ${SORT_KEYS.find((s) => s.key === prefs.key)?.label.toLowerCase()} — ${sortDirectionLabel(prefs.key, prefs.dir).toLowerCase()}`}
+          size={44}
+          onClick={() => setSorting(true)}
+          style={{ fontSize: '17px' }}
+        />
+        <IconButton
+          glyph="✓"
+          label={selecting ? 'Stop selecting' : 'Select files and folders'}
+          size={44}
+          onClick={() => onSelecting(!selecting)}
+          style={{
+            fontSize: '17px',
+            // A mode rather than an action, so it says which one it is in.
+            color: selecting ? COLORS.accent : undefined,
+          }}
+        />
+
+        <span style={{ flex: 1 }} />
+
+        <IconButton
+          glyph="＋"
+          label="New folder"
+          title={`New folder inside ${path}`}
+          size={44}
+          onClick={onNewFolder}
+          style={{ fontSize: '17px' }}
+        />
+        </>}
+      </div>
+
+      {jumping && (
+        <ActionSheet
+          title="Go to"
+          subtitle="Every folder between the root of the vault and where you are standing."
+          onClose={() => setJumping(false)}
+          items={[
+            nav.canForward && {
+              key: 'forward',
+              glyph: '▶',
+              label: 'Forward',
+              hint: nav.ahead,
+              onSelect: nav.forward,
+            },
+            { key: '/', glyph: '▣', label: 'Vault', hint: 'The root', onSelect: () => nav.navigate('/') },
+            ...segments.map((segment, i) => {
+              const target = '/' + segments.slice(0, i + 1).join('/')
+              const current = i === segments.length - 1
+              return {
+                key: target,
+                glyph: current ? '◉' : '▸',
+                label: segment,
+                hint: current ? 'Where you are now' : target,
+                disabled: current,
+                onSelect: () => nav.navigate(target),
+              }
+            }),
+          ]}
+        />
+      )}
+
+      {sorting && <SortSheet prefs={prefs} view={view} onClose={() => setSorting(false)} />}
+    </div>
+  )
+}
+
 /* The one control that reaches past the folder you are standing in. The index
    it queries only exists in the open vault, so this is also the only thing in
    the app that can answer "where did I put that?" at all. */
-export function SearchField({ value, busy, mobile, onChange }) {
+export function SearchField({ value, busy, mobile, autoFocus, onChange }) {
   return (
     <div style={{
       position: 'relative',
       display: 'flex',
       alignItems: 'center',
-      // On a phone the field takes a row of its own, above the two actions.
-      flex: mobile ? '1 0 100%' : '1 1 220px',
-      minWidth: mobile ? '100%' : '150px',
+      // On a phone the field is the toolbar while it is open, so it takes
+      // whatever the row has left after the button that closes it — not the
+      // whole width, which would put that button underneath its own clear ✕.
+      flex: mobile ? '1 1 0' : '1 1 220px',
+      minWidth: mobile ? 0 : '150px',
     }}>
       <span style={{
         position: 'absolute', left: mobile ? '11px' : '9px', color: COLORS.textMuted,
@@ -111,6 +323,7 @@ export function SearchField({ value, busy, mobile, onChange }) {
       <input
         type="search"
         value={value}
+        autoFocus={autoFocus}
         aria-label="Search files and folders"
         placeholder="Search files and folders"
         onChange={(e) => onChange(e.target.value)}
@@ -199,28 +412,34 @@ export function ViewControls({ mobile, prefs, view, selecting, onSelecting }) {
         }}
       />
 
-      {sorting && (
-        <ActionSheet
-          title="Sort by"
-          subtitle="Folders lead whichever column is chosen — a folder in the index carries a name and nothing else to sort on."
-          onClose={() => setSorting(false)}
-          items={SORT_KEYS.map((spec) => ({
-            key: spec.key,
-            glyph: prefs.key === spec.key ? (prefs.dir === 'asc' ? '↑' : '↓') : '·',
-            label: spec.label,
-            hint: prefs.key === spec.key
-              ? `${sortDirectionLabel(spec.key, prefs.dir)} — choose again to reverse it`
-              // What choosing it would do, which is its natural direction
-              // rather than whichever way the current column happens to face.
-              : sortDirectionLabel(spec.key, naturalDirection(spec.key)),
-            // The sheet stays open when the same column is chosen again, so
-            // reversing the order is one tap and the arrow moves under it.
-            keepOpen: prefs.key === spec.key,
-            onSelect: () => view.setSort(spec.key),
-          }))}
-        />
-      )}
+      {sorting && <SortSheet prefs={prefs} view={view} onClose={() => setSorting(false)} />}
     </div>
+  )
+}
+
+/* Which column, and which way round — two questions, so a sheet rather than a
+   menu. Opened from the desk's ⇅ button and from the phone's ⋯ alike. */
+function SortSheet({ prefs, view, onClose }) {
+  return (
+    <ActionSheet
+      title="Sort by"
+      subtitle="Folders lead whichever column is chosen — a folder in the index carries a name and nothing else to sort on."
+      onClose={onClose}
+      items={SORT_KEYS.map((spec) => ({
+        key: spec.key,
+        glyph: prefs.key === spec.key ? (prefs.dir === 'asc' ? '↑' : '↓') : '·',
+        label: spec.label,
+        hint: prefs.key === spec.key
+          ? `${sortDirectionLabel(spec.key, prefs.dir)} — choose again to reverse it`
+          // What choosing it would do, which is its natural direction
+          // rather than whichever way the current column happens to face.
+          : sortDirectionLabel(spec.key, naturalDirection(spec.key)),
+        // The sheet stays open when the same column is chosen again, so
+        // reversing the order is one tap and the arrow moves under it.
+        keepOpen: prefs.key === spec.key,
+        onSelect: () => view.setSort(spec.key),
+      }))}
+    />
   )
 }
 

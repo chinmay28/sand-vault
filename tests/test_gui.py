@@ -125,6 +125,18 @@ def make_folder(page, name):
     page.wait_for_selector(f"text={name}", timeout=20000)
 
 
+def search_on_a_phone(page, query):
+    """Type a query into the phone's search field, opening it first.
+
+    A phone has no room for a field beside the toolbar, so the toolbar is one
+    bar and the field takes its place while it is being typed into — which
+    means there is nothing to type into until ⌕ has been tapped. On a desk the
+    field is simply there, and TestSearch's own helper types straight into it.
+    """
+    page.get_by_label("Search", exact=True).click()
+    page.get_by_label("Search files and folders").fill(query)
+
+
 def listed_files(page):
     """The file names on screen, in the order the browser drew them.
 
@@ -1362,10 +1374,66 @@ class TestMobileLayout:
         app.wait_for_timeout(300)
         # A result carries its folder as well as its name, which is the widest
         # a row in this app ever gets.
-        app.get_by_label("Search files and folders").fill("nightmare")
+        search_on_a_phone(app, "nightmare")
         app.wait_for_selector("text=a-narrow-screens-worst-nightmare.txt", timeout=20000)
 
         assert not horizontal_overflow(app)
+
+    def test_the_phone_heads_the_listing_with_the_folder(self, app, tmp_path):
+        """The phone's toolbar is a heading, not a row of arrows.
+
+        The desk's controls do not survive a 390px screen — half that row is
+        empty and the trail takes a line of its own to draw a slash — so the
+        phone names the folder instead and says underneath what it holds and
+        how many separate accounts it is spread over. That last number is the
+        thing only this app can answer, and it is counted off the folder in
+        front of you rather than the vault.
+        """
+        # Counted in a folder of its own: the vault the suite shares has been
+        # filled by every test before this one, and what is being checked is
+        # that the heading counts the folder in front of you rather than all of
+        # it.
+        make_folder(app, "headed-folder")
+        app.get_by_text("headed-folder").first.click()
+        app.wait_for_load_state("networkidle")
+
+        source = tmp_path / "headed.txt"
+        source.write_text("counted")
+        upload_and_settle(app, source, choose=["ui-one", "ui-two", "ui-three"])
+
+        app.set_viewport_size(PHONE)
+        app.wait_for_timeout(400)
+
+        # The desk's separate arrows are gone; the heading carries the name.
+        assert app.get_by_label("Up", exact=True).count() == 0
+        heading = app.locator('button[aria-label^="headed-folder"]')
+        expect(heading).to_have_count(1)
+        # One file, scattered over the three accounts it was given — and not a
+        # word about everything sitting outside this folder.
+        assert "1 file" in heading.inner_text()
+        assert "3 clouds" in heading.inner_text()
+
+        # And everything the desk keeps on its toolbar is one tap away here.
+        for label in ("Search", "Sort", "New folder", "Select files and folders"):
+            assert app.get_by_label(label, exact=True).count() == 1
+
+    def test_the_folder_name_drops_the_trail_on_a_phone(self, app):
+        """Walking back up is a menu rather than a row of crumbs — four
+        folders deep there is no room to spell the trail out, and the menu is
+        fewer taps than the crumbs were anyway."""
+        make_folder(app, "trail-folder")
+        app.get_by_text("trail-folder").first.click()
+        app.wait_for_load_state("networkidle")
+
+        app.set_viewport_size(PHONE)
+        app.wait_for_timeout(400)
+
+        app.get_by_label("trail-folder — open the folder trail").click()
+        app.wait_for_selector("text=Where you are now", timeout=10000)
+        # The root is on it, and choosing it walks back out. Read inside the
+        # sheet: the wordmark in the header is called Vault too.
+        app.get_by_role("dialog").get_by_text("Vault", exact=True).click()
+        app.wait_for_selector('button[aria-label="The root of the vault"]', timeout=10000)
 
     def test_row_controls_are_thumb_sized_on_a_phone(self, app, tmp_path):
         """Anything tappable in the file list has to be worth aiming at.

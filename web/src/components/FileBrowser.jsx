@@ -1,12 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { COLORS, FONT } from '../theme'
+import { COLORS, FONT, formatBytes } from '../theme'
 import { api, joinPath } from '../api'
 import { sortFiles, sortFolders, sortHits, useViewPrefs } from '../view'
 import { Banner, Button, Empty, Modal, Spinner } from './ui'
 import { UploadDestination, RelocateClouds } from './CloudSelect'
 import { makeThumbnail } from '../thumbs'
 import { COLUMNS, FileRow, FileTile, FolderRow, FolderTile, SelectBox } from './FileEntry'
-import { Breadcrumbs, NavCluster, SearchField, SelectionBar, ViewControls } from './Toolbar'
+import { Breadcrumbs, FolderHeader, NavCluster, SearchField, SelectionBar, ViewControls } from './Toolbar'
 import { BulkDelete, BulkDownload } from './BulkActions'
 
 /* How long to sit on a keystroke before asking the server. Long enough that
@@ -28,6 +28,9 @@ export default function FileBrowser({
   const [warnings, setWarnings] = useState([])
   const [creatingFolder, setCreatingFolder] = useState(false)
   const [query, setQuery] = useState('')
+  // Only a phone has this: there the field takes the whole toolbar while it is
+  // open, so it has to be opened and closed rather than simply sitting there.
+  const [searchOpen, setSearchOpen] = useState(false)
   const [scoped, setScoped] = useState(true)
   const [results, setResults] = useState(null)
   const [searching, setSearching] = useState(false)
@@ -49,8 +52,9 @@ export default function FileBrowser({
   const searchScope = scoped ? path : '/'
 
   // Walking into a folder is a different question from the one being asked, so
-  // the search ends when navigation begins.
-  useEffect(() => { setQuery('') }, [path])
+  // the search ends when navigation begins — and on a phone the field it was
+  // typed into gives the toolbar back.
+  useEffect(() => { setQuery(''); setSearchOpen(false) }, [path])
 
   const runSearch = useCallback((signal) => api.search(searchTerm, { path: searchScope, signal })
     .then((resp) => { setResults(resp); setSearchError(null) })
@@ -106,6 +110,45 @@ export default function FileBrowser({
       })),
     ]
   }, [searchTerm, results, listing, path, prefs])
+
+  /* What this folder holds, for the heading above it on a phone: how much is
+     here, and how many separate accounts it is spread over.
+
+     Counted off the listing rather than asked of the server, because the
+     listing is the answer — it arrived with every file's size and the accounts
+     holding each of its parts already in it. The cloud count is of this folder
+     alone, not of the vault: a folder whose files all landed on the same three
+     accounts says three whether ten are connected or three are.
+
+     Null until the listing arrives, so the line is blank for that moment
+     rather than reading a zero that is about to be wrong. */
+  const stats = useMemo(() => {
+    if (!listing) return null
+
+    const folders = listing.folders?.length || 0
+    const files = listing.files || []
+    const bytes = files.reduce((total, file) => total + (file.size || 0), 0)
+    const clouds = new Set()
+    for (const file of files) {
+      for (const shard of file.shards || []) {
+        if (shard.provider_id) clouds.add(shard.provider_id)
+      }
+    }
+
+    /* What is worth a line here is what the listing underneath cannot say for
+       itself. Folders are countable at a glance in the rows below, so they are
+       named only when they are all there is; what a row cannot tell you is how
+       much this folder comes to and how far it is spread — and on a 390px
+       screen a fourth number is a fourth number that gets cut off. */
+    const counted = files.length > 0
+      ? [`${files.length} file${files.length === 1 ? '' : 's'}`, formatBytes(bytes)]
+      : folders > 0 ? [`${folders} folder${folders === 1 ? '' : 's'}`] : []
+
+    return {
+      summary: counted.length ? counted.join(' · ') : 'Empty',
+      clouds: clouds.size,
+    }
+  }, [listing])
 
   // Which rows have a stored picture. The listing says so outright, so no row
   // asks for a thumbnail that was never made.
@@ -281,52 +324,85 @@ export default function FileBrowser({
         borderBottom: `1px solid ${COLORS.border}`,
         flexShrink: 0,
       }}>
-        {/* Moving about comes first on both layouts. On a phone the arrows and
-            the view controls share the top line and the trail takes the one
-            below it, because a trail four folders deep is already a row's
-            worth on its own. */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: mobile ? '6px' : '10px', flexWrap: 'wrap' }}>
-          <NavCluster nav={nav} mobile={mobile} />
-          {mobile ? <span style={{ flex: 1 }} /> : (
-            <Breadcrumbs path={path} mobile={mobile} onNavigate={nav.navigate} />
-          )}
-          <ViewControls
-            mobile={mobile}
+        {/* A desk has room to lay the controls out and a phone does not, so
+            they are not the same toolbar. On a desk: the arrows, the trail and
+            the view controls across the top, the search and the two actions
+            below. On a phone: the folder as a heading, saying what it holds and
+            over how many clouds, with everything else on a strip beneath it —
+            and search taking that strip's place while it is being typed into,
+            because a field a folder name has to fit in cannot also share the
+            line. */}
+        {mobile ? (
+          <FolderHeader
+            nav={nav}
+            path={path}
+            stats={stats}
             prefs={prefs}
             view={view}
             selecting={selecting}
+            canUpload={canUpload}
             onSelecting={(on) => { setSelecting(on); if (!on) setSelected(new Set()) }}
+            onSearch={() => setSearchOpen(true)}
+            onNewFolder={() => setCreatingFolder(true)}
+            onUpload={() => fileInput.current?.click()}
+            /* Handed to the heading rather than put in its place: the field
+               takes over the strip of icons underneath and the folder stays
+               named above it, so a screen of results still says what was being
+               searched and from where. */
+            search={(searchOpen || searchTerm) && (
+              <>
+                <SearchField
+                  value={query}
+                  busy={searching}
+                  mobile
+                  autoFocus
+                  onChange={setQuery}
+                />
+                <Button
+                  size="md"
+                  variant="ghost"
+                  onClick={() => { setQuery(''); setSearchOpen(false) }}
+                  style={{ flexShrink: 0 }}
+                >Done</Button>
+              </>
+            )}
           />
-        </div>
+        ) : (
+          <>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+              <NavCluster nav={nav} mobile={false} />
+              <Breadcrumbs path={path} mobile={false} onNavigate={nav.navigate} />
+              <ViewControls
+                mobile={false}
+                prefs={prefs}
+                view={view}
+                selecting={selecting}
+                onSelecting={(on) => { setSelecting(on); if (!on) setSelected(new Set()) }}
+              />
+            </div>
 
-        {mobile && <Breadcrumbs path={path} mobile onNavigate={nav.navigate} />}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+              <SearchField
+                value={query}
+                busy={searching}
+                mobile={false}
+                onChange={setQuery}
+              />
+              <Button size="sm" onClick={() => setCreatingFolder(true)}>+ Folder</Button>
+              <Button size="sm" variant="primary" onClick={() => fileInput.current?.click()} disabled={!canUpload}>
+                ↑ Upload
+              </Button>
+            </div>
+          </>
+        )}
 
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: mobile ? '8px' : '10px', flexWrap: 'wrap',
-        }}>
-          <SearchField
-            value={query}
-            busy={searching}
-            mobile={mobile}
-            onChange={setQuery}
-          />
-
-          {/* The two actions split the phone's row, each ending up wider than a
-              thumb and taller than the 44px floor. */}
-          <Button size={mobile ? 'md' : 'sm'} onClick={() => setCreatingFolder(true)}
-            style={mobile ? { flex: 1, justifyContent: 'center', minHeight: '46px' } : null}>+ Folder</Button>
-          <Button size={mobile ? 'md' : 'sm'} variant="primary" onClick={() => fileInput.current?.click()} disabled={!canUpload}
-            style={mobile ? { flex: 1, justifyContent: 'center', minHeight: '46px' } : null}>
-            ↑ Upload
-          </Button>
-          <input
-            ref={fileInput}
-            type="file"
-            multiple
-            style={{ display: 'none' }}
-            onChange={(e) => { chooseFiles(Array.from(e.target.files || [])); e.target.value = '' }}
-          />
-        </div>
+        <input
+          ref={fileInput}
+          type="file"
+          multiple
+          style={{ display: 'none' }}
+          onChange={(e) => { chooseFiles(Array.from(e.target.files || [])); e.target.value = '' }}
+        />
       </div>
 
       {selecting && (
