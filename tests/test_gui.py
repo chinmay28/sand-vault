@@ -298,6 +298,15 @@ class TestEditingAnAccount:
         card.get_by_role("button", name="Edit").click()
         app.wait_for_selector("text=Edit account", timeout=10000)
 
+    def wait_for_stripe(self, app, name, colour):
+        """Saving closes the dialog and asks for the account list again, so the
+        card is repainted a beat later — poll rather than race it."""
+        for _ in range(40):
+            if self.stripe_colour(app, name) == colour:
+                return
+            app.wait_for_timeout(250)
+        assert self.stripe_colour(app, name) == colour
+
     def stripe_colour(self, app, name):
         """The colour of the card's edge stripe, read off what is drawn."""
         return app.evaluate(
@@ -320,7 +329,7 @@ class TestEditingAnAccount:
         app.get_by_role("button", name="Save").click()
 
         app.wait_for_selector("text=ui-renamed", timeout=20000)
-        assert self.stripe_colour(app, "ui-renamed") == "rgb(52, 211, 153)"
+        self.wait_for_stripe(app, "ui-renamed", "rgb(52, 211, 153)")
 
         # Stored in the vault rather than held in the tab: both survive a
         # reload, which is the only proof the server was told.
@@ -345,6 +354,28 @@ class TestEditingAnAccount:
         app.wait_for_selector("text=ui-renamed", timeout=20000)
         self.open_editor(app, "ui-renamed")
         expect(app.get_by_role("radio", name="Automatic")).to_have_attribute("aria-checked", "true")
+        app.keyboard.press("Escape")
+
+    def test_the_full_palette_is_one_disclosure_away(self, app, clouds):
+        """Twelve named colours are the shortlist. Every shade of every hue is
+        behind a disclosure, and the dialog reopens on whatever was picked
+        there rather than showing nothing selected."""
+        connect_cloud(app, "ui-shaded", clouds)
+
+        self.open_editor(app, "ui-shaded")
+        expect(app.get_by_role("radio", name="Orchid deep")).to_have_count(0)
+
+        app.get_by_role("button", name="All shades").click()
+        app.get_by_role("radio", name="Orchid deep").click()
+        app.get_by_role("button", name="Save").click()
+        app.wait_for_selector("text=Edit account", state="detached", timeout=20000)
+
+        self.wait_for_stripe(app, "ui-shaded", "rgb(217, 70, 239)")
+
+        # A shade the shortlist does not show opens the palette on its own.
+        self.open_editor(app, "ui-shaded")
+        expect(app.get_by_role("radio", name="Orchid deep")).to_have_attribute(
+            "aria-checked", "true")
         app.keyboard.press("Escape")
 
     def test_a_name_another_account_already_has_is_refused(self, app):

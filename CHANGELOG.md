@@ -369,9 +369,14 @@ A connected account is yours to label. **Edit** on its card in the sidebar opens
 a dialog for what it is called and the colour it wears — the same colour on the
 card, on every part badge in the file list, and in the cloud picker, which is
 what makes "which three clouds is this file on" a question you answer by eye.
-Twelve palette colours, a native picker for anything else, and **Automatic**,
-which hands the choice back: the browser then picks one and keeps it stable as
-other accounts come and go.
+Twelve named colours are the shortlist, **All shades** opens the whole palette —
+the same twelve hues in three shades each, a hue per column, so "the same blue
+but deeper" is a move downwards rather than a hunt — a native picker takes any
+colour at all, and **Automatic** hands the choice back: the browser then picks
+one and keeps it stable as other accounts come and go. Every colour in the
+palette is light enough to carry the app's dark text and dark enough to hold
+against the surface behind it, since a part badge is a number drawn *on* the
+account's colour.
 
 A chosen colour is claimed before the automatic ones are handed out, so nothing
 else drifts onto it — your Google Drive can be the blue one because that is what

@@ -37,30 +37,50 @@ export const FONT = {
    "which three clouds is this file on" is a question you answer by eye.
 
    An account can be given a colour of its own in the edit menu, which the vault
-   stores; the palette below is what everything else is drawn from, and what the
-   picker offers. */
-export const ACCOUNT_COLORS = [
-  '#38bdf8', '#a78bfa', '#34d399', '#fb7185',
-  '#fbbf24', '#22d3ee', '#f472b6', '#a3e635',
-  '#818cf8', '#4ade80', '#e879f9', '#fb923c',
+   stores; this palette is what everything else is drawn from, and what the
+   picker offers.
+
+   Twelve hues, three shades each. Every one of them is light enough to carry
+   the app's dark text on top, because that is what a part badge is — a number
+   in `bg` on the account's colour — and dark enough to hold its own against the
+   surface it sits on. Nothing here goes past that on either side: a palette
+   with a navy and a pastel in it would offer two colours that cannot actually
+   be used. */
+export const ACCOUNT_PALETTE = [
+  { name: 'Sky', shades: ['#7dd3fc', '#38bdf8', '#0ea5e9'] },
+  { name: 'Cyan', shades: ['#67e8f9', '#22d3ee', '#06b6d4'] },
+  { name: 'Mint', shades: ['#6ee7b7', '#34d399', '#10b981'] },
+  { name: 'Green', shades: ['#86efac', '#4ade80', '#22c55e'] },
+  { name: 'Lime', shades: ['#bef264', '#a3e635', '#84cc16'] },
+  { name: 'Amber', shades: ['#fcd34d', '#fbbf24', '#f59e0b'] },
+  { name: 'Orange', shades: ['#fdba74', '#fb923c', '#f97316'] },
+  { name: 'Rose', shades: ['#fda4af', '#fb7185', '#f43f5e'] },
+  { name: 'Pink', shades: ['#f9a8d4', '#f472b6', '#ec4899'] },
+  { name: 'Orchid', shades: ['#f0abfc', '#e879f9', '#d946ef'] },
+  { name: 'Violet', shades: ['#c4b5fd', '#a78bfa', '#8b5cf6'] },
+  { name: 'Indigo', shades: ['#a5b4fc', '#818cf8', '#6366f1'] },
 ]
 
-/* Names for the palette, so a swatch has something to be called: a picker made
-   of twelve unlabelled squares is unreadable to a screen reader and unpointable
-   over the phone to someone else. */
-export const ACCOUNT_COLOR_NAMES = {
-  '#38bdf8': 'Sky',
-  '#a78bfa': 'Violet',
-  '#34d399': 'Mint',
-  '#fb7185': 'Rose',
-  '#fbbf24': 'Amber',
-  '#22d3ee': 'Cyan',
-  '#f472b6': 'Pink',
-  '#a3e635': 'Lime',
-  '#818cf8': 'Indigo',
-  '#4ade80': 'Green',
-  '#e879f9': 'Orchid',
-  '#fb923c': 'Orange',
+/* The middle shade of each hue: the twelve the automatic assignment hands out,
+   and the row the picker opens on. */
+export const ACCOUNT_COLORS = ACCOUNT_PALETTE.map((hue) => hue.shades[1])
+
+/* Names for every swatch, so none of them is an unlabelled square — which is
+   unreadable to a screen reader and unpointable over the phone to someone
+   else. The middle shade is the hue's plain name; the other two say which way
+   they lean. */
+export const ACCOUNT_COLOR_NAMES = Object.fromEntries(
+  ACCOUNT_PALETTE.flatMap(({ name, shades }) => [
+    [shades[0], `${name} light`],
+    [shades[1], name],
+    [shades[2], `${name} deep`],
+  ]),
+)
+
+/* What to call a colour that came from the native picker rather than the
+   palette: its own hex, which is the only honest name for it. */
+export function accountColorName(hex) {
+  return ACCOUNT_COLOR_NAMES[hex] || hex
 }
 
 function preferredIndex(id) {

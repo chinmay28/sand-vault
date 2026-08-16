@@ -445,7 +445,13 @@ class TestCLI:
         source.write_bytes(payload)
         cli(sand_bin, vault_dir, "put", str(source), "--accounts", "cli-a,cli-b,cli-edit")
 
-        stored = sorted(os.listdir(path))
+        def parts_on(directory):
+            """The stored parts, ignoring the manifest backup and the scratch
+            files an atomic write leaves behind."""
+            return {n for n in os.listdir(directory)
+                    if n.endswith(".sand") and n != "manifest.sand"}
+
+        stored = parts_on(path)
 
         cli(sand_bin, vault_dir, "remote", "edit", "cli-edit",
             "--name", "cli-edited", "--color", "#38BDF8")
@@ -460,8 +466,9 @@ class TestCLI:
                       if "on-the-edited-cloud.bin" in line)
         assert "cli-edited" in ls_row, ls_row
 
-        # Nothing moved, and the file still reads back byte for byte.
-        assert sorted(os.listdir(path)) == stored
+        # Not one part moved — the index changed, so the account's copy of the
+        # manifest is rewritten, and nothing else on it is touched.
+        assert parts_on(path) == stored
         out = tmp_path / "still-here.bin"
         cli(sand_bin, vault_dir, "get", "/on-the-edited-cloud.bin", "-o", str(out))
         assert out.read_bytes() == payload

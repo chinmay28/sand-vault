@@ -280,11 +280,18 @@ are all the same shade. That is what makes *which three clouds is this file on*
 a question you answer by eye rather than by opening an inspector.
 
 **Edit** on an account's card opens the menu for both fields — what it is
-called, and which colour it wears. There are twelve palette colours, a native
-picker for anything else, and **Automatic**, which hands the choice back to the
-browser; a swatch another account is already wearing is marked as such before
-you pick it. A chosen colour is claimed before the automatic ones are handed
+called, and which colour it wears. Twelve named colours are the shortlist;
+**All shades** opens the whole palette — the same twelve hues in three shades
+each, a hue per column — and a native picker takes any colour at all for a
+cloud with a brand colour of its own. **Automatic** hands the choice back to the
+browser. A swatch another account is already wearing is marked as such before
+you pick it, and a chosen colour is claimed before the automatic ones are handed
 out, so nothing else drifts onto it.
+
+Every colour in the palette is light enough to carry the app's dark text and
+dark enough to hold against the surface behind it, because a part badge is a
+number drawn *on* the account's colour — a navy or a pastel would be a colour
+you could pick and then not be able to read.
 
 ```bash
 ./sand remote edit r2-cold --name r2-archive       # rename it
