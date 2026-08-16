@@ -43,6 +43,26 @@ func openVault(cmd *cobra.Command) (*vault.Vault, error) {
 	return v, nil
 }
 
+// closeVault locks the vault at the end of a command, after letting the
+// manifest backup catch up.
+//
+// The wait is the point. Changing the index schedules a push of the encrypted
+// copy every account carries, and it runs on its own goroutine so that an
+// upload never waits on three network round-trips it does not need. A process
+// that exits the moment the upload is done therefore leaves the copies
+// describing a vault one file behind — and locking the vault on the way out
+// aborts the push outright, since it needs the keys that just went away. The
+// file most likely to be missing from a recovery is then the one that was
+// stored last, which is the worst possible one to lose.
+//
+// Every command that opens the vault ends here, whether or not it writes: a
+// push left over from an earlier command that exited too early is finished by
+// the next one, and one with nothing to do returns immediately.
+func closeVault(v *vault.Vault) {
+	v.AwaitBackupSync()
+	v.Lock()
+}
+
 // readPassword reads a password from SAND_PASSWORD, or prompts without echo.
 func readPassword(prompt string) (string, error) {
 	return readPasswordFrom("SAND_PASSWORD", prompt)

@@ -60,7 +60,8 @@ func vaultCmd() *cobra.Command {
 		Short: "Create and manage the vault",
 	}
 	cmd.AddCommand(vaultInitCmd(), vaultStatusCmd(), vaultPasswdCmd(), vaultMigrateCmd(), vaultConvertCmd(),
-		vaultPolicyCmd(), vaultDefaultsCmd(), vaultBackupCmd(), vaultRecoverCmd())
+		vaultPolicyCmd(), vaultDefaultsCmd(), vaultBackupCmd(), vaultRecoverCmd(),
+		vaultReclaimCmd())
 	return cmd
 }
 
@@ -111,7 +112,7 @@ func vaultStatusCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer v.Lock()
+			defer closeVault(v)
 
 			stats, err := v.Stats()
 			if err != nil {
@@ -130,6 +131,23 @@ func vaultStatusCmd() *cobra.Command {
 			if stats.Pending > 0 {
 				fmt.Printf("Awaiting re-key:  %d file(s) are still under the previous key — run 'sand vault migrate'\n",
 					stats.Pending)
+			}
+			// A recovery adopts the key of the vault it rebuilt, so until these
+			// files are re-encrypted the password that opened that vault still
+			// opens their parts.
+			if stats.InheritedKey {
+				fmt.Printf("Inherited key:    still the one a recovery adopted, so the lost vault's password\n" +
+					"                  opens every part — new uploads included. Run 'sand vault reclaim'\n")
+			}
+			// What a recovery run before every account was back leaves behind:
+			// an index that knows about parts it cannot reach.
+			if stats.Unresolved > 0 {
+				fmt.Printf("Out of reach:     %d part(s) are on accounts this vault is not connected to",
+					stats.Unresolved)
+				if stats.Stranded > 0 {
+					fmt.Printf(", leaving %d file(s) unopenable", stats.Stranded)
+				}
+				fmt.Print("\n                  connect them and run 'sand vault recover --resume'\n")
 			}
 			return nil
 		},
@@ -178,7 +196,7 @@ take a while. Nothing is unreadable while it runs, and it can be interrupted:
 			if _, err := v.ChangePassword(cmd.Context(), old, next, false); err != nil {
 				return err
 			}
-			defer v.Lock()
+			defer closeVault(v)
 			// The copies of the index on the accounts are sealed under the old
 			// password and carry the key being retired, so the push replacing
 			// them has to land before this process goes away.
@@ -217,7 +235,7 @@ have already moved are not touched, so running it again is free.`,
 			if err != nil {
 				return err
 			}
-			defer v.Lock()
+			defer closeVault(v)
 
 			if v.PendingMigration() == 0 {
 				fmt.Println("Every file is already stored under the vault's current key.")
@@ -254,7 +272,7 @@ anything. Name paths to convert those, or pass --all to work through everything.
 			if err != nil {
 				return err
 			}
-			defer v.Lock()
+			defer closeVault(v)
 
 			pending := v.PendingConversion()
 			if len(pending) == 0 {
@@ -373,7 +391,7 @@ still spreads over everything connected instead of filling the same three.`,
 			if err != nil {
 				return err
 			}
-			defer v.Lock()
+			defer closeVault(v)
 
 			if len(args) == 0 && !clear {
 				return printDefaultAccounts(v)
@@ -438,7 +456,7 @@ func vaultPolicyCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer v.Lock()
+			defer closeVault(v)
 
 			if len(args) == 0 {
 				fmt.Println(v.Policy())

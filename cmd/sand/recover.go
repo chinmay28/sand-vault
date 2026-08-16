@@ -48,7 +48,7 @@ it, or to turn it off with --disable.`,
 			if err != nil {
 				return err
 			}
-			defer v.Lock()
+			defer closeVault(v)
 
 			switch {
 			case disable:
@@ -99,6 +99,7 @@ func vaultRecoverCmd() *cobra.Command {
 	var (
 		from           string
 		dryRun         bool
+		resume         bool
 		backupPassword string
 	)
 
@@ -115,13 +116,18 @@ away.
 Reconnecting an account gives it a new internal ID, so this asks each connected
 account which parts it actually holds and re-points the index at whichever
 account answers. Accounts you have not reconnected show up as unreachable
-parts; connect them and run it again.`,
+parts.
+
+Connect those accounts later and run 'sand vault recover --resume', which asks
+the accounts the same question again and re-points whatever is now within
+reach. It needs no password: the key was adopted by the recovery that ran
+first, and what was missing is a reachable copy of the parts.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			v, err := openVault(cmd)
 			if err != nil {
 				return err
 			}
-			defer v.Lock()
+			defer closeVault(v)
 
 			accounts, err := v.Providers()
 			if err != nil {
@@ -131,10 +137,47 @@ parts; connect them and run it again.`,
 				return fmt.Errorf("connect the accounts holding your parts first, with 'sand remote add'")
 			}
 
+			if resume {
+				report, err := v.Reconcile(cmd.Context(), dryRun)
+				if err != nil {
+					return err
+				}
+				printWarnings(report.Warnings)
+				printRecoveryReport(report, dryRun)
+				if dryRun {
+					fmt.Println("\nNothing was changed. Run again without --dry-run to apply.")
+				}
+				return nil
+			}
+
+			// A vault that already holds files cannot adopt a second snapshot,
+			// but if those files are the half-reachable remains of an earlier
+			// recovery there is still something to be done about them.
+			if stats, err := v.Stats(); err == nil && stats.Unresolved > 0 {
+				return fmt.Errorf(
+					"this vault already holds %d file(s), %d of them stranded on accounts that "+
+						"are not connected — connect those accounts and run "+
+						"'sand vault recover --resume' to finish the recovery that brought them here",
+					stats.Files, stats.Stranded)
+			}
+
 			source := accounts[0]
 			if from != "" {
 				if source, err = findProvider(v, from); err != nil {
 					return err
+				}
+			} else if scan, err := v.ScanForRecovery(cmd.Context()); err == nil {
+				// Every account carries the same copy, so any one of them will
+				// do — but not one holding *this* vault's backup, which the old
+				// password cannot open. Prefer an account still carrying the
+				// index of the vault that is gone.
+				for _, candidate := range scan.Sources {
+					if candidate.Backup && candidate.Foreign {
+						if cfg, err := findProvider(v, candidate.ProviderID); err == nil {
+							source = cfg
+						}
+						break
+					}
 				}
 			}
 
@@ -162,21 +205,7 @@ parts; connect them and run it again.`,
 			}
 			printWarnings(report.Warnings)
 
-			verb := "Recovered"
-			if dryRun {
-				verb = "Would recover"
-			}
-			fmt.Printf("%s %d file(s) in %d folder(s).\n", verb, report.Files, report.Folders)
-			if report.Relocated > 0 {
-				fmt.Printf("  %d part(s) re-pointed at the accounts now holding them.\n", report.Relocated)
-			}
-			if report.Unreachable > 0 {
-				fmt.Printf("  %d part(s) are on accounts that are not connected.\n", report.Unreachable)
-			}
-			if report.Recoverable < report.Files {
-				fmt.Printf("  %d file(s) do not have enough reachable parts to open — connect the missing accounts and run this again.\n",
-					report.Files-report.Recoverable)
-			}
+			printRecoveryReport(report, dryRun)
 			if dryRun {
 				fmt.Println("\nNothing was changed. Run again without --dry-run to apply.")
 				return nil
@@ -201,6 +230,137 @@ parts; connect them and run it again.`,
 	cmd.Flags().StringVar(&backupPassword, "backup-password", "",
 		"password of the vault being recovered (prompted for, or read from SAND_BACKUP_PASSWORD)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "report what would be recovered without changing anything")
+	cmd.Flags().BoolVar(&resume, "resume", false,
+		"finish an earlier recovery by re-pointing the index at accounts that are now connected")
+	return cmd
+}
+
+// printRecoveryReport says what came back and — the part worth the ink — what
+// did not, and which account would have to be reconnected to change that.
+func printRecoveryReport(report *vault.RecoveryReport, dryRun bool) {
+	verb := "Recovered"
+	if dryRun {
+		verb = "Would recover"
+	}
+	fmt.Printf("%s %d of %d file(s) in %d folder(s) — %s of %s.\n",
+		verb, report.Recoverable, report.Files, report.Folders,
+		formatBytes(report.RecoverableBytes), formatBytes(report.Bytes))
+
+	if report.Relocated > 0 {
+		fmt.Printf("  %d part(s) re-pointed at the accounts now holding them.\n", report.Relocated)
+	}
+	if report.Degraded > 0 {
+		fmt.Printf("  %d file(s) came back with no spare part left.\n", report.Degraded)
+	}
+	if report.Unreachable > 0 {
+		fmt.Printf("  %d part(s) are on accounts that are not connected.\n", report.Unreachable)
+	}
+
+	if report.Complete() {
+		return
+	}
+
+	fmt.Printf("\nNot recovered: %d of %d file(s), %s of %s.\n",
+		report.Lost, report.Files, formatBytes(report.LostBytes), formatBytes(report.Bytes))
+
+	if len(report.MissingAccounts) > 0 {
+		fmt.Println("\nConnect these accounts, then 'sand vault recover --resume':")
+		for _, account := range report.MissingAccounts {
+			note := "spare parts only"
+			if account.Blocking {
+				note = fmt.Sprintf("%d file(s) cannot be opened without it", account.Files)
+			}
+			fmt.Printf("  %-24s %-10s %d part(s) — %s\n",
+				account.Name, account.Kind, account.Parts, note)
+		}
+	}
+
+	if len(report.Missing) > 0 {
+		fmt.Println("\nFiles still missing:")
+		for _, file := range report.Missing {
+			fmt.Printf("  %-40s %10s  %d of %d part(s) found\n",
+				file.Path, formatBytes(file.Size), file.PartsFound, file.PartsNeeded)
+		}
+		if report.MissingTruncated > 0 {
+			fmt.Printf("  … and %d more\n", report.MissingTruncated)
+		}
+	}
+}
+
+func vaultReclaimCmd() *cobra.Command {
+	var accounts []string
+
+	cmd := &cobra.Command{
+		Use:   "reclaim",
+		Short: "Re-encrypt recovered files under this vault's own key",
+		Long: `Take recovered files off the key of the vault they came from.
+
+Recovery adopts the lost vault's data key, because that key is the only thing
+that opens the parts already sitting on your accounts. That gets the files
+back, and it leaves something behind: those parts are still encrypted under the
+old key, which the old password still derives — through any copy of the old
+` + vault.BackupKey + `, including ones this vault never got to overwrite.
+
+This ends that. A fresh data key is sealed under your current password, every
+file is rebuilt onto it, and the parts under the old key are erased. Your
+password does not change.
+
+Since every file is gathered and scattered anyway, --account is the moment to
+say where they should live: name the clouds you actually mean to keep using,
+rather than the ones the vault that died happened to choose. Left out, each
+file goes back to the accounts it is already on.
+
+It costs a download and an upload of the whole vault. Files stay readable
+throughout, and stopping it is safe — whatever moved stays moved, and
+'sand vault migrate' finishes the rest.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			v, err := openVault(cmd)
+			if err != nil {
+				return err
+			}
+			defer closeVault(v)
+
+			chosen, err := resolveAccountNames(v, accounts)
+			if err != nil {
+				return err
+			}
+
+			stats, err := v.Stats()
+			if err != nil {
+				return err
+			}
+			if stats.Files == 0 {
+				fmt.Println("This vault holds no files, so there is nothing to re-encrypt.")
+				return nil
+			}
+			fmt.Printf("Re-encrypting %d file(s) (%s) under a key of this vault's own",
+				stats.Files, formatBytes(stats.Bytes))
+			if len(chosen) > 0 {
+				fmt.Printf(", onto %d chosen cloud(s)", len(chosen))
+			}
+			fmt.Println("…")
+
+			report, err := v.Reclaim(cmd.Context(), chosen, func(path string, done, total int) {
+				fmt.Printf("  [%d/%d] %s\n", done, total, path)
+			})
+			if report != nil {
+				printWarnings(report.Warnings)
+				fmt.Printf("Re-encrypted %d of %d file(s) (%s).\n",
+					report.Migrated, report.Pending, formatBytes(report.Bytes))
+				if report.Remaining > 0 {
+					fmt.Printf("%d file(s) are still on the old key and still readable — "+
+						"fix what is reported above and run 'sand vault migrate' to finish.\n",
+						report.Remaining)
+				} else {
+					fmt.Println("The old key opens nothing that is still stored.")
+				}
+			}
+			return err
+		},
+	}
+
+	cmd.Flags().StringSliceVar(&accounts, "account", nil,
+		"cloud account to store the re-encrypted files on, by name or id (repeatable)")
 	return cmd
 }
 

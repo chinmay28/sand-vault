@@ -33,7 +33,7 @@ func lsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer v.Lock()
+			defer closeVault(v)
 
 			listing, err := v.List(path)
 			if err != nil {
@@ -103,7 +103,7 @@ search at all — no connected account can be asked what it is holding.`,
 			if err != nil {
 				return err
 			}
-			defer v.Lock()
+			defer closeVault(v)
 
 			results, err := v.Search(vault.SearchOptions{
 				Query: args[0],
@@ -170,7 +170,7 @@ func putCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer v.Lock()
+			defer closeVault(v)
 
 			chosen, err := resolveAccountNames(v, accounts)
 			if err != nil {
@@ -250,7 +250,7 @@ func getCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer v.Lock()
+			defer closeVault(v)
 
 			entry, err := resolveEntry(v, args[0])
 			if err != nil {
@@ -308,7 +308,7 @@ func rmCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer v.Lock()
+			defer closeVault(v)
 
 			ctx := context.Background()
 			target := args[0]
@@ -353,7 +353,7 @@ func mkdirCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer v.Lock()
+			defer closeVault(v)
 
 			if err := v.Mkdir(args[0]); err != nil {
 				return err
@@ -376,7 +376,7 @@ encrypted parts stay exactly where they are on your cloud accounts.`,
 			if err != nil {
 				return err
 			}
-			defer v.Lock()
+			defer closeVault(v)
 
 			entry, err := resolveEntry(v, args[0])
 			if err != nil {
@@ -435,7 +435,7 @@ repeat — run it again and it moves whatever is still in the wrong place.
 			if err != nil {
 				return err
 			}
-			defer v.Lock()
+			defer closeVault(v)
 
 			chosen, err := resolveAccountNames(v, accounts)
 			if err != nil {
@@ -536,7 +536,7 @@ func checkCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer v.Lock()
+			defer closeVault(v)
 
 			ctx := context.Background()
 			var targets []*vault.Entry

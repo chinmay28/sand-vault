@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useState } from 'react'
-import { COLORS, FONT, assignAccountColors } from './theme'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
+import { COLORS, FONT, assignAccountColors, formatBytes } from './theme'
 import { useIsMobile } from './hooks'
 import { useNavigator } from './navigation'
 import { api } from './api'
@@ -7,6 +7,7 @@ import LockScreen from './components/LockScreen'
 import AccountsPanel from './components/AccountsPanel'
 import FileBrowser from './components/FileBrowser'
 import PreviewModal, { ShardInspector } from './components/PreviewModal'
+import RecoverVault from './components/RecoverVault'
 import { Brand, DevMark } from './components/Brand'
 import { Banner, Button } from './components/ui'
 
@@ -27,9 +28,23 @@ export default function App() {
   const [preview, setPreview] = useState(null)
   const [inspecting, setInspecting] = useState(null)
   const [accountsOpen, setAccountsOpen] = useState(false)
+  const [recovery, setRecovery] = useState(null)
+  const [recovering, setRecovering] = useState(false)
 
   const mobile = useIsMobile()
   const unlocked = !!status?.unlocked
+
+  // A prompt that reappears every time the accounts are refreshed stops being a
+  // prompt and starts being an obstacle. Held in a ref rather than in state so
+  // that saying "not now" does not itself re-run the scan.
+  const recoveryDismissed = useRef(false)
+
+  // The recovery dialog connects clouds of its own, so the accounts it is
+  // working through change underneath this component while it is open. It owns
+  // its own copy of the scan from the moment it mounts; this ref is what stops
+  // the scan out here being cleared from under it and unmounting it mid-flow.
+  const recoveringRef = useRef(false)
+  const openRecovery = (open) => { recoveringRef.current = open; setRecovering(open) }
 
   // Which account owns which colour can only be decided against the whole list,
   // and every pane below reads the answer back by id — so settle it here, in
@@ -98,6 +113,43 @@ export default function App() {
     refreshProviders()
   }, [unlocked, refreshProviders])
 
+  /* Disaster recovery starts here, without being asked for.
+
+     Someone whose machine died reinstalls SAND, makes a fresh vault and
+     reconnects their clouds — and those clouds are still carrying the index of
+     the vault that is gone. The app can see that and they cannot, so it looks
+     as soon as there is an account to look at, and says so.
+
+     On an empty vault, because that is the state a reinstalled machine is in and
+     the only state a whole vault can be adopted into — and on a vault carrying
+     shard records that point at accounts it is not connected to, which is what
+     a recovery run before every cloud was back leaves behind. Any other vault is
+     simply in use, and is not asked. */
+  const providerKey = providers.map((p) => p.id).sort().join(',')
+  const fileCount = status?.stats?.files ?? 0
+  const unresolved = status?.stats?.unresolved ?? 0
+
+  useEffect(() => {
+    if (recoveringRef.current) return
+    if (!unlocked || providerKey === '' || (fileCount > 0 && unresolved === 0)) {
+      setRecovery(null)
+      return
+    }
+    let cancelled = false
+    api.recoveryScan().then((scan) => {
+      if (cancelled) return
+      setRecovery(scan)
+      // Only the disaster interrupts. Resuming is offered from the banner
+      // instead: it is not news — the vault has been in that state since the
+      // recovery that made it — and a modal on every load would be a nag.
+      if (scan.available && !recoveryDismissed.current) openRecovery(true)
+    }).catch(() => {
+      // An account that will not answer is the accounts panel's story to tell;
+      // it should not put an error over an otherwise working vault.
+    })
+    return () => { cancelled = true }
+  }, [unlocked, providerKey, fileCount, unresolved])
+
   const lock = async () => {
     await api.lock().catch(() => {})
     setStatus((s) => ({ ...s, unlocked: false, stats: null }))
@@ -106,6 +158,9 @@ export default function App() {
     setPreview(null)
     setInspecting(null)
     setAccountsOpen(false)
+    setRecovery(null)
+    openRecovery(false)
+    recoveryDismissed.current = false
     // The trail is a list of folder names, which is the file index — locking
     // the vault has to put that away with everything else.
     nav.reset()
@@ -194,6 +249,23 @@ export default function App() {
           {!mobile && <DevMark />}
         </header>
 
+        {/* Dismissed, but not forgotten — and the standing offer for a recovery
+            that has not finished, which no modal is going to nag about. */}
+        {(recovery?.available || recovery?.resumable) && !recovering && (
+          <div style={{ padding: mobile ? '10px 10px 0' : '12px 20px 0', flexShrink: 0 }}>
+            <Banner tone="warn">
+              <span style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                <span>
+                  {recoveryNotice(recovery)}
+                </span>
+                <Button size="sm" variant="ghost" onClick={() => openRecovery(true)}>
+                  {recovery.available ? 'Attempt recovery' : 'Finish recovery'}
+                </Button>
+              </span>
+            </Banner>
+          </div>
+        )}
+
         <div style={{ flex: 1, display: 'flex', minHeight: 0, position: 'relative' }}>
           <AccountsPanel
             providers={providers}
@@ -232,6 +304,21 @@ export default function App() {
           onThumbStored={() => refreshListing()}
         />
       )}
+      {recovering && recovery && (
+        <RecoverVault
+          scan={recovery}
+          onClose={() => { openRecovery(false); recoveryDismissed.current = true }}
+          onRecovered={() => {
+            openRecovery(false)
+            setRecovery(null)
+            refreshAll()
+          }}
+          /* The dialog connects clouds of its own, so the accounts panel has
+             to hear about them the moment they land rather than when it
+             closes. */
+          onAccountsChanged={refreshProviders}
+        />
+      )}
       {inspecting && (
         <ShardInspector
           file={inspecting}
@@ -243,6 +330,25 @@ export default function App() {
       )}
     </Shell>
   )
+}
+
+/* What the banner says, which is two quite different pieces of news.
+
+   The first is a discovery: this machine is new and those clouds are carrying a
+   vault. The second is unfinished business — a recovery that ran while some
+   accounts were still missing, where the distinction worth drawing is between
+   files that cannot be opened at all and parts that were only ever the spare. */
+function recoveryNotice(scan) {
+  if (scan.available) {
+    return `Sand files detected on your clouds — ${scan.parts} part${scan.parts === 1 ? '' : 's'} `
+      + `(${formatBytes(scan.bytes)}) and an encrypted copy of a vault index this one did not write.`
+  }
+  if (scan.stranded > 0) {
+    return `${scan.stranded} file${scan.stranded === 1 ? '' : 's'} in this vault cannot be opened: `
+      + 'their parts are on clouds it is not connected to. Connect them to finish the recovery.'
+  }
+  return `${scan.unresolved} part${scan.unresolved === 1 ? '' : 's'} of your files sit on clouds `
+    + 'this vault is not connected to. Your files still open, with nothing to spare.'
 }
 
 function Shell({ children }) {

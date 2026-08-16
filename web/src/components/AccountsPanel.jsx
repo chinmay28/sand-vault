@@ -5,6 +5,7 @@ import { Banner, Button, IconButton, Spinner } from './ui'
 import ConnectCloud, { pendingOAuthFlow } from './ConnectCloud'
 import EditAccount from './EditAccount'
 import ChangePassword from './ChangePassword'
+import ReclaimVault from './ReclaimVault'
 import MountDrive from './MountDrive'
 import { DefaultClouds, PARTS_PER_FILE } from './CloudSelect'
 import { DevMark } from './Brand'
@@ -118,6 +119,7 @@ export default function AccountsPanel({
   const [changingPassword, setChangingPassword] = useState(false)
   const [mounting, setMounting] = useState(false)
   const [choosingDefaults, setChoosingDefaults] = useState(false)
+  const [reclaiming, setReclaiming] = useState(false)
   const [error, setError] = useState(null)
 
   const defaults = stats?.default_accounts || []
@@ -294,6 +296,24 @@ export default function AccountsPanel({
           />
         )}
 
+        {/* A recovery adopts the key of the vault it rebuilt, so until these
+            files are re-encrypted the old password still opens their parts.
+            Said here rather than only at the end of the recovery: the transfer
+            is the whole vault twice over, and the moment to do it is rarely the
+            moment the recovery finishes. */}
+        {stats?.inherited_key && (
+          <Banner tone="warn">
+            This vault is still using the key it recovered, so the lost vault&apos;s password
+            opens every part on your clouds — including anything you upload until you change it.
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setReclaiming(true)}
+              style={{ marginTop: '8px' }}
+            >Re-encrypt under your key</Button>
+          </Banner>
+        )}
+
         {/* The three things you do to the vault itself rather than to an
             account. They were ghost buttons in a column, which read as three
             more lines of the grey text above them — nothing said they could be
@@ -367,6 +387,15 @@ export default function AccountsPanel({
           stats={stats}
           onClose={() => setChangingPassword(false)}
           onChanged={onChanged}
+        />
+      )}
+
+      {reclaiming && (
+        <ReclaimVault
+          stats={stats}
+          providers={providers}
+          onClose={() => setReclaiming(false)}
+          onDone={onChanged}
         />
       )}
     </aside>

@@ -116,6 +116,124 @@ account already holding a *different* vault's backup is also left alone, so
 connecting an account to a second vault cannot destroy the first one's way
 back.
 
+### The browser notices there is a vault to recover, and says so
+
+Recovery used to be something you had to know existed. Someone whose machine
+died would reinstall SAND, make a fresh vault, reconnect their clouds, see an
+empty file list, and have no reason to suspect that everything they owned was
+sitting on those accounts waiting to be claimed — `sand vault recover` only
+helps the people who already know to type it.
+
+So the app looks. On a vault holding no files, connecting an account asks it two
+questions no password is needed for: what are you holding, and is that
+`manifest.sand` one this vault wrote? An index backup written by a *different*
+vault is the signature of the disaster this feature is for, and it opens the
+prompt:
+
+> **Sand files detected** — 412 parts (3.1 GB) and an encrypted copy of a vault
+> index this one did not write.
+
+And then it walks the rest of the way, because that prompt fires on the *first*
+cloud you reconnect and one cloud is never enough: a file is rebuilt from two of
+its three parts. So the dialog does not open on a password box it cannot use
+yet. It asks for the next cloud, connects it without leaving the dialog, and
+re-checks by itself when it lands — the second account turns it into the
+password prompt, and the last one is taken as the answer to the question it
+asked, running the recovery rather than making you press the same button again.
+It still checks before it commits.
+
+The password it asks for is the one belonging to the vault that is gone, not
+this one's — a distinction the dialog makes rather than leaving you to discover.
+
+**And it says what did not come back.** A recovery is only as complete as the
+accounts you managed to reconnect: a file is rebuilt from any two of its three
+parts, so one cloud you have not got back yet costs nothing, and two costs you
+the file. The report now counts both halves — files *and* bytes, because those
+diverge and the bytes are usually the answer to "how bad is it" — and then names
+the shortfall:
+
+```
+Recovered 18 of 23 file(s) in 6 folder(s) — 1.2 GB of 4.4 GB.
+  2 file(s) came back with no spare part left.
+
+Not recovered: 5 of 23 file(s), 3.2 GB of 4.4 GB.
+
+Connect these accounts, then 'sand vault recover --resume':
+  onedrive-personal         onedrive   9 part(s) — 5 file(s) cannot be opened without it
+  nas-backup                webdav     3 part(s) — spare parts only
+```
+
+The same report renders in the browser, and the same distinction survives: an
+account holding only spare copies is listed but not blamed, because reconnecting
+it changes nothing about what you can open. Files that came back openable but
+without a spare are called out too — they read fine and they have no redundancy
+left.
+
+### …and finishing it when the last cloud turns up
+
+Telling you which accounts to connect is only worth saying if connecting them
+finishes the job, and it did not: running `sand vault recover` a second time was
+refused, because by then the vault held the files the first pass brought back
+and adopting the snapshot again would have replaced the very key they depend on.
+The advice was a dead end.
+
+`sand vault recover --resume` is the way through. It is a much smaller operation
+than a recovery — the index is already here and so is the key; what was missing
+was a reachable copy of the parts — so it asks every account what it holds,
+re-points the records that now have somewhere to point, and **asks for no
+password at all**. The browser offers the same thing as *Finish recovery*, and
+`sand vault status` now counts what is waiting on it: `unresolved` shard records
+naming accounts the vault is not connected to, and the `stranded` files that
+cannot be opened because of them.
+
+Three endpoints carry all of it: `GET /api/vault/recovery` for the scan,
+`POST /api/vault/recovery` for the dry run and the rebuild, and
+`POST /api/vault/recovery/resume` to finish one later. All need a session.
+
+### …and taking the recovered files off the dead vault's key
+
+A recovery adopts the lost vault's data key. It has to — that key is the only
+thing that opens the parts already sitting on your accounts — and it means the
+job is not finished when the files come back. The key is derived from the *old*
+password, and every copy of the old `manifest.sand` hands it over, including any
+taken off an account before the replacement vault existed. Recovery replaces the
+copies it can reach; it cannot replace the ones it cannot. So the files stay
+readable by whoever could read them before the machine died, and nothing said so.
+
+Now the vault says so and keeps saying so — in `sand vault status`, and as a
+standing banner in the accounts panel — until:
+
+```bash
+sand vault reclaim --account work --account offsite --account nas
+```
+
+A fresh data key sealed under your **current** password, every file rebuilt onto
+it, and the parts the old key opened erased. Your password does not change; only
+what it protects does. And since every file is gathered and scattered anyway,
+that is the one cheap moment to say where they should live: `--account` moves
+them off the clouds a machine you no longer have picked. The browser offers the
+same thing with the cloud picker in it.
+
+It costs a download and an upload of the whole vault, which is why it is offered
+rather than done as part of the recovery — a recovery has to work with the
+network you have, and this can wait for the one you want. Files stay readable
+throughout, an interrupted run resumes with `sand vault migrate`, and a
+selection that could not hold a file is refused before the key rotates rather
+than halfway through.
+
+### A CLI upload no longer outruns its own backup
+
+`sand put` returned the moment the parts were on the accounts, and the push of
+the encrypted index runs on its own goroutine so that an upload never waits on
+network round-trips it does not need. The process then exited — and locking the
+vault on the way out aborted the push outright, since it needs the keys that
+just went away.
+
+So the copies on the accounts described a vault one file behind, and the file
+missing from a recovery was always the one stored last. Every CLI command now
+lets that push settle before it locks. A command with nothing to push returns
+immediately; one that finds a push left over by an earlier command finishes it.
+
 ### Changing your password now changes what protects your files
 
 `sand vault passwd` used to re-wrap the data key and say, truthfully, that

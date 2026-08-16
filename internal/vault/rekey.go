@@ -247,6 +247,17 @@ func (v *Vault) PendingMigration() int {
 // left — is reported as a warning and left where it is. Calling it again picks
 // up whatever is still outstanding. progress may be nil.
 func (v *Vault) MigrateFiles(ctx context.Context, progress ProgressFunc) (*MigrationReport, error) {
+	return v.MigrateFilesTo(ctx, nil, progress)
+}
+
+// MigrateFilesTo is MigrateFiles with somewhere to put the result.
+//
+// A password change leaves every file where it is, because moving them is not
+// what was asked for. Reclaiming a recovered vault is the case where it is: the
+// files are being gathered and scattered anyway, and the accounts they are on
+// are the ones a vault that no longer exists chose. accounts nil keeps each
+// file where it is.
+func (v *Vault) MigrateFilesTo(ctx context.Context, accounts []string, progress ProgressFunc) (*MigrationReport, error) {
 	v.mu.RLock()
 	if v.dataKey == nil {
 		v.mu.RUnlock()
@@ -268,7 +279,7 @@ func (v *Vault) MigrateFiles(ctx context.Context, progress ProgressFunc) (*Migra
 			break
 		}
 
-		path, size, warnings, err := v.migrateFile(ctx, id)
+		path, size, warnings, err := v.migrateFile(ctx, id, accounts)
 		report.Warnings = append(report.Warnings, warnings...)
 		switch {
 		case errors.Is(err, ErrLocked):
@@ -297,7 +308,10 @@ func (v *Vault) MigrateFiles(ctx context.Context, progress ProgressFunc) (*Migra
 // current data key. The index moves to the new parts in a single write, so the
 // file is readable through the whole thing: on the old parts until that write,
 // on the new ones after it.
-func (v *Vault) migrateFile(ctx context.Context, id string) (path string, size int64, warnings []string, err error) {
+//
+// accounts, when given, is where the new parts go — followed exactly, since it
+// is a choice somebody made rather than a default to top up.
+func (v *Vault) migrateFile(ctx context.Context, id string, accounts []string) (path string, size int64, warnings []string, err error) {
 	v.mu.RLock()
 	if v.dataKey == nil {
 		v.mu.RUnlock()
@@ -322,20 +336,26 @@ func (v *Vault) migrateFile(ctx context.Context, id string) (path string, size i
 		return path, 0, nil, fmt.Errorf("%s could not be re-encrypted: %w", path, err)
 	}
 
-	// Re-encrypting is not a move: the file goes back to the accounts it was
-	// already on, whether they were chosen for it or picked at random. Any that
-	// have been disconnected since are topped up from what is connected now,
-	// rather than leaving the file a part short for good.
-	current := make([]string, 0, len(stale.Shards))
-	for _, s := range stale.Shards {
-		current = append(current, s.ProviderID)
+	// Re-encrypting is not a move: unless it was asked to be. Left alone, the
+	// file goes back to the accounts it was already on, whether they were
+	// chosen for it or picked at random — any that have been disconnected since
+	// are topped up from what is connected now, rather than leaving the file a
+	// part short for good. Given a selection, that selection is followed
+	// exactly, which is what reclaiming a recovered vault onto the accounts
+	// somebody actually wants to keep amounts to.
+	current, exact := accounts, len(accounts) > 0
+	if !exact {
+		current = make([]string, 0, len(stale.Shards))
+		for _, s := range stale.Shards {
+			current = append(current, s.ProviderID)
+		}
 	}
 
 	// Re-encrypting writes the current format, so a file stored whole before
 	// chunking existed comes back chunked. That is the cheapest moment to do it:
 	// the file has already been gathered and is about to be scattered again, so
 	// changing format costs nothing beyond what the re-encryption was paying.
-	placed, err := v.scatterChunked(ctx, name, data, current, false, v.uploadChunkSize())
+	placed, err := v.scatterChunked(ctx, name, data, current, exact, v.uploadChunkSize())
 	warnings = placed.warnings
 	if err != nil {
 		return path, 0, warnings, fmt.Errorf("re-encrypting %s: %w", path, err)

@@ -100,27 +100,129 @@ def server(sand_bin, vault_dir):
     )
 
     base_url = f"http://127.0.0.1:{port}"
-
-    # Poll /api/health until ready (up to 10 s)
-    for _ in range(50):
-        try:
-            r = requests.get(f"{base_url}/api/health", timeout=1)
-            if r.status_code == 200:
-                break
-        except Exception:
-            pass
-        time.sleep(0.2)
-    else:
-        proc.kill()
-        raise RuntimeError(
-            f"SAND server did not start within 10 s on port {port}.\n"
-            f"stderr: {proc.stderr.read().decode()}"
-        )
+    _wait_for_server(base_url, proc, port)
 
     yield base_url
 
     proc.terminate()
     proc.wait(timeout=5)
+
+
+def _wait_for_server(base_url, proc, port):
+    """Poll /api/health until the server answers, or give up after 10 s."""
+    for _ in range(50):
+        try:
+            if requests.get(f"{base_url}/api/health", timeout=1).status_code == 200:
+                return
+        except Exception:
+            pass
+        time.sleep(0.2)
+    proc.kill()
+    raise RuntimeError(
+        f"SAND server did not start within 10 s on port {port}.\n"
+        f"stderr: {proc.stderr.read().decode()}"
+    )
+
+
+@pytest.fixture
+def spawn_server(sand_bin, tmp_path):
+    """Factory for an extra `sand serve` on a vault of its own.
+
+    The session's `server` fixture shares one vault across the whole suite,
+    which is exactly wrong for anything about a *new* machine: disaster
+    recovery only runs into a vault that has never held a file, and it takes
+    the vault over when it does. So those tests get their own process, their
+    own port and their own vault file, all of which go away with the test.
+    """
+    started = []
+
+    def _start(name="replacement"):
+        port = _find_free_port()
+        proc = subprocess.Popen(
+            [
+                sand_bin, "serve",
+                "--port", str(port),
+                "--bind", "127.0.0.1",
+                "--vault", str(tmp_path / f"{name}.sand"),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        started.append(proc)
+        base_url = f"http://127.0.0.1:{port}"
+        _wait_for_server(base_url, proc, port)
+        return base_url
+
+    yield _start
+
+    for proc in started:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+
+LOST_VAULT_PASSWORD = "the-password-that-is-gone"
+LOST_VAULT_FILES = ("ledger.csv", "notes.txt")
+
+
+@pytest.fixture(scope="session")
+def _lost_vault_template(sand_bin, tmp_path_factory):
+    """Build the wreckage once: three cloud folders holding a vault whose
+    machine then died.
+
+    Session-scoped because building it is expensive in the way that matters
+    here — a vault init and two uploads are four Argon2id derivations at 64 MB
+    apiece, and doing that per test loaded the machine enough to make the
+    unrelated browser tests race. Each test gets its own copy instead; see
+    lost_vault, which is what tests actually ask for.
+    """
+    root = tmp_path_factory.mktemp("lost-vault")
+    vault_file = root / "doomed.sand"
+    clouds = []
+
+    def run(*args):
+        env = dict(os.environ)
+        env["SAND_PASSWORD"] = LOST_VAULT_PASSWORD
+        result = subprocess.run(
+            [sand_bin, "--vault", str(vault_file), *args],
+            capture_output=True, text=True, env=env,
+        )
+        assert result.returncode == 0, f"{args}\nstdout: {result.stdout}\nstderr: {result.stderr}"
+        return result
+
+    run("vault", "init", "--policy", "strict")
+    for name in ("dead-one", "dead-two", "dead-three"):
+        path = root / "clouds" / name
+        os.makedirs(path, exist_ok=True)
+        clouds.append(name)
+        run("remote", "add", "local", "--name", name, "--set", f"path={path}")
+
+    for name, body in (("ledger.csv", b"date,amount\n2026-08-01,42\n"), ("notes.txt", b"nothing here")):
+        source = root / name
+        source.write_bytes(body)
+        run("put", str(source))
+
+    # The machine dies here. The parts and the encrypted index are still sitting
+    # on the accounts; the only thing that could read them is gone.
+    os.remove(vault_file)
+    return str(root / "clouds"), clouds
+
+
+@pytest.fixture
+def lost_vault(_lost_vault_template, tmp_path):
+    """A private copy of that wreckage: (cloud_paths, password, filenames).
+
+    Copied rather than shared, because recovering from these accounts writes to
+    them — the recovering vault claims each one, replacing the backup the dead
+    vault left with its own under a new password. Two tests over one set of
+    folders would be two tests over one vault.
+    """
+    source, names = _lost_vault_template
+    destination = tmp_path / "dead-clouds"
+    shutil.copytree(source, destination)
+    return [str(destination / name) for name in names], LOST_VAULT_PASSWORD, list(LOST_VAULT_FILES)
 
 
 @pytest.fixture(scope="session")

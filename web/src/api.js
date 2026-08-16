@@ -59,6 +59,41 @@ export const api = {
     }),
   migrate: () => request('/api/vault/migrate', { method: 'POST' }),
 
+  /* Disaster recovery. Every connected account carries an encrypted copy of
+     the index, so a machine that lost its vault can find one sitting on the
+     clouds it reconnects. The scan costs a listing and one small download per
+     account and needs no password — it only reports what is there, and whether
+     it belongs to a vault other than this one. */
+  recoveryScan: () => request('/api/vault/recovery'),
+  /* Rebuilds the index from that copy. The password is the *lost* vault's, not
+     this one's: the backup is still sealed under whatever password wrote it.
+     Ask with dryRun first — it reports exactly what would come back and what
+     would not, without touching the vault. */
+  recover: ({ providerId, password, dryRun = false } = {}) =>
+    request('/api/vault/recovery', {
+      method: 'POST',
+      body: { provider_id: providerId || '', password, dry_run: dryRun },
+    }),
+  /* Finishes a recovery that ran before every account was reconnected. It asks
+     the accounts what they hold and re-points the index at whichever one
+     answers, which needs no password at all — the key was adopted by the
+     recovery that ran first, and what was missing is a reachable copy of the
+     parts rather than a secret. */
+  resumeRecovery: ({ dryRun = false } = {}) =>
+    request('/api/vault/recovery/resume', { method: 'POST', body: { dry_run: dryRun } }),
+  /* Takes recovered files off the key they came back on. A recovery adopts the
+     lost vault's data key — it is the only thing that opens the parts already
+     on the accounts — which leaves the old password able to open them too,
+     through any copy of the old index backup. This mints a fresh key under the
+     current password and rebuilds every file onto it, erasing the old parts.
+     `accounts` is where they should land; empty leaves each file where it is.
+
+     A download and an upload of the whole vault, so it holds the connection for
+     a long time. Nothing is unreadable while it runs and stopping is safe —
+     whatever moved stays moved, and migrate() finishes the rest. */
+  reclaim: (accounts = []) =>
+    request('/api/vault/reclaim', { method: 'POST', body: { accounts } }),
+
   providerSpecs: () => request('/api/providers/specs'),
   providers: () => request('/api/providers'),
   addProvider: (kind, name, options) =>
