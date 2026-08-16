@@ -4,6 +4,7 @@ import { useIsMobile } from '../hooks'
 import { api } from '../api'
 import { useDownload } from '../download'
 import { thumbnailFromElement } from '../thumbs'
+import PdfPreview from './PdfPreview'
 import StreamLink from './StreamLink'
 import { RelocateClouds } from './CloudSelect'
 import { Banner, Button, Modal, Spinner } from './ui'
@@ -111,29 +112,13 @@ export default function PreviewModal({ file, hasThumb, onClose, onThumbStored })
           <audio src={url} controls style={{ width: '90%', margin: '32px 0' }} />
         )}
 
-        {/* Mobile browsers — iOS Safari in particular — render a framed PDF as
-            a blank box or a single unscrollable page, so offer the file itself
-            rather than a preview that does not work. */}
-        {!error && kind === 'pdf' && (mobile ? (
-          <div style={{
-            padding: '40px 20px',
-            textAlign: 'center',
-            fontFamily: FONT.sans,
-            fontSize: '13px',
-            color: COLORS.textMuted,
-            lineHeight: 1.6,
-          }}>
-            <div style={{ fontSize: '30px', marginBottom: '10px', opacity: 0.5 }}>📕</div>
-            PDFs do not preview reliably on a phone.<br />
-            Open it below to read it with your own viewer.
-          </div>
-        ) : (
-          <iframe
-            src={url}
-            title={file.name}
-            style={{ width: '100%', height: 'calc(var(--app-height) * 0.68)', border: 'none', background: '#fff' }}
-          />
-        ))}
+        {/* Drawn here rather than framed for the browser to deal with: a
+            framed PDF is a blank box or one unscrollable page on iOS Safari,
+            which used to leave a phone with an apology instead of the
+            document. */}
+        {!error && kind === 'pdf' && (
+          <PdfPreview url={url} name={file.name} onFirstPage={captureThumb} />
+        )}
 
         {!error && kind === 'text' && (
           loading ? <div style={{ padding: '40px' }}><Spinner size={20} /></div> : (

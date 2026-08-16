@@ -660,6 +660,11 @@ pipe the password on stdin.
   your accounts, one small pack per folder. Anything without one keeps its icon
 - **Preview** — images, video, audio, PDF and text render inline, rebuilt on
   demand; anything else downloads
+- **PDF viewer** — pages are drawn by the app itself rather than handed to the
+  browser's viewer, so a phone shows the document instead of the blank frame
+  iOS Safari makes of one. Page at a time, arrow keys or `‹ ›`, and a zoom for
+  reading a dense page on a small screen; only the pages you look at are
+  fetched
 - **Stream in VLC** — `▶` on a video or audio row opens it in VLC and starts
   playing, and shows the address with a copy button either way
 - **Change password** — at the foot of the sidebar; re-encrypts every stored
@@ -1132,7 +1137,8 @@ sand/
 ├── web/src/                     # React file browser
 │   ├── api.js  theme.js  App.jsx
 │   └── components/              # LockScreen, AccountsPanel, ConnectCloud,
-│                                #   FileBrowser, PreviewModal, StreamLink, ui
+│                                #   FileBrowser, PreviewModal, PdfPreview,
+│                                #   StreamLink, ui
 │   ├── public/                  # app icon, home-screen icons + manifest,
 │   │                            #   developer badge
 │   └── build-version.js         # feeds the version into the bundle

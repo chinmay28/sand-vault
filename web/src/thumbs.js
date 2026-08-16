@@ -9,6 +9,7 @@
    What leaves here is a small JPEG. The server decodes and re-encodes it
    before storing, so nothing downstream depends on this having been honest. */
 
+import { PDF_OPTIONS, loadPDFJS } from './pdfjs'
 import { previewKind } from './theme'
 
 /* The longest edge of a stored thumbnail. Matches internal/thumb.Size — the
@@ -78,10 +79,8 @@ async function fromImage(blob) {
 async function fromPDF(blob) {
   const pdfjs = await loadPDFJS()
   const doc = await pdfjs.getDocument({
+    ...PDF_OPTIONS,
     data: new Uint8Array(await blob.arrayBuffer()),
-    // A PDF is a document format with opinions about fetching things; none of
-    // them are welcome in a vault that makes no third-party requests.
-    isEvalSupported: false,
     disableAutoFetch: true,
   }).promise
 
@@ -106,29 +105,6 @@ async function fromPDF(blob) {
   } finally {
     doc.destroy()
   }
-}
-
-/* pdf.js is far larger than everything else in this bundle put together, so it
-   is fetched only when a PDF is actually being turned into a picture — and
-   from this origin, like every other asset here. */
-let pdfjsPromise = null
-
-function loadPDFJS() {
-  if (!pdfjsPromise) {
-    pdfjsPromise = (async () => {
-      const [pdfjs, worker] = await Promise.all([
-        import('pdfjs-dist'),
-        import('pdfjs-dist/build/pdf.worker.min.mjs?url'),
-      ])
-      pdfjs.GlobalWorkerOptions.workerSrc = worker.default
-      return pdfjs
-    })().catch((err) => {
-      // Let the next PDF try again rather than caching the failure forever.
-      pdfjsPromise = null
-      throw err
-    })
-  }
-  return pdfjsPromise
 }
 
 /* Scales a decoded source down to fit THUMB_EDGE and encodes it. */
