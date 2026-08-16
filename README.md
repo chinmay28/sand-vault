@@ -53,7 +53,7 @@ curl -fsSL https://raw.githubusercontent.com/chinmay28/sand-vault/main/scripts/q
 ```
 
 The download's checksum is verified before anything is swapped in, and
-`SAND_RELEASE=v2.0.42` pins a specific release instead of the latest. Releases
+`SAND_RELEASE=v2026.8.42` pins a specific release instead of the latest. Releases
 publish **`linux/amd64`** and **`linux/arm64`**; anything else builds from
 source (the default), which works everywhere. Both modes install the same thing
 — one static binary with the web client embedded, under the same unit and the
@@ -967,13 +967,20 @@ Output is `sand` on Linux/macOS, `sand.exe` on Windows.
 
 ### Versioning
 
-`vMAJOR.MINOR.PATCH`, where **the patch number is the repository's commit
-count** — every commit is a patch release, so `v2.0.311` is the 311th commit on
-the 2.0 line.
+`vYEAR.MONTH.PATCH` — a calendar version, where **the patch number is the
+repository's commit count** — so `v2026.8.311` is the 311th commit on the 2026.8
+line. There is no semantic major/minor: the leading numbers say *when* a release
+line opened, not what it promises about compatibility. Breaking changes are
+called out in [`CHANGELOG.md`](./CHANGELOG.md), which is the thing to read
+before upgrading.
 
-- `MAJOR`/`MINOR` are source constants in
+- `YEAR`/`MONTH` are source constants in
   [`internal/version/version.go`](./internal/version/version.go). Bump them by
-  hand.
+  hand when a release line opens — they are deliberately not read from the build
+  clock, so rebuilding an old tree still reports what it originally shipped.
+- The month is not zero-padded (`v2026.8.311`, not `v2026.08.311`): semver
+  forbids a leading zero, and an unpadded month keeps every tag something a
+  semver parser will accept.
 - `PATCH` only exists at build time, so it is stamped in: `-ldflags -X` for the
   Go binary, Vite's `define` for the web bundle. Both read
   [`scripts/version.mjs`](./scripts/version.mjs), so the header, `sand version`
@@ -981,8 +988,8 @@ the 2.0 line.
 
 A patch of `0` means an unstamped build — no git, or a **shallow clone**, which
 `version.mjs` detects and refuses to guess around rather than shipping a build
-that quietly calls itself `v2.0.1`. Anything building a release needs the full
-commit graph (`fetch-depth: 0`, or `--filter=blob:none` rather than
+that quietly calls itself `v2026.8.1`. Anything building a release needs the
+full commit graph (`fetch-depth: 0`, or `--filter=blob:none` rather than
 `--depth 1`).
 
 ---
@@ -1155,7 +1162,7 @@ sand/
 │   ├── public/                  # app icon, home-screen icons + manifest,
 │   │                            #   developer badge
 │   └── build-version.js         # feeds the version into the bundle
-├── internal/version/            # MAJOR/MINOR; PATCH stamped at link time
+├── internal/version/            # YEAR/MONTH; PATCH stamped at link time
 ├── tests/                       # pytest e2e: CLI, API, vault flow, browser
 ├── scripts/
 │   ├── quickstart.sh            # one-command systemd install / upgrade / rollback

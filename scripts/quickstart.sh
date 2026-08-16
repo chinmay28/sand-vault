@@ -507,7 +507,7 @@ else
     install -d -o "$SVC_USER" -g "$SVC_USER" -m 755 "$PREFIX"
     log "cloning $SAND_REPO…"
     # NOT --depth 1: the version's patch number is the commit count, so a
-    # shallow clone would build something calling itself v2.0.1 forever.
+    # shallow clone would build something calling itself v2026.8.1 forever.
     # blob:none keeps it cheap while still carrying the full commit graph.
     as_svc git clone --filter=blob:none --branch "$SAND_REF" "$SAND_REPO" "$SRC_DIR"
     ok "cloned to $SRC_DIR"
