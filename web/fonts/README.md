@@ -5,27 +5,32 @@ where the face it is written in lives.
 
 ## What ships here
 
-`wordmark-script.woff2` — **1.9 KB**, five glyphs: `V a u l t`, and nothing
-else. It is a subset of [**Sacramento**](https://fonts.google.com/specimen/Sacramento)
-by Brian J. Bonislawsky (Astigmatic), used under the SIL Open Font License 1.1,
-whose full text is in `OFL.txt` beside it. A thin monoline script with tall
-ascenders: the hand the mark was designed around.
+`wordmark-script.woff2` — **3.4 KB**, five glyphs: `V a u l t`, and nothing
+else. It is a subset of [**Caveat**](https://fonts.google.com/specimen/Caveat)
+by Pablo Impallari, used under the SIL Open Font License 1.1, whose full text is
+in `OFL.txt` beside it. A monoline hand with a large x-height and short
+ascenders — which is why it stays legible at the 17px the header sets it in,
+where a finer copperplate turns to mud.
 
-The subset is renamed — it declares itself as **SAND Wordmark Script**, not as
-Sacramento. That is not branding, it is the licence: Sacramento carries a
-Reserved Font Name, and the OFL is explicit that a Modified Version may not use
-one. The original copyright, designer and licence records travel with the file.
+Caveat ships as a variable font. The copy here is pinned to **weight 500**: one
+weight is all the wordmark sets, and carrying the axis would mean carrying every
+master behind it.
+
+The name is kept. Caveat reserves none — its copyright line names no Reserved
+Font Name — so the subset stays honest about whose drawing it is, with the
+original copyright, designer and licence records intact.
 
 Rebuild it from the upstream face at any time:
 
 ```bash
 pip install 'fonttools[woff]' brotli
-curl -O https://raw.githubusercontent.com/google/fonts/main/ofl/sacramento/Sacramento-Regular.ttf
-python scripts/make-wordmark-font.py Sacramento-Regular.ttf
+curl -O https://raw.githubusercontent.com/google/fonts/main/ofl/caveat/Caveat%5Bwght%5D.ttf
+python scripts/make-wordmark-font.py 'Caveat[wght].ttf' --weight 500
 ```
 
-That script does the subsetting and the renaming, and is the whole derivation —
-nothing about this file is hand-edited.
+That script does the pinning and the subsetting, and is the whole derivation —
+nothing about this file is hand-edited. Point it at a different face and pass
+`--family` if that one reserves its name.
 
 ## Using a licensed face instead
 
@@ -64,8 +69,8 @@ why size matters, and why both faces are cut to five glyphs.
 The build says which it found:
 
 ```
-wordmark: embedding wordmark-script.woff2 (1.9 KB)
-wordmark: embedding nefelibata-script.woff2 (13.4 KB), wordmark-script.woff2 (1.9 KB)
+wordmark: embedding wordmark-script.woff2 (3.4 KB)
+wordmark: embedding nefelibata-script.woff2 (13.4 KB), wordmark-script.woff2 (3.4 KB)
 wordmark: no font at web/fonts — falling back to the system script face
 ```
 

@@ -527,9 +527,20 @@ class TestCLI:
         clouds_root = os.path.join(vault_dir, "cli-clouds")
 
         def shard_paths():
+            """The stored parts only.
+
+            Every account also carries a copy of the index, rewritten in the
+            background whenever the index changes — an upload, a rename, a
+            deletion — so counting *files* rather than parts means counting
+            whatever backup happened to land while this test was measuring.
+            The atomic write that puts it there leaves a scratch file behind
+            for an instant too.
+            """
             found = set()
             for dirpath, _, filenames in os.walk(clouds_root):
                 for filename in filenames:
+                    if filename == "manifest.sand" or not filename.endswith(".sand"):
+                        continue
                     found.add(os.path.join(dirpath, filename))
             return found
 

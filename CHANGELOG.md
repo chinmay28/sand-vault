@@ -418,14 +418,15 @@ badges in each account's own colour, a per-part health read-out, and inline
 preview for images, video, audio, PDF and text — each one rebuilt on demand.
 
 The wordmark is set in two hands: SAND in the tracked-out monospace it has
-always had, and *Vault* written beside it in a thin monoline script.
+always had, and *Vault* written beside it in a monoline hand.
 
-That script is **1.9 KB and in this repository** — five glyphs, `V a u l t`,
-subset from [Sacramento](https://fonts.google.com/specimen/Sacramento) by Brian
-J. Bonislawsky under the SIL Open Font License, renamed as the licence requires
-of a modified version, and travelling with its `OFL.txt`. Everyone sees the same
-mark, including a Linux browser with no handwriting face installed, which is
-what the old system-font stack could not promise.
+That hand is **3.4 KB and in this repository** — five glyphs, `V a u l t`,
+subset from [Caveat](https://fonts.google.com/specimen/Caveat) by Pablo
+Impallari under the SIL Open Font License and pinned to one weight, travelling
+with its `OFL.txt`. Everyone sees the same mark, including a Linux browser with
+no handwriting face installed, which is what the old system-font stack could not
+promise — and Caveat's large x-height keeps it legible at the 17px the header
+sets it in.
 
 It is never linked. The build reads whatever face is in `web/fonts/` and embeds
 it in the page as a `data:` URI, so it is one request fewer than a system font

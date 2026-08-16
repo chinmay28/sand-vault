@@ -671,10 +671,10 @@ The UI loads no external fonts, scripts or styles. Opening your vault makes zero
 third-party requests.
 
 The wordmark is the one piece of typography that is not the system's own:
-*Vault* is written in a thin monoline script that ships in the repository at
-**1.9 KB** — five glyphs and nothing else, subset from
-[Sacramento](https://fonts.google.com/specimen/Sacramento) under the SIL Open
-Font License (see [`web/fonts/`](./web/fonts/README.md)). It is never linked:
+*Vault* is written in a monoline hand that ships in the repository at **3.4
+KB** — five glyphs and nothing else, subset from
+[Caveat](https://fonts.google.com/specimen/Caveat) under the SIL Open Font
+License (see [`web/fonts/`](./web/fonts/README.md)). It is never linked:
 the build embeds it in the page as a `data:` URI, so it costs one request fewer
 than a system font rather than one more. **Nefelibata Script** — a *nefelibata*
 is a cloud-walker — is asked for ahead of it and embedded the same way if you

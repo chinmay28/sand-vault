@@ -62,10 +62,11 @@ export function Brand({ size = 'md' }) {
             // Scripts sit small for their point size, and a swash can start
             // left of where the glyph is measured from — hence the size bump
             // and the room on the left for it to lean into. Tuned against the
-            // face in web/fonts, where this lands the script's x-height on
-            // SAND's cap height and lets the ascenders rise past it. It is the
-            // one number to touch if the face ever changes.
-            fontSize: '1.65em',
+            // face in web/fonts, where this lands the script's x-height near
+            // SAND's cap height without letting it shout the mono down. It is
+            // the one number to touch if the face ever changes — a script with
+            // a smaller x-height wants noticeably more.
+            fontSize: '1.35em',
             fontWeight: 500,
             // Deliberately not italic. Every face in the stack is already
             // written on a slant, so asking for italic on top of that makes

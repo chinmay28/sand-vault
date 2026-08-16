@@ -32,7 +32,7 @@ const here = path.dirname(fileURLToPath(import.meta.url))
  */
 const WORDMARK_FACES = [
   ['Nefelibata Script', 'nefelibata-script'],
-  ['SAND Wordmark Script', 'wordmark-script'],
+  ['Caveat', 'wordmark-script'],
 ]
 const FORMATS = [
   ['woff2', 'font/woff2'],

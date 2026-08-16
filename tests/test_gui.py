@@ -354,7 +354,15 @@ class TestEditingAnAccount:
         app.wait_for_selector("text=ui-renamed", timeout=20000)
         self.open_editor(app, "ui-renamed")
         expect(app.get_by_role("radio", name="Automatic")).to_have_attribute("aria-checked", "true")
-        app.keyboard.press("Escape")
+
+        # Put the name back before leaving. The vault is shared across this
+        # session, and an account's folder on disk is named after what it was
+        # called when it was connected — so a test that walks away from a
+        # renamed account leaves every later test looking for parts in a
+        # directory that does not exist.
+        app.get_by_label("Name").fill("ui-editable")
+        app.get_by_role("button", name="Save").click()
+        app.wait_for_selector("text=ui-editable", timeout=20000)
 
     def test_the_full_palette_is_one_disclosure_away(self, app, clouds):
         """Twelve named colours are the shortlist. Every shade of every hue is

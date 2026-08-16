@@ -33,16 +33,16 @@ export const FONT = {
      Drop a copy in web/fonts and the build embeds it; a machine with the
      desktop font installed finds it by name either way.
 
-     Otherwise the face in the repository: a thin monoline script cut down to
-     the five letters of "Vault", under two kilobytes, embedded in the page by
-     the build. It is what everyone sees, and it is the same everywhere.
+     Otherwise the face in the repository: Caveat, cut down to the five letters
+     of "Vault" and pinned to one weight — three kilobytes, embedded in the page
+     by the build. It is what everyone sees, and it is the same everywhere.
 
      And behind both, faces that ship with an operating system, so the mark is
      still written even if the woff2 will not decode. Nothing is ever fetched,
      which is the rule the whole app is held to. */
-  script: "'Nefelibata Script', 'SAND Wordmark Script', 'Snell Roundhand', " +
-    "'Apple Chancery', 'Segoe Script', 'Bradley Hand', 'Brush Script MT', " +
-    "'Lucida Handwriting', 'URW Chancery L', cursive",
+  script: "'Nefelibata Script', Caveat, 'Snell Roundhand', 'Apple Chancery', " +
+    "'Segoe Script', 'Bradley Hand', 'Brush Script MT', 'Lucida Handwriting', " +
+    "'URW Chancery L', cursive",
 }
 
 /* Each connected account wears a colour no other account wears: the same colour

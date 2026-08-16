@@ -1,32 +1,38 @@
 #!/usr/bin/env python3
-"""Build the wordmark's script face: five glyphs, renamed, as a woff2.
+"""Build the wordmark's script face: five glyphs, as a woff2.
 
 The wordmark draws exactly one word — *Vault* — so shipping a whole script
-family to draw it would be a hundred kilobytes of glyphs nobody ever sees, in a
-file that the build embeds directly into index.html. This cuts the face down to
-the letters that are actually drawn.
+family to draw it would be a few hundred kilobytes of glyphs nobody ever sees,
+in a file the build embeds directly into index.html. This cuts the face down to
+the letters that are actually drawn, which is the difference between two
+kilobytes and four hundred.
 
-The rename is not decoration. The source face is under the SIL Open Font
-License with a Reserved Font Name, and the OFL is explicit: a Modified Version
-— which a subset is — may not carry the reserved name. So the derivative gets
-a name of its own, keeps the original copyright notice, and travels with the
-licence text beside it in web/fonts/OFL.txt.
-
-Usage:
+A variable font is pinned to one weight first: the wordmark is set at one
+weight, and carrying the axis would mean carrying every master behind it.
 
     pip install 'fonttools[woff]' brotli
-    python scripts/make-wordmark-font.py Sacramento-Regular.ttf
+    curl -O https://raw.githubusercontent.com/google/fonts/main/ofl/caveat/Caveat%5Bwght%5D.ttf
+    python scripts/make-wordmark-font.py 'Caveat[wght].ttf' --weight 500
 
-The source TTF is not kept in this repository; download it from the upstream
-project (github.com/google/fonts/tree/main/ofl/sacramento) and point this at
-it. The output lands at web/fonts/wordmark-script.woff2, which the web build
-embeds automatically.
+The source font is not kept in this repository — download it from upstream and
+point this at it. The output lands at web/fonts/wordmark-script.woff2, which
+the web build embeds automatically, and its family name is what
+`FONT.script` in web/src/theme.js has to name.
+
+On names: a subset is a Modified Version under the SIL Open Font License. Where
+the source declares a Reserved Font Name the derivative may not use it, and
+`--family` renames the whole name table accordingly; where it does not, keeping
+the original name is both allowed and more honest about whose drawing it is.
+Either way the copyright, designer and licence records are preserved, and the
+licence text travels beside the font in web/fonts/OFL.txt.
 """
+import argparse
 import subprocess
 import sys
 from pathlib import Path
 
-from fontTools.ttLib import TTFont
+from fontTools import ttLib
+from fontTools.varLib import instancer
 
 REPO = Path(__file__).resolve().parent.parent
 OUT = REPO / "web" / "fonts" / "wordmark-script.woff2"
@@ -34,61 +40,67 @@ OUT = REPO / "web" / "fonts" / "wordmark-script.woff2"
 # The word the wordmark writes. Nothing else needs to be in the file.
 TEXT = "Vault"
 
-# The derivative's own name, as the OFL requires for a Modified Version of a
-# face with a Reserved Font Name.
-FAMILY = "SAND Wordmark Script"
-STYLE = "Regular"
-VERSION = "Version 1.000; SAND subset"
 
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Build web/fonts/wordmark-script.woff2")
+    ap.add_argument("source", help="the upstream .ttf or .otf to cut down")
+    ap.add_argument("--weight", type=float, default=None,
+                    help="pin a variable font's wght axis to this value")
+    ap.add_argument("--family", default=None,
+                    help="rename the face — required when the source reserves its name")
+    args = ap.parse_args()
 
-def main(source: str) -> int:
-    tmp = OUT.with_suffix(".subset.ttf")
     OUT.parent.mkdir(parents=True, exist_ok=True)
+    pinned = OUT.with_suffix(".pinned.ttf")
+    subset = OUT.with_suffix(".subset.ttf")
+    source = Path(args.source)
+
+    if args.weight is not None:
+        font = ttLib.TTFont(source)
+        instancer.instantiateVariableFont(font, {"wght": args.weight}, inplace=True)
+        font.save(pinned)
+        font.close()
+        source = pinned
 
     subprocess.run(
         [
-            "pyftsubset", source,
+            "pyftsubset", str(source),
             f"--text={TEXT}",
-            # Keep the name table so the records below survive to be rewritten.
+            # Keep the name table: the records below are the attribution, and
+            # the licence requires them to survive the subsetting.
             "--name-IDs=*",
-            "--output-file=" + str(tmp),
+            "--output-file=" + str(subset),
         ],
         check=True,
     )
 
-    font = TTFont(tmp)
-    name = font["name"]
-
-    # nameID 0 is the copyright notice, which the licence requires be kept.
-    # nameID 7 is the source foundry's trademark: it belongs to their face, not
-    # to this derivative, so it goes.
-    for record in list(name.names):
-        if record.nameID == 7:
+    font = ttLib.TTFont(subset)
+    if args.family:
+        name = font["name"]
+        # nameID 7 is the source foundry's trademark: it belongs to their face,
+        # not to a renamed derivative of it.
+        for record in [r for r in name.names if r.nameID == 7]:
             name.names.remove(record)
-
-    for record in name.names:
-        if record.nameID in (1, 4, 16):
-            record.string = FAMILY
-        elif record.nameID == 2:
-            record.string = STYLE
-        elif record.nameID == 3:
-            record.string = f"{FAMILY}: {STYLE}"
-        elif record.nameID == 5:
-            record.string = VERSION
-        elif record.nameID == 6:
-            record.string = FAMILY.replace(" ", "") + "-" + STYLE
+        for record in name.names:
+            if record.nameID in (1, 4, 16):
+                record.string = args.family
+            elif record.nameID == 3:
+                record.string = f"{args.family}: Regular"
+            elif record.nameID == 6:
+                record.string = args.family.replace(" ", "") + "-Regular"
 
     font.flavor = "woff2"
     font.save(OUT)
+    family = font["name"].getDebugName(1)
     font.close()
-    tmp.unlink()
 
-    print(f"{OUT.relative_to(REPO)} — {OUT.stat().st_size} bytes, glyphs for {TEXT!r}")
+    for scratch in (pinned, subset):
+        scratch.unlink(missing_ok=True)
+
+    print(f"{OUT.relative_to(REPO)} — {OUT.stat().st_size} bytes, "
+          f"{TEXT!r} in {family!r}")
     return 0
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print(__doc__)
-        raise SystemExit(2)
-    raise SystemExit(main(sys.argv[1]))
+    raise SystemExit(main())
