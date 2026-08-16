@@ -166,7 +166,15 @@ export default function App() {
               textTransform: 'uppercase',
               color: COLORS.textMuted,
               marginTop: '4px',
-            }}>multi-cloud encrypted file store</span>
+            }}>
+              {/* Two phrases, not one — the bullet is faded against the text
+                  around it so it reads as a divider rather than a word of its
+                  own. The spaces are written out because JSX drops whitespace
+                  that wraps a line. */}
+              {'Secure Archival '}
+              <span style={{ opacity: 0.55 }}>•</span>
+              {' Network Distribution'}
+            </span>
           )}
 
           <span style={{ flex: 1 }} />
