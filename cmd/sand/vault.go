@@ -12,11 +12,12 @@ import (
 
 func serveCmd() *cobra.Command {
 	var (
-		port         int
-		bind         string
-		idleTimeout  time.Duration
-		webdav       bool
-		webdavPrefix string
+		port          int
+		bind          string
+		idleTimeout   time.Duration
+		webdav        bool
+		webdavPrefix  string
+		rechunkOnRead bool
 	)
 
 	cmd := &cobra.Command{
@@ -30,6 +31,7 @@ func serveCmd() *cobra.Command {
 				IdleTimeout:  idleTimeout,
 				WebDAV:       webdav,
 				WebDAVPrefix: webdavPrefix,
+				NoRechunk:    !rechunkOnRead,
 			}
 			return s.Start()
 		},
@@ -50,6 +52,13 @@ func serveCmd() *cobra.Command {
 		"also serve the vault as a WebDAV share, for mounting in a file manager or player")
 	cmd.Flags().StringVar(&webdavPrefix, "webdav-path", server.DefaultWebDAVPrefix,
 		"URL path to mount the WebDAV share under")
+	// On by default, because a file left in the old format is a file that has to
+	// be rebuilt in full every time it is read, and converting it once ends
+	// that. Worth turning off on a metered connection, where the conversion's
+	// download and re-upload cost real money, or on a machine with too little
+	// disk to stage a large file while it is converted.
+	cmd.Flags().BoolVar(&rechunkOnRead, "rechunk-on-read", true,
+		"convert files stored in the pre-chunking format after they are read, so later reads can seek")
 	return cmd
 }
 

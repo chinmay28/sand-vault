@@ -194,6 +194,9 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		vaultErrorResponse(w, err)
 		return
 	}
+	// A file still stored whole is rebuilt onto disk to be read at an offset;
+	// closing is what lets go of that copy.
+	defer reader.Close()
 
 	// A player has no browser session keeping the vault awake, which is the
 	// same hole a mounted share has: without this the vault would lock itself

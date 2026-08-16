@@ -1,7 +1,6 @@
 package vault
 
 import (
-	"bytes"
 	"container/list"
 	"context"
 	"errors"
@@ -315,22 +314,59 @@ func (c ctxReaderAt) ReadAt(p []byte, off int64) (int, error) {
 // stays the narrower door for a caller that specifically needs cheap seeks and
 // would rather be told when it cannot have them.
 //
-// A file still stored whole is gathered in full and served from memory, which
-// is what reading one has always cost. Reading it is also what schedules its
-// conversion, so the fallback stops being taken for that file shortly after.
-func (v *Vault) OpenReadSeeker(ctx context.Context, id string) (io.ReadSeeker, *Entry, error) {
+// A file still stored whole has to be rebuilt in full, because that format has
+// no seams to read between. The rebuilt copy goes to local disk rather than
+// staying in memory, and is shared by everything reading that file at the time
+// — a player opens a fresh connection on every seek, and one rebuild per seek is
+// what used to take a small machine down. Reading it also schedules its
+// conversion to chunks, so this path stops being taken for that file shortly
+// after.
+//
+// The reader must be closed. For a chunked file that costs nothing; for a
+// rebuilt one it is what releases the copy on disk.
+func (v *Vault) OpenReadSeeker(ctx context.Context, id string) (io.ReadSeekCloser, *Entry, error) {
 	reader, err := v.OpenReader(id)
 	if err == nil {
-		return io.NewSectionReader(
-			ctxReaderAt{ctx: ctx, reader: reader}, 0, reader.Size()), reader.Entry(), nil
+		return nopSeekCloser{io.NewSectionReader(
+			ctxReaderAt{ctx: ctx, reader: reader}, 0, reader.Size())}, reader.Entry(), nil
 	}
 	if errors.Is(err, ErrLocked) {
 		return nil, nil, err
 	}
 
-	data, entry, err := v.Fetch(ctx, id)
+	entry, err := v.Entry(id)
 	if err != nil {
 		return nil, nil, err
 	}
-	return bytes.NewReader(data), entry, nil
+
+	spool, _, err := v.openSpool(ctx, entry)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Served first, converted after — the same bargain Fetch makes, and for the
+	// same reasons (see rechunk.go).
+	v.queueRechunk(entry.ID)
+	return spool, entry, nil
 }
+
+// openSpool rebuilds a whole-stored file onto disk, or joins the rebuild
+// already under way.
+//
+// It does not queue the conversion: that belongs to reading a file, and this is
+// also how the conversion itself gets at the bytes.
+func (v *Vault) openSpool(ctx context.Context, entry *Entry) (*spoolReader, *spooled, error) {
+	return v.spools.open(ctx, entry.ID, func(ctx context.Context) ([]byte, error) {
+		v.mu.RLock()
+		shards := append([]Shard(nil), entry.Shards...)
+		keyID, path := entry.KeyID, entry.Path()
+		v.mu.RUnlock()
+		return v.gather(ctx, shards, keyID, path)
+	})
+}
+
+// nopSeekCloser gives a reader that owns nothing the same shape as one that
+// owns a file on disk, so callers close everything and branch on nothing.
+type nopSeekCloser struct{ io.ReadSeeker }
+
+func (nopSeekCloser) Close() error { return nil }

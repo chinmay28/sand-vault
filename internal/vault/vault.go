@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"log"
 	"path"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -50,6 +51,11 @@ type Vault struct {
 	// structures with their own locks, never taken while mu is held.
 	chunks *chunkCache
 	flight *chunkFlight
+
+	// spools holds files stored in the pre-chunking format, rebuilt onto local
+	// disk so that reading one at an offset costs disk rather than memory. See
+	// spool.go.
+	spools *spoolCache
 
 	// chunkSize is the plaintext chunk length new uploads are cut into. It is
 	// per-vault rather than a constant because every file records the size it
@@ -106,9 +112,14 @@ func Open(path string) (*Vault, error) {
 		chunkSize: archive.DefaultChunkSize,
 		chunks:    newChunkCache(DefaultChunkCacheBytes),
 		flight:    newChunkFlight(),
+		spools:    newSpoolCache(filepath.Dir(path)),
 	}
 	v.backupIdle.L = &v.backupMu
 	v.rechunkIdle.L = &v.rechunkMu
+
+	// A rebuilt copy is only ever open, so anything matching the name now is
+	// the residue of a process that died holding one.
+	sweepSpools(path)
 
 	sf, err := readStore(path)
 	if err != nil && !errors.Is(err, ErrNotInitialized) {
@@ -344,6 +355,7 @@ func (v *Vault) Lock() {
 	// the files themselves.
 	v.forgetAllThumbs()
 	v.chunks.clear()
+	v.spools.clear()
 	v.forgetRechunkQueue()
 
 	v.liveMu.Lock()

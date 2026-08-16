@@ -497,7 +497,14 @@ sand find receipt
 
 ```
 sand serve [--port 8123] [--bind 0.0.0.0] [--idle-timeout 30m] [--vault PATH]
+           [--webdav] [--webdav-path /dav] [--rechunk-on-read]
 ```
+
+`--rechunk-on-read` (on by default) converts files stored before chunked storage
+existed after they are read. Such a file has to be rebuilt in full on every read;
+converting it once ends that. Turning it off costs nothing but leaves those files
+as they are — worth doing on a metered connection, where the conversion's
+download and re-upload are real money.
 
 ### Standalone mode (no vault, no accounts)
 
@@ -874,6 +881,39 @@ systemctl status sand && journalctl -u sand -f
 
 Both write the same unit and use the same data directory
 (`/var/lib/sand`), so they can be used interchangeably on one host.
+
+### Memory, on a small machine
+
+The unit caps the service:
+
+```ini
+MemoryMax=80%
+MemorySwapMax=0
+```
+
+A percentage rather than a number, so it tracks whatever it lands on — 800 MB on
+a 1 GB Pi, 12.8 GB on a 16 GB server, no editing. The swap line is the half that
+keeps the machine responsive: a limit met by swapping to an SD card is exactly
+the unresponsiveness the limit is there to prevent. Under both, a runaway kills
+SAND and `Restart=on-failure` brings it back, instead of taking the box —
+including ssh — down with it.
+
+Raise it if you have a reason to:
+
+```bash
+sudo systemctl edit sand    # [Service] / MemoryMax=90%
+```
+
+Files stored before chunked storage existed are the ones that used to need the
+headroom: they cannot be read in pieces, so any read rebuilds all of them. They
+are now rebuilt onto disk rather than into memory, and converted to chunks after
+the first read, so it is a one-off per old file. If you would rather not have
+that conversion happen — it costs a download and a re-upload of whatever is read
+— turn it off:
+
+```bash
+sand serve --rechunk-on-read=false     # or SAND_RECHUNK=0 for the quickstart
+```
 
 ### Local folders on the systemd service
 

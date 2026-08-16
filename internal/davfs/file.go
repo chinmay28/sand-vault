@@ -21,7 +21,7 @@ import (
 // vault's own random-access read.
 type readFile struct {
 	entry *vault.Entry
-	body  io.ReadSeeker
+	body  io.ReadSeekCloser
 }
 
 func newReadFile(ctx context.Context, v *vault.Vault, entry *vault.Entry) (*readFile, error) {
@@ -34,9 +34,14 @@ func newReadFile(ctx context.Context, v *vault.Vault, entry *vault.Entry) (*read
 
 func (f *readFile) Read(p []byte) (int, error)                { return f.body.Read(p) }
 func (f *readFile) Seek(off int64, whence int) (int64, error) { return f.body.Seek(off, whence) }
-func (f *readFile) Close() error                              { return nil }
-func (f *readFile) Write([]byte) (int, error)                 { return 0, os.ErrPermission }
-func (f *readFile) Stat() (os.FileInfo, error)                { return fileInfo{entry: f.entry}, nil }
+
+// Close releases the read. For a chunked file that is nothing; for one still
+// stored whole it is what lets go of the rebuilt copy on disk, which is only
+// removed once every reader of that file has. The handler closes every file it
+// opens, so this runs once per request.
+func (f *readFile) Close() error               { return f.body.Close() }
+func (f *readFile) Write([]byte) (int, error)  { return 0, os.ErrPermission }
+func (f *readFile) Stat() (os.FileInfo, error) { return fileInfo{entry: f.entry}, nil }
 
 func (f *readFile) Readdir(int) ([]os.FileInfo, error) { return nil, os.ErrInvalid }
 
@@ -73,7 +78,11 @@ type uploadResult struct {
 // newWriteFile begins storing a file. A non-nil prefix is read into the upload
 // ahead of anything written, which is how appending works: the file already
 // stored goes in first, the new bytes follow, and neither is held in memory.
-func newWriteFile(ctx context.Context, v *vault.Vault, dir, base string, prefix io.Reader) *writeFile {
+//
+// The prefix is closed when the upload is done with it, whatever the outcome —
+// it is a read of a stored file, and one still in the pre-chunking format is
+// holding a rebuilt copy on disk until it is let go.
+func newWriteFile(ctx context.Context, v *vault.Vault, dir, base string, prefix io.ReadCloser) *writeFile {
 	pr, pw := io.Pipe()
 	f := &writeFile{name: base, pw: pw, done: make(chan uploadResult, 1)}
 
@@ -83,6 +92,9 @@ func newWriteFile(ctx context.Context, v *vault.Vault, dir, base string, prefix 
 	}
 
 	go func() {
+		if prefix != nil {
+			defer prefix.Close()
+		}
 		// PUT to a path that already holds a file replaces it, which is what
 		// WebDAV means by it.
 		entry, warnings, err := v.UploadStream(ctx, dir, base, source, vault.UploadOptions{Overwrite: true})
