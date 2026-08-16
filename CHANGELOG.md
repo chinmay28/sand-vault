@@ -410,12 +410,46 @@ only in the encrypted index, so searching is something an **open** vault can
 do and nothing else can — which is also why it is instant: the index is
 already in memory.
 
+### Walking the tree like a file manager
+
+The browser knew where you were and nothing about how you got there. The
+breadcrumb trail only ever pointed up the branch it was showing, so returning to
+a folder you had just left meant finding it again — and in a vault deep enough
+to be worth having, that is the whole afternoon.
+
+**Back, Forward and Up** now lead the toolbar, on a phone as well as at a desk.
+The current folder is a trail of the ones walked through rather than a single
+value, so the arrows step along it the way they do everywhere else; `Alt+←`,
+`Alt+→` and `Alt+↑` do the same from the keyboard. The trail lives in memory and
+is dropped when the vault locks — folder names are the index, and locking puts
+the index away.
+
+**A grid** stands beside the list, because a folder of photographs or films is a
+folder whose file names say nothing at all: the stored thumbnail was the only
+part of the row anyone was reading, so it becomes the tile. **Sorting** is by
+name, size, date or kind, each column opening the way round it is normally
+wanted — largest first for size, newest first for date — and reversing when
+chosen again. Folders lead whichever column is picked, since a folder in the
+index carries a name and nothing else to sort on. Both are preferences and are
+remembered, in three words in the browser's own storage and nothing about the
+vault.
+
+**Rows can be picked**, singly, in a run with `Shift`, or the lot with the tick
+above the columns or `Ctrl+A`. What is picked can be downloaded, moved onto
+other clouds, or deleted, in one go. Moving a selection prices the whole thing
+as one number — every estimate still comes out of the encrypted index without
+contacting an account — and then carries the files one at a time, so a cloud
+that stops answering costs the file in flight and nothing else. Deleting counts
+folders and files separately before it asks, because a folder takes everything
+inside it.
+
 ### The browser
 
 Lock screen, a sidebar of connected accounts with live status and how much each
-is holding, breadcrumbs, search, drag-and-drop upload with progress, part
-badges in each account's own colour, a per-part health read-out, and inline
-preview for images, video, audio, PDF and text — each one rebuilt on demand.
+is holding, navigation controls and breadcrumbs, search, list or grid, sorting,
+selection with bulk actions, drag-and-drop upload with progress, part badges in
+each account's own colour, a per-part health read-out, and inline preview for
+images, video, audio, PDF and text — each one rebuilt on demand.
 
 The wordmark is set in two hands: SAND in the tracked-out monospace it has
 always had, and *Vault* written beside it in a monoline hand.

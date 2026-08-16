@@ -1,24 +1,26 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react'
-import { COLORS, FONT, accountColor, fileIcon, formatBytes, formatDate, isPlayable } from '../theme'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { COLORS, FONT } from '../theme'
 import { api, joinPath } from '../api'
-import { useDownload } from '../download'
-import { ActionSheet, Banner, Button, ConfirmDialog, Empty, IconButton, Modal, Spinner } from './ui'
-import StreamLink from './StreamLink'
-import ConvertFile from './ConvertFile'
-import { RelocateClouds, UploadDestination } from './CloudSelect'
+import { sortFiles, sortFolders, sortHits, useViewPrefs } from '../view'
+import { Banner, Button, Empty, Modal, Spinner } from './ui'
+import { UploadDestination, RelocateClouds } from './CloudSelect'
 import { makeThumbnail } from '../thumbs'
-
-/* Name, size, modified, parts, actions. The four fixed columns come to nearly
-   500px, which is why the phone layout stacks instead of shrinking them. */
-const COLUMNS = 'minmax(0,1fr) 92px 150px 132px 108px'
+import { COLUMNS, FileRow, FileTile, FolderRow, FolderTile, SelectBox } from './FileEntry'
+import { Breadcrumbs, NavCluster, SearchField, SelectionBar, ViewControls } from './Toolbar'
+import { BulkDelete, BulkDownload } from './BulkActions'
 
 /* How long to sit on a keystroke before asking the server. Long enough that
    typing a word is one query rather than six, short enough to feel live. */
 const SEARCH_DEBOUNCE_MS = 180
 
+/* How wide a tile is allowed to get before the grid grows another column. Two
+   columns on the narrowest phone anyone still carries, and as many as fit on a
+   desk — which is the whole reason to be looking at tiles rather than rows. */
+const TILE_MIN_PX = { mobile: 108, desktop: 132 }
+
 export default function FileBrowser({
-  path, listing, loading, error, providers, defaultAccounts, mobile,
-  onNavigate, onRefresh, onPreview, onInspect, onError,
+  nav, listing, loading, error, providers, defaultAccounts, mobile,
+  onRefresh, onPreview, onInspect, onError,
 }) {
   const [dragging, setDragging] = useState(false)
   const [pending, setPending] = useState(null)
@@ -30,9 +32,16 @@ export default function FileBrowser({
   const [results, setResults] = useState(null)
   const [searching, setSearching] = useState(false)
   const [searchError, setSearchError] = useState(null)
+  const [prefs, view] = useViewPrefs()
+  const [selecting, setSelecting] = useState(false)
+  const [selected, setSelected] = useState(() => new Set())
+  const [bulk, setBulk] = useState(null)
   const fileInput = useRef(null)
   const dragDepth = useRef(0)
+  // Where the last tick was put, so a shift-click has a range to reach back to.
+  const anchor = useRef(null)
 
+  const path = nav.path
   const canUpload = providers.length > 0
   const searchTerm = query.trim()
   // Searching from inside a folder looks there first; the results header can
@@ -78,6 +87,105 @@ export default function FileBrowser({
     if (searchTerm) runSearch()
   }, [onRefresh, runSearch, searchTerm])
 
+  /* One list of what is on screen, whether that came from the listing or from
+     a search, already in the chosen order. Everything downstream — the rows,
+     the tiles, select-all, a shift-click's range — works off this and so all
+     of them agree about what "everything here" is and what order it is in. */
+  const entries = useMemo(() => {
+    if (searchTerm) {
+      return sortHits(results?.hits || [], prefs).map((hit) => (hit.type === 'folder'
+        ? { kind: 'folder', key: `dir:${hit.path}`, name: hit.name, path: hit.path, location: hit.dir }
+        : { kind: 'file', key: `file:${hit.file.id}`, name: hit.file.name, file: hit.file, location: hit.dir }))
+    }
+    return [
+      ...sortFolders(listing?.folders, prefs).map((name) => ({
+        kind: 'folder', key: `dir:${joinPath(path, name)}`, name, path: joinPath(path, name),
+      })),
+      ...sortFiles(listing?.files, prefs).map((file) => ({
+        kind: 'file', key: `file:${file.id}`, name: file.name, file,
+      })),
+    ]
+  }, [searchTerm, results, listing, path, prefs])
+
+  // Which rows have a stored picture. The listing says so outright, so no row
+  // asks for a thumbnail that was never made.
+  const thumbs = useMemo(
+    () => new Set((searchTerm ? results?.thumbs : listing?.thumbs) || []),
+    [searchTerm, results, listing])
+
+  /* A selection is about the things in front of you, so walking somewhere else
+     — or asking a different question of the index — ends it rather than
+     carrying a set of hidden rows along to be acted on by surprise. */
+  useEffect(() => { setSelected(new Set()); anchor.current = null }, [path, searchTerm])
+
+  const chosen = useMemo(
+    () => entries.filter((entry) => selected.has(entry.key)), [entries, selected])
+  const chosenFiles = chosen.filter((entry) => entry.kind !== 'folder')
+
+  const selectAll = useCallback(() => {
+    setSelected(new Set(entries.map((entry) => entry.key)))
+  }, [entries])
+
+  /* Ticking a box, with shift extending from the last one ticked — the range
+     select every file manager has, and the only bearable way to pick forty
+     photographs out of sixty. */
+  const toggle = useCallback((entry, checked, event) => {
+    const at = entries.findIndex((e) => e.key === entry.key)
+    setSelected((current) => {
+      const next = new Set(current)
+      const from = anchor.current
+      if (event?.shiftKey && from != null && from < entries.length && at >= 0) {
+        const [lo, hi] = from <= at ? [from, at] : [at, from]
+        for (let i = lo; i <= hi; i++) {
+          if (checked) next.add(entries[i].key)
+          else next.delete(entries[i].key)
+        }
+      } else if (checked) {
+        next.add(entry.key)
+      } else {
+        next.delete(entry.key)
+      }
+      return next
+    })
+    anchor.current = at
+  }, [entries])
+
+  /* Ctrl+A is what a file manager answers to, and this one has a selection to
+     answer it with. Not while a field has the focus, where the same keystroke
+     means the text in it — and not on a page with nothing listed. */
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key !== 'a' && e.key !== 'A') return
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return
+      const el = e.target
+      if (el instanceof HTMLElement && (el.isContentEditable
+        || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName))) return
+      if (!entries.length) return
+      e.preventDefault()
+      setSelecting(true)
+      selectAll()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [entries.length, selectAll])
+
+  /* Back and Forward on the keyboard as well as under the pointer. Alt is what
+     a browser uses for the same pair, and the guard is the same one as above:
+     inside a text field those keystrokes are how you move through the text. */
+  useEffect(() => {
+    const onKey = (e) => {
+      if (!e.altKey || e.ctrlKey || e.metaKey) return
+      const el = e.target
+      if (el instanceof HTMLElement && (el.isContentEditable
+        || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName))) return
+      if (e.key === 'ArrowLeft') { e.preventDefault(); nav.back() }
+      else if (e.key === 'ArrowRight') { e.preventDefault(); nav.forward() }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); nav.up() }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [nav])
+
   /* Files are held here until the clouds they are going to have been settled.
      Nothing is read or sent in the meantime — the picker is between choosing
      files and uploading them, not a step inside the upload. */
@@ -98,12 +206,12 @@ export default function FileBrowser({
       /* Made here, before anything is sent, because this is the only place the
          plaintext file exists in a browser. Each one resolves to null rather
          than throwing, so a format we cannot draw never holds up its upload. */
-      const thumbs = await Promise.all(
+      const thumbnails = await Promise.all(
         [...files].map((file) => makeThumbnail(file, file.type, file.name)))
 
       const resp = await api.upload(files, path, {
         accounts,
-        thumbs,
+        thumbs: thumbnails,
         onProgress: (fraction) => setUploads((prev) =>
           prev.map((u) => (u.id === batch.id ? { ...u, progress: fraction } : u))),
       })
@@ -141,7 +249,21 @@ export default function FileBrowser({
     chooseFiles(Array.from(e.dataTransfer.files || []))
   }
 
-  const segments = path === '/' ? [] : path.slice(1).split('/')
+  const listProps = {
+    entries,
+    thumbs,
+    prefs,
+    mobile,
+    providers,
+    selecting,
+    selected,
+    onToggle: toggle,
+    onNavigate: nav.navigate,
+    onPreview,
+    onInspect,
+    onRefresh: searchTerm ? refreshSearch : onRefresh,
+    onError,
+  }
 
   return (
     <main
@@ -153,53 +275,76 @@ export default function FileBrowser({
     >
       <div style={{
         display: 'flex',
-        alignItems: 'center',
+        flexDirection: 'column',
         gap: mobile ? '8px' : '10px',
-        padding: mobile ? '10px 12px' : '14px 20px',
+        padding: mobile ? '10px 12px' : '12px 20px',
         borderBottom: `1px solid ${COLORS.border}`,
-        flexWrap: 'wrap',
+        flexShrink: 0,
       }}>
-        {/* On a phone the trail takes a row of its own and the two actions
-            split the one below it, rather than all three fighting for it. */}
-        <nav style={{
-          flex: 1, minWidth: mobile ? '100%' : '180px', display: 'flex', alignItems: 'center',
-          gap: '5px', fontFamily: FONT.mono, fontSize: '12px', flexWrap: 'wrap',
+        {/* Moving about comes first on both layouts. On a phone the arrows and
+            the view controls share the top line and the trail takes the one
+            below it, because a trail four folders deep is already a row's
+            worth on its own. */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: mobile ? '6px' : '10px', flexWrap: 'wrap' }}>
+          <NavCluster nav={nav} mobile={mobile} />
+          {mobile ? <span style={{ flex: 1 }} /> : (
+            <Breadcrumbs path={path} mobile={mobile} onNavigate={nav.navigate} />
+          )}
+          <ViewControls
+            mobile={mobile}
+            prefs={prefs}
+            view={view}
+            selecting={selecting}
+            onSelecting={(on) => { setSelecting(on); if (!on) setSelected(new Set()) }}
+          />
+        </div>
+
+        {mobile && <Breadcrumbs path={path} mobile onNavigate={nav.navigate} />}
+
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: mobile ? '8px' : '10px', flexWrap: 'wrap',
         }}>
-          <Crumb label="▣ /" mobile={mobile} onClick={() => onNavigate('/')} active={path === '/'} />
-          {segments.map((segment, i) => {
-            const target = '/' + segments.slice(0, i + 1).join('/')
-            return (
-              <React.Fragment key={target}>
-                <span style={{ color: COLORS.textMuted }}>/</span>
-                <Crumb label={segment} mobile={mobile} onClick={() => onNavigate(target)} active={i === segments.length - 1} />
-              </React.Fragment>
-            )
-          })}
-        </nav>
+          <SearchField
+            value={query}
+            busy={searching}
+            mobile={mobile}
+            onChange={setQuery}
+          />
 
-        <SearchField
-          value={query}
-          busy={searching}
-          mobile={mobile}
-          onChange={setQuery}
-        />
-
-        {/* The two actions split the phone's row, each ending up wider than a
-            thumb and taller than the 44px floor. */}
-        <Button size={mobile ? 'md' : 'sm'} onClick={() => setCreatingFolder(true)}
-          style={mobile ? { flex: 1, justifyContent: 'center', minHeight: '46px' } : null}>+ Folder</Button>
-        <Button size={mobile ? 'md' : 'sm'} variant="primary" onClick={() => fileInput.current?.click()} disabled={!canUpload}
-          style={mobile ? { flex: 1, justifyContent: 'center', minHeight: '46px' } : null}>
-          ↑ Upload
-        </Button>
-        <input
-          ref={fileInput}
-          type="file"
-          multiple
-          style={{ display: 'none' }}
-          onChange={(e) => { chooseFiles(Array.from(e.target.files || [])); e.target.value = '' }}
-        />
+          {/* The two actions split the phone's row, each ending up wider than a
+              thumb and taller than the 44px floor. */}
+          <Button size={mobile ? 'md' : 'sm'} onClick={() => setCreatingFolder(true)}
+            style={mobile ? { flex: 1, justifyContent: 'center', minHeight: '46px' } : null}>+ Folder</Button>
+          <Button size={mobile ? 'md' : 'sm'} variant="primary" onClick={() => fileInput.current?.click()} disabled={!canUpload}
+            style={mobile ? { flex: 1, justifyContent: 'center', minHeight: '46px' } : null}>
+            ↑ Upload
+          </Button>
+          <input
+            ref={fileInput}
+            type="file"
+            multiple
+            style={{ display: 'none' }}
+            onChange={(e) => { chooseFiles(Array.from(e.target.files || [])); e.target.value = '' }}
+          />
+        </div>
       </div>
+
+      {selecting && (
+        <SelectionBar
+          mobile={mobile}
+          count={chosen.length}
+          total={entries.length}
+          files={chosenFiles.length}
+          allSelected={entries.length > 0 && chosen.length === entries.length}
+          busy={!!bulk}
+          onAll={selectAll}
+          onNone={() => setSelected(new Set())}
+          onDone={() => { setSelecting(false); setSelected(new Set()) }}
+          onDownload={() => setBulk('download')}
+          onMove={() => setBulk('move')}
+          onDelete={() => setBulk('delete')}
+        />
+      )}
 
       <div style={{ flex: 1, overflowY: 'auto', padding: mobile ? '12px 12px 32px' : '16px 20px 40px' }}>
         {error && <Banner tone="error">{error}</Banner>}
@@ -248,30 +393,24 @@ export default function FileBrowser({
             path={path}
             scoped={scoped}
             mobile={mobile}
-            providers={providers}
             onScopeChange={setScoped}
-            onNavigate={onNavigate}
-            onPreview={onPreview}
-            onInspect={onInspect}
-            onRefresh={refreshSearch}
-            onError={onError}
+            listProps={listProps}
           />
         ) : loading && !listing ? (
           <div style={{ padding: '48px', textAlign: 'center' }}><Spinner size={20} /></div>
+        ) : entries.length === 0 ? (
+          <Empty icon="◇" title={path === '/' ? 'Nothing stored yet' : 'This folder is empty'}>
+            {canUpload
+              ? 'Drop files anywhere in this pane, or use Upload. Each file is compressed, split into three encrypted parts, and each part goes to a different cloud account.'
+              : 'Connect at least two cloud accounts first — SAND needs somewhere separate to put each part of a file.'}
+            {canUpload && (
+              <div style={{ marginTop: '16px' }}>
+                <Button variant="primary" size="sm" onClick={() => fileInput.current?.click()}>↑ Choose files</Button>
+              </div>
+            )}
+          </Empty>
         ) : (
-          <FileTable
-            path={path}
-            listing={listing}
-            canUpload={canUpload}
-            mobile={mobile}
-            providers={providers}
-            onNavigate={onNavigate}
-            onPreview={onPreview}
-            onInspect={onInspect}
-            onRefresh={onRefresh}
-            onError={onError}
-            onPickFiles={() => fileInput.current?.click()}
-          />
+          <EntryList {...listProps} onSelectAll={selectAll} onSelectNone={() => setSelected(new Set())} />
         )}
       </div>
 
@@ -316,89 +455,51 @@ export default function FileBrowser({
           onCreated={() => { setCreatingFolder(false); onRefresh() }}
         />
       )}
-    </main>
-  )
-}
 
-/* The one control that reaches past the folder you are standing in. The index
-   it queries only exists in the open vault, so this is also the only thing in
-   the app that can answer "where did I put that?" at all. */
-function SearchField({ value, busy, mobile, onChange }) {
-  return (
-    <div style={{
-      position: 'relative',
-      display: 'flex',
-      alignItems: 'center',
-      // On a phone the field takes a row of its own, above the two actions.
-      flex: mobile ? '1 0 100%' : '0 1 240px',
-      minWidth: mobile ? '100%' : '150px',
-    }}>
-      <span style={{
-        position: 'absolute', left: mobile ? '11px' : '9px', color: COLORS.textMuted,
-        fontSize: '13px', pointerEvents: 'none',
-      }}>⌕</span>
-      <input
-        type="search"
-        value={value}
-        aria-label="Search files and folders"
-        placeholder="Search files and folders"
-        onChange={(e) => onChange(e.target.value)}
-        onKeyDown={(e) => { if (e.key === 'Escape') onChange('') }}
-        style={{
-          width: '100%',
-          // Tall enough to be a target in its own right on a phone, where the
-          // clear button beside it also has to clear 44px.
-          minHeight: mobile ? '46px' : 0,
-          padding: mobile ? '8px 48px 8px 30px' : '6px 28px 6px 24px',
-          background: COLORS.bg,
-          border: `1px solid ${COLORS.border}`,
-          borderRadius: '6px',
-          color: COLORS.text,
-          fontFamily: FONT.mono,
-          fontSize: mobile ? '13px' : '12px',
-          outline: 'none',
-          boxSizing: 'border-box',
-          // Otherwise Safari renders a search field as its own rounded pill
-          // and ignores most of the above. (Its clear button is dropped in
-          // App.jsx, which is where a pseudo-element can be reached.)
-          WebkitAppearance: 'none',
-        }}
-      />
-      {busy && (
-        <span style={{ position: 'absolute', right: mobile ? '14px' : '9px', display: 'flex' }}>
-          <Spinner size={mobile ? 13 : 11} />
-        </span>
+      {bulk === 'delete' && (
+        <BulkDelete
+          items={chosen}
+          onClose={() => setBulk(null)}
+          /* What was deleted cannot stay ticked, and what survived a partial
+             run is still there to be tried again. */
+          onDone={() => { setSelected(new Set()); listProps.onRefresh() }}
+        />
       )}
-      {!busy && value && (
-        <span style={{ position: 'absolute', right: mobile ? '2px' : '4px', display: 'flex' }}>
-          <IconButton
-            glyph="✕"
-            label="Clear the search"
-            tone="muted"
-            size={mobile ? 44 : 20}
-            onClick={() => onChange('')}
-            style={{ fontSize: mobile ? '13px' : '11px' }}
-          />
-        </span>
+
+      {bulk === 'download' && (
+        <BulkDownload items={chosen} onClose={() => setBulk(null)} />
       )}
-    </div>
+
+      {bulk === 'move' && (
+        <RelocateClouds
+          targets={chosen.map((entry) => (
+            entry.kind === 'folder' ? { path: entry.path } : { id: entry.file.id }))}
+          title={`Move ${chosen.length} item${chosen.length === 1 ? '' : 's'}`}
+          subtitle="Pick the clouds every part of everything selected should live on"
+          /* Nothing preselected: a selection has as many placements as it has
+             files, so there is no "where it is now" to open on. The estimate
+             says how much of it is already in place as soon as there is
+             something to price. */
+          current={[]}
+          providers={providers}
+          onClose={() => setBulk(null)}
+          onDone={listProps.onRefresh}
+        />
+      )}
+    </main>
   )
 }
 
 /* Search results are the same rows as a listing, with the folder each hit
    lives in spelled out — a name on its own means nothing once the answer can
    come from anywhere in the vault. */
-function SearchResults({
-  term, results, searching, error, path, scoped, mobile, providers,
-  onScopeChange, onNavigate, onPreview, onInspect, onRefresh, onError,
-}) {
+function SearchResults({ term, results, searching, error, path, scoped, mobile, onScopeChange, listProps }) {
   if (error) return <Banner tone="error">{error}</Banner>
   if (!results) {
     return <div style={{ padding: '48px', textAlign: 'center' }}><Spinner size={20} /></div>
   }
 
   const hits = results.hits || []
-  const thumbs = new Set(results.thumbs || [])
   const scopeNote = path !== '/' && (
     <button
       onClick={() => onScopeChange(!scoped)}
@@ -437,88 +538,24 @@ function SearchResults({
           ("*.jpg"), or include a "/" to match a whole path ("photos/2024").
         </Empty>
       ) : (
-        <div style={{
-          border: `1px solid ${COLORS.border}`,
-          borderRadius: '8px',
-          overflow: 'hidden',
-          background: COLORS.surface,
-        }}>
-          {hits.map((hit) => (hit.type === 'folder' ? (
-            <FolderRow
-              key={`dir:${hit.path}`}
-              name={hit.name}
-              path={hit.path}
-              location={hit.dir}
-              mobile={mobile}
-              providers={providers}
-              onNavigate={onNavigate}
-              onRefresh={onRefresh}
-              onError={onError}
-            />
-          ) : (
-            <FileRow
-              key={hit.file.id}
-              file={hit.file}
-              location={hit.dir}
-              mobile={mobile}
-              providers={providers}
-              hasThumb={thumbs.has(hit.file.id)}
-              onPreview={() => onPreview(hit.file, thumbs.has(hit.file.id))}
-              onInspect={() => onInspect(hit.file)}
-              onRefresh={onRefresh}
-              onError={onError}
-            />
-          )))}
-        </div>
+        <EntryList {...listProps} />
       )}
     </>
   )
 }
 
-function Crumb({ label, mobile, onClick, active }) {
-  return (
-    <button
-      onClick={onClick}
-      style={{
-        background: 'none',
-        border: 'none',
-        // Walking back up the tree is a tap like any other, so the trail gets
-        // room to be tapped rather than being treated as decoration.
-        minHeight: mobile ? '44px' : 0,
-        minWidth: mobile ? '44px' : 0,
-        padding: mobile ? '4px 10px' : '2px 4px',
-        borderRadius: '6px',
-        cursor: 'pointer',
-        fontFamily: FONT.mono,
-        fontSize: mobile ? '13px' : '12px',
-        color: active ? COLORS.accent : COLORS.textDim,
-        fontWeight: active ? 700 : 400,
-      }}
-    >{label}</button>
-  )
+/* The listing, as rows or as tiles. Which one is a preference and nothing
+   more: both are drawn from the same ordered entries and offer the same things
+   to do with each of them. */
+function EntryList(props) {
+  return props.prefs.view === 'grid' ? <EntryGrid {...props} /> : <EntryTable {...props} />
 }
 
-function FileTable({ path, listing, canUpload, mobile, providers, onNavigate, onPreview, onInspect, onRefresh, onError, onPickFiles }) {
-  const folders = listing?.folders || []
-  const files = listing?.files || []
-  // Which rows have a stored picture. The listing says so outright, so no row
-  // asks for a thumbnail that was never made.
-  const thumbs = new Set(listing?.thumbs || [])
-
-  if (!folders.length && !files.length) {
-    return (
-      <Empty icon="◇" title={path === '/' ? 'Nothing stored yet' : 'This folder is empty'}>
-        {canUpload
-          ? 'Drop files anywhere in this pane, or use Upload. Each file is compressed, split into three encrypted parts, and each part goes to a different cloud account.'
-          : 'Connect at least two cloud accounts first — SAND needs somewhere separate to put each part of a file.'}
-        {canUpload && (
-          <div style={{ marginTop: '16px' }}>
-            <Button variant="primary" size="sm" onClick={onPickFiles}>↑ Choose files</Button>
-          </div>
-        )}
-      </Empty>
-    )
-  }
+function EntryTable({
+  entries, thumbs, mobile, providers, selecting, selected, onToggle, onSelectAll, onSelectNone,
+  onNavigate, onPreview, onInspect, onRefresh, onError,
+}) {
+  const all = entries.length > 0 && entries.every((entry) => selected.has(entry.key))
 
   return (
     <div style={{
@@ -527,13 +564,16 @@ function FileTable({ path, listing, canUpload, mobile, providers, onNavigate, on
       overflow: 'hidden',
       background: COLORS.surface,
     }}>
-      {/* Column headings only make sense over columns. */}
-      {!mobile && (
+      {/* Column headings only make sense over columns. The tick above them
+          picks the lot, which is the one control here that is worth having on
+          a phone too — hence the heading row appearing at all while
+          selecting. */}
+      {(!mobile || selecting) && (
         <div style={{
-          display: 'grid',
-          gridTemplateColumns: COLUMNS,
-          gap: '12px',
-          padding: '9px 14px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: selecting ? (mobile ? '4px' : '6px') : 0,
+          padding: mobile ? '4px 10px' : '9px 14px',
           borderBottom: `1px solid ${COLORS.border}`,
           fontFamily: FONT.mono,
           fontSize: '9.5px',
@@ -542,651 +582,110 @@ function FileTable({ path, listing, canUpload, mobile, providers, onNavigate, on
           textTransform: 'uppercase',
           color: COLORS.textMuted,
         }}>
-          <span>Name</span>
-          <span>Size</span>
-          <span>Modified</span>
-          <span title="Which account holds each of the three parts">Parts</span>
-          <span />
+          {selecting && (
+            <SelectBox
+              mobile={mobile}
+              checked={all}
+              label={all ? 'Select none' : 'Select everything here'}
+              onChange={(checked) => (checked ? onSelectAll?.() : onSelectNone?.())}
+            />
+          )}
+          {mobile ? (
+            <span>{all ? 'Everything here is selected' : 'Select everything here'}</span>
+          ) : (
+            <div style={{
+              display: 'grid', gridTemplateColumns: COLUMNS, gap: '12px',
+              flex: 1, minWidth: 0,
+            }}>
+              <span>Name</span>
+              <span>Size</span>
+              <span>Modified</span>
+              <span title="Which account holds each of the three parts">Parts</span>
+              <span />
+            </div>
+          )}
         </div>
       )}
 
-      {folders.map((folder) => (
+      {entries.map((entry) => (entry.kind === 'folder' ? (
         <FolderRow
-          key={`dir:${folder}`}
-          name={folder}
-          path={joinPath(path, folder)}
+          key={entry.key}
+          name={entry.name}
+          path={entry.path}
+          location={entry.location}
           mobile={mobile}
           providers={providers}
+          selecting={selecting}
+          selected={selected.has(entry.key)}
+          onSelect={(checked, event) => onToggle(entry, checked, event)}
           onNavigate={onNavigate}
           onRefresh={onRefresh}
           onError={onError}
         />
-      ))}
-
-      {files.map((file) => (
+      ) : (
         <FileRow
-          key={file.id}
-          file={file}
+          key={entry.key}
+          file={entry.file}
+          location={entry.location}
           mobile={mobile}
           providers={providers}
-          hasThumb={thumbs.has(file.id)}
-          onPreview={() => onPreview(file, thumbs.has(file.id))}
-          onInspect={() => onInspect(file)}
+          hasThumb={thumbs.has(entry.file.id)}
+          selecting={selecting}
+          selected={selected.has(entry.key)}
+          onSelect={(checked, event) => onToggle(entry, checked, event)}
+          onPreview={() => onPreview(entry.file, thumbs.has(entry.file.id))}
+          onInspect={() => onInspect(entry.file)}
           onRefresh={onRefresh}
           onError={onError}
         />
-      ))}
+      )))}
     </div>
   )
 }
 
-function Row({ children, mobile }) {
-  const [hover, setHover] = useState(false)
+function EntryGrid({
+  entries, thumbs, mobile, providers, selecting, selected, onToggle,
+  onNavigate, onPreview, onInspect, onRefresh, onError,
+}) {
   return (
-    <div
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      style={{
-        // Too narrow for columns, so the row becomes a stack: the name and its
-        // menu on the first line, the details underneath. It is also roomier
-        // than the desktop row — a row a fingertip has to hit needs the height
-        // more than the screen needs to hold one more file.
-        ...(mobile
-          ? { display: 'flex', flexDirection: 'column', rowGap: '2px' }
-          : { display: 'grid', gridTemplateColumns: COLUMNS, gap: '12px', alignItems: 'center' }),
-        padding: mobile ? '6px 10px 8px' : '9px 14px',
-        borderBottom: `1px solid ${COLORS.border}22`,
-        background: hover ? COLORS.surfaceHover : 'transparent',
-        fontFamily: FONT.mono,
-        fontSize: '11.5px',
-        color: COLORS.textDim,
-        minHeight: mobile ? '64px' : '38px',
-      }}
-    >{children}</div>
-  )
-}
-
-/* The picture in front of a file's name. It is a stored thumbnail — a small
-   JPEG the vault keeps a folder at a time — so drawing one costs nothing like
-   rebuilding the file it came from.
-
-   `size` is the edge in pixels: 52 on a phone, where the row is a stack and
-   the tile is the left column of it, and 26 on a desktop, where it stands in
-   for the emoji inside the Name column without changing the row's height.
-
-   It falls back to that same emoji, and does so on any failure — a file
-   uploaded before thumbnails existed, an account that has gone quiet, a pack
-   that could not be read. The list has always been readable without pictures. */
-function Thumb({ id, icon, size, expected }) {
-  const [failed, setFailed] = useState(false)
-
-  // A new file in the same row position must not inherit the old one's state.
-  useEffect(() => { setFailed(false) }, [id])
-
-  if (!expected || failed) {
-    return <span style={{ flexShrink: 0, fontSize: size >= 40 ? '26px' : '15px' }}>{icon}</span>
-  }
-
-  return (
-    <img
-      src={api.thumbURL(id)}
-      alt=""
-      width={size}
-      height={size}
-      loading="lazy"
-      decoding="async"
-      onError={() => setFailed(true)}
-      style={{
-        width: `${size}px`,
-        height: `${size}px`,
-        flexShrink: 0,
-        objectFit: 'cover',
-        borderRadius: size >= 40 ? '6px' : '4px',
-        background: COLORS.surfaceRaised,
-        border: `1px solid ${COLORS.border}`,
-      }}
-    />
-  )
-}
-
-/* The tappable name. On a phone it claims the whole first line and a 44px
-   height, so opening a file means hitting the row rather than the glyph.
-   `location` is the folder the row was found in, which only a search result
-   has to say. */
-function NameButton({ mobile, icon, label, location, chevron, disabled, title, onClick }) {
-  return (
-    <button
-      onClick={onClick}
-      title={title}
-      disabled={disabled}
-      style={{
-        display: 'flex', alignItems: 'center', gap: '9px',
-        flex: 1, minWidth: 0,
-        minHeight: mobile ? '44px' : 0,
-        background: 'none', border: 'none',
-        padding: mobile ? '0 2px' : 0,
-        borderRadius: '8px',
-        cursor: disabled ? 'not-allowed' : 'pointer',
-        fontFamily: FONT.mono,
-        fontSize: mobile ? '13.5px' : '12.5px',
-        color: disabled ? COLORS.error : COLORS.text,
-        overflow: 'hidden', textAlign: 'left',
-      }}
-    >
-      {chevron !== undefined
-        ? <span style={{ color: COLORS.accent, flexShrink: 0 }}>{chevron}</span>
-        /* Lines file names up under the folder rows' ▸ chevron. */
-        : <span style={{ width: '12px', flexShrink: 0 }} />}
-      <span style={{ flexShrink: 0 }}>{icon}</span>
-      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
-      {location && (
-        /* Shrinks before the name does: a truncated name is worse than a
-           truncated path. */
-        <span
-          title={location}
-          style={{
-            minWidth: 0, flexShrink: 1,
-            color: COLORS.textMuted, fontSize: mobile ? '11px' : '10.5px',
-            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-          }}
-        >in {location}</span>
-      )}
-    </button>
-  )
-}
-
-function FileRow({ file, location, mobile, providers, hasThumb, onPreview, onInspect, onRefresh, onError }) {
-  const [busy, setBusy] = useState(false)
-  const [download, downloading] = useDownload(onError)
-  const [menu, setMenu] = useState(false)
-  const [confirming, setConfirming] = useState(false)
-  /* null, or 'play' when the stream dialog should reach for VLC on the way in
-     and 'link' when it should just show the address. */
-  const [streaming, setStreaming] = useState(null)
-  const [converting, setConverting] = useState(null)
-  const [relocating, setRelocating] = useState(false)
-  /* A file stored before chunked storage existed. It cannot be read at an
-     offset, so nothing opens or streams it until it has been converted — the
-     row says so rather than letting a click fail. */
-  const legacy = !file.chunk_count
-  const degraded = file.shards.length < 3
-  const dead = file.shards.length < 2
-  // Only what a player is any use for gets offered one.
-  const playable = isPlayable(file.mime, file.name)
-
-  const remove = async () => {
-    setBusy(true)
-    try {
-      const resp = await api.deleteFile(file.id)
-      if (resp.warnings?.length) onError(resp.warnings.join('\n'))
-      setConfirming(false)
-      onRefresh()
-    } catch (err) {
-      onError(err.message)
-      setConfirming(false)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const icon = fileIcon(file.mime, file.name)
-  const openTitle = dead
-    ? 'Too few parts remain to rebuild this file'
-    : legacy ? 'Stored in the old format — convert it before it can be opened' : 'Open'
-
-  const name = (
-    <NameButton
-      mobile={mobile}
-      /* On a desktop the picture stands exactly where the emoji did, so the
-         Name column keeps its width and the row its height. */
-      icon={<Thumb id={file.id} icon={icon} size={26} expected={hasThumb} />}
-      label={file.name}
-      location={location}
-      disabled={dead}
-      title={openTitle}
-      onClick={legacy ? () => setConverting('open') : onPreview}
-    />
-  )
-
-  /* On a phone the badges are a read-out and nothing more. A third target in a
-     row that already has a name and a menu would have to be either too small
-     to hit or tall enough to push the next file off the screen — and the menu
-     already offers the same inspector by name. On a desktop the badges stay
-     the shortcut they have always been. */
-  const partsBadges = (
-    <>
-      {[1, 2, 3].map((part) => {
-        const shard = file.shards.find((s) => s.part === part)
-        return (
-          <span
-            key={part}
-            title={shard ? `Part ${part} on ${shard.provider_name}` : `Part ${part} not stored`}
-            style={{
-              /* The badges share the phone's second line with the size and
-                 the date now that the picture has taken the left column, so
-                 they are the desktop's width there too — that is the
-                 difference between reading the date and truncating it. */
-              width: '19px',
-              height: mobile ? '16px' : '15px',
-              borderRadius: '3px',
-              fontFamily: FONT.mono,
-              fontSize: mobile ? '9.5px' : '8.5px',
-              fontWeight: 700,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              flexShrink: 0,
-              color: shard ? COLORS.bg : COLORS.textMuted,
-              background: shard ? accountColor(shard.provider_id) : 'transparent',
-              border: shard ? 'none' : `1px dashed ${COLORS.border}`,
-            }}
-          >{part}</span>
-        )
-      })}
-      {degraded && (
-        <span style={{ marginLeft: '3px', color: dead ? COLORS.error : COLORS.warn, fontSize: '11px' }}>
-          {dead ? '✗' : '!'}
-        </span>
-      )}
-    </>
-  )
-
-  const parts = mobile ? (
-    <span
-      title={`${file.shards.length} of 3 parts stored`}
-      style={{ display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 0 }}
-    >{partsBadges}</span>
-  ) : (
-    <button
-      onClick={onInspect}
-      title="Where the parts live"
-      aria-label="Where the parts live"
-      style={{
-        display: 'flex', alignItems: 'center', gap: '3px',
-        background: 'none', border: 'none', padding: 0,
-        borderRadius: '6px', cursor: 'pointer', flexShrink: 0,
-      }}
-    >{partsBadges}</button>
-  )
-
-  /* A pointer can pick between two 34px squares. A fingertip cannot, and one
-     of them deletes the file everywhere, so the phone gets a single menu
-     button instead and spells the choices out in a sheet. */
-  const actions = mobile ? (
-    <IconButton
-      glyph="⋯"
-      label={`Actions for ${file.name}`}
-      onClick={() => setMenu(true)}
-      size={44}
-      style={{ background: COLORS.surfaceRaised, border: `1px solid ${COLORS.border}`, fontSize: '18px' }}
-    />
-  ) : (
-    <span style={{ display: 'flex', gap: '2px', justifyContent: 'flex-end', flexShrink: 0 }}>
-      {/* Three controls is what the column has room for, so this one is on the
-          rows it means something on: a player is no use on a PDF. */}
-      {legacy ? (
-        <IconButton
-          glyph="◈"
-          label={`Convert ${file.name}`}
-          title="Stored in the old format — convert it to open or stream it"
-          tone="muted"
-          onClick={() => setConverting('open')}
-        />
-      ) : playable && !dead && (
-        <IconButton
-          glyph="▶"
-          label={`Stream ${file.name}`}
-          title="Open in VLC, or copy the address"
-          onClick={() => setStreaming('play')}
-        />
-      )}
-      {/* Every row carries this control, so the spoken name says which file it
-          belongs to rather than repeating the same sentence down the list. */}
-      <IconButton
-        glyph={downloading ? '…' : '↓'}
-        label={`Download ${file.name}`}
-        title="Download the rebuilt, decrypted file"
-        disabled={downloading}
-        onClick={() => download(file)}
-      />
-      {/* Moving the parts to other clouds would be a fourth control here, and
-          there is room for three. It lives in the parts inspector instead —
-          one click away through the badges, and beside the read-out of where
-          they are now, which is the question it answers. */}
-      <IconButton
-        glyph={busy ? '…' : '✕'}
-        label="Delete everywhere"
-        tone="muted"
-        disabled={busy}
-        onClick={() => setConfirming(true)}
-      />
-    </span>
-  )
-
-  const dialogs = (
-    <>
-      {menu && (
-        <ActionSheet
-          title={file.name}
-          subtitle={`${formatBytes(file.size)} · ${formatDate(file.modified_at)}`}
-          onClose={() => setMenu(false)}
-          items={[
-            legacy ? {
-              key: 'convert',
-              glyph: '◈',
-              label: 'Convert to chunks',
-              hint: 'Stored in the old format, which cannot be opened or streamed until converted',
-              disabled: dead,
-              onSelect: () => setConverting('open'),
-            } : {
-              key: 'open',
-              glyph: '◱',
-              label: 'Open',
-              hint: dead ? 'Too few parts remain to rebuild this file' : 'Gather the parts and rebuild it here',
-              disabled: dead,
-              onSelect: onPreview,
-            },
-            // Sits under Open because it is the same intent aimed elsewhere:
-            // watch this, but in the player that can actually seek it.
-            playable && !legacy && {
-              key: 'stream',
-              glyph: '▶',
-              label: 'Stream in VLC',
-              hint: dead ? 'Too few parts remain to rebuild this file' : 'Open it in VLC and start playing',
-              disabled: dead,
-              onSelect: () => setStreaming('play'),
-            },
-            !legacy && {
-              key: 'copy-link',
-              glyph: '⧉',
-              label: 'Copy the address',
-              hint: 'A link any player or app can open',
-              disabled: dead,
-              onSelect: () => setStreaming('link'),
-            },
-            !legacy && {
-              key: 'download',
-              glyph: '↓',
-              // The sheet closes on the way out and the fetch carries on
-              // behind it — a home-screen app has no tab to park a download
-              // in, so nothing here may navigate.
-              label: downloading ? 'Downloading…' : 'Download',
-              hint: 'Save the rebuilt, decrypted file',
-              disabled: downloading,
-              onSelect: () => download(file),
-            },
-            {
-              key: 'parts',
-              glyph: '◈',
-              label: 'Where the parts live',
-              hint: `${file.shards.length} of 3 parts stored`,
-              onSelect: onInspect,
-            },
-            {
-              key: 'relocate',
-              glyph: '⇄',
-              label: 'Move to other clouds',
-              hint: 'Only the parts that have to move are copied',
-              onSelect: () => setRelocating(true),
-            },
-            {
-              key: 'delete',
-              glyph: '✕',
-              label: 'Delete',
-              hint: 'Erases every part, everywhere',
-              danger: true,
-              onSelect: () => setConfirming(true),
-            },
-          ]}
-        />
-      )}
-
-      {streaming && (
-        <StreamLink
-          file={file}
-          autoplay={streaming === 'play'}
-          onClose={() => setStreaming(null)}
-        />
-      )}
-
-      {converting && (
-        <ConvertFile
-          file={file}
-          onClose={() => setConverting(null)}
-          onConverted={onRefresh}
-        />
-      )}
-
-      {confirming && (
-        <ConfirmDialog
-          title={`Delete ${file.name}?`}
-          busy={busy}
-          onConfirm={remove}
-          onClose={() => !busy && setConfirming(false)}
-        >
-          Every part is erased from the accounts holding it. This cannot be undone.
-        </ConfirmDialog>
-      )}
-
-      {relocating && (
-        <RelocateClouds
-          target={{ id: file.id }}
-          title={`Move ${file.name}`}
-          subtitle={`${formatBytes(file.size)} — pick the clouds its ${file.shards.length} part(s) should live on`}
-          /* Already selected: where the parts are now, so the dialog opens on
-             the truth and a swap is one click rather than four. */
-          current={file.shards.map((s) => s.provider_id)}
+    <div style={{
+      display: 'grid',
+      gridTemplateColumns: `repeat(auto-fill, minmax(${mobile ? TILE_MIN_PX.mobile : TILE_MIN_PX.desktop}px, 1fr))`,
+      gap: mobile ? '8px' : '12px',
+    }}>
+      {entries.map((entry) => (entry.kind === 'folder' ? (
+        <FolderTile
+          key={entry.key}
+          name={entry.name}
+          path={entry.path}
+          location={entry.location}
+          mobile={mobile}
           providers={providers}
-          onClose={() => setRelocating(false)}
-          onDone={onRefresh}
+          selecting={selecting}
+          selected={selected.has(entry.key)}
+          onSelect={(checked, event) => onToggle(entry, checked, event)}
+          onNavigate={onNavigate}
+          onRefresh={onRefresh}
+          onError={onError}
         />
-      )}
-    </>
-  )
-
-  if (mobile) {
-    /* The picture is the row's left column and the two lines of text sit
-       beside it, rather than the name being indented over a line of detail.
-       Six pixels taller than the row it replaces, and the tile is inside the
-       same tap target as the name — pointing at the photo is how anyone would
-       expect to open it. */
-    return (
-      <Row mobile>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <button
-            onClick={legacy ? () => setConverting('open') : onPreview}
-            disabled={dead}
-            title={openTitle}
-            style={{
-              display: 'flex', alignItems: 'center', gap: '10px',
-              flex: 1, minWidth: 0, minHeight: '52px',
-              background: 'none', border: 'none', padding: '0 2px',
-              borderRadius: '8px', textAlign: 'left',
-              cursor: dead ? 'not-allowed' : 'pointer',
-            }}
-          >
-            <Thumb id={file.id} icon={icon} size={52} expected={hasThumb} />
-
-            <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '3px' }}>
-              <span style={{
-                fontFamily: FONT.mono, fontSize: '13.5px',
-                color: dead ? COLORS.error : COLORS.text,
-                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-              }}>{file.name}</span>
-
-              {/* Size, date and the part badges share the second line — the
-                  columns they came from are gone, so they carry their own
-                  separators. */}
-              {/* This line carries the part badges as well as the size and the
-                  date, and on a 390px screen it has 224px to do it in. Hence
-                  no "·" separator, unlike everywhere else, and hence the
-                  badges are pushed right with a margin rather than a spacer
-                  element — a spacer would cost a flex gap of its own, which is
-                  the difference between reading the time and truncating it. */}
-              <span style={{
-                display: 'flex', alignItems: 'center', gap: '6px',
-                fontFamily: FONT.mono, fontSize: '11px', color: COLORS.textMuted,
-              }}>
-                <span style={{ whiteSpace: 'nowrap', flexShrink: 0 }}>{formatBytes(file.size)}</span>
-                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {formatDate(file.modified_at)}
-                </span>
-                {location && (
-                  <span
-                    title={location}
-                    style={{ minWidth: 0, flexShrink: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                  >in {location}</span>
-                )}
-                <span style={{ marginLeft: 'auto', display: 'flex', flexShrink: 0 }}>{parts}</span>
-              </span>
-            </span>
-          </button>
-
-          {actions}
-        </div>
-        {dialogs}
-      </Row>
-    )
-  }
-
-  return (
-    <Row>
-      {name}
-      <span>{formatBytes(file.size)}</span>
-      <span>{formatDate(file.modified_at)}</span>
-      {parts}
-      {actions}
-      {dialogs}
-    </Row>
-  )
-}
-
-function FolderRow({ name, path, location, mobile, providers, onNavigate, onRefresh, onError }) {
-  const [menu, setMenu] = useState(false)
-  const [confirming, setConfirming] = useState(false)
-  const [relocating, setRelocating] = useState(false)
-  const [busy, setBusy] = useState(false)
-
-  const open = () => onNavigate(path)
-
-  const remove = async () => {
-    setBusy(true)
-    try {
-      const resp = await api.deleteFolder(path, true)
-      if (resp.warnings?.length) onError(resp.warnings.join('\n'))
-      setConfirming(false)
-      onRefresh()
-    } catch (err) {
-      onError(err.message)
-      setConfirming(false)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const nameButton = (
-    <NameButton mobile={mobile} icon="📁" label={name} location={location} chevron="▸" title="Open folder" onClick={open} />
-  )
-
-  const actions = mobile ? (
-    <IconButton
-      glyph="⋯"
-      label={`Actions for ${name}`}
-      onClick={() => setMenu(true)}
-      size={44}
-      style={{ background: COLORS.surfaceRaised, border: `1px solid ${COLORS.border}`, fontSize: '18px' }}
-    />
-  ) : (
-    <span style={{ display: 'flex', gap: '2px', justifyContent: 'flex-end' }}>
-      <IconButton
-        glyph="⇄"
-        label={`Move ${name} to other clouds`}
-        title="Move every file in this folder to other clouds"
-        onClick={() => setRelocating(true)}
-      />
-      <IconButton glyph="✕" label="Delete folder" tone="muted" onClick={() => setConfirming(true)} />
-    </span>
-  )
-
-  const dialogs = (
-    <>
-      {menu && (
-        <ActionSheet
-          title={name}
-          subtitle="Folder"
-          onClose={() => setMenu(false)}
-          items={[
-            { key: 'open', glyph: '▸', label: 'Open folder', onSelect: open },
-            {
-              key: 'relocate',
-              glyph: '⇄',
-              label: 'Move to other clouds',
-              hint: 'Everything inside it, and only the parts that have to move',
-              onSelect: () => setRelocating(true),
-            },
-            {
-              key: 'delete',
-              glyph: '✕',
-              label: 'Delete folder',
-              hint: 'Erases everything inside it, everywhere',
-              danger: true,
-              onSelect: () => setConfirming(true),
-            },
-          ]}
-        />
-      )}
-
-      {confirming && (
-        <ConfirmDialog
-          title={`Delete ${name}?`}
-          subtitle={path}
-          busy={busy}
-          confirmLabel="Delete folder"
-          onConfirm={remove}
-          onClose={() => !busy && setConfirming(false)}
-        >
-          The folder and everything inside it goes: all parts are erased from every account. This cannot be undone.
-        </ConfirmDialog>
-      )}
-
-      {relocating && (
-        <RelocateClouds
-          target={{ path }}
-          title={`Move ${name}`}
-          subtitle={`Everything under ${path} — pick the clouds its parts should live on`}
-          /* A folder has no placement of its own; its files each have one. So
-             the dialog opens on nothing chosen and the preview says, as soon as
-             there is something to price, how much of the folder is already
-             where it is being sent. */
-          current={[]}
+      ) : (
+        <FileTile
+          key={entry.key}
+          file={entry.file}
+          location={entry.location}
+          mobile={mobile}
           providers={providers}
-          onClose={() => setRelocating(false)}
-          onDone={onRefresh}
+          hasThumb={thumbs.has(entry.file.id)}
+          selecting={selecting}
+          selected={selected.has(entry.key)}
+          onSelect={(checked, event) => onToggle(entry, checked, event)}
+          onPreview={() => onPreview(entry.file, thumbs.has(entry.file.id))}
+          onInspect={() => onInspect(entry.file)}
+          onRefresh={onRefresh}
+          onError={onError}
         />
-      )}
-    </>
-  )
-
-  if (mobile) {
-    return (
-      <Row mobile>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minHeight: '48px' }}>
-          {nameButton}
-          {actions}
-        </div>
-        {dialogs}
-      </Row>
-    )
-  }
-
-  return (
-    <Row>
-      {nameButton}
-      {/* The three empty middle cells only exist to fill the grid. */}
-      <span /><span /><span />
-      {actions}
-      {dialogs}
-    </Row>
+      )))}
+    </div>
   )
 }
 

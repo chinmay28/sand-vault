@@ -1189,8 +1189,11 @@ sand/
 │   └── server/                # sessions, handlers, embedded SPA
 ├── web/src/                   # React file browser
 │   ├── api.js  theme.js  App.jsx
-│   └── components/            # LockScreen, AccountsPanel, FileBrowser, PreviewModal,
-│                              #   PdfPreview (pdf.js page renderer), ui
+│   ├── navigation.js          # the trail of folders walked — Back/Forward/Up
+│   ├── view.js                # list or grid, sort key and direction (persisted)
+│   └── components/            # LockScreen, AccountsPanel, FileBrowser, Toolbar,
+│                              #   FileEntry (rows + tiles), BulkActions,
+│                              #   PreviewModal, PdfPreview (pdf.js), ui
 └── tests/                     # pytest e2e: CLI, API, vault flow, browser
 ```
 
