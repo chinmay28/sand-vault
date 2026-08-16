@@ -155,6 +155,20 @@ export default function RecoverVault({ scan: initialScan, onClose, onRecovered, 
         <RecoveryFigures report={report} />
         <Shortfall report={report} />
 
+        {/* Adopting the lost vault's key is what made these files readable
+            again, and it is not where this should end: that key comes from the
+            old password, and every copy of the old index backup hands it over.
+            Said here, and again in the accounts panel, because the transfer it
+            takes to fix is the whole vault twice over and rarely wanted now. */}
+        {report.recoverable > 0 && (
+          <Banner tone="info">
+            These files are on the key of the vault they came from, which its password still
+            opens. When you have the time and the bandwidth, re-encrypt them under your own key
+            from the accounts panel — it rebuilds every file and erases the parts the old
+            password could read.
+          </Banner>
+        )}
+
         {report.warnings?.length > 0 && (
           <Banner tone="warn">
             <span style={{ fontFamily: FONT.mono, fontSize: '11px', whiteSpace: 'pre-wrap' }}>

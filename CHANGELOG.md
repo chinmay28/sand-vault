@@ -190,6 +190,37 @@ Three endpoints carry all of it: `GET /api/vault/recovery` for the scan,
 `POST /api/vault/recovery` for the dry run and the rebuild, and
 `POST /api/vault/recovery/resume` to finish one later. All need a session.
 
+### …and taking the recovered files off the dead vault's key
+
+A recovery adopts the lost vault's data key. It has to — that key is the only
+thing that opens the parts already sitting on your accounts — and it means the
+job is not finished when the files come back. The key is derived from the *old*
+password, and every copy of the old `manifest.sand` hands it over, including any
+taken off an account before the replacement vault existed. Recovery replaces the
+copies it can reach; it cannot replace the ones it cannot. So the files stay
+readable by whoever could read them before the machine died, and nothing said so.
+
+Now the vault says so and keeps saying so — in `sand vault status`, and as a
+standing banner in the accounts panel — until:
+
+```bash
+sand vault reclaim --account work --account offsite --account nas
+```
+
+A fresh data key sealed under your **current** password, every file rebuilt onto
+it, and the parts the old key opened erased. Your password does not change; only
+what it protects does. And since every file is gathered and scattered anyway,
+that is the one cheap moment to say where they should live: `--account` moves
+them off the clouds a machine you no longer have picked. The browser offers the
+same thing with the cloud picker in it.
+
+It costs a download and an upload of the whole vault, which is why it is offered
+rather than done as part of the recovery — a recovery has to work with the
+network you have, and this can wait for the one you want. Files stay readable
+throughout, an interrupted run resumes with `sand vault migrate`, and a
+selection that could not hold a file is refused before the key rotates rather
+than halfway through.
+
 ### A CLI upload no longer outruns its own backup
 
 `sand put` returned the moment the parts were on the accounts, and the push of

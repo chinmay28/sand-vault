@@ -565,6 +565,41 @@ the data key the files it already brought back depend on.
 In the browser this is the same banner and the same dialog, saying *Finish
 recovery* instead of *Attempt recovery*.
 
+### Making the recovered files yours
+
+A recovery adopts the lost vault's data key, because that key is the only thing
+that opens the parts already sitting on your accounts. It gets your files back,
+and it leaves something behind: those parts are still encrypted under the old
+key, which the **old password** still derives. Every copy of the old
+`manifest.sand` hands that key over — including any taken off an account before
+this vault existed, which no amount of overwriting can reach.
+
+So the vault says so, and keeps saying so, until you finish the job:
+
+```
+Inherited key:    2 file(s) came back from a recovery and are still on the
+                  lost vault's key, which its password opens — run 'sand vault reclaim'
+```
+
+```bash
+sand vault reclaim                                  # onto the clouds they are on
+sand vault reclaim --account work --account offsite --account nas
+```
+
+A fresh data key is sealed under your **current** password, every file is
+rebuilt onto it, and the parts the old key opened are erased. Your password does
+not change. Since every file is gathered and scattered anyway, `--account` is
+the cheap moment to say where they should live — the clouds a recovery lands on
+are the ones a machine you no longer have picked.
+
+It costs a download and an upload of the whole vault, which is why it is offered
+rather than done: a recovery has to work with the network you have, and this can
+wait for the one you want. Files stay readable throughout, and stopping is safe
+— whatever moved stays moved, and `sand vault migrate` finishes the rest.
+
+In the browser this is a standing banner in the accounts panel, and a dialog
+with the cloud picker in it.
+
 ### The tradeoff, stated plainly
 
 A copy of this file sits in every account, and every copy is one password away
@@ -605,6 +640,7 @@ sand vault defaults [account]... [--clear]    Show or set the clouds uploads go 
 sand vault backup [--disable|--enable]        Write the encrypted index to every account
 sand vault recover [--from ACCOUNT]           Rebuild a lost vault from an account's copy
 sand vault recover --resume                   Finish one, once the rest of the clouds are back
+sand vault reclaim [--account NAME]...        Re-encrypt recovered files under your own key
 ```
 
 ### Converting old files
@@ -833,6 +869,7 @@ its home screen gets the password prompt like any other browser would.
 | GET | `/api/vault/recovery` | Is a connected account carrying a vault this one could recover? |
 | POST | `/api/vault/recovery` | Rebuild the index from that copy (`password`, `provider_id`, `dry_run`) |
 | POST | `/api/vault/recovery/resume` | Re-point the index at accounts reconnected since (`dry_run`; no password) |
+| POST | `/api/vault/reclaim` | Re-encrypt recovered files under this vault's own key, onto `accounts` |
 | GET | `/api/providers/specs` | Backend descriptions for the connect form |
 | GET · POST | `/api/providers` | List / connect accounts |
 | POST | `/api/providers/{id}/test` | Re-check an account |
@@ -1238,7 +1275,7 @@ sand/
 │   └── components/              # LockScreen, AccountsPanel, ConnectCloud,
 │                                #   FileBrowser, Toolbar, FileEntry, BulkActions,
 │                                #   PreviewModal, PdfPreview, StreamLink,
-│                                #   RecoverVault, ui
+│                                #   RecoverVault, ReclaimVault, ui
 │   ├── public/                  # app icon, home-screen icons + manifest,
 │   │                            #   developer badge
 │   └── build-version.js         # feeds the version into the bundle

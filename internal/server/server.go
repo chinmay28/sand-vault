@@ -212,6 +212,9 @@ func (s *Server) Handler() (http.Handler, error) {
 		"GET /api/vault/recovery":         s.handleRecoveryScan,
 		"POST /api/vault/recovery":        s.handleRecoveryRun,
 		"POST /api/vault/recovery/resume": s.handleRecoveryResume,
+		// Taking recovered files off the dead vault's key and onto this one's,
+		// on whichever accounts are named.
+		"POST /api/vault/reclaim": s.handleVaultReclaim,
 
 		"GET /api/providers":            s.handleProvidersList,
 		"POST /api/providers":           s.handleProviderAdd,

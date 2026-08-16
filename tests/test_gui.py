@@ -1765,3 +1765,45 @@ class TestDisasterRecovery:
         # so the vault says so rather than calling the job done.
         page.get_by_role("button", name="Open the vault").click()
         expect(page.get_by_role("button", name="Finish recovery")).to_be_visible(timeout=30000)
+
+    def test_recovered_files_are_re_encrypted_onto_chosen_clouds(self, page, spawn_server, lost_vault):
+        """Recovery adopts the dead vault's key, which its password still opens.
+
+        The app says so and keeps saying so, and re-encrypting is where the
+        user also gets to say which clouds the files should live on — the ones
+        a recovery lands on were chosen on a machine that is gone.
+        """
+        clouds, lost_password, names = lost_vault
+        base = spawn_server("case-reclaim")
+        self.new_machine(page, base, "a-brand-new-passphrase")
+
+        self.reconnect(page, "back-one", clouds[0])
+        page.wait_for_selector("text=Sand files detected", timeout=30000)
+        self.reconnect_from_dialog(page, "back-two", clouds[1])
+        password_box = page.locator('input[type="password"]')
+        expect(password_box.first).to_be_visible(timeout=60000)
+        password_box.first.fill(lost_password)
+        self.reconnect_from_dialog(page, "back-three", clouds[2])
+        page.wait_for_selector("text=Recovery complete", timeout=90000)
+
+        # Said at the end of the recovery...
+        expect(page.get_by_text(re.compile(r"on the key of the vault they came from"))).to_be_visible()
+        page.get_by_role("button", name="Open the vault").click()
+
+        # ...and standing in the accounts panel, because the transfer it takes
+        # to fix is the whole vault twice over and rarely wanted right now.
+        reclaim = page.get_by_role("button", name="Re-encrypt under your key")
+        expect(reclaim).to_be_visible(timeout=30000)
+        reclaim.click()
+        page.wait_for_selector("text=Re-encrypt under your own key", timeout=15000)
+
+        # Pick the clouds: everything is being gathered and scattered anyway.
+        select_clouds(page, ["back-one", "back-two", "back-three"])
+        page.get_by_role("button", name="Re-encrypt and move").click()
+        page.wait_for_selector("text=These files are yours now", timeout=120000)
+        page.get_by_role("button", name="Done").click()
+
+        # The warning is gone and the files still open.
+        expect(page.get_by_role("button", name="Re-encrypt under your key")).to_have_count(0, timeout=30000)
+        for name in names:
+            expect(page.get_by_text(name, exact=True).first).to_be_visible(timeout=30000)

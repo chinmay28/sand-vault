@@ -247,6 +247,7 @@ Three routes back, in increasing order of how much has survived:
 | Enough parts + `manifest.sand` + password | `sand restore --manifest` | The complete file, offline, no accounts |
 | The accounts + password | `sand vault recover`, or the browser's own prompt | The whole vault, files openable again |
 | The accounts you were missing | `sand vault recover --resume` | The parts that were out of reach, no password needed |
+| A recovered vault | `sand vault reclaim` | The same files on a key of your own, on clouds you pick |
 
 `sand vault recover` runs against a fresh vault with the accounts reconnected.
 Reconnecting gives every account a new internal id, so rather than trusting the
@@ -286,6 +287,30 @@ usually the answer to "how bad is this" — and then names what is left: the fil
 that came up short, and the accounts whose absence caused it. An account that
 held only a third part is listed without `Blocking` set, since reconnecting it
 changes nothing about what can be opened.
+
+**Recovery ends with borrowed keys, and that is not where it should stop.** The
+recovered vault adopts the lost vault's `data_key` because that key is the only
+thing that opens the parts already on the accounts. It is derived from the *old*
+password, and every copy of the old `manifest.sand` carries it — including any
+taken off an account before the replacement vault existed, which no amount of
+overwriting can reach. So the files are readable by whoever could read them
+before the machine died, and the vault records that (`InheritedKeyID` in the
+store, `Stats.InheritedKey` out of it) and keeps saying so.
+
+`Vault.Reclaim` (`sand vault reclaim`, `POST /api/vault/reclaim`) closes it, and
+is the third thing in this codebase built out of the same two moves §3.3
+established. `RotateDataKey` mints a fresh generation and retires the adopted
+one — no password needed, since the key that *wraps* the data key is the one
+already held in memory and is not the one changing — and `MigrateFilesTo` then
+rebuilds every file onto it and erases the parts the old key opened. Because
+every file is gathered and scattered anyway, that migration is also the one
+cheap moment to change placement, which is what the `accounts` argument is for:
+the clouds a recovery lands on are the ones a machine that no longer exists
+picked. The selection is validated against `BuildPlan` *before* the key rotates,
+so a placement that cannot hold a file fails with the vault untouched.
+
+Interruptible on the same terms as a password change: the rotation is one write,
+each file commits on its own, and `sand vault migrate` finishes whatever is left.
 
 **Finishing later is a separate operation.** A partial recovery leaves a
 complete index, part of it out of reach: `Stats.Unresolved` counts the shard
@@ -979,6 +1004,7 @@ reveals only whether a vault exists.
 | GET | `/api/vault/recovery` | Is a connected account carrying a vault this one could recover? (§3.7) |
 | POST | `/api/vault/recovery` | Adopt that index (`password` — the *lost* vault's, `provider_id`, `dry_run`) |
 | POST | `/api/vault/recovery/resume` | Re-point the index at accounts reconnected since (`dry_run`; no password) |
+| POST | `/api/vault/reclaim` | Fresh data key under this password, every file rebuilt onto it, onto `accounts` (§3.7) |
 | GET | `/api/providers/specs` | Backend descriptions for the connect form |
 | GET | `/api/providers` | Connected accounts: online, parts held, quota |
 | POST | `/api/providers` | Connect an account (pings before saving) |
@@ -1233,8 +1259,9 @@ sand/
 │   ├── sandfile/              # binary .sand part format
 │   ├── provider/              # provider.go, local, s3, webdav, gdrive, dropbox
 │   ├── vault/                 # store (encrypted file), manifest, placement, transfer,
-│   │                          #   relocate (moving parts between accounts),
-│   │                          #   backup (writing the index out), recovery (reading it back)
+│   │                          #   relocate (moving parts between accounts), rekey,
+│   │                          #   backup (writing the index out), recovery (reading it
+│   │                          #   back), reclaim (onto a key of your own)
 │   └── server/                # sessions, handlers, embedded SPA
 ├── web/src/                   # React file browser
 │   ├── api.js  theme.js  App.jsx

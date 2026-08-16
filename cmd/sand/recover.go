@@ -287,6 +287,83 @@ func printRecoveryReport(report *vault.RecoveryReport, dryRun bool) {
 	}
 }
 
+func vaultReclaimCmd() *cobra.Command {
+	var accounts []string
+
+	cmd := &cobra.Command{
+		Use:   "reclaim",
+		Short: "Re-encrypt recovered files under this vault's own key",
+		Long: `Take recovered files off the key of the vault they came from.
+
+Recovery adopts the lost vault's data key, because that key is the only thing
+that opens the parts already sitting on your accounts. That gets the files
+back, and it leaves something behind: those parts are still encrypted under the
+old key, which the old password still derives — through any copy of the old
+` + vault.BackupKey + `, including ones this vault never got to overwrite.
+
+This ends that. A fresh data key is sealed under your current password, every
+file is rebuilt onto it, and the parts under the old key are erased. Your
+password does not change.
+
+Since every file is gathered and scattered anyway, --account is the moment to
+say where they should live: name the clouds you actually mean to keep using,
+rather than the ones the vault that died happened to choose. Left out, each
+file goes back to the accounts it is already on.
+
+It costs a download and an upload of the whole vault. Files stay readable
+throughout, and stopping it is safe — whatever moved stays moved, and
+'sand vault migrate' finishes the rest.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			v, err := openVault(cmd)
+			if err != nil {
+				return err
+			}
+			defer closeVault(v)
+
+			chosen, err := resolveAccountNames(v, accounts)
+			if err != nil {
+				return err
+			}
+
+			stats, err := v.Stats()
+			if err != nil {
+				return err
+			}
+			if stats.Files == 0 {
+				fmt.Println("This vault holds no files, so there is nothing to re-encrypt.")
+				return nil
+			}
+			fmt.Printf("Re-encrypting %d file(s) (%s) under a key of this vault's own",
+				stats.Files, formatBytes(stats.Bytes))
+			if len(chosen) > 0 {
+				fmt.Printf(", onto %d chosen cloud(s)", len(chosen))
+			}
+			fmt.Println("…")
+
+			report, err := v.Reclaim(cmd.Context(), chosen, func(path string, done, total int) {
+				fmt.Printf("  [%d/%d] %s\n", done, total, path)
+			})
+			if report != nil {
+				printWarnings(report.Warnings)
+				fmt.Printf("Re-encrypted %d of %d file(s) (%s).\n",
+					report.Migrated, report.Pending, formatBytes(report.Bytes))
+				if report.Remaining > 0 {
+					fmt.Printf("%d file(s) are still on the old key and still readable — "+
+						"fix what is reported above and run 'sand vault migrate' to finish.\n",
+						report.Remaining)
+				} else {
+					fmt.Println("The old key opens nothing that is still stored.")
+				}
+			}
+			return err
+		},
+	}
+
+	cmd.Flags().StringSliceVar(&accounts, "account", nil,
+		"cloud account to store the re-encrypted files on, by name or id (repeatable)")
+	return cmd
+}
+
 func manifestCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "manifest",

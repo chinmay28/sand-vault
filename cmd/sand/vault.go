@@ -60,7 +60,8 @@ func vaultCmd() *cobra.Command {
 		Short: "Create and manage the vault",
 	}
 	cmd.AddCommand(vaultInitCmd(), vaultStatusCmd(), vaultPasswdCmd(), vaultMigrateCmd(), vaultConvertCmd(),
-		vaultPolicyCmd(), vaultDefaultsCmd(), vaultBackupCmd(), vaultRecoverCmd())
+		vaultPolicyCmd(), vaultDefaultsCmd(), vaultBackupCmd(), vaultRecoverCmd(),
+		vaultReclaimCmd())
 	return cmd
 }
 
@@ -130,6 +131,14 @@ func vaultStatusCmd() *cobra.Command {
 			if stats.Pending > 0 {
 				fmt.Printf("Awaiting re-key:  %d file(s) are still under the previous key — run 'sand vault migrate'\n",
 					stats.Pending)
+			}
+			// A recovery adopts the key of the vault it rebuilt, so until these
+			// files are re-encrypted the password that opened that vault still
+			// opens their parts.
+			if stats.InheritedKey && stats.Files > 0 {
+				fmt.Printf("Inherited key:    %d file(s) came back from a recovery and are still on the\n"+
+					"                  lost vault's key, which its password opens — run 'sand vault reclaim'\n",
+					stats.Files)
 			}
 			// What a recovery run before every account was back leaves behind:
 			// an index that knows about parts it cannot reach.

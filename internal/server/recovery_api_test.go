@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -300,6 +301,118 @@ func TestRecoveryResumesOnceTheRestOfTheCloudsAreBack(t *testing.T) {
 	_, scan = c.json(http.MethodGet, "/api/vault/recovery", nil)
 	if resumable, _ := scan["resumable"].(bool); resumable {
 		t.Errorf("everything is reachable, so nothing should be offered: %v", scan)
+	}
+}
+
+// Recovery gets the files back on the dead vault's key; reclaiming is what
+// takes them off it, and what lets the user say where they should live instead.
+func TestReclaimingARecoveredVaultOverHTTP(t *testing.T) {
+	const lostPassword = "the password that is gone"
+	roots := lostVault(t, lostPassword)
+	c := reconnected(t, "a brand new password", roots)
+
+	w, _ := c.json(http.MethodPost, "/api/vault/recovery", map[string]any{"password": lostPassword})
+	if w.Code != http.StatusOK {
+		t.Fatalf("recover: %d %s", w.Code, w.Body.String())
+	}
+
+	// The vault says, and keeps saying, that its key is not its own.
+	_, status := c.json(http.MethodGet, "/api/vault", nil)
+	stats := status["stats"].(map[string]any)
+	if inherited, _ := stats["inherited_key"].(bool); !inherited {
+		t.Fatalf("a recovered vault should report an inherited key: %v", stats)
+	}
+
+	// A cloud the dead vault never used, to prove the selection is honoured.
+	elsewhere := filepath.Join(t.TempDir(), "somewhere-new")
+	w, resp := c.json(http.MethodPost, "/api/providers", map[string]any{
+		"kind": "local", "name": "somewhere-new", "options": map[string]string{"path": elsewhere},
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("connect a new account: %d %v", w.Code, resp)
+	}
+	fresh := resp["provider"].(map[string]any)["id"].(string)
+
+	ids := c.providerIDs()
+	chosen := []string{fresh}
+	for _, id := range ids {
+		if id != fresh && len(chosen) < 3 {
+			chosen = append(chosen, id)
+		}
+	}
+
+	w, body := c.json(http.MethodPost, "/api/vault/reclaim", map[string]any{"accounts": chosen})
+	if w.Code != http.StatusOK {
+		t.Fatalf("reclaim: %d %s", w.Code, w.Body.String())
+	}
+	if migrated, _ := body["migrated"].(float64); migrated != 2 {
+		t.Fatalf("reclaim moved %v of the 2 files: %v", migrated, body)
+	}
+	if remaining, _ := body["remaining"].(float64); remaining != 0 {
+		t.Errorf("reclaim left %v files on the old key", remaining)
+	}
+
+	// The warning is gone, and nothing is waiting on a migration.
+	_, status = c.json(http.MethodGet, "/api/vault", nil)
+	stats = status["stats"].(map[string]any)
+	if inherited, _ := stats["inherited_key"].(bool); inherited {
+		t.Error("the key is this vault's own now and should not report as inherited")
+	}
+	if pending, _ := stats["pending_migration"].(float64); pending != 0 {
+		t.Errorf("%v files are still on an older key", pending)
+	}
+
+	// Every part is on a cloud that was chosen, and the files still open.
+	_, listing := c.json(http.MethodGet, "/api/files?path=/", nil)
+	files := listing["files"].([]any)
+	if len(files) != 2 {
+		t.Fatalf("expected 2 files, got %d", len(files))
+	}
+	for _, raw := range files {
+		file := raw.(map[string]any)
+		shards := file["shards"].([]any)
+		if len(shards) != 3 {
+			t.Errorf("%v has %d parts, want a full set", file["name"], len(shards))
+		}
+		for _, s := range shards {
+			id := s.(map[string]any)["provider_id"].(string)
+			if !slices.Contains(chosen, id) {
+				t.Errorf("%v: a part landed on %v, which was not chosen",
+					file["name"], s.(map[string]any)["provider_name"])
+			}
+		}
+	}
+	id := files[0].(map[string]any)["id"].(string)
+	content := c.do(http.MethodGet, "/api/files/"+id+"/content", nil, "")
+	if content.Code != http.StatusOK || content.Body.Len() == 0 {
+		t.Fatalf("reading a reclaimed file: %d %s", content.Code, content.Body.String())
+	}
+}
+
+func TestReclaimRefusesACloudSelectionThatCannotHoldAFile(t *testing.T) {
+	const lostPassword = "the password that is gone"
+	roots := lostVault(t, lostPassword)
+	c := reconnected(t, "a brand new password", roots)
+
+	w, _ := c.json(http.MethodPost, "/api/vault/recovery", map[string]any{"password": lostPassword})
+	if w.Code != http.StatusOK {
+		t.Fatalf("recover: %d %s", w.Code, w.Body.String())
+	}
+
+	w, body := c.json(http.MethodPost, "/api/vault/reclaim",
+		map[string]any{"accounts": []string{c.providerIDs()[0]}})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("reclaim onto one cloud = %d %v, want it refused", w.Code, body)
+	}
+
+	// Refused before anything rotated, so the vault is exactly as it was.
+	_, status := c.json(http.MethodGet, "/api/vault", nil)
+	stats := status["stats"].(map[string]any)
+	if inherited, _ := stats["inherited_key"].(bool); !inherited {
+		t.Error("a refused reclaim changed the key anyway")
+	}
+	if pending, _ := stats["pending_migration"].(float64); pending != 0 {
+		t.Errorf("a refused reclaim left %v files mid-migration", pending)
 	}
 }
 

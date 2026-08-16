@@ -503,11 +503,16 @@ func (v *Vault) Recover(ctx context.Context, snapshot *Snapshot, dryRun bool) (*
 		retiredOn []wrappedKey
 		policy    Policy
 		manifest  *Manifest
-	}{v.dataKey, v.dataKeyID, v.retired, v.store.DataKey, v.store.RetiredKeys, v.store.Policy, v.manifest}
+		inherited string
+	}{v.dataKey, v.dataKeyID, v.retired, v.store.DataKey, v.store.RetiredKeys, v.store.Policy,
+		v.manifest, v.store.InheritedKeyID}
 
 	v.store.DataKey = wrapped
 	v.store.DataKeyID = snapshot.KeyID
 	v.store.RetiredKeys = wrappedRetired
+	// Adopted, not minted. Until these files are re-encrypted, the password of
+	// the vault that died still opens their parts — see Reclaim.
+	v.store.InheritedKeyID = snapshot.KeyID
 	v.dataKey = dataKey
 	v.dataKeyID = snapshot.KeyID
 	v.retired = retired
@@ -529,6 +534,7 @@ func (v *Vault) Recover(ctx context.Context, snapshot *Snapshot, dryRun bool) (*
 		v.store.RetiredKeys = previous.retiredOn
 		v.store.Policy = previous.policy
 		v.manifest = previous.manifest
+		v.store.InheritedKeyID = previous.inherited
 		return nil, err
 	}
 

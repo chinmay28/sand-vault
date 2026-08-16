@@ -1176,6 +1176,11 @@ type Stats struct {
 	// resuming the recovery is what clears them — see Reconcile.
 	Unresolved int `json:"unresolved"`
 	Stranded   int `json:"stranded"`
+
+	// InheritedKey says the key these files are stored under came from a
+	// recovery rather than from this vault, so the password of the vault that
+	// died still opens their parts. Reclaim is what clears it.
+	InheritedKey bool `json:"inherited_key"`
 }
 
 // Stats returns aggregate counters for the whole vault.
@@ -1196,6 +1201,7 @@ func (v *Vault) Stats() (Stats, error) {
 		folders[f] = true
 	}
 	s.Unresolved, s.Stranded = v.unreachableLocked()
+	s.InheritedKey = v.store.InheritedKeyID != "" && v.store.InheritedKeyID == v.dataKeyID
 	for _, e := range v.manifest.Entries {
 		s.Files++
 		s.Bytes += e.Size

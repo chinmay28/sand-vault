@@ -126,6 +126,18 @@ type storeFile struct {
 	// field — an older vault, or one written by a build that predates the
 	// feature — means the backup is on, which is the default.
 	ManifestBackupDisabled bool `json:"manifest_backup_disabled,omitempty"`
+
+	// InheritedKeyID names a data key this vault did not mint: the one a
+	// recovery adopted from the vault it rebuilt.
+	//
+	// Recorded because adopting it is not the end of the story. That key is
+	// derived from the *old* password, and every copy of the old manifest.sand
+	// hands it over — including any that was taken off an account before this
+	// vault existed, which no amount of overwriting can reach. So while the
+	// active generation is this one, the files are readable by whoever could
+	// read them before the machine died, and the vault has to keep saying so
+	// until they have been re-encrypted. Cleared by RotateDataKey.
+	InheritedKeyID string `json:"inherited_key_id,omitempty"`
 }
 
 // seal encrypts plaintext under key with a fresh random nonce.

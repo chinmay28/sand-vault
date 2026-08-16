@@ -81,6 +81,18 @@ export const api = {
      parts rather than a secret. */
   resumeRecovery: ({ dryRun = false } = {}) =>
     request('/api/vault/recovery/resume', { method: 'POST', body: { dry_run: dryRun } }),
+  /* Takes recovered files off the key they came back on. A recovery adopts the
+     lost vault's data key — it is the only thing that opens the parts already
+     on the accounts — which leaves the old password able to open them too,
+     through any copy of the old index backup. This mints a fresh key under the
+     current password and rebuilds every file onto it, erasing the old parts.
+     `accounts` is where they should land; empty leaves each file where it is.
+
+     A download and an upload of the whole vault, so it holds the connection for
+     a long time. Nothing is unreadable while it runs and stopping is safe —
+     whatever moved stays moved, and migrate() finishes the rest. */
+  reclaim: (accounts = []) =>
+    request('/api/vault/reclaim', { method: 'POST', body: { accounts } }),
 
   providerSpecs: () => request('/api/providers/specs'),
   providers: () => request('/api/providers'),

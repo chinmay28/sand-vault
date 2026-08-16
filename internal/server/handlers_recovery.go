@@ -158,6 +158,42 @@ func (s *Server) handleRecoveryResume(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"report": report})
 }
 
+// reclaimRequest names the accounts the re-encrypted files should end up on.
+type reclaimRequest struct {
+	// Accounts is a set of connected account IDs. Empty leaves each file on the
+	// accounts it is already on — which after a recovery are the ones the vault
+	// that died chose.
+	Accounts []string `json:"accounts"`
+}
+
+// handleVaultReclaim takes recovered files off the dead vault's key.
+//
+// Recovery adopts that key because it is the only thing that opens the parts
+// already on the accounts, and that leaves the old password able to open them
+// too — through any copy of the old manifest.sand, including ones this vault
+// never got to overwrite. Reclaiming ends it: a fresh data key under this
+// vault's own password, every file rebuilt onto it, the old parts erased.
+//
+// A download and an upload per file, so this request can run for a very long
+// time on a full vault. Files stay readable throughout, and a client that gives
+// up on the response has broken nothing: whatever moved stays moved, and
+// POST /api/vault/migrate finishes the rest.
+func (s *Server) handleVaultReclaim(w http.ResponseWriter, r *http.Request) {
+	var req reclaimRequest
+	if err := decodeJSON(r, &req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
+		return
+	}
+
+	v, _ := s.Vault()
+	report, err := v.Reclaim(r.Context(), req.Accounts, nil)
+	if err != nil {
+		vaultErrorResponse(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, report)
+}
+
 // firstRecoverableAccount picks the account to read the backup from when the
 // caller did not name one: the first holding a backup this vault cannot open,
 // which is by definition one written by the vault being recovered.
