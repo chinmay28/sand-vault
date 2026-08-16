@@ -317,10 +317,14 @@ func (v *Vault) migrateFile(ctx context.Context, id string) (path string, size i
 	stale.Shards = append([]Shard(nil), entry.Shards...)
 	v.mu.RUnlock()
 
-	data, _, err := v.Fetch(ctx, id)
+	// Read at an offset rather than gathered into a buffer: the scatter below
+	// runs for as long as the uploads take, and holding the whole file for that
+	// is what used to make converting a large one fatal on a small machine.
+	source, err := v.openForMigration(ctx, &stale)
 	if err != nil {
 		return path, 0, nil, fmt.Errorf("%s could not be re-encrypted: %w", path, err)
 	}
+	defer source.close()
 
 	// Re-encrypting is not a move: the file goes back to the accounts it was
 	// already on, whether they were chosen for it or picked at random. Any that
@@ -333,18 +337,31 @@ func (v *Vault) migrateFile(ctx context.Context, id string) (path string, size i
 
 	// Re-encrypting writes the current format, so a file stored whole before
 	// chunking existed comes back chunked. That is the cheapest moment to do it:
-	// the file has already been gathered and is about to be scattered again, so
+	// the file is being read end to end and scattered again either way, so
 	// changing format costs nothing beyond what the re-encryption was paying.
-	placed, err := v.scatterChunked(ctx, name, data, current, false, v.uploadChunkSize())
+	placed, err := v.scatterStream(ctx, name, source.src, source.size, source.hash,
+		current, false, v.uploadChunkSize())
 	warnings = placed.warnings
 	if err != nil {
 		return path, 0, warnings, fmt.Errorf("re-encrypting %s: %w", path, err)
 	}
+
 	fresh := &Entry{
 		ArchiveID:  placed.archiveID,
 		Shards:     placed.shards,
 		ChunkSize:  placed.chunkSize,
 		ChunkCount: placed.chunkCount,
+	}
+
+	// Reading a file end to end is the one moment its whole-file hash can be
+	// checked (§6.4), and this was such a read. Catching it here means the new
+	// parts go rather than being committed over the old ones, so the index is
+	// left pointing at parts that are known good.
+	if source.verify != nil {
+		if err := source.verify(); err != nil {
+			v.deleteEntryShards(context.WithoutCancel(ctx), fresh)
+			return path, 0, warnings, err
+		}
 	}
 
 	v.mu.Lock()

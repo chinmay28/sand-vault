@@ -225,7 +225,7 @@ func (fs *FileSystem) OpenFile(ctx context.Context, name string, flag int, perm 
 	// memory: the existing file is read back as a stream and the new bytes
 	// follow it into the same streaming upload, so the cost is bandwidth rather
 	// than RAM. O_TRUNC wins if both are set, which is what os.OpenFile does.
-	var prefix io.Reader
+	var prefix io.ReadCloser
 	if flag&os.O_APPEND != 0 && flag&os.O_TRUNC == 0 {
 		if existing, err := fs.Vault.EntryByPath(clean); err == nil {
 			body, _, err := fs.Vault.OpenReadSeeker(ctx, existing.ID)

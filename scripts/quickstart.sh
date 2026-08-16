@@ -84,8 +84,15 @@
 #                    username and the vault password. It sends that password on
 #                    every request rather than once at sign-in, so put TLS in
 #                    front before turning it on anywhere but loopback.
+#   SAND_RECHUNK     1 | 0                   convert files stored in the
+#                    pre-chunking format after they are read (default: 1). A file
+#                    left in that format has to be rebuilt in full on every read;
+#                    converting it once ends that. Turn it off on a metered
+#                    connection, where the conversion's download and re-upload
+#                    cost money, or where there is too little disk to stage a
+#                    large file while it converts.
 #
-# PORT, HOST and SAND_WEBDAV are remembered. On an upgrade, leaving one unset
+# PORT, HOST, SAND_WEBDAV and SAND_RECHUNK are remembered. On an upgrade, leaving one unset
 # keeps whatever the service is already running with rather than resetting it
 # to the default — so re-running this script to pick up a new version cannot
 # quietly move a loopback-only install back onto every interface.
@@ -188,6 +195,27 @@ else
 fi
 WEBDAV_ARGS=""
 [ "$WEBDAV" = 1 ] && WEBDAV_ARGS=" --webdav"
+
+# Converting files out of the pre-chunking format after they are read, on unless
+# turned off. A file left in that format cannot be read in pieces, so every read
+# rebuilds all of it; converting it once is what stops that. The conversion
+# itself costs a download and a re-upload, which is the reason to decline it.
+#
+# Remembered as its negative, because that is what appears in the unit: the
+# default is on, so only "off" is ever written as a flag.
+if [ -n "${SAND_RECHUNK:-}" ]; then
+  case "$SAND_RECHUNK" in
+    1 | true | yes | on) RECHUNK=1 ;;
+    0 | false | no | off) RECHUNK=0 ;;
+    *) die "SAND_RECHUNK must be 1 or 0 (got '$SAND_RECHUNK')." ;;
+  esac
+elif [ "$(prior_flag rechunk-on-read)" = "false" ]; then
+  RECHUNK=0
+else
+  RECHUNK=1
+fi
+RECHUNK_ARGS=""
+[ "$RECHUNK" = 0 ] && RECHUNK_ARGS=" --rechunk-on-read=false"
 
 INSTALL_NODE="${INSTALL_NODE:-auto}"
 INSTALL_GO="${INSTALL_GO:-auto}"
@@ -629,10 +657,25 @@ Type=simple
 User=$SVC_USER
 Group=$SVC_USER
 WorkingDirectory=$WORK_DIR
-ExecStart=$SERVER_BIN serve --port $PORT --bind $HOST --vault $VAULT_PATH$WEBDAV_ARGS
+ExecStart=$SERVER_BIN serve --port $PORT --bind $HOST --vault $VAULT_PATH$WEBDAV_ARGS$RECHUNK_ARGS
 Environment=SAND_VAULT=$VAULT_PATH
 Restart=on-failure
 RestartSec=3
+
+# A ceiling, so that whatever SAND does it does to itself rather than to the
+# machine. Reading a file stored in the pre-chunking format has to rebuild all of
+# it, and on a small box a large enough film could take the whole system into
+# swap — at which point nothing responds, ssh included, until the kernel picks
+# something to kill. Under a limit the service is what gets killed, and
+# Restart=on-failure brings it back.
+#
+# A percentage rather than a number, so it tracks the machine it lands on: 80% on
+# a 1 GB Pi is 800 MB, on a 16 GB server it is 12.8 GB, and neither needs editing
+# here. MemorySwapMax=0 is the half that keeps the box responsive — a limit alone
+# would be met by swapping, which on an SD card is the unresponsiveness this is
+# meant to prevent.
+MemoryMax=80%
+MemorySwapMax=0
 
 # Hardening. The vault holds cloud credentials and the map of every stored
 # file, so the service gets write access to its data directory and the mount

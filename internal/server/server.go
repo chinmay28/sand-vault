@@ -58,6 +58,14 @@ type Server struct {
 	// DefaultWebDAVPrefix.
 	WebDAVPrefix string
 
+	// NoRechunk stops files stored in the pre-chunking format from being
+	// converted after they are read.
+	//
+	// Negated so that the zero value keeps the conversion on, which is what it
+	// should be: a file left in the old format has to be rebuilt in full on
+	// every read, and converting it once is what ends that.
+	NoRechunk bool
+
 	vault      *vault.Vault
 	sessions   *sessionStore
 	streams    *streamStore
@@ -144,6 +152,9 @@ func (s *Server) Handler() (http.Handler, error) {
 	v, err := s.Vault()
 	if err != nil {
 		return nil, err
+	}
+	if s.NoRechunk {
+		v.SetRechunkOnRead(false)
 	}
 	if s.sessions == nil {
 		s.sessions = newSessionStore(s.IdleTimeout)
