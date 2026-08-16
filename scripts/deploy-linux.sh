@@ -116,6 +116,12 @@ ExecStart=/usr/local/bin/sand serve --port ${PORT} --bind ${BIND} --vault ${VAUL
 Environment=SAND_VAULT=${VAULT_PATH}
 Restart=on-failure
 RestartSec=5s
+# A ceiling, so a runaway kills SAND rather than taking the machine into swap —
+# where nothing answers, ssh included. A percentage so it tracks the machine it
+# lands on; no swap, because a limit met by swapping is the unresponsiveness the
+# limit exists to prevent. SAND reads this back and sets GOMEMLIMIT under it.
+MemoryMax=80%
+MemorySwapMax=0
 # Security hardening. The service gets write access to its data directory and
 # the mount roots a Local folder account lives under — nothing else;
 # ProtectHome is why --vault above is not optional.

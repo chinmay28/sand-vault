@@ -634,6 +634,20 @@ Environment=SAND_VAULT=$VAULT_PATH
 Restart=on-failure
 RestartSec=3
 
+# A ceiling, so that whatever SAND does it does to itself rather than to the
+# machine. A percentage rather than a number, so it tracks whatever it lands on:
+# 800 MB on a 1 GB Pi, 12.8 GB on a 16 GB one, without editing anything here.
+#
+# MemorySwapMax=0 is the half that keeps the box responsive. A limit met by
+# swapping to an SD card is precisely the unresponsiveness the limit exists to
+# prevent — better to be killed and restarted than to take ssh down with you.
+#
+# SAND reads this limit back at startup and sets GOMEMLIMIT under it, so the
+# collector works against the ceiling rather than growing towards it. Raising
+# this with 'systemctl edit sand' is enough; nothing else needs changing.
+MemoryMax=80%
+MemorySwapMax=0
+
 # Hardening. The vault holds cloud credentials and the map of every stored
 # file, so the service gets write access to its data directory and the mount
 # roots a Local folder account lives under, and nothing else — note

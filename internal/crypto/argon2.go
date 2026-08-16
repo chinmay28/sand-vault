@@ -126,3 +126,40 @@ func ZeroBytes(b []byte) {
 		b[i] = 0
 	}
 }
+
+// DecryptInPlace is Decrypt writing the plaintext over the ciphertext it came
+// from, rather than into a second buffer of the same length.
+//
+// It exists for one caller: rebuilding a file stored in SAND's pre-chunking
+// format, where the "ciphertext" is half a film. GCM cannot release any of that
+// plaintext before the tag over all of it verifies — which is why the format
+// cannot be streamed and why chunking replaced it — but there is no reason to
+// hold two copies of it while finding out. Reusing the buffer halves the peak.
+//
+// ciphertext is destroyed. The returned slice aliases it, and it is shorter by
+// the tag, so a caller must not read the original afterwards.
+func DecryptInPlace(key, nonce, ciphertext, associatedData []byte) ([]byte, error) {
+	if len(key) != 32 {
+		return nil, errors.New("key must be 32 bytes for AES-256")
+	}
+	if len(nonce) != NonceSize {
+		return nil, fmt.Errorf("nonce must be %d bytes", NonceSize)
+	}
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create AES cipher: %w", err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create GCM: %w", err)
+	}
+
+	// ciphertext[:0] is what tells crypto/cipher to write over the input. The
+	// plaintext is always shorter than the ciphertext by the tag, so it fits.
+	plaintext, err := gcm.Open(ciphertext[:0], nonce, ciphertext, associatedData)
+	if err != nil {
+		return nil, fmt.Errorf("decryption failed (wrong password or corrupted data): %w", err)
+	}
+	return plaintext, nil
+}

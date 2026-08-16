@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -58,7 +59,7 @@ func vaultCmd() *cobra.Command {
 		Use:   "vault",
 		Short: "Create and manage the vault",
 	}
-	cmd.AddCommand(vaultInitCmd(), vaultStatusCmd(), vaultPasswdCmd(), vaultMigrateCmd(),
+	cmd.AddCommand(vaultInitCmd(), vaultStatusCmd(), vaultPasswdCmd(), vaultMigrateCmd(), vaultConvertCmd(),
 		vaultPolicyCmd(), vaultDefaultsCmd(), vaultBackupCmd(), vaultRecoverCmd())
 	return cmd
 }
@@ -225,6 +226,101 @@ have already moved are not touched, so running it again is free.`,
 			return runMigration(cmd, v)
 		},
 	}
+}
+
+func vaultConvertCmd() *cobra.Command {
+	var all bool
+
+	cmd := &cobra.Command{
+		Use:   "convert [path]...",
+		Short: "Move files out of the format SAND used before chunking",
+		Long: `Convert files stored in SAND's original whole-file format into chunks.
+
+A file in the old format has no seams: its parts are halves of one sealed blob,
+so reading a byte in the middle means rebuilding all of it. That is why nothing
+streams such a file — a player asking for one second of a film would cost the
+whole film in memory — and why they are refused until converted.
+
+Converting reads the file once and stores it again in chunks, so afterwards it
+seeks like anything else. It costs a download and an upload of the whole file,
+which on a home connection is minutes per film, and it moves your data: the old
+parts are erased once the new ones are committed. The file stays readable
+throughout, and an interrupted conversion leaves it exactly as it was.
+
+With no arguments it reports what is left in the old format without changing
+anything. Name paths to convert those, or pass --all to work through everything.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			v, err := openVault(cmd)
+			if err != nil {
+				return err
+			}
+			defer v.Lock()
+
+			pending := v.PendingConversion()
+			if len(pending) == 0 {
+				fmt.Println("Every file is already stored in chunks.")
+				return nil
+			}
+
+			if !all && len(args) == 0 {
+				var total int64
+				for _, entry := range pending {
+					fmt.Printf("  %s  (%s)\n", entry.Path(), formatBytes(entry.Size))
+					total += entry.Size
+				}
+				fmt.Printf("\n%d file(s), %s, still in the old format.\n",
+					len(pending), formatBytes(total))
+				fmt.Println("Convert them with 'sand vault convert --all', or name the ones you want.")
+				return nil
+			}
+
+			chosen := pending
+			if !all {
+				chosen = nil
+				wanted := map[string]bool{}
+				for _, arg := range args {
+					wanted[arg] = true
+				}
+				for _, entry := range pending {
+					if wanted[entry.Path()] {
+						chosen = append(chosen, entry)
+					}
+				}
+				if len(chosen) == 0 {
+					return fmt.Errorf("none of those paths are in the old format — " +
+						"run 'sand vault convert' with no arguments to see what is")
+				}
+			}
+
+			fmt.Printf("Converting %d file(s). This downloads and re-uploads each one.\n", len(chosen))
+			var failed int
+			for i, entry := range chosen {
+				fmt.Printf("[%d/%d] %s … ", i+1, len(chosen), entry.Path())
+				report, err := v.Convert(cmd.Context(), entry.ID)
+				if err != nil {
+					failed++
+					fmt.Printf("failed: %v\n", err)
+					if errors.Is(err, vault.ErrLocked) {
+						return err
+					}
+					continue
+				}
+				fmt.Printf("done (%d chunks)\n", report.ChunkCount)
+				for _, w := range report.Warnings {
+					fmt.Printf("        warning: %s\n", w)
+				}
+			}
+
+			if failed > 0 {
+				return fmt.Errorf("%d of %d file(s) could not be converted", failed, len(chosen))
+			}
+			fmt.Println("Done. Those files now stream without being rebuilt whole.")
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVar(&all, "all", false, "convert every file still in the old format")
+	return cmd
 }
 
 // runMigration re-encrypts everything left on an old key, reporting as it goes:

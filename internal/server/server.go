@@ -219,17 +219,21 @@ func (s *Server) Handler() (http.Handler, error) {
 		"POST /api/providers/oauth/complete": s.handleOAuthComplete,
 		"GET /api/providers/oauth/{id}":      s.handleOAuthStatus,
 
-		"GET /api/search":             s.handleSearch,
-		"GET /api/files":              s.handleFilesList,
-		"POST /api/files":             s.handleFilesUpload,
-		"GET /api/files/{id}":         s.handleFileMeta,
-		"DELETE /api/files/{id}":      s.handleFileDelete,
-		"POST /api/files/{id}/move":   s.handleFileMove,
-		"GET /api/files/{id}/health":  s.handleFileHealth,
-		"GET /api/files/{id}/content": s.handleFileContent,
-		"POST /api/files/{id}/stream": s.handleFileStreamLink,
-		"GET /api/files/{id}/thumb":   s.handleFileThumb,
-		"PUT /api/files/{id}/thumb":   s.handleFileThumbSet,
+		"GET /api/search":            s.handleSearch,
+		"GET /api/files":             s.handleFilesList,
+		"POST /api/files":            s.handleFilesUpload,
+		"GET /api/files/{id}":        s.handleFileMeta,
+		"DELETE /api/files/{id}":     s.handleFileDelete,
+		"POST /api/files/{id}/move":  s.handleFileMove,
+		"GET /api/files/{id}/health": s.handleFileHealth,
+		// Converting a pre-chunking file into the chunked format, which is what
+		// the read path's refusal asks for. See handlers_convert.go.
+		"GET /api/conversions":         s.handleConversionsPending,
+		"POST /api/files/{id}/convert": s.handleFileConvert,
+		"GET /api/files/{id}/content":  s.handleFileContent,
+		"POST /api/files/{id}/stream":  s.handleFileStreamLink,
+		"GET /api/files/{id}/thumb":    s.handleFileThumb,
+		"PUT /api/files/{id}/thumb":    s.handleFileThumbSet,
 
 		"POST /api/folders":   s.handleFolderCreate,
 		"DELETE /api/folders": s.handleFolderDelete,
@@ -325,6 +329,11 @@ func setAssetCaching(w http.ResponseWriter, path string, etags map[string]string
 
 // Start initializes routes and starts the HTTP server.
 func (s *Server) Start() error {
+	// Before anything can allocate: tell the collector what it has to work
+	// with, so an unexpectedly large read becomes a slow process rather than a
+	// machine that stops answering.
+	applyMemoryLimit()
+
 	handler, err := s.Handler()
 	if err != nil {
 		return err
@@ -512,6 +521,11 @@ func vaultErrorResponse(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusUnauthorized, "wrong password", "WRONG_PASSWORD")
 	case errors.Is(err, vault.ErrNotInitialized):
 		writeError(w, http.StatusNotFound, "no vault has been created yet", "NO_VAULT")
+	case errors.Is(err, vault.ErrNeedsConversion):
+		// 409 rather than 400: nothing about the request is wrong, the file is
+		// simply in a state that has to change before it can be answered for.
+		// The browser reads this code and offers to convert.
+		writeError(w, http.StatusConflict, err.Error(), "NEEDS_CONVERSION")
 	default:
 		msg := err.Error()
 		if strings.HasPrefix(msg, "no such file") || strings.HasPrefix(msg, "no such folder") {

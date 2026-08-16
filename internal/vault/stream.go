@@ -73,6 +73,65 @@ func (v *Vault) UploadStream(ctx context.Context, dir, name string, r io.Reader,
 	return v.commitUpload(ctx, dir, name, size, DetectMIME(name, head[:n]), placed, opts)
 }
 
+// UploadStreamAt stores a file the caller can already read at an offset,
+// skipping the spool UploadStream would make.
+//
+// It exists for the HTTP upload handler. Go's multipart parser has already
+// written anything large to a temporary file, so spooling it a second time
+// would put a 4 GB film on disk twice — which on a Raspberry Pi's SD card is
+// both slow and the difference between fitting and not. Everything else is
+// identical: the whole-file hash still has to be known before the first chunk
+// is sealed, so src is read once to compute it and then rewound.
+func (v *Vault) UploadStreamAt(ctx context.Context, dir, name string, src io.ReadSeeker, size int64, opts UploadOptions) (*Entry, []string, error) {
+	name, err := SanitizeName(name)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	v.mu.RLock()
+	if v.dataKey == nil {
+		v.mu.RUnlock()
+		return nil, nil, ErrLocked
+	}
+	dir = CleanDir(dir)
+	if !v.manifest.FolderExists(dir) {
+		v.mu.RUnlock()
+		return nil, nil, fmt.Errorf("no such folder: %s", dir)
+	}
+	v.mu.RUnlock()
+
+	readerAt, ok := src.(io.ReaderAt)
+	if !ok {
+		// Nothing to gain over the spooling path, and correctness beats the
+		// optimisation: fall back rather than guess.
+		if _, err := src.Seek(0, io.SeekStart); err != nil {
+			return nil, nil, fmt.Errorf("rewinding the upload: %w", err)
+		}
+		return v.UploadStream(ctx, dir, name, src, opts)
+	}
+
+	digest := sha256.New()
+	if _, err := io.Copy(digest, src); err != nil {
+		return nil, nil, fmt.Errorf("reading the upload: %w", err)
+	}
+	var hash [32]byte
+	copy(hash[:], digest.Sum(nil))
+
+	if _, err := src.Seek(0, io.SeekStart); err != nil {
+		return nil, nil, fmt.Errorf("rewinding the upload: %w", err)
+	}
+
+	placed, err := v.scatterStream(ctx, name, readerAt, size, hash, opts.Accounts, true, v.uploadChunkSize())
+	if err != nil {
+		return nil, placed.warnings, err
+	}
+
+	head := make([]byte, 512)
+	n, _ := readerAt.ReadAt(head, 0)
+
+	return v.commitUpload(ctx, dir, name, size, DetectMIME(name, head[:n]), placed, opts)
+}
+
 // spool copies a stream to a temporary file, returning it rewound along with
 // the length and hash of what went through.
 func (v *Vault) spool(r io.Reader) (*os.File, int64, [32]byte, error) {

@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -137,18 +136,18 @@ func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 			results = append(results, result)
 			continue
 		}
-		data, err := io.ReadAll(f)
-		f.Close()
-		if err != nil {
-			result.Error = "could not read the uploaded file"
-			results = append(results, result)
-			continue
-		}
-
-		entry, warnings, err := v.Upload(ctx, dir, fh.Filename, data, vault.UploadOptions{
+		// Streamed rather than read into a slice first, and read where the
+		// multipart parser already put it. Upload held the whole file in memory,
+		// so a 4 GB film through the browser was 4 GB resident on top of
+		// everything the scatter allocates; this is bounded by the chunk window.
+		// UploadStreamAt rather than UploadStream because the parser has already
+		// spilled anything large to disk, and spooling it again would write the
+		// film twice.
+		entry, warnings, err := v.UploadStreamAt(ctx, dir, fh.Filename, f, fh.Size, vault.UploadOptions{
 			Overwrite: overwrite,
 			Accounts:  accounts,
 		})
+		f.Close()
 		result.Warnings = warnings
 		if err != nil {
 			result.Error = err.Error()
@@ -344,15 +343,23 @@ func (s *Server) handleFileHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, health)
 }
 
-// handleFileContent gathers the file's parts from the connected accounts,
-// rebuilds the plaintext, and serves it. With ?download=1 the browser saves it;
-// otherwise it renders inline, which is what makes previewing possible.
+// handleFileContent serves a stored file, rebuilding only the part of it the
+// request actually asks for. With ?download=1 the browser saves it; otherwise it
+// renders inline, which is what makes previewing possible.
+//
+// It reads at an offset rather than rebuilding the file first, and the
+// difference is the whole point. A <video> element asks for a few hundred
+// kilobytes at a time and seeks around; answering each of those from a buffer
+// holding the entire film cost memory proportional to the film — measured at
+// 337 MB to serve one range of a 256 MB file, and so about 5 GB for a 4 GB one,
+// per request in flight. Through the chunked reader the same request costs the
+// chunks that range covers, which does not grow with the file at all.
 func (s *Server) handleFileContent(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := contextWithTimeout(r, 30*time.Minute)
 	defer cancel()
 
 	v, _ := s.Vault()
-	data, entry, err := v.Fetch(ctx, r.PathValue("id"))
+	body, entry, err := v.OpenReadSeeker(ctx, r.PathValue("id"))
 	if err != nil {
 		vaultErrorResponse(w, err)
 		return
@@ -385,9 +392,10 @@ func (s *Server) handleFileContent(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "private, no-store")
 	w.Header().Set("ETag", `"`+entry.Hash+`"`)
 
-	// ServeContent handles range requests, which is what lets audio and video
-	// seek instead of buffering the whole file first.
-	http.ServeContent(w, r, entry.Name, entry.ModifiedAt, bytes.NewReader(data))
+	// ServeContent turns a Range header into seeks and reads on the body, which
+	// is why the body has to be the vault's own random-access reader rather
+	// than a buffer holding the file.
+	http.ServeContent(w, r, entry.Name, entry.ModifiedAt, body)
 }
 
 // isRiskyInline reports content types that must not be rendered inline in the

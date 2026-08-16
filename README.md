@@ -447,6 +447,21 @@ sand vault backup [--disable|--enable]        Write the encrypted index to every
 sand vault recover [--from ACCOUNT]           Rebuild a lost vault from an account's copy
 ```
 
+### Converting old files
+
+```
+sand vault convert                 # what is still in the old format
+sand vault convert --all           # move all of it
+sand vault convert /Videos/a.mkv   # or just these
+```
+
+Files stored before SAND had chunked storage are one sealed blob with no seams,
+so reading a byte in the middle means rebuilding all of it. Nothing streams such
+a file for that reason — the browser and the share both refuse it and offer to
+convert instead. Converting reads it once and stores it again in chunks, after
+which it seeks like anything else. It costs a download and an upload of the whole
+file, and erases the old parts once the new ones are committed.
+
 ### Recovery
 
 ```
@@ -497,7 +512,13 @@ sand find receipt
 
 ```
 sand serve [--port 8123] [--bind 0.0.0.0] [--idle-timeout 30m] [--vault PATH]
+           [--webdav] [--webdav-path /dav]
 ```
+
+On start it reads whatever memory limit it is running under — the systemd unit's
+`MemoryMax`, or the machine's own — and sets `GOMEMLIMIT` below it, so the
+collector works against a ceiling instead of growing towards the machine's. Set
+`GOMEMLIMIT` yourself to override.
 
 ### Standalone mode (no vault, no accounts)
 
@@ -612,7 +633,9 @@ its home screen gets the password prompt like any other browser would.
 | GET | `/api/files?path=` | List a folder |
 | GET | `/api/search?q=` | Find files and folders by name (`&path=` to scope, `&type=file\|folder`, `&limit=`) |
 | POST | `/api/files` | Upload (`files[]`, `path`, `overwrite`, `thumb-N` per file) |
-| GET | `/api/files/{id}/content` | Rebuild and stream (`?download=1`) |
+| GET | `/api/files/{id}/content` | Serve at an offset — a range costs the chunks it covers, not the file (`?download=1`) |
+| GET | `/api/conversions` | Files still in the pre-chunking format |
+| POST | `/api/files/{id}/convert` | Move one out of it |
 | POST | `/api/files/{id}/stream` | Mint a link a media player can open — see below |
 | GET | `/stream/{token}/{name}` | Play that link (no session; the token is the credential) |
 | GET · PUT | `/api/files/{id}/thumb` | The stored thumbnail; PUT stores one for a file that has none |

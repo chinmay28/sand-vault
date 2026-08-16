@@ -331,9 +331,6 @@ func (v *Vault) Fetch(ctx context.Context, id string) ([]byte, *Entry, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	// Served first, converted after: a read must not wait on a scatter, take
-	// the write lock, or push a manifest backup to every account. See rechunk.go.
-	v.queueRechunk(snapshot.ID)
 	return data, entry, nil
 }
 

@@ -91,10 +91,6 @@ type Vault struct {
 	// backupWarned remembers the accounts already reported as holding another
 	// vault's backup, so the warning is said once rather than on every change.
 	backupWarned map[string]bool
-
-	// rechunkState is the background converter that moves files stored whole
-	// onto the chunked format after they are read. See rechunk.go.
-	rechunkState
 }
 
 // Open returns a handle to the vault at path. The vault starts locked; if no
@@ -108,7 +104,10 @@ func Open(path string) (*Vault, error) {
 		flight:    newChunkFlight(),
 	}
 	v.backupIdle.L = &v.backupMu
-	v.rechunkIdle.L = &v.rechunkMu
+
+	// A conversion only ever holds its spool open, so anything matching that
+	// name now is what a process killed mid-conversion left behind.
+	sweepConversionSpools(path)
 
 	sf, err := readStore(path)
 	if err != nil && !errors.Is(err, ErrNotInitialized) {
@@ -344,7 +343,6 @@ func (v *Vault) Lock() {
 	// the files themselves.
 	v.forgetAllThumbs()
 	v.chunks.clear()
-	v.forgetRechunkQueue()
 
 	v.liveMu.Lock()
 	v.live = map[string]provider.Provider{}

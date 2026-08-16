@@ -34,7 +34,6 @@ func newTestVault(t *testing.T) *vault.Vault {
 		t.Fatalf("Init: %v", err)
 	}
 	t.Cleanup(v.AwaitBackupSync)
-	t.Cleanup(v.AwaitRechunk)
 
 	for i := 0; i < 3; i++ {
 		if _, err := v.AddProvider(context.Background(), provider.Config{

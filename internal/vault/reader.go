@@ -1,7 +1,6 @@
 package vault
 
 import (
-	"bytes"
 	"container/list"
 	"context"
 	"errors"
@@ -180,11 +179,21 @@ type ChunkedReader struct {
 	entry *Entry
 }
 
+// ErrNeedsConversion is returned for a file still stored in the pre-chunking
+// format, which cannot be read at an offset.
+//
+// It is a distinct error because it wants a distinct answer: not "this failed"
+// but "convert this first, then ask again". Everything above — the HTTP API, the
+// WebDAV share, the browser — turns it into that offer rather than into a
+// retry, and Convert is what satisfies it.
+var ErrNeedsConversion = errors.New(
+	"this file is stored in the format SAND used before chunking and has to be converted before it can be streamed")
+
 // OpenReader returns a reader over a stored file.
 //
 // A file stored whole has no chunks to fetch individually, so it is refused
 // here rather than silently rebuilt in full behind an interface that promises
-// cheap seeks — Fetch is the honest way to read one.
+// cheap seeks.
 func (v *Vault) OpenReader(id string) (*ChunkedReader, error) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
@@ -197,9 +206,7 @@ func (v *Vault) OpenReader(id string) (*ChunkedReader, error) {
 		return nil, fmt.Errorf("no such file: %s", id)
 	}
 	if !entry.Chunked() {
-		return nil, fmt.Errorf(
-			"%s is stored whole and cannot be read at an offset — read it with Fetch, "+
-				"or let it be rechunked first", entry.Path())
+		return nil, fmt.Errorf("%s: %w", entry.Path(), ErrNeedsConversion)
 	}
 
 	snapshot := *entry
@@ -307,30 +314,24 @@ func (c ctxReaderAt) ReadAt(p []byte, off int64) (int, error) {
 	return c.reader.ReadAtContext(c.ctx, p, off)
 }
 
-// OpenReadSeeker reads a stored file however it happens to be stored: at an
-// offset when it is chunked, and from a rebuilt copy when it is not.
+// OpenReadSeeker reads a stored file at an offset, so that serving a range
+// costs the chunks that range covers rather than the file.
 //
-// It exists because a caller serving HTTP ranges — or a filesystem — wants one
-// answer to "let me read this file", not a branch on a storage detail. OpenReader
-// stays the narrower door for a caller that specifically needs cheap seeks and
-// would rather be told when it cannot have them.
+// It refuses a file still in the pre-chunking format. That format has no seams —
+// its parts are halves of one sealed blob — so the only way to answer for a byte
+// in the middle is to rebuild all of it, and doing that behind an interface that
+// promises cheap seeks is how a 4 GB film became 12 GB of resident memory on a
+// machine asked for the first megabyte.
 //
-// A file still stored whole is gathered in full and served from memory, which
-// is what reading one has always cost. Reading it is also what schedules its
-// conversion, so the fallback stops being taken for that file shortly after.
+// The honest answer is to say so. ErrNeedsConversion is not a failure to read
+// the file; it is the file being in a format this door cannot open, and the
+// caller is expected to offer Convert rather than to retry. Conversion is a
+// sequential read, which that format handles perfectly well — see convert.go.
 func (v *Vault) OpenReadSeeker(ctx context.Context, id string) (io.ReadSeeker, *Entry, error) {
 	reader, err := v.OpenReader(id)
-	if err == nil {
-		return io.NewSectionReader(
-			ctxReaderAt{ctx: ctx, reader: reader}, 0, reader.Size()), reader.Entry(), nil
-	}
-	if errors.Is(err, ErrLocked) {
-		return nil, nil, err
-	}
-
-	data, entry, err := v.Fetch(ctx, id)
 	if err != nil {
 		return nil, nil, err
 	}
-	return bytes.NewReader(data), entry, nil
+	return io.NewSectionReader(
+		ctxReaderAt{ctx: ctx, reader: reader}, 0, reader.Size()), reader.Entry(), nil
 }

@@ -32,7 +32,6 @@ func newTestVault(t *testing.T, accounts int) (*Vault, []string) {
 	// of any file still stored whole, so let both finish before the temporary
 	// directories they write into are cleaned up.
 	t.Cleanup(v.AwaitBackupSync)
-	t.Cleanup(v.AwaitRechunk)
 
 	roots := make([]string, accounts)
 	for i := 0; i < accounts; i++ {
