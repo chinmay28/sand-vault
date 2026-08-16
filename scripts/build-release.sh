@@ -15,7 +15,7 @@
 
 set -euo pipefail
 
-# vMAJOR.MINOR.PATCH with PATCH = the repo's commit count; scripts/version.mjs
+# vYEAR.MONTH.PATCH with PATCH = the repo's commit count; scripts/version.mjs
 # is the single place that is assembled, so the binary, the embedded web client
 # and the release filenames can never disagree. Pass a version to override.
 VERSION="${1:-$(node "$(dirname "$0")/version.mjs")}"

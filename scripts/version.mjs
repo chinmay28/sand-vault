@@ -2,19 +2,20 @@
 /**
  * The one place the app's version number is assembled.
  *
- * Scheme: vMAJOR.MINOR.PATCH, where PATCH is the repository's commit count —
- * every commit is a patch release, so `v2.0.311` is the 311th commit on the
- * 2.0 line.
+ * Scheme: vYEAR.MONTH.PATCH — a calendar version, where PATCH is the
+ * repository's commit count, so `v2026.8.311` is the 311th commit on the 2026.8
+ * line. The month is not zero-padded; that keeps the string valid semver.
  *
- *   - MAJOR/MINOR are source constants, read out of
- *     internal/version/version.go so there is exactly one declaration of them
- *     in the tree. Bump them there.
+ *   - YEAR/MONTH are source constants, read out of internal/version/version.go
+ *     so there is exactly one declaration of them in the tree. Bump them there
+ *     when a release line opens; they are not taken from the build clock, which
+ *     would move the version without a commit.
  *   - PATCH comes from `git rev-list --count HEAD`, which only exists at build
  *     time: the Go binary gets it stamped in via -ldflags, the web bundle gets
  *     it inlined by Vite. Both call this file, so they can never disagree.
  *
  * Usage:
- *   node scripts/version.mjs            # print e.g. v2.0.311
+ *   node scripts/version.mjs            # print e.g. v2026.8.311
  *   node scripts/version.mjs --patch    # print just the commit count (311)
  *   import { appVersion } from './scripts/version.mjs'
  */
@@ -26,8 +27,8 @@ import { dirname, resolve } from 'node:path';
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const GO_VERSION_FILE = resolve(repoRoot, 'internal/version/version.go');
 
-/** Read `Major`/`Minor` out of the Go source that declares them. */
-function majorMinor() {
+/** Read `Year`/`Month` out of the Go source that declares them. */
+function yearMonth() {
   const src = readFileSync(GO_VERSION_FILE, 'utf8');
   const read = (name) => {
     const m = new RegExp(`^\\s*${name}\\s*=\\s*(\\d+)\\s*$`, 'm').exec(src);
@@ -36,7 +37,12 @@ function majorMinor() {
     }
     return Number(m[1]);
   };
-  return { major: read('Major'), minor: read('Minor') };
+  const year = read('Year');
+  const month = read('Month');
+  if (!(month >= 1 && month <= 12)) {
+    throw new Error(`Month = ${month} in ${GO_VERSION_FILE}; want a calendar month (1-12)`);
+  }
+  return { year, month };
 }
 
 /** Run git in the repo root; null if it fails (no repo, no git, old git). */
@@ -59,7 +65,7 @@ function git(args) {
  * Shallow is the trap, and it's why this isn't a bare `rev-list`: a clone made
  * with `--depth 1` answers `rev-list --count HEAD` with `1`, which is not an
  * error and not obviously wrong — it just quietly ships a build calling itself
- * `2.0.1`. Refuse it. Patch 0 is the agreed "unstamped build" marker (it
+ * `2026.8.1`. Refuse it. Patch 0 is the agreed "unstamped build" marker (it
  * matches the Go default), and a version ending in `.0` is visibly a
  * non-release rather than a plausible lie.
  *
@@ -82,14 +88,14 @@ export function commitCount() {
 
 /**
  * The full version string, `v`-prefixed to match how the project tags releases
- * (v2.0.0). Must stay byte-identical to version.String() in the Go package.
+ * (v2026.8.0). Must stay byte-identical to version.String() in the Go package.
  *
  * Note `--patch` / commitCount() stays bare: that one feeds `-ldflags -X` as
  * the value of `version.Patch`, which is the number alone.
  */
 export function appVersion() {
-  const { major, minor } = majorMinor();
-  return `v${major}.${minor}.${commitCount()}`;
+  const { year, month } = yearMonth();
+  return `v${year}.${month}.${commitCount()}`;
 }
 
 // Invoked directly (by the build scripts), print rather than export.

@@ -1,12 +1,38 @@
 # Changelog
 
-Releases are `vMAJOR.MINOR.PATCH`, where the patch number is the repository's
-commit count — `v2.0.42` is the 42nd commit on the 2.0 line. See
-[`internal/version/version.go`](./internal/version/version.go).
+Releases are `vYEAR.MONTH.PATCH` — a calendar version, where the patch number
+is the repository's commit count, so `v2026.8.42` is the 42nd commit on the
+2026.8 line. See [`internal/version/version.go`](./internal/version/version.go).
+Releases before `v2026.8` used `vMAJOR.MINOR.PATCH` and are listed under their
+original numbers.
 
 Each section below is the body of the corresponding GitHub release. A heading
 must name the tag exactly — a tag whose commit builds a different version is a
 tag that shouldn't be published.
+
+## v2026.8 — calendar versioning
+
+The version is now `vYEAR.MONTH.PATCH`: the year and month the release line
+opened, then the repository's commit count, exactly as before. `v2026.8.311` is
+the 311th commit on the 2026.8 line.
+
+Nothing about the software changed with this — it is a change to what the
+numbers mean. The old `MAJOR.MINOR` claimed a compatibility promise the project
+was not actually making at that granularity; a date says plainly how old a build
+is, which is the question anyone reading a version here was asking anyway.
+Breaking changes are called out in this file, which stays the thing to read
+before upgrading.
+
+The year and month remain hand-bumped source constants (`Year`/`Month` in
+[`internal/version/version.go`](./internal/version/version.go)) rather than
+being read from the build clock, so rebuilding an old tree still reports the
+version it originally shipped. The month is not zero-padded — semver forbids a
+leading zero, and every tag stays something a semver parser will accept.
+
+Upgrading needs nothing. `SAND_INSTALL=release` asks GitHub for the latest
+published release rather than comparing numbers itself, so it picks up
+`v2026.8.x` the same way it picked up `v2.0.x`, and `SAND_RELEASE` still pins
+whatever tag you give it.
 
 ## v2.0 — the multi-cloud file browser
 
