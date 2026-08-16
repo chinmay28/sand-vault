@@ -605,6 +605,86 @@ class TestUploadAndPreview:
         assert app.locator('button[title="Where the parts live"]').first.is_visible()
 
 
+class TestPdfPreview:
+    """A PDF is drawn into the page by pdf.js rather than handed to the
+    browser's own viewer, so the same document with the same controls comes up
+    on a desktop and on a phone — where a framed PDF used to be a blank box and
+    the app had to apologise instead of showing it.
+    """
+
+    def _upload(self, app, design_pdf, tmp_path, name):
+        source = tmp_path / name
+        source.write_bytes(open(design_pdf, "rb").read())
+        upload_and_settle(app, source)
+
+    def _open(self, app, name):
+        app.locator(f'button[title="Open"]:has-text("{name}")').first.click()
+        canvas = app.locator("[data-pdf-preview] canvas")
+        # Nothing is drawn until the parts are gathered and the page rendered.
+        expect(canvas).to_be_visible(timeout=90000)
+        return canvas
+
+    def _painted(self, canvas):
+        """The drawn pixels, so a redraw can be told from a stale canvas."""
+        return canvas.evaluate("el => el.toDataURL()")
+
+    def test_a_pdf_renders_its_first_page(self, app, design_pdf, tmp_path):
+        # A renderer reaching for a font pack or a character map it was never
+        # given would say so here — and reaching for one over the network is
+        # the third-party request this app promises never to make.
+        noise = []
+        app.on("console", lambda m: noise.append(m.text) if m.type == "error" else None)
+        app.on("pageerror", lambda e: noise.append(str(e)))
+
+        self._upload(app, design_pdf, tmp_path, "rendered.pdf")
+        canvas = self._open(app, "rendered.pdf")
+
+        box = canvas.bounding_box()
+        assert box["width"] > 100 and box["height"] > 100, box
+        # 13 pages, and the viewer says so — it read the document rather than
+        # drawing whatever the first bytes happened to decode to.
+        expect(app.get_by_text(re.compile(r"Page 1 / 13"))).to_be_visible()
+        assert not noise, f"console errors while rendering: {noise}"
+
+    def test_turning_a_page_draws_the_next_one(self, app, design_pdf, tmp_path):
+        self._upload(app, design_pdf, tmp_path, "paged.pdf")
+        canvas = self._open(app, "paged.pdf")
+        first = self._painted(canvas)
+
+        app.get_by_label("Next page").click()
+        expect(app.get_by_text(re.compile(r"Page 2 / 13"))).to_be_visible(timeout=60000)
+        app.wait_for_timeout(1200)
+
+        assert self._painted(canvas) != first, "page 2 shows page 1's pixels"
+
+        # And back, which is the same journey with the keyboard.
+        app.keyboard.press("ArrowLeft")
+        expect(app.get_by_text(re.compile(r"Page 1 / 13"))).to_be_visible(timeout=60000)
+
+    def test_a_phone_gets_the_document_not_an_apology(self, app, design_pdf, tmp_path):
+        self._upload(app, design_pdf, tmp_path, "phone.pdf")
+
+        app.set_viewport_size(PHONE)
+        app.wait_for_timeout(400)
+        canvas = self._open(app, "phone.pdf")
+
+        assert app.get_by_text("PDFs do not preview reliably").count() == 0
+        # Fitted to the dialog rather than spilling out of it.
+        box = canvas.bounding_box()
+        assert box["width"] > 100, box
+        assert box["width"] <= PHONE["width"], box
+        assert not horizontal_overflow(app)
+
+        # Zooming is what makes a dense page readable on a screen this size,
+        # and the page it hands back is a bigger one, not the same one stretched.
+        before = canvas.evaluate("el => el.width")
+        app.get_by_label("Zoom in").click()
+        app.wait_for_timeout(1500)
+        assert canvas.evaluate("el => el.width") > before
+
+        app.set_viewport_size({"width": 1280, "height": 900})
+
+
 class TestStreamingToAPlayer:
     """Watching a film means handing VLC an address, and VLC has none of what
     authenticates this app.  The row mints a link standing for that one file,

@@ -470,6 +470,29 @@ the app was the only way out. The bytes are now fetched in the background and
 handed to the browser under the file's own name, and the page you started from
 never moves.
 
+### A PDF opens in the app rather than in the browser's viewer
+
+Previewing a PDF used to mean framing it and hoping. On a desktop the browser's
+own viewer took over; on a phone it produced a blank box or one unscrollable
+page, so the app stopped trying and offered an apology and a download button
+instead of the document.
+
+It now draws the pages itself, with the pdf.js that was already in the bundle
+making thumbnails. A phone and a desktop show the same document with the same
+controls: one page at a time, `‹ ›` or the arrow keys to turn, and a zoom for a
+dense page on a small screen. The page is fitted to the width it has and drawn
+at the screen's real pixels, so it is as sharp as the screen allows.
+
+Only the page you are looking at is drawn, and only the bytes that page needs
+are fetched — the content endpoint answers ranges out of the chunks they fall
+in, so opening a 300-page scan does not gather 300 pages off your accounts
+first. Opening one whose thumbnail was never made — anything put in from the
+command line — quietly stores the first page as its picture, since it has just
+been drawn and costs nothing to keep.
+
+Still no third-party requests: the renderer, its worker and every byte it reads
+come from the binary and the vault.
+
 ### Quick start
 
 One command installs SAND as a hardened systemd service, building from source

@@ -1189,7 +1189,8 @@ sand/
 │   └── server/                # sessions, handlers, embedded SPA
 ├── web/src/                   # React file browser
 │   ├── api.js  theme.js  App.jsx
-│   └── components/            # LockScreen, AccountsPanel, FileBrowser, PreviewModal, ui
+│   └── components/            # LockScreen, AccountsPanel, FileBrowser, PreviewModal,
+│                              #   PdfPreview (pdf.js page renderer), ui
 └── tests/                     # pytest e2e: CLI, API, vault flow, browser
 ```
 
