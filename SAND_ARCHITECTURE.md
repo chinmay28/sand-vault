@@ -831,6 +831,8 @@ reveals only whether a vault exists.
 | POST | `/api/files` | Upload (multipart `files[]`, `path`, `overwrite`, `accounts`) |
 | GET | `/api/files/{id}` | Metadata including part placement |
 | GET | `/api/files/{id}/content` | **Rebuild and stream** (`?download=1` to save) |
+| POST | `/api/files/{id}/stream` | Mint a stream ticket for one file (§9.5) |
+| GET | `/stream/{token}/{name}` | Play it — public, ranged; the token is the credential |
 | GET | `/api/files/{id}/health` | Per-part reachability, without downloading |
 | POST | `/api/files/{id}/move` | Rename or move (index only) |
 | DELETE | `/api/files/{id}` | Erase every part, drop the entry |
@@ -931,6 +933,49 @@ too, as `os.OpenFile` does.
 request.** That is worse than the browser, which sends it once at sign-in, and
 is why the share is opt-in and why `Start` says so. Put TLS in front of it —
 `scripts/nginx-sand.conf`, or Tailscale Serve.
+
+### 9.5 Stream tickets
+
+Playing a film in VLC means giving VLC an address, and VLC has none of what
+authenticates the app. The session cookie is `HttpOnly` and `SameSite=Strict`,
+so it is neither readable by the page nor carried by another program; the share
+is authenticated by the vault password itself, which is not a thing to put in a
+URL and on a clipboard. Both are the wrong shape for *play this one file over
+there*.
+
+So a ticket: 32 random bytes standing for one file, minted by a session that has
+already unlocked the vault, and good for that file and nothing else. It is
+plainly a bearer credential — anyone holding the link can play that file — which
+is what every property of it follows from.
+
+| | |
+|---|---|
+| Scope | One file. Not the folder, not the index, not the vault |
+| Lifetime | `DefaultStreamTTL`, 12 hours, slid forward on each request so a link in use never expires mid-film |
+| Storage | Memory only — a link that outlived the process would outlive the unlocked vault it was minted from |
+| Locking | `clear()` on lock and on auto-lock: the links are voided, not left to fail one request at a time |
+| Reads | `OpenReadSeeker` (§4.3) behind `http.ServeContent`, so a seek costs the chunks that range covers |
+| Keep-alive | Counts as external activity, so the auto-lock cannot fire mid-film — the hole a mounted share has |
+
+The path ends in the file's own name (`/stream/{token}/film.mkv`) because a
+player picks its demuxer off the extension before a byte arrives; the token
+before it is what decides which file is served, so renaming that segment changes
+nothing. The response is what `/content` gives a browser — the stored type,
+`no-store`, `nosniff`, and anything that could execute in this origin forced to
+a download.
+
+The address is assembled in the browser from the origin it reached the server
+on, not from anything the server reports about itself: a name the server guessed
+would resolve nowhere else, and behind Tailscale Serve or a reverse proxy the
+right answer is a host the server has never heard of.
+
+Reaching VLC from the page is then three answers, because there is no fourth:
+`vlc-x-callback://` on iOS (VLC's documented entry point), an `intent:` naming
+`org.videolan.vlc` on Android (a bare `vlc://` drops the scheme and assumes
+http, which would fetch an https share in the clear), and on a desktop a
+two-line `.m3u`, which VLC registers itself for wherever it installs. Nothing
+reports whether a scheme was handled, so the page watches for its own
+`visibilitychange` instead and offers the address when none came.
 
 ---
 

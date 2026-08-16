@@ -539,6 +539,8 @@ pipe the password on stdin.
   your accounts, one small pack per folder. Anything without one keeps its icon
 - **Preview** — images, video, audio, PDF and text render inline, rebuilt on
   demand; anything else downloads
+- **Stream in VLC** — `▶` on a video or audio row opens it in VLC and starts
+  playing, and shows the address with a copy button either way
 - **Change password** — at the foot of the sidebar; re-encrypts every stored
   file onto the new key, and offers to finish the job later if you defer it or
   an account was unreachable
@@ -611,6 +613,8 @@ its home screen gets the password prompt like any other browser would.
 | GET | `/api/search?q=` | Find files and folders by name (`&path=` to scope, `&type=file\|folder`, `&limit=`) |
 | POST | `/api/files` | Upload (`files[]`, `path`, `overwrite`, `thumb-N` per file) |
 | GET | `/api/files/{id}/content` | Rebuild and stream (`?download=1`) |
+| POST | `/api/files/{id}/stream` | Mint a link a media player can open — see below |
+| GET | `/stream/{token}/{name}` | Play that link (no session; the token is the credential) |
 | GET · PUT | `/api/files/{id}/thumb` | The stored thumbnail; PUT stores one for a file that has none |
 | GET | `/api/files/{id}/health` | Per-part reachability |
 | POST | `/api/files/{id}/move` | Rename / move |
@@ -633,6 +637,49 @@ Uploads report per-file results, so one failure in a batch doesn't sink the rest
 
 Sessions use a `SameSite=Strict` cookie and every write is `Origin`-checked, so
 another site in your browser can't drive the local API.
+
+---
+
+## Stream a file to VLC
+
+A row's `▶` — or **Stream in VLC** in the phone's row menu — opens the file in
+VLC and starts playing it. Nothing is typed and nothing is transcribed.
+
+The browser can't hand VLC a cookie, so the address is what carries the
+authority: the server mints a link standing for that **one file**, and the
+player follows it with no password and no session. That is also the thing to
+know before sharing one — anyone holding the link can play that file, so it
+expires on its own, and locking the vault voids every link already handed out.
+
+| | |
+|---|---|
+| Lifetime | 12 hours, and the clock restarts each time the link is used, so one in use never expires mid-film |
+| Locking the vault | Voids every outstanding link immediately |
+| Reach | One file. Not the folder, not the index, not the vault |
+
+The dialog shows the address whatever happens, with a copy button — that is the
+answer to "how do I get the path", and the fallback when a handoff finds no VLC
+installed. How the handoff is made depends on where you are:
+
+| | |
+|---|---|
+| iOS / iPadOS | `vlc-x-callback://` — VLC's own documented entry point |
+| Android | An `intent:` naming `org.videolan.vlc`, so the scheme survives the trip and https stays https |
+| Desktop | A two-line `.m3u`; VLC registers itself for playlists on every desktop it installs on |
+
+Seeking works the way it does over the share: a player asking for the middle of
+a film fetches the chunks covering that stretch, not the file. The link counts
+as use of the vault, so the auto-lock won't fire halfway through.
+
+Any player that takes a URL works — the address is an ordinary HTTP one that
+answers `Range` requests. VLC is what the button reaches for because it is the
+one with a documented way in on every platform.
+
+> [!NOTE]
+> The link inherits the origin you reached the app on, so behind Tailscale
+> Serve or a reverse proxy it is the `https://` address without being told
+> about it. Over plain HTTP it is a bearer token in the clear, like everything
+> else SAND sends there — put TLS in front of it.
 
 ---
 
@@ -691,6 +738,11 @@ A correct password against a locked vault unlocks it, which is what keeps a
 mount alive past the idle timeout instead of going dead until you open a
 browser. Requests to the share count as activity, so the auto-lock won't fire
 halfway through a film.
+
+To play *one* file in a player you don't need the share at all — see [Stream a
+file to VLC](#stream-a-file-to-vlc), which works on a plain `sand serve` and
+hands over a link rather than your password. The share is for browsing the whole
+vault from outside the browser.
 
 Jellyfin and Plex want a real filesystem rather than a URL, so they need a FUSE
 mount — not built yet.
@@ -944,7 +996,7 @@ sand/
 ├── web/src/                     # React file browser
 │   ├── api.js  theme.js  App.jsx
 │   └── components/              # LockScreen, AccountsPanel, ConnectCloud,
-│                                #   FileBrowser, PreviewModal, ui
+│                                #   FileBrowser, PreviewModal, StreamLink, ui
 │   ├── public/                  # app icon, home-screen icons + manifest,
 │   │                            #   developer badge
 │   └── build-version.js         # feeds the version into the bundle

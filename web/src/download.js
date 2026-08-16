@@ -21,6 +21,23 @@ import { api } from './api'
    that ever takes, and still bounds how long the plaintext stays reachable. */
 const REVOKE_AFTER_MS = 60_000
 
+/* Hand a blob to the browser as a file under a name of our choosing, without
+   the page going anywhere. Used for a rebuilt file, and for the small playlist
+   that starts a desktop player. */
+export function saveBlob(blob, filename) {
+  const url = URL.createObjectURL(blob)
+
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  // Firefox only follows a synthetic click on an anchor that is in the document.
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+
+  setTimeout(() => URL.revokeObjectURL(url), REVOKE_AFTER_MS)
+}
+
 export async function downloadFile(file) {
   const resp = await fetch(api.contentURL(file.id, { download: true }), {
     credentials: 'same-origin',
@@ -30,17 +47,7 @@ export async function downloadFile(file) {
   /* The whole file lands in memory, which is the bargain the server has
      already made on its side: it gathers the parts and rebuilds the plaintext
      in memory to answer this very request. */
-  const url = URL.createObjectURL(await resp.blob())
-
-  const link = document.createElement('a')
-  link.href = url
-  link.download = file.name
-  // Firefox only follows a synthetic click on an anchor that is in the document.
-  document.body.appendChild(link)
-  link.click()
-  link.remove()
-
-  setTimeout(() => URL.revokeObjectURL(url), REVOKE_AFTER_MS)
+  saveBlob(await resp.blob(), file.name)
 }
 
 /* Rebuilding a file takes as long as the slowest account holding a part, so

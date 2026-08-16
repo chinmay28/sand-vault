@@ -1,9 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { COLORS, FONT, accountColor, formatBytes, previewKind } from '../theme'
+import { COLORS, FONT, accountColor, formatBytes, isPlayable, previewKind } from '../theme'
 import { useIsMobile } from '../hooks'
 import { api } from '../api'
 import { useDownload } from '../download'
 import { thumbnailFromElement } from '../thumbs'
+import StreamLink from './StreamLink'
 import { Banner, Button, Modal, Spinner } from './ui'
 
 /* How much of the visible viewport a preview may take before the modal's own
@@ -27,6 +28,13 @@ export default function PreviewModal({ file, hasThumb, onClose, onThumbStored })
      still a file the preview above may be rendering perfectly well. */
   const [downloadError, setDownloadError] = useState(null)
   const [download, downloading] = useDownload(setDownloadError)
+
+  /* The preview above is the browser's best attempt at the file. For a film
+     that means one long inline fetch and whichever codecs the browser happens
+     to have, which is exactly when handing it to a real player is the better
+     answer — so the offer sits beside it rather than somewhere else. */
+  const [streaming, setStreaming] = useState(null)
+  const playable = isPlayable(file.mime, file.name)
 
   useEffect(() => {
     if (kind !== 'text') return
@@ -168,6 +176,15 @@ export default function PreviewModal({ file, hasThumb, onClose, onThumbStored })
       <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
         <Button variant="ghost" onClick={onClose}
           style={mobile ? { flex: 1, justifyContent: 'center' } : null}>Close</Button>
+        {/* A player for the files a player is for; for everything else the
+            same dialog, opened for the address it is really wanted for. */}
+        <Button
+          onClick={() => setStreaming(playable ? 'play' : 'link')}
+          title={playable
+            ? 'Open this in VLC, or copy the address'
+            : 'A link any player or app can open'}
+          style={mobile ? { flex: 1, justifyContent: 'center' } : null}
+        >{playable ? '▶ Stream in VLC' : '⧉ Copy the address'}</Button>
         <Button
           variant="primary"
           onClick={() => download(file)}
@@ -180,6 +197,17 @@ export default function PreviewModal({ file, hasThumb, onClose, onThumbStored })
             : '↓ Download decrypted'}
         </Button>
       </div>
+
+      {streaming && (
+        <StreamLink
+          file={file}
+          autoplay={streaming === 'play'}
+          /* Opened from inside a dialog, so it has to sit above the one that
+             opened it rather than wherever the portal happened to put it. */
+          zIndex={120}
+          onClose={() => setStreaming(null)}
+        />
+      )}
     </Modal>
   )
 }

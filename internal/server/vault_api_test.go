@@ -25,6 +25,10 @@ type testClient struct {
 	handler http.Handler
 	cookies []*http.Cookie
 	origin  string
+
+	// server is the handler's own Server, for the few tests that have to look
+	// at state the HTTP surface does not expose.
+	server *Server
 }
 
 func newTestClient(t *testing.T) *testClient {
@@ -43,7 +47,7 @@ func newTestClient(t *testing.T) *testClient {
 			s.vault.AwaitBackupSync()
 		}
 	})
-	return &testClient{t: t, handler: handler, origin: "http://example.test"}
+	return &testClient{t: t, handler: handler, server: s, origin: "http://example.test"}
 }
 
 func (c *testClient) do(method, path string, body io.Reader, contentType string) *httptest.ResponseRecorder {

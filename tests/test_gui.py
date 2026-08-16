@@ -429,6 +429,119 @@ class TestUploadAndPreview:
         assert app.locator('button[title="Where the parts live"]').first.is_visible()
 
 
+class TestStreamingToAPlayer:
+    """Watching a film means handing VLC an address, and VLC has none of what
+    authenticates this app.  The row mints a link standing for that one file,
+    which is the only credential a player can actually be given — so the tests
+    here follow the address the dialog shows with no cookie at all, the way VLC
+    would.
+    """
+
+    def _open_dialog(self, app, tmp_path, name="clip.mp4"):
+        source = tmp_path / name
+        source.write_bytes(b"not really a film, but it streams like one")
+        upload_and_settle(app, source)
+
+        app.get_by_label(f"Stream {name}").click()
+        app.get_by_role("heading", name="Stream to a player").wait_for(timeout=20000)
+        address = app.get_by_label("Stream address")
+        address.wait_for(timeout=20000)
+        return source, address.input_value()
+
+    def test_only_what_a_player_is_for_offers_one(self, app, tmp_path):
+        film = tmp_path / "offered.mp4"
+        film.write_bytes(b"a film")
+        upload_and_settle(app, film)
+
+        notes = tmp_path / "not-offered.txt"
+        notes.write_text("a text file has nothing to stream")
+        upload_and_settle(app, notes)
+
+        assert app.get_by_label("Stream offered.mp4").count() == 1
+        assert app.get_by_label("Stream not-offered.txt").count() == 0
+
+    def test_the_address_plays_without_the_session(self, app, tmp_path, server):
+        import requests
+
+        source, address = self._open_dialog(app, tmp_path, "plays.mp4")
+
+        assert address.startswith(server), f"address {address!r} is not on this origin"
+        assert "/stream/" in address
+        # The name is the last segment because a player picks its demuxer off
+        # the extension before a single byte arrives.
+        assert address.endswith("plays.mp4")
+
+        # A bare requests call carries no session cookie, which is the whole
+        # point: this is what VLC has.
+        played = requests.get(address, timeout=30)
+        assert played.status_code == 200
+        assert played.content == source.read_bytes()
+
+        # And it seeks, which is what makes it worth streaming rather than
+        # downloading first.
+        ranged = requests.get(address, headers={"Range": "bytes=4-9"}, timeout=30)
+        assert ranged.status_code == 206
+        assert ranged.content == source.read_bytes()[4:10]
+
+        app.keyboard.press("Escape")
+
+    def test_the_address_copies_without_the_clipboard_api(self, app, tmp_path):
+        """The other half of the ask: getting the path onto the clipboard
+        without transcribing it.  SAND is usually reached over plain HTTP,
+        where navigator.clipboard does not exist, so the API is taken away here
+        to force the fallback the copy button really runs on."""
+        _, address = self._open_dialog(app, tmp_path, "copied.mp4")
+
+        app.evaluate(
+            """() => {
+              Object.defineProperty(navigator, 'clipboard',
+                { value: undefined, configurable: true })
+              window.__copied = []
+              document.execCommand = (command) => {
+                if (command !== 'copy') return false
+                const el = document.activeElement
+                window.__copied.push(el && el.value != null ? el.value : '')
+                return true
+              }
+            }"""
+        )
+
+        app.get_by_role("button", name="COPY").click()
+        app.wait_for_selector("text=COPIED", timeout=5000)
+        assert app.evaluate("() => window.__copied") == [address]
+
+        app.keyboard.press("Escape")
+
+    def test_a_desktop_is_handed_a_playlist_naming_the_address(self, app, tmp_path):
+        """A desktop browser has no URL scheme to reach VLC through, so the
+        handoff there is the playlist file VLC registers itself for."""
+        _, address = self._open_dialog(app, tmp_path, "playlist.mp4")
+
+        with app.expect_download(timeout=30000) as download:
+            app.get_by_role("button", name="▶ Open in VLC").click()
+
+        assert download.value.suggested_filename == "playlist.mp4.m3u"
+        body = download.value.path().read_text()
+        assert body.startswith("#EXTM3U")
+        assert address in body
+
+        app.keyboard.press("Escape")
+
+    def test_locking_the_vault_voids_a_link_already_handed_out(self, app, tmp_path, server):
+        import requests
+
+        _, address = self._open_dialog(app, tmp_path, "voided.mp4")
+        assert requests.get(address, timeout=30).status_code == 200
+
+        app.keyboard.press("Escape")
+        app.get_by_label("Lock vault").click()
+        app.wait_for_selector("text=Vault password", timeout=20000)
+
+        # The keys have left memory, so the link goes with them rather than
+        # failing one request at a time.
+        assert requests.get(address, timeout=30).status_code == 404
+
+
 class TestChoosingClouds:
     """Which clouds a file is scattered over is a decision, not a detail.
 

@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
-import { COLORS, FONT, accountColor, fileIcon, formatBytes, formatDate } from '../theme'
+import { COLORS, FONT, accountColor, fileIcon, formatBytes, formatDate, isPlayable } from '../theme'
 import { api, joinPath } from '../api'
 import { useDownload } from '../download'
 import { ActionSheet, Banner, Button, ConfirmDialog, Empty, IconButton, Modal, Spinner } from './ui'
+import StreamLink from './StreamLink'
 import { UploadDestination } from './CloudSelect'
 import { makeThumbnail } from '../thumbs'
 
@@ -692,8 +693,13 @@ function FileRow({ file, location, mobile, hasThumb, onPreview, onInspect, onRef
   const [download, downloading] = useDownload(onError)
   const [menu, setMenu] = useState(false)
   const [confirming, setConfirming] = useState(false)
+  /* null, or 'play' when the stream dialog should reach for VLC on the way in
+     and 'link' when it should just show the address. */
+  const [streaming, setStreaming] = useState(null)
   const degraded = file.shards.length < 3
   const dead = file.shards.length < 2
+  // Only what a player is any use for gets offered one.
+  const playable = isPlayable(file.mime, file.name)
 
   const remove = async () => {
     setBusy(true)
@@ -801,6 +807,16 @@ function FileRow({ file, location, mobile, hasThumb, onPreview, onInspect, onRef
     />
   ) : (
     <span style={{ display: 'flex', gap: '2px', justifyContent: 'flex-end', flexShrink: 0 }}>
+      {/* Three controls is what the column has room for, so this one is on the
+          rows it means something on: a player is no use on a PDF. */}
+      {playable && !dead && (
+        <IconButton
+          glyph="▶"
+          label={`Stream ${file.name}`}
+          title="Open in VLC, or copy the address"
+          onClick={() => setStreaming('play')}
+        />
+      )}
       {/* Every row carries this control, so the spoken name says which file it
           belongs to rather than repeating the same sentence down the list. */}
       <IconButton
@@ -836,6 +852,24 @@ function FileRow({ file, location, mobile, hasThumb, onPreview, onInspect, onRef
               disabled: dead,
               onSelect: onPreview,
             },
+            // Sits under Open because it is the same intent aimed elsewhere:
+            // watch this, but in the player that can actually seek it.
+            playable && {
+              key: 'stream',
+              glyph: '▶',
+              label: 'Stream in VLC',
+              hint: dead ? 'Too few parts remain to rebuild this file' : 'Open it in VLC and start playing',
+              disabled: dead,
+              onSelect: () => setStreaming('play'),
+            },
+            {
+              key: 'copy-link',
+              glyph: '⧉',
+              label: 'Copy the address',
+              hint: 'A link any player or app can open',
+              disabled: dead,
+              onSelect: () => setStreaming('link'),
+            },
             {
               key: 'download',
               glyph: '↓',
@@ -863,6 +897,14 @@ function FileRow({ file, location, mobile, hasThumb, onPreview, onInspect, onRef
               onSelect: () => setConfirming(true),
             },
           ]}
+        />
+      )}
+
+      {streaming && (
+        <StreamLink
+          file={file}
+          autoplay={streaming === 'play'}
+          onClose={() => setStreaming(null)}
         />
       )}
 
