@@ -110,6 +110,12 @@ export const api = {
     request(`/api/folders?path=${encodeURIComponent(path)}${recursive ? '&recursive=1' : ''}`,
       { method: 'DELETE' }),
 
+  /* A link a player outside the browser can follow. VLC has none of what
+     authenticates this app — the session cookie is HttpOnly and SameSite=Strict
+     — so the server mints a bearer link standing for this one file, which is
+     the only credential a player can actually be handed. */
+  streamLink: (id) => request(`/api/files/${encodeURIComponent(id)}/stream`, { method: 'POST' }),
+
   contentURL: (id, { download = false } = {}) =>
     `/api/files/${encodeURIComponent(id)}/content${download ? '?download=1' : ''}`,
 

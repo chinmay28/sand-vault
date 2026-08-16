@@ -60,13 +60,15 @@ type Server struct {
 
 	vault      *vault.Vault
 	sessions   *sessionStore
+	streams    *streamStore
 	oauthFlows *oauthFlowStore
 
-	// davActivity is when a WebDAV request last arrived. A mounted share has no
-	// browser session to keep it alive, so without this the vault would lock
+	// externalActivity is when something outside the browser last read the
+	// vault — a mounted share, or a player following a stream link. Neither has
+	// a browser session to keep the vault alive, so without this it would lock
 	// itself halfway through a film.
-	davMu       sync.Mutex
-	davActivity time.Time
+	externalMu       sync.Mutex
+	externalActivity time.Time
 }
 
 // DefaultWebDAVPrefix is where the share is mounted unless told otherwise.
@@ -146,6 +148,9 @@ func (s *Server) Handler() (http.Handler, error) {
 	if s.sessions == nil {
 		s.sessions = newSessionStore(s.IdleTimeout)
 	}
+	if s.streams == nil {
+		s.streams = newStreamStore(0)
+	}
 	if s.oauthFlows == nil {
 		s.oauthFlows = newOAuthFlowStore()
 	}
@@ -158,7 +163,7 @@ func (s *Server) Handler() (http.Handler, error) {
 		dav, err := davfs.Handler(v, davfs.Options{
 			Prefix:     prefix,
 			Realm:      "SAND Vault",
-			OnActivity: s.noteDAVActivity,
+			OnActivity: s.noteExternalActivity,
 		})
 		if err != nil {
 			return nil, err
@@ -175,6 +180,13 @@ func (s *Server) Handler() (http.Handler, error) {
 	mux.HandleFunc("POST /api/vault/init", s.handleVaultInit)
 	mux.HandleFunc("POST /api/vault/unlock", s.handleVaultUnlock)
 	mux.HandleFunc("GET /api/providers/specs", s.handleProviderSpecs)
+
+	// A stream link carries its own credential in the path, which is the point
+	// of it: the player following one is not the browser and has no session to
+	// offer. Registered for GET, which the router answers HEAD on too — a
+	// player asks for the length and the range support before the first byte.
+	mux.HandleFunc("GET /stream/{token}", s.handleStream)
+	mux.HandleFunc("GET /stream/{token}/{name}", s.handleStream)
 
 	// The provider sends the browser back here after the account holder has
 	// signed in. It arrives as a cross-site navigation, which the session
@@ -215,6 +227,7 @@ func (s *Server) Handler() (http.Handler, error) {
 		"POST /api/files/{id}/move":   s.handleFileMove,
 		"GET /api/files/{id}/health":  s.handleFileHealth,
 		"GET /api/files/{id}/content": s.handleFileContent,
+		"POST /api/files/{id}/stream": s.handleFileStreamLink,
 		"GET /api/files/{id}/thumb":   s.handleFileThumb,
 		"PUT /api/files/{id}/thumb":   s.handleFileThumbSet,
 
@@ -364,10 +377,12 @@ func (s *Server) autoLockLoop() {
 		if err != nil || !v.Unlocked() {
 			continue
 		}
-		if s.sessions.sweep() > 0 || s.davActive() {
+		if s.sessions.sweep() > 0 || s.externalActive() {
 			continue
 		}
 		v.Lock()
+		// Every stream link was minted against the keys that just left memory.
+		s.streams.clear()
 		log.Print("vault auto-locked after idle timeout")
 	}
 }
@@ -385,24 +400,25 @@ func (s *Server) webdavPrefix() string {
 	return strings.TrimSuffix(prefix, "/")
 }
 
-// noteDAVActivity records that the share was used just now.
-func (s *Server) noteDAVActivity() {
-	s.davMu.Lock()
-	s.davActivity = time.Now()
-	s.davMu.Unlock()
+// noteExternalActivity records that something without a browser session — the
+// share, or a stream link — read the vault just now.
+func (s *Server) noteExternalActivity() {
+	s.externalMu.Lock()
+	s.externalActivity = time.Now()
+	s.externalMu.Unlock()
 }
 
-// davActive reports whether the share has been used inside the idle timeout,
-// which counts as use in exactly the way a live browser session does.
-func (s *Server) davActive() bool {
+// externalActive reports whether that happened inside the idle timeout, which
+// counts as use in exactly the way a live browser session does.
+func (s *Server) externalActive() bool {
 	idle := s.IdleTimeout
 	if idle <= 0 {
 		idle = DefaultIdleTimeout
 	}
 
-	s.davMu.Lock()
-	defer s.davMu.Unlock()
-	return !s.davActivity.IsZero() && time.Since(s.davActivity) < idle
+	s.externalMu.Lock()
+	defer s.externalMu.Unlock()
+	return !s.externalActivity.IsZero() && time.Since(s.externalActivity) < idle
 }
 
 // requireSession rejects requests without a valid session, or when the vault

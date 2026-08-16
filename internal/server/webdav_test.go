@@ -79,19 +79,19 @@ func TestWebDAVPrefixIsConfigurable(t *testing.T) {
 func TestWebDAVActivityHoldsOffTheAutoLock(t *testing.T) {
 	s := &Server{IdleTimeout: time.Minute}
 
-	if s.davActive() {
+	if s.externalActive() {
 		t.Error("a share nobody has used reports as active")
 	}
 
-	s.noteDAVActivity()
-	if !s.davActive() {
+	s.noteExternalActivity()
+	if !s.externalActive() {
 		t.Error("a share used just now does not report as active")
 	}
 
-	s.davMu.Lock()
-	s.davActivity = time.Now().Add(-2 * time.Minute)
-	s.davMu.Unlock()
-	if s.davActive() {
+	s.externalMu.Lock()
+	s.externalActivity = time.Now().Add(-2 * time.Minute)
+	s.externalMu.Unlock()
+	if s.externalActive() {
 		t.Error("a share last used past the idle timeout still reports as active")
 	}
 }

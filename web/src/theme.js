@@ -124,6 +124,25 @@ export function previewKind(mime = '', name = '') {
   return null
 }
 
+/* Which files are worth handing to a media player.
+
+   Deliberately wider than previewKind, and on a different question. That one
+   asks what this browser can draw, and it has to be strict — it is choosing
+   between a <video> element and an honest "no preview here". This one asks what
+   VLC could play, and VLC's answer is nearly everything.
+
+   Hence the extension test rather than the type alone: a .mkv usually arrives
+   with no recognised type at all, since Go's built-in table stops at the
+   handful of web formats and a server without an /etc/mime.types has nothing
+   else to consult. That is precisely the file a browser cannot play and a
+   player can. */
+export function isPlayable(mime = '', name = '') {
+  const type = mime.split(';')[0].trim().toLowerCase()
+  if (type.startsWith('video/') || type.startsWith('audio/')) return true
+  return /\.(mp4|m4v|mov|mkv|webm|avi|wmv|flv|mpe?g|m2ts|ts|ogv|3gp|mp3|m4a|aac|flac|wav|ogg|oga|opus|wma)$/i
+    .test(name)
+}
+
 const TEXTUAL = new Set([
   'application/json',
   'application/x-yaml',
