@@ -245,7 +245,8 @@ Three routes back, in increasing order of how much has survived:
 |---|---|---|
 | `manifest.sand` + password | `sand manifest ls` | The file tree and the placement map |
 | Enough parts + `manifest.sand` + password | `sand restore --manifest` | The complete file, offline, no accounts |
-| The accounts + password | `sand vault recover` | The whole vault, files openable again |
+| The accounts + password | `sand vault recover`, or the browser's own prompt | The whole vault, files openable again |
+| The accounts you were missing | `sand vault recover --resume` | The parts that were out of reach, no password needed |
 
 `sand vault recover` runs against a fresh vault with the accounts reconnected.
 Reconnecting gives every account a new internal id, so rather than trusting the
@@ -254,6 +255,40 @@ shard record at whichever account answers with that key. Accounts that were not
 reconnected show up as unreachable parts. The recovered vault adopts the old
 data key, so new uploads join the existing files instead of starting a second
 key, and it rewrites the backups under its own password.
+
+**Nobody has to know the command exists.** The route above is only a route back
+for someone who already suspects there is one, and the person in this situation
+— a reinstalled machine, an empty vault, a file list that is blank because
+everything they own is on accounts the vault has never heard of — has no reason
+to suspect it. So `Vault.ScanForRecovery` asks each connected account two
+questions that need no password: what are you holding, and does the
+`manifest.sand` on you open under *this* vault's key? A readable envelope that
+this vault cannot open was written by a different one, which is the signature of
+exactly this disaster, and the browser prompts on it. The scan runs only where
+it could matter — an empty vault, or one carrying shard records that point
+nowhere — so it never sits on the path of a vault that is simply in use.
+
+**The report leads on the shortfall.** `MinPartsToRestore` is two of three, so
+one cloud you have not got back yet costs nothing and two costs you the file.
+`RecoveryReport` therefore counts in pairs — `Recoverable` against `Files`,
+`RecoverableBytes` against `Bytes`, because those two diverge and the bytes are
+usually the answer to "how bad is this" — and then names what is left: the files
+that came up short, and the accounts whose absence caused it. An account that
+held only a third part is listed without `Blocking` set, since reconnecting it
+changes nothing about what can be opened.
+
+**Finishing later is a separate operation.** A partial recovery leaves a
+complete index, part of it out of reach: `Stats.Unresolved` counts the shard
+records naming accounts the vault is not connected to, and `Stats.Stranded` the
+files that cannot be opened because of them. `Recover` cannot be run twice — it
+adopts a data key, and by then there are files depending on the one it adopted —
+so `Vault.Reconcile` (`sand vault recover --resume`, `POST
+/api/vault/recovery/resume`) does the small half instead: ask the accounts what
+they hold, re-point what now has somewhere to point, persist. No password is
+involved, because what was missing was never a secret. A shard whose account
+*is* connected but did not appear in its listing keeps its record rather than
+being dropped — one failed listing should not throw placement away; that is what
+the health check is for.
 
 ### 3.8 Searching is a property of the open vault
 
@@ -931,6 +966,9 @@ reveals only whether a vault exists.
 | POST | `/api/vault/migrate` | Finish a re-encryption that was deferred or interrupted |
 | POST | `/api/vault/policy` | Change placement policy |
 | POST | `/api/vault/defaults` | Set the accounts uploads use by default (empty list = pick per file) |
+| GET | `/api/vault/recovery` | Is a connected account carrying a vault this one could recover? (§3.7) |
+| POST | `/api/vault/recovery` | Adopt that index (`password` — the *lost* vault's, `provider_id`, `dry_run`) |
+| POST | `/api/vault/recovery/resume` | Re-point the index at accounts reconnected since (`dry_run`; no password) |
 | GET | `/api/providers/specs` | Backend descriptions for the connect form |
 | GET | `/api/providers` | Connected accounts: online, parts held, quota |
 | POST | `/api/providers` | Connect an account (pings before saving) |
@@ -1185,7 +1223,8 @@ sand/
 │   ├── sandfile/              # binary .sand part format
 │   ├── provider/              # provider.go, local, s3, webdav, gdrive, dropbox
 │   ├── vault/                 # store (encrypted file), manifest, placement, transfer,
-│   │                          #   relocate (moving parts between accounts), backup
+│   │                          #   relocate (moving parts between accounts),
+│   │                          #   backup (writing the index out), recovery (reading it back)
 │   └── server/                # sessions, handlers, embedded SPA
 ├── web/src/                   # React file browser
 │   ├── api.js  theme.js  App.jsx

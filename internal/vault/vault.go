@@ -1166,6 +1166,16 @@ type Stats struct {
 	// Pending counts the files still stored under a retired data key after a
 	// password change, waiting to be re-encrypted under the new one.
 	Pending int `json:"pending_migration"`
+
+	// Unresolved counts shard records naming an account this vault is not
+	// connected to, and Stranded the files that cannot be opened as a result.
+	//
+	// Both are normally zero. They are what a recovery run before every account
+	// was reconnected leaves behind: the index knows the file exists and where
+	// its parts went, and cannot reach enough of them. Connecting the rest and
+	// resuming the recovery is what clears them — see Reconcile.
+	Unresolved int `json:"unresolved"`
+	Stranded   int `json:"stranded"`
 }
 
 // Stats returns aggregate counters for the whole vault.
@@ -1185,6 +1195,7 @@ func (v *Vault) Stats() (Stats, error) {
 	for _, f := range v.manifest.Folders {
 		folders[f] = true
 	}
+	s.Unresolved, s.Stranded = v.unreachableLocked()
 	for _, e := range v.manifest.Entries {
 		s.Files++
 		s.Bytes += e.Size

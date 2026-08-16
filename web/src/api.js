@@ -59,6 +59,29 @@ export const api = {
     }),
   migrate: () => request('/api/vault/migrate', { method: 'POST' }),
 
+  /* Disaster recovery. Every connected account carries an encrypted copy of
+     the index, so a machine that lost its vault can find one sitting on the
+     clouds it reconnects. The scan costs a listing and one small download per
+     account and needs no password — it only reports what is there, and whether
+     it belongs to a vault other than this one. */
+  recoveryScan: () => request('/api/vault/recovery'),
+  /* Rebuilds the index from that copy. The password is the *lost* vault's, not
+     this one's: the backup is still sealed under whatever password wrote it.
+     Ask with dryRun first — it reports exactly what would come back and what
+     would not, without touching the vault. */
+  recover: ({ providerId, password, dryRun = false } = {}) =>
+    request('/api/vault/recovery', {
+      method: 'POST',
+      body: { provider_id: providerId || '', password, dry_run: dryRun },
+    }),
+  /* Finishes a recovery that ran before every account was reconnected. It asks
+     the accounts what they hold and re-points the index at whichever one
+     answers, which needs no password at all — the key was adopted by the
+     recovery that ran first, and what was missing is a reachable copy of the
+     parts rather than a secret. */
+  resumeRecovery: ({ dryRun = false } = {}) =>
+    request('/api/vault/recovery/resume', { method: 'POST', body: { dry_run: dryRun } }),
+
   providerSpecs: () => request('/api/providers/specs'),
   providers: () => request('/api/providers'),
   addProvider: (kind, name, options) =>

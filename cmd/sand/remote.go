@@ -98,7 +98,7 @@ one needs. Settings are supplied as --set key=value pairs, for example:
 			if err != nil {
 				return err
 			}
-			defer v.Lock()
+			defer closeVault(v)
 
 			cfg, err := v.AddProvider(context.Background(), provider.Config{
 				Kind:    provider.Kind(args[0]),
@@ -134,7 +134,7 @@ func remoteListCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer v.Lock()
+			defer closeVault(v)
 
 			statuses, err := v.ProviderStatuses(context.Background())
 			if err != nil {
@@ -203,7 +203,7 @@ uploaded, downloaded or re-encrypted by renaming a cloud.`,
 			if err != nil {
 				return err
 			}
-			defer v.Lock()
+			defer closeVault(v)
 
 			cfg, err := findProvider(v, args[0])
 			if err != nil {
@@ -253,7 +253,7 @@ func remoteTestCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer v.Lock()
+			defer closeVault(v)
 
 			cfg, err := findProvider(v, args[0])
 			if err != nil {
@@ -281,7 +281,7 @@ func remoteRemoveCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer v.Lock()
+			defer closeVault(v)
 
 			cfg, err := findProvider(v, args[0])
 			if err != nil {

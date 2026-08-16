@@ -767,7 +767,10 @@ class TestDisasterRecovery:
             capture_output=True, text=True, env=env,
         )
         assert recover.returncode == 0, recover.stderr
-        assert "Recovered 2 file(s)" in recover.stdout
+        # Both halves of the count, because the report leads on what came back
+        # against what was there rather than on a bare total.
+        assert "Recovered 2 of 2 file(s)" in recover.stdout
+        assert "Not recovered" not in recover.stdout
 
         # The tree is back...
         result = cli(sand_bin, new_root, "ls", "/finance", password="a-different-password")

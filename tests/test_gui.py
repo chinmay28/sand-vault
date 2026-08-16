@@ -1564,3 +1564,122 @@ class TestNoConsoleErrors:
         # Favicon 404s are noise, not defects.
         real = [e for e in errors if "favicon" not in e.lower()]
         assert not real, f"console errors on load: {real}"
+
+
+class TestDisasterRecovery:
+    """The machine died and the clouds came back.
+
+    Every test here gets its own server, port and vault file, because that is
+    the scenario: a replacement machine that has never held a file, connecting
+    accounts that are still carrying the vault it lost. The app is supposed to
+    notice that on its own — nobody in this situation knows to go looking for a
+    recovery command.
+    """
+
+    def new_machine(self, page, base_url, password):
+        """Create the replacement vault through the first-run screen."""
+        page.goto(base_url)
+        page.wait_for_selector("text=Create your vault", timeout=20000)
+        boxes = page.locator('input[autocomplete="new-password"]')
+        boxes.nth(0).fill(password)
+        boxes.nth(1).fill(password)
+        page.get_by_text("▶ Create vault").click()
+        page.wait_for_selector("text=Connected clouds", timeout=20000)
+
+    def reconnect(self, page, name, path):
+        """Wire one of the recovered cloud folders back up through the UI."""
+        page.get_by_text("+ Connect a cloud").click()
+        page.wait_for_selector("text=Local folder", timeout=15000)
+        page.get_by_text("Local folder").click()
+        form = page.locator("form")
+        form.locator("input").nth(0).fill(name)
+        form.locator("input").nth(1).fill(path)
+        form.locator("button[type=submit]").click()
+        page.wait_for_selector(f"text={name}", timeout=30000)
+
+    def dismiss_prompt(self, page):
+        """Close the recovery prompt if it has opened over the accounts panel.
+
+        Keyed on the button rather than the title: the banner underneath says
+        "Sand files detected" too, and it is still there once the dialog is
+        shut — which is the point of it.
+        """
+        not_now = page.get_by_role("button", name="Not now")
+        if not_now.count() == 0:
+            return
+        not_now.click()
+        page.wait_for_timeout(300)
+
+    def test_connecting_a_cloud_prompts_to_recover(self, page, spawn_server, lost_vault):
+        clouds, _, _ = lost_vault
+        self.new_machine(page, spawn_server("case-prompt"), "a-brand-new-passphrase")
+
+        # Nothing has been asked for. Connecting the first cloud is enough for
+        # the app to find a vault on it and say so.
+        self.reconnect(page, "back-one", clouds[0])
+        expect(page.get_by_text("Sand files detected")).to_be_visible(timeout=30000)
+
+        # And it says what it found, rather than only that it found something.
+        expect(page.get_by_text(re.compile(r"stored parts?"))).to_be_visible()
+        expect(page.get_by_text(re.compile(r"Only 1 cloud is connected"))).to_be_visible()
+
+    def test_recovery_brings_the_files_back(self, page, spawn_server, lost_vault):
+        clouds, lost_password, names = lost_vault
+        self.new_machine(page, spawn_server("case-whole"), "a-brand-new-passphrase")
+
+        self.reconnect(page, "back-one", clouds[0])
+        self.dismiss_prompt(page)
+        self.reconnect(page, "back-two", clouds[1])
+        self.dismiss_prompt(page)
+        self.reconnect(page, "back-three", clouds[2])
+        self.dismiss_prompt(page)
+
+        # The banner is the standing offer once the prompt has been waved away.
+        page.get_by_role("button", name="Attempt recovery").click()
+        page.wait_for_selector("text=Sand files detected", timeout=30000)
+
+        page.locator('input[type="password"]').first.fill(lost_password)
+        page.get_by_role("button", name="Check what is there").click()
+        # The dry run answers before anything is adopted.
+        expect(page.get_by_text("files openable")).to_be_visible(timeout=60000)
+        expect(page.get_by_text(re.compile(r"Nothing would be left behind"))).to_be_visible()
+
+        page.get_by_role("button", name="Recover", exact=True).click()
+        page.wait_for_selector("text=Recovery complete", timeout=60000)
+        page.get_by_role("button", name="Open the vault").click()
+
+        for name in names:
+            expect(page.get_by_text(name, exact=True).first).to_be_visible(timeout=30000)
+
+    def test_a_partial_recovery_says_what_is_still_missing(self, page, spawn_server, lost_vault):
+        clouds, lost_password, _ = lost_vault
+        self.new_machine(page, spawn_server("case-partial"), "a-brand-new-passphrase")
+
+        # One cloud of three, which is one short of the two parts a file needs.
+        self.reconnect(page, "back-one", clouds[0])
+        page.wait_for_selector("text=Sand files detected", timeout=30000)
+
+        page.locator('input[type="password"]').first.fill(lost_password)
+        page.get_by_role("button", name="Recover", exact=True).click()
+        page.wait_for_selector("text=Recovery finished, in part", timeout=60000)
+
+        # The shortfall, and the one instruction that would change it.
+        expect(page.get_by_text(re.compile(r"did\s+not come back"))).to_be_visible()
+        expect(page.get_by_text("Connect these and recover again")).to_be_visible()
+        expect(page.get_by_text("Files still missing")).to_be_visible()
+        expect(page.get_by_text("dead-two")).to_be_visible()
+
+        page.get_by_role("button", name="Open the vault").click()
+
+        # Connecting the rest turns the offer into one to finish the job, which
+        # needs no password: the key was adopted by the recovery that ran first.
+        self.reconnect(page, "back-two", clouds[1])
+        self.reconnect(page, "back-three", clouds[2])
+
+        page.get_by_role("button", name="Finish recovery").click()
+        page.wait_for_selector("text=Finish the recovery", timeout=30000)
+        assert page.locator('input[type="password"]').count() == 0
+
+        page.get_by_role("button", name="Finish recovery").last.click()
+        page.wait_for_selector("text=Recovery complete", timeout=60000)
+        expect(page.get_by_text("files openable")).to_be_visible()
