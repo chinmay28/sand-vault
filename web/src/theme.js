@@ -24,22 +24,25 @@ export const COLORS = {
 export const FONT = {
   mono: "ui-monospace, 'SF Mono', 'JetBrains Mono', 'Fira Code', Menlo, Consolas, monospace",
   sans: "system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
-  /* The wordmark's second half, written rather than set.
+  /* The wordmark's second half, written rather than set. Three tiers, and the
+     app is only ever one of them:
 
-     Nefelibata Script first — a nefelibata is a cloud-walker, which is a fair
-     description of a vault that lives on other people's clouds. It is a
-     licensed font, so it is not in this repository: the build embeds it when a
-     copy is sitting in web/fonts (see the README there), and a browser on a
-     machine with the desktop font installed finds it by name either way.
+     Nefelibata Script, if this build has it. A nefelibata is a cloud-walker,
+     which is a fair description of a vault that lives on other people's
+     clouds — but it is a licensed face, so the repository cannot carry one.
+     Drop a copy in web/fonts and the build embeds it; a machine with the
+     desktop font installed finds it by name either way.
 
-     Everything after it ships with an operating system, so the wordmark is
-     still written when the font is not there — nothing is ever fetched, which
-     is the rule the whole app is held to. The stack walks the handwriting face
-     each platform actually has and ends at the generic `cursive`, which every
-     browser resolves to something joined. */
-  script: "'Nefelibata Script', Nefelibata, 'Snell Roundhand', 'Apple Chancery', " +
-    "'Segoe Script', 'Bradley Hand', 'Brush Script MT', 'Lucida Handwriting', " +
-    "'URW Chancery L', cursive",
+     Otherwise the face in the repository: a thin monoline script cut down to
+     the five letters of "Vault", under two kilobytes, embedded in the page by
+     the build. It is what everyone sees, and it is the same everywhere.
+
+     And behind both, faces that ship with an operating system, so the mark is
+     still written even if the woff2 will not decode. Nothing is ever fetched,
+     which is the rule the whole app is held to. */
+  script: "'Nefelibata Script', 'SAND Wordmark Script', 'Snell Roundhand', " +
+    "'Apple Chancery', 'Segoe Script', 'Bradley Hand', 'Brush Script MT', " +
+    "'Lucida Handwriting', 'URW Chancery L', cursive",
 }
 
 /* Each connected account wears a colour no other account wears: the same colour

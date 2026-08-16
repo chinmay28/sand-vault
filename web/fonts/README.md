@@ -1,67 +1,74 @@
 # The wordmark's script face
 
-The second half of the wordmark — *Vault* — is set in **Nefelibata Script**, by
+The second half of the wordmark — *Vault* — is written rather than set. This is
+where the face it is written in lives.
+
+## What ships here
+
+`wordmark-script.woff2` — **1.9 KB**, five glyphs: `V a u l t`, and nothing
+else. It is a subset of [**Sacramento**](https://fonts.google.com/specimen/Sacramento)
+by Brian J. Bonislawsky (Astigmatic), used under the SIL Open Font License 1.1,
+whose full text is in `OFL.txt` beside it. A thin monoline script with tall
+ascenders: the hand the mark was designed around.
+
+The subset is renamed — it declares itself as **SAND Wordmark Script**, not as
+Sacramento. That is not branding, it is the licence: Sacramento carries a
+Reserved Font Name, and the OFL is explicit that a Modified Version may not use
+one. The original copyright, designer and licence records travel with the file.
+
+Rebuild it from the upstream face at any time:
+
+```bash
+pip install 'fonttools[woff]' brotli
+curl -O https://raw.githubusercontent.com/google/fonts/main/ofl/sacramento/Sacramento-Regular.ttf
+python scripts/make-wordmark-font.py Sacramento-Regular.ttf
+```
+
+That script does the subsetting and the renaming, and is the whole derivation —
+nothing about this file is hand-edited.
+
+## Using a licensed face instead
+
+The app asks for **Nefelibata Script** first, and falls through to the face
+above when it is not there. Nefelibata is by
 [My Creative Land](https://www.myfonts.com/collections/my-creative-land-foundry)
-(Elena Genova). The name is the reason: a *nefelibata* is a cloud-walker, which
-is a fair description of a vault that lives on other people's clouds.
+(Elena Genova) and the name is the reason for wanting it: a *nefelibata* is a
+cloud-walker, which is a fair description of a vault that lives on other
+people's clouds.
 
-It is a licensed font, and this repository does not carry one. Nothing here
-breaks without it: the wordmark falls back to whatever handwriting face the
-platform already has (Snell Roundhand on Apple, Segoe Script on Windows), which
-is what shipped before.
-
-## Adding it
-
-Buy a **webfont** licence and put the file here:
+Buy a **webfont** licence, put the file here, and the build picks it up:
 
 ```
 web/fonts/nefelibata-script.woff2      (or .woff)
 ```
 
-Then `make build-web`. The build says which it did:
-
-```
-wordmark: embedding nefelibata-script.woff2 (14 KB)
-wordmark: no font at web/fonts — falling back to the system script face
-```
-
-Nothing else changes — `FONT.script` in `web/src/theme.js` already asks for the
-family first and keeps the system stack behind it.
-
-## Why it is embedded rather than linked
-
-SAND fetches nothing from anywhere; opening your vault makes zero third-party
-requests, and a logo is not the thing to break that for. So the file is read at
-build time and embedded in `index.html` as a `data:` URI rather than linked —
-it cannot become a request to somebody's CDN however the app is deployed, and
-there is no second round trip before the mark is drawn.
-
-That does put the font in the page, so keep it small.
-
-## Subset it
-
-The wordmark is five letters. A full family carries Latin, Cyrillic and a few
-hundred glyphs you will never draw, which is a lot of `index.html` for one
-word. Cut it down with [`fonttools`](https://github.com/fonttools/fonttools):
+`.gitignore` keeps it out of the repository — a webfont licence covers your own
+sites rather than redistribution — so a clean checkout builds with the open face
+instead. Subset it the same way if you want it small; the wordmark only ever
+draws five letters:
 
 ```bash
-pip install 'fonttools[woff]' brotli
-pyftsubset NefelibataScript.otf \
-  --text='Vault' \
-  --flavor=woff2 \
+pyftsubset Nefelibata-Script.otf --text='Vault' --flavor=woff2 \
   --output-file=web/fonts/nefelibata-script.woff2
 ```
 
-That is usually a few kilobytes rather than a hundred. Add `--text='Vault SAND'`
-if you ever set the first word in it too.
+## Why they are embedded rather than linked
 
-## Why it is not committed
+SAND fetches nothing from anywhere; opening your vault makes zero third-party
+requests, and a logo is not the thing to break that for. So whatever is here is
+read at build time and embedded in `index.html` as a `data:` URI rather than
+linked — it cannot become a request to somebody's CDN however the app is
+deployed, and there is no second round trip before the mark is drawn. That is
+why size matters, and why both faces are cut to five glyphs.
 
-`.gitignore` keeps `web/fonts/*.woff*` out of the repository on purpose: a
-webfont licence generally covers *your* sites, not redistribution, and a public
-repository redistributes everything in it. If your licence says otherwise, that
-is your call to make — drop the ignore rule.
+The build says which it found:
 
-Release builds made from a clean checkout therefore ship the fallback. If you
-want the real face in the published binaries, the font has to be present on the
-machine that runs `make release`.
+```
+wordmark: embedding wordmark-script.woff2 (1.9 KB)
+wordmark: embedding nefelibata-script.woff2 (13.4 KB), wordmark-script.woff2 (1.9 KB)
+wordmark: no font at web/fonts — falling back to the system script face
+```
+
+The last line is not a failure. Behind both faces the stack in
+`web/src/theme.js` still names the handwriting face each platform ships, so the
+mark is written either way.

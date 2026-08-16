@@ -670,13 +670,16 @@ pipe the password on stdin.
 The UI loads no external fonts, scripts or styles. Opening your vault makes zero
 third-party requests.
 
-The wordmark is the one piece of typography that is not the system's own: *Vault*
-is written in **Nefelibata Script** — a *nefelibata* is a cloud-walker — where
-the machine that built the bundle had a licensed copy of the face. It is never
-linked. A copy in [`web/fonts/`](./web/fonts/README.md) is read at build time
-and embedded in the page as a `data:` URI, so it costs one request fewer than a
-system font rather than one more; without one, the build says so and the mark
-falls back to whatever handwriting face the platform ships.
+The wordmark is the one piece of typography that is not the system's own:
+*Vault* is written in a thin monoline script that ships in the repository at
+**1.9 KB** — five glyphs and nothing else, subset from
+[Sacramento](https://fonts.google.com/specimen/Sacramento) under the SIL Open
+Font License (see [`web/fonts/`](./web/fonts/README.md)). It is never linked:
+the build embeds it in the page as a `data:` URI, so it costs one request fewer
+than a system font rather than one more. **Nefelibata Script** — a *nefelibata*
+is a cloud-walker — is asked for ahead of it and embedded the same way if you
+drop a licensed copy in, and the platform's own handwriting faces stand behind
+both.
 
 Asset filenames carry a content hash and are cached for a year; `index.html`,
 which names the current bundle, revalidates on every load against an ETag. An

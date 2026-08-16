@@ -8,26 +8,35 @@ import { appVersion } from './build-version.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 
-/* The wordmark's script face.
+/* The wordmark's script faces.
  *
  * SAND fetches nothing from anywhere: opening your vault makes zero
- * third-party requests, and a logo is not the thing to break that for. So the
- * face is not linked — it is read off disk at build time and embedded in the
+ * third-party requests, and a logo is not the thing to break that for. So a
+ * face is never linked — it is read off disk at build time and embedded in the
  * page itself, which means it cannot become a request to somebody's CDN no
- * matter how the app is deployed.
+ * matter how the app is deployed, and there is no second round trip before the
+ * mark is drawn.
  *
- * It is also optional. Nefelibata is a licensed font and this repository does
- * not carry one, so when the file is absent the build says so and the wordmark
- * falls back to the platform's own handwriting face (see FONT.script). Nothing
- * breaks; the second half of the name is simply written in a different hand.
+ * Two faces can be declared, and both are optional:
  *
- * Drop a licensed copy at web/fonts/nefelibata-script.woff2 — see the README
- * beside it, including how to subset it down to the five letters of "Vault".
+ *   wordmark-script.woff2   the one in the repository — five glyphs of an
+ *                           open-licensed script, under two kilobytes
+ *   nefelibata-script.woff2 a licensed face, which the repository cannot carry
+ *                           and .gitignore keeps out
+ *
+ * Which one is actually worn is decided by the order of FONT.script in
+ * theme.js, not here. This only declares what the page has to offer, and says
+ * on the console what it found; with neither present the wordmark falls back to
+ * the platform's own handwriting face and nothing breaks. See the README beside
+ * the fonts.
  */
-const WORDMARK_FAMILY = 'Nefelibata Script'
-const WORDMARK_FILES = [
-  ['nefelibata-script.woff2', 'woff2', 'font/woff2'],
-  ['nefelibata-script.woff', 'woff', 'font/woff'],
+const WORDMARK_FACES = [
+  ['Nefelibata Script', 'nefelibata-script'],
+  ['SAND Wordmark Script', 'wordmark-script'],
+]
+const FORMATS = [
+  ['woff2', 'font/woff2'],
+  ['woff', 'font/woff'],
 ]
 
 function wordmarkFont() {
@@ -36,33 +45,37 @@ function wordmarkFont() {
   return {
     name: 'sand-wordmark-font',
     transformIndexHtml() {
-      for (const [name, format, mime] of WORDMARK_FILES) {
-        const file = path.resolve(here, 'fonts', name)
-        if (!fs.existsSync(file)) continue
+      const rules = []
+      const found = []
 
-        const data = fs.readFileSync(file)
-        if (!announced) {
-          announced = true
-          console.log(`wordmark: embedding ${name} (${Math.round(data.length / 1024)} KB)`)
-        }
-        return [{
-          tag: 'style',
-          injectTo: 'head',
-          children:
-            `@font-face{font-family:'${WORDMARK_FAMILY}';` +
+      for (const [family, stem] of WORDMARK_FACES) {
+        for (const [format, mime] of FORMATS) {
+          const file = path.resolve(here, 'fonts', `${stem}.${format}`)
+          if (!fs.existsSync(file)) continue
+
+          const data = fs.readFileSync(file)
+          found.push(`${stem}.${format} (${(data.length / 1024).toFixed(1)} KB)`)
+          rules.push(
+            `@font-face{font-family:'${family}';` +
             `src:url(data:${mime};base64,${data.toString('base64')}) format('${format}');` +
             // The wordmark is two words in two hands and one of them is always
             // ready — swap draws it in the fallback hand first rather than
-            // holding the whole lockup back for a font that is already local.
+            // holding the whole lockup back for a face that is already here.
             'font-weight:400;font-style:normal;font-display:swap;}',
-        }]
+          )
+          break
+        }
       }
 
       if (!announced) {
         announced = true
-        console.log('wordmark: no font at web/fonts — falling back to the system script face')
+        console.log(found.length
+          ? `wordmark: embedding ${found.join(', ')}`
+          : 'wordmark: no font at web/fonts — falling back to the system script face')
       }
-      return []
+
+      if (!rules.length) return []
+      return [{ tag: 'style', injectTo: 'head', children: rules.join('') }]
     },
   }
 }

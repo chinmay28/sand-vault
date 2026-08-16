@@ -10,14 +10,18 @@
 web/node_modules/
 web/dist/
 
-# The wordmark's script face. A webfont licence covers your own sites, not
-# redistribution, and a public repository redistributes everything in it — so
-# the file stays on the machine that builds, and a build without it falls back
-# to the platform's own handwriting face. See web/fonts/README.md.
+# Script faces for the wordmark. A licensed webfont covers your own sites
+# rather than redistribution, and a public repository redistributes everything
+# in it — so any face dropped in here stays on the machine that builds.
+#
+# The exception is the one the repository ships: an open-licensed face, cut
+# down to the five letters of "Vault" and travelling with its OFL.txt, which is
+# exactly what that licence permits. See web/fonts/README.md.
 web/fonts/*.woff
 web/fonts/*.woff2
 web/fonts/*.otf
 web/fonts/*.ttf
+!web/fonts/wordmark-script.woff2
 
 # IDE
 .idea/
