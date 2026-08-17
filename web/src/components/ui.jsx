@@ -541,11 +541,17 @@ const SheetRow = React.forwardRef(function SheetRow(
    it gets a real dialog rather than the browser's confirm() — which on a phone
    puts its two buttons side by side at the top of the screen, out of reach and
    a few pixels apart. */
-export function ConfirmDialog({ title, subtitle, children, confirmLabel = 'Delete', busy, onConfirm, onClose }) {
+/* zIndex is forwarded for the same reason every other nested dialog takes one:
+   a confirmation opened from inside a panel has to sit above the panel that
+   asked for it. Left at the Modal default it lands underneath, and the button
+   that opened it reads as broken — the dialog is there, behind the backdrop. */
+export function ConfirmDialog({
+  title, subtitle, children, confirmLabel = 'Delete', busy, onConfirm, onClose, zIndex,
+}) {
   const mobile = useIsMobile()
 
   return (
-    <Modal title={title} subtitle={subtitle} onClose={onClose} width={420}>
+    <Modal title={title} subtitle={subtitle} onClose={onClose} width={420} zIndex={zIndex}>
       {children && (
         <div style={{
           marginBottom: '18px',
