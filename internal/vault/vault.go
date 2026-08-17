@@ -1051,6 +1051,22 @@ func (v *Vault) EntryByPath(path string) (*Entry, error) {
 	return e, nil
 }
 
+// Folders lists every folder in the vault, root first, as normalized paths.
+//
+// It is the whole tree in one answer, which is what a "where should this go?"
+// picker needs: the alternative is a request per level, and the folder a file
+// is being moved into is rarely the one already open. It costs a walk of the
+// index and contacts no account — the folder structure is in the manifest, and
+// the manifest is already decrypted in memory.
+func (v *Vault) Folders() ([]string, error) {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	if v.dataKey == nil {
+		return nil, ErrLocked
+	}
+	return v.manifest.AllFolders(), nil
+}
+
 // FolderExists reports whether a folder is in the index. A locked vault knows
 // nothing, so it answers false rather than guessing.
 func (v *Vault) FolderExists(dir string) bool {

@@ -507,6 +507,39 @@ encrypted index alone, without contacting a single account.
 A folder's stored thumbnails come along too, so moving a folder off an account
 really does move it off.
 
+### Moving something to another folder
+
+The other move, and until now the missing one: the browser could send a file to
+different clouds but not to a different folder. Tidying a vault meant downloading
+a file, deleting it and uploading it again — a round trip of every byte to change
+one word.
+
+Now every row carries **→** for it, beside Download and Delete on a file and
+beside **⇄** on a folder, with *Move to another folder* in the row's menu on a
+phone or a tile. Tick several rows and **→ Folder** in the selection bar moves
+the lot; **⇄ Clouds** beside it is still the other move, renamed so the two are
+told apart by what they move something onto. The dialog opens on the folder you
+are already in, walks the vault's own tree, and has a **+ New folder here** for
+a destination that does not exist yet. On the command line `sand mv` now takes a
+folder as well as a file, and over HTTP it is `POST /api/files/{id}/move` for a
+file and a new `POST /api/folders/move` for a folder.
+
+**Nothing is transferred.** Which folder something is in is a field in the
+encrypted index, and a part's object name is derived from the file's random
+archive ID rather than from the folder it sits in — so this rewrites that field
+and contacts no account at all. A 4 GB film moves as fast as a note, and its
+parts stay on the same clouds under the same key. A folder is a path in the
+index in exactly the same way, so moving one carries every file beneath it, at
+any depth, in a single index write: there is no moment where half a tree answers
+to its old name. Its thumbnails and its film-details setting travel with it,
+since both are filed under the folder rather than inside it.
+
+What cannot happen is said rather than attempted. A folder cannot be moved
+inside itself and is not offered as a destination; anything already in the folder
+you are looking at says so instead of being moved onto its own path; and a name
+already taken in the destination is refused for that one file, with the rest of
+a selection still moving.
+
 ### Naming an account, and choosing its colour
 
 A connected account is yours to label. **Edit** on its card in the sidebar opens

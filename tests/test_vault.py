@@ -349,6 +349,44 @@ class TestStoreAndRetrieve:
         assert [f["name"] for f in nested["files"]] == ["q1.txt"]
         assert nested["parent"] == "/reports"
 
+    def test_moving_a_folder_carries_the_files_and_not_the_parts(self, server, unlocked):
+        """A folder is a path in the index, so moving one is an index change:
+        the files answer to a new path and their parts never leave the accounts
+        they were scattered to."""
+        for path in ("/shelf/books", "/library"):
+            unlocked.post(f"{server}/api/folders", json={"path": path},
+                          headers={"Origin": server}, timeout=30)
+        r = upload(unlocked, server, "novel.txt", b"a long story", path="/shelf/books")
+        entry = r.json()["results"][0]["file"]
+        before = {(s["part"], s["provider_id"], s["key"]) for s in entry["shards"]}
+
+        # Every folder in the vault, which is what a destination picker draws.
+        tree = unlocked.get(f"{server}/api/folders", timeout=30).json()["folders"]
+        assert {"/", "/shelf", "/shelf/books", "/library"} <= set(tree)
+
+        moved = unlocked.post(
+            f"{server}/api/folders/move",
+            json={"from": "/shelf/books", "to": "/library/books"},
+            headers={"Origin": server}, timeout=60,
+        )
+        assert moved.status_code == 200, moved.text
+
+        meta = unlocked.get(f"{server}/api/files/{entry['id']}", timeout=30).json()
+        assert meta["path"] == "/library/books/novel.txt"
+        assert {(s["part"], s["provider_id"], s["key"])
+                for s in meta["file"]["shards"]} == before
+
+        got = unlocked.get(f"{server}/api/files/{entry['id']}/content", timeout=60)
+        assert got.content == b"a long story"
+
+        # A folder cannot be moved inside itself, whatever the request says.
+        refused = unlocked.post(
+            f"{server}/api/folders/move",
+            json={"from": "/library", "to": "/library/books/library"},
+            headers={"Origin": server}, timeout=30,
+        )
+        assert refused.status_code >= 400
+
     def test_relocating_to_the_same_clouds_moves_nothing(self, server, unlocked):
         """Placement is a set of accounts, not a sequence — naming the three a
         file is already on, in a different order, is not a change."""
@@ -547,6 +585,32 @@ class TestCLI:
 
         result = cli(sand_bin, vault_dir, "ls", "/cli-docs")
         assert "nested.txt" in result.stdout
+
+    def test_mv_moves_a_folder_with_everything_under_it(self, sand_bin, vault_dir, tmp_path):
+        source = tmp_path / "carried.txt"
+        source.write_text("carried, not rebuilt")
+
+        cli(sand_bin, vault_dir, "mkdir", "/cli-from/deep")
+        cli(sand_bin, vault_dir, "mkdir", "/cli-to")
+        cli(sand_bin, vault_dir, "put", str(source), "--path", "/cli-from/deep")
+
+        # A destination that already exists means "inside it", the same way it
+        # does when the thing being moved is a file.
+        cli(sand_bin, vault_dir, "mv", "/cli-from", "/cli-to")
+
+        assert "carried.txt" in cli(sand_bin, vault_dir, "ls", "/cli-to/cli-from/deep").stdout
+        gone = cli(sand_bin, vault_dir, "ls", "/cli-from", check=False)
+        assert gone.returncode != 0
+
+        # The parts never moved, so the file still rebuilds from the accounts
+        # it was scattered to in the first place.
+        out = tmp_path / "carried-back.txt"
+        cli(sand_bin, vault_dir, "get", "/cli-to/cli-from/deep/carried.txt", "-o", str(out))
+        assert out.read_text() == "carried, not rebuilt"
+
+        inside_itself = cli(sand_bin, vault_dir, "mv", "/cli-to", "/cli-to/cli-from/cli-to",
+                            check=False)
+        assert inside_itself.returncode != 0
 
     def test_check_reports_healthy_files(self, sand_bin, vault_dir, tmp_path):
         source = tmp_path / "healthy.txt"

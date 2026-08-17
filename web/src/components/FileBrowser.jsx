@@ -11,6 +11,7 @@ import {
 } from './FileEntry'
 import { Breadcrumbs, FolderHeader, NavCluster, SearchField, SelectionBar, ViewControls } from './Toolbar'
 import { BulkDelete, BulkDownload } from './BulkActions'
+import MoveToFolder from './MoveToFolder'
 import { FilmButton, FilmLookupSettings } from './FilmDetails'
 
 /* How long to sit on a keystroke before asking the server. Long enough that
@@ -446,7 +447,8 @@ export default function FileBrowser({
           onNone={() => setSelected(new Set())}
           onDone={() => { setSelecting(false); setSelected(new Set()) }}
           onDownload={() => setBulk('download')}
-          onMove={() => setBulk('move')}
+          onMoveTo={() => setBulk('folder')}
+          onMove={() => setBulk('clouds')}
           onDelete={() => setBulk('delete')}
         />
       )}
@@ -586,7 +588,18 @@ export default function FileBrowser({
         <BulkDownload items={chosen} onClose={() => setBulk(null)} />
       )}
 
-      {bulk === 'move' && (
+      {bulk === 'folder' && (
+        <MoveToFolder
+          items={chosen}
+          onClose={() => setBulk(null)}
+          /* What moved is not in this folder any more, so it cannot stay
+             ticked; what a partial run left behind is still here to try
+             again. */
+          onDone={() => { setSelected(new Set()); listProps.onRefresh() }}
+        />
+      )}
+
+      {bulk === 'clouds' && (
         <RelocateClouds
           targets={chosen.map((entry) => (
             entry.kind === 'folder' ? { path: entry.path } : { id: entry.file.id }))}

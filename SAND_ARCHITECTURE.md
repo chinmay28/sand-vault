@@ -722,6 +722,43 @@ accounts rather than growing a second copy of the placement machinery. A pack
 that will not move is a warning — it is a picture, and the browser can draw
 another.
 
+### 5.6 Moving something within the vault costs nothing
+
+The other move, and the one to reach for first. §5.5 changes which accounts hold
+a file's parts and copies bytes to do it. Changing where a file *appears* copies
+nothing at all: a file's folder is a field on its index entry, and by §5.4 the
+objects its parts live in are named after its random archive ID and the part
+number — never after the folder. So `Vault.Move` rewrites one field and returns.
+A 4 GB film moves as fast as a note, and its parts stay exactly where they are,
+on the same accounts, under the same key generation.
+
+`Vault.MoveFolder` is the same fact one level up: a folder is a path in the
+index, so moving one rewrites every entry beneath it — at any depth — in a single
+index write, with an in-memory rollback if that write fails. A loop over `Move`
+would have left a window where half a tree answered to its old name and half to
+its new one. Two maps keyed by folder come along in the same write: the
+thumbnail packs (§4.3) and the film-lookup settings (§3.10). Neither carries its
+folder's name inside it, so both travel for the price of rekeying a map, with no
+network work at all — which is exactly what a folder relocation cannot do, and
+why that one pays a gather and a scatter instead.
+
+What is refused, and by the vault rather than by whichever caller asked:
+
+- The root cannot be moved, and a folder cannot be moved inside itself or into
+  one of its own descendants — the rewrite would walk into the path it was
+  rewriting.
+- The destination's parent has to exist already, the same as it does for
+  `Mkdir`, and the destination itself must not: a move never silently merges two
+  trees.
+- A name already taken in the destination folder is refused for that file alone.
+
+The browser reads `GET /api/folders` to draw the tree it picks a destination
+from — every folder in one answer, since `GET /api/files` walks a level at a time
+and choosing where something goes is rarely a question about the folder already
+open. It lists a folder whether it was created outright or exists only because a
+file sits beneath it: both are folders you can walk into, so both are folders you
+can move into.
+
 ---
 
 ## 6. Cryptography
@@ -1090,9 +1127,11 @@ reveals only whether a vault exists.
 | POST | `/api/files/{id}/stream` | Mint a stream ticket for one file (§9.5) |
 | GET | `/stream/{token}/{name}` | Play it — public, ranged; the token is the credential |
 | GET | `/api/files/{id}/health` | Per-part reachability, without downloading |
-| POST | `/api/files/{id}/move` | Rename or move (index only) |
+| POST | `/api/files/{id}/move` | Rename or move into another folder (index only, §5.6) |
 | DELETE | `/api/files/{id}` | Erase every part, drop the entry |
+| GET | `/api/folders` | Every folder in the vault, root first — the whole tree in one answer, for a destination picker |
 | POST | `/api/folders` | Create a folder |
+| POST | `/api/folders/move` | Move a folder `from` one path `to` another, with everything under it (§5.6) |
 | DELETE | `/api/folders?path=&recursive=` | Delete a folder |
 | POST | `/api/relocate` | Move a file (`id`) or a folder (`path`) onto other `accounts` (§5.5); `"preview": true` prices it out of the index and moves nothing |
 | GET | `/api/movies` | Whether a film database key is stored, and which folders are opted in (§3.10) |
@@ -1179,13 +1218,10 @@ a browser. It is the same surface `/api/vault/unlock` already presents to
 anyone who can reach the port. Requests to the share also count as use, so the
 auto-lock does not fire halfway through a film.
 
-**Renaming a folder** goes through `Vault.MoveFolder`, which rewrites every
-entry beneath it in one index write. Doing it as a loop over `Move` would have
-left a window where half a tree answered to its old name and half to its new
-one; doing it as a single write means there is no such window, and a failure to
-persist rolls the whole rewrite back. Thumbnails travel with it for free: a pack
-is filed under its folder rather than carrying the folder's name, so the move is
-a rewritten map key and no network work at all.
+**Renaming a folder** goes through `Vault.MoveFolder`, the same call the
+browser's own move reaches (§5.6): every entry beneath it is rewritten in one
+index write, so there is never a window where half a tree answers to its old
+name, and a failure to persist rolls the whole rewrite back.
 
 **Appending** stores the file again with the new bytes on the end, because the
 vault stores whole files. What it does not do is hold either half in memory —
@@ -1351,7 +1387,8 @@ sand/
 │   ├── view.js                # list or grid, sort key and direction (persisted)
 │   └── components/            # LockScreen, AccountsPanel, FileBrowser, Toolbar,
 │                              #   FileEntry (rows + tiles), BulkActions,
-│                              #   PreviewModal, PdfPreview (pdf.js), FilmDetails, ui
+│                              #   MoveToFolder, PreviewModal, PdfPreview (pdf.js),
+│                              #   FilmDetails, ui
 └── tests/                     # pytest e2e: CLI, API, vault flow, browser
 ```
 

@@ -158,6 +158,10 @@ export const api = {
   convertFile: (id) => request(`/api/files/${encodeURIComponent(id)}/convert`, { method: 'POST' }),
   fileHealth: (id) => request(`/api/files/${encodeURIComponent(id)}/health`),
   deleteFile: (id) => request(`/api/files/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  /* Move a file into another folder, rename it, or both. An empty `dir` or
+     `name` leaves that half alone. Nothing is uploaded or downloaded: a file's
+     folder is a field in the index, and its parts are named after the file
+     rather than after where it sits, so they never move. */
   moveFile: (id, dir, name) =>
     request(`/api/files/${encodeURIComponent(id)}/move`, { method: 'POST', body: { dir, name } }),
 
@@ -173,6 +177,16 @@ export const api = {
   deleteFolder: (path, recursive) =>
     request(`/api/folders?path=${encodeURIComponent(path)}${recursive ? '&recursive=1' : ''}`,
       { method: 'DELETE' }),
+
+  /* Every folder in the vault, root first — the whole tree in one answer,
+     which is what picking a destination needs. Folder paths and nothing else:
+     no file names, no sizes, no placements. */
+  folders: () => request('/api/folders'),
+  /* Move a folder, and everything under it, somewhere else in the vault. Like
+     moving a file this is an index change and nothing more — no part leaves the
+     account it is on — and the whole subtree changes in one write, so there is
+     never a moment where half of it answers to the old name. */
+  moveFolder: (from, to) => request('/api/folders/move', { method: 'POST', body: { from, to } }),
 
   /* A link a player outside the browser can follow. VLC has none of what
      authenticates this app — the session cookie is HttpOnly and SameSite=Strict

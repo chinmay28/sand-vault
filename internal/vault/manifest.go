@@ -286,6 +286,38 @@ func (m *Manifest) Children(dir string) (folders []string, files []*Entry) {
 	return folders, files
 }
 
+// AllFolders lists every folder in the vault as a normalized path, root first.
+//
+// A folder counts whether it was created outright or exists only because a file
+// sits somewhere beneath it — both are folders the browser can walk into, and so
+// both are folders something can be moved into. Which is what this is for: the
+// destination picker draws the whole tree from one answer rather than asking
+// per level, and a tree is only usable if the branch a file made is on it.
+func (m *Manifest) AllFolders() []string {
+	seen := map[string]bool{"/": true}
+	out := []string{"/"}
+
+	add := func(dir string) {
+		// Ancestors first would need a second pass; walking up and stopping at
+		// the first folder already seen is the same set in one, because a
+		// folder is only ever recorded together with everything above it.
+		for d := CleanDir(dir); d != "/" && !seen[d]; d = CleanDir(path.Dir(d)) {
+			seen[d] = true
+			out = append(out, d)
+		}
+	}
+
+	for _, f := range m.Folders {
+		add(f)
+	}
+	for _, e := range m.Entries {
+		add(e.Dir)
+	}
+
+	sort.Strings(out)
+	return out
+}
+
 // Descendants returns every entry stored at or below a directory.
 func (m *Manifest) Descendants(dir string) []*Entry {
 	dir = CleanDir(dir)

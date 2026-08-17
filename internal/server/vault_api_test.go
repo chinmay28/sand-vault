@@ -577,6 +577,102 @@ func TestMoveOverHTTP(t *testing.T) {
 	}
 }
 
+// folderPaths asks for every folder in the vault, in the order it answers.
+func (c *testClient) folderPaths() []string {
+	c.t.Helper()
+
+	w, body := c.json(http.MethodGet, "/api/folders", nil)
+	if w.Code != http.StatusOK {
+		c.t.Fatalf("folders: %d %v", w.Code, body)
+	}
+	raw, _ := body["folders"].([]any)
+	out := make([]string, 0, len(raw))
+	for _, path := range raw {
+		out = append(out, path.(string))
+	}
+	return out
+}
+
+func TestFolderListingCoversTheWholeTree(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("pw", 3)
+
+	c.json(http.MethodPost, "/api/folders", map[string]any{"path": "/archive"})
+	// Every level of the tree, not only the leaf that was named: a file can be
+	// moved into /photos as much as into /photos/2024.
+	c.json(http.MethodPost, "/api/folders", map[string]any{"path": "/photos/2024"})
+	c.upload("a.txt", "/photos/2024", []byte("a"))
+
+	got := strings.Join(c.folderPaths(), " ")
+	if want := "/ /archive /photos /photos/2024"; got != want {
+		t.Errorf("folders = %q, want %q", got, want)
+	}
+}
+
+func TestFolderMoveOverHTTP(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("pw", 3)
+
+	c.json(http.MethodPost, "/api/folders", map[string]any{"path": "/photos/2024"})
+	file := c.upload("holiday.txt", "/photos/2024", []byte("still readable"))
+	id := file["id"].(string)
+
+	// The destination's parent has to exist, the same as it does for mkdir.
+	if w, _ := c.json(http.MethodPost, "/api/folders/move",
+		map[string]any{"from": "/photos/2024", "to": "/archive/2024"}); w.Code == http.StatusOK {
+		t.Fatal("moving into a folder that does not exist should have been refused")
+	}
+
+	c.json(http.MethodPost, "/api/folders", map[string]any{"path": "/archive"})
+	w, body := c.json(http.MethodPost, "/api/folders/move",
+		map[string]any{"from": "/photos/2024", "to": "/archive/2024"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("move folder: %d %v", w.Code, body)
+	}
+	if body["path"] != "/archive/2024" {
+		t.Errorf("path = %v, want /archive/2024", body["path"])
+	}
+
+	// Everything beneath it came along, and the parts never moved — the file
+	// still rebuilds from the accounts it was scattered to.
+	w, body = c.json(http.MethodGet, "/api/files/"+id, nil)
+	if w.Code != http.StatusOK || body["path"] != "/archive/2024/holiday.txt" {
+		t.Fatalf("moved file = %d %v", w.Code, body)
+	}
+	if w := c.do(http.MethodGet, "/api/files/"+id+"/content", nil, ""); w.Body.String() != "still readable" {
+		t.Errorf("content after the folder moved = %q", w.Body.String())
+	}
+}
+
+func TestFolderMoveRefusesTheImpossible(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("pw", 3)
+
+	c.json(http.MethodPost, "/api/folders", map[string]any{"path": "/library/films"})
+	c.json(http.MethodPost, "/api/folders", map[string]any{"path": "/music"})
+	c.upload("deep.txt", "/library/films", []byte("x"))
+
+	for _, move := range []struct {
+		name     string
+		from, to string
+	}{
+		{"inside itself", "/library", "/library/films/library"},
+		{"onto a folder that is already there", "/library", "/music"},
+		{"a folder that does not exist", "/nowhere", "/music/nowhere"},
+		{"the root", "/", "/music/root"},
+	} {
+		if w, body := c.json(http.MethodPost, "/api/folders/move",
+			map[string]any{"from": move.from, "to": move.to}); w.Code == http.StatusOK {
+			t.Errorf("moving %s was allowed: %v", move.name, body)
+		}
+	}
+
+	// Nothing was half-done by any of those: the tree is as it was.
+	if got := strings.Join(c.folderPaths(), " "); got != "/ /library /library/films /music" {
+		t.Errorf("folders after the refusals = %q", got)
+	}
+}
+
 // searchPaths runs a search and returns the paths it found, in order.
 func (c *testClient) searchPaths(query string) []string {
 	c.t.Helper()

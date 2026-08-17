@@ -6,6 +6,7 @@ import { ActionSheet, ConfirmDialog, IconButton } from './ui'
 import StreamLink from './StreamLink'
 import ConvertFile from './ConvertFile'
 import { RelocateClouds } from './CloudSelect'
+import MoveToFolder from './MoveToFolder'
 
 /* One file or one folder, drawn as a row or as a tile.
 
@@ -16,14 +17,14 @@ import { RelocateClouds } from './CloudSelect'
    are two arrangements of what it hands back. */
 
 /* Name, size, modified, parts, actions. The four fixed columns come to nearly
-   500px, which is why the phone layout stacks instead of shrinking them. */
-export const COLUMNS = 'minmax(0,1fr) 92px 150px 132px 108px'
+   550px, which is why the phone layout stacks instead of shrinking them. */
+export const COLUMNS = 'minmax(0,1fr) 92px 150px 132px 144px'
 
 /* The same again in a folder that has asked for film details, where a video
    row carries one control more. The column grows by exactly one button rather
-   than the three already there being crowded together — and it grows for the
+   than the ones already there being crowded together — and it grows for the
    whole table, because a heading has to sit over the column it names. */
-export const FILM_COLUMNS = 'minmax(0,1fr) 92px 150px 132px 144px'
+export const FILM_COLUMNS = 'minmax(0,1fr) 92px 150px 132px 180px'
 
 /* Everything a file row or tile can do, and every dialog it can open.
 
@@ -41,6 +42,7 @@ export function useFileActions({ file, providers, film, onPreview, onInspect, on
   const [streaming, setStreaming] = useState(null)
   const [converting, setConverting] = useState(null)
   const [relocating, setRelocating] = useState(false)
+  const [moving, setMoving] = useState(false)
 
   /* A file stored before chunked storage existed. It cannot be read at an
      offset, so nothing opens or streams it until it has been converted — the
@@ -142,6 +144,16 @@ export function useFileActions({ file, providers, film, onPreview, onInspect, on
               hint: `${file.shards.length} of 3 parts stored`,
               onSelect: onInspect,
             },
+            /* The two moves, next to each other and named for what they move
+               it onto. This one is free and instant whatever the file weighs;
+               the one under it copies bytes between clouds. */
+            {
+              key: 'move',
+              glyph: '→',
+              label: 'Move to another folder',
+              hint: 'Only the index changes — the parts stay on the same clouds',
+              onSelect: () => setMoving(true),
+            },
             {
               key: 'relocate',
               glyph: '⇄',
@@ -201,6 +213,14 @@ export function useFileActions({ file, providers, film, onPreview, onInspect, on
           onDone={onRefresh}
         />
       )}
+
+      {moving && (
+        <MoveToFolder
+          items={[{ kind: 'file', name: file.name, file }]}
+          onClose={() => setMoving(false)}
+          onDone={onRefresh}
+        />
+      )}
     </>
   )
 
@@ -211,6 +231,7 @@ export function useFileActions({ file, providers, film, onPreview, onInspect, on
     stream: (mode) => setStreaming(mode),
     confirmDelete: () => setConfirming(true),
     relocate: () => setRelocating(true),
+    moveTo: () => setMoving(true),
   }
 }
 
@@ -526,10 +547,18 @@ export function FileRow({
         disabled={a.downloading}
         onClick={() => a.download(file)}
       />
-      {/* Moving the parts to other clouds would be a fourth control here, and
-          there is room for three. It lives in the parts inspector instead —
-          one click away through the badges, and beside the read-out of where
-          they are now, which is the question it answers. */}
+      {/* Moving it to another folder, which every row carries for the same
+          reason it carries Delete: it is something you do to a file wherever
+          you happen to be looking at it, and it costs nothing to do.
+          Moving the *parts* to other clouds is the other question and lives in
+          the parts inspector, one click away through the badges — beside the
+          read-out of where they are now, which is what it answers. */}
+      <IconButton
+        glyph="→"
+        label={`Move ${file.name} to another folder`}
+        title="Move it into another folder — the parts stay exactly where they are"
+        onClick={a.moveTo}
+      />
       <IconButton
         glyph={a.busy ? '…' : '✕'}
         label="Delete everywhere"
@@ -621,6 +650,7 @@ function useFolderActions({ name, path, providers, onNavigate, onRefresh, onErro
   const [menu, setMenu] = useState(false)
   const [confirming, setConfirming] = useState(false)
   const [relocating, setRelocating] = useState(false)
+  const [moving, setMoving] = useState(false)
   const [busy, setBusy] = useState(false)
 
   const open = () => onNavigate(path)
@@ -649,6 +679,13 @@ function useFolderActions({ name, path, providers, onNavigate, onRefresh, onErro
           onClose={() => setMenu(false)}
           items={[
             { key: 'open', glyph: '▸', label: 'Open folder', onSelect: open },
+            {
+              key: 'move',
+              glyph: '→',
+              label: 'Move to another folder',
+              hint: 'It takes everything inside it, and nothing is transferred',
+              onSelect: () => setMoving(true),
+            },
             {
               key: 'relocate',
               glyph: '⇄',
@@ -696,6 +733,14 @@ function useFolderActions({ name, path, providers, onNavigate, onRefresh, onErro
           onDone={onRefresh}
         />
       )}
+
+      {moving && (
+        <MoveToFolder
+          items={[{ kind: 'folder', name, path }]}
+          onClose={() => setMoving(false)}
+          onDone={onRefresh}
+        />
+      )}
     </>
   )
 
@@ -705,6 +750,7 @@ function useFolderActions({ name, path, providers, onNavigate, onRefresh, onErro
     openMenu: () => setMenu(true),
     confirmDelete: () => setConfirming(true),
     relocate: () => setRelocating(true),
+    moveTo: () => setMoving(true),
   }
 }
 
@@ -732,6 +778,12 @@ export function FolderRow({
     />
   ) : (
     <span style={{ display: 'flex', gap: '2px', justifyContent: 'flex-end' }}>
+      <IconButton
+        glyph="→"
+        label={`Move ${name} to another folder`}
+        title="Move the folder, and everything in it, somewhere else in the vault"
+        onClick={a.moveTo}
+      />
       <IconButton
         glyph="⇄"
         label={`Move ${name} to other clouds`}

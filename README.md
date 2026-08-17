@@ -406,6 +406,42 @@ Two things worth knowing before you press it:
 
 ---
 
+## Moving something to another folder
+
+The other kind of move, and the cheap one. Which folder a file is in is a field
+in the encrypted index, and the objects its parts are stored as are named after
+the file's random archive ID rather than after the folder — so moving a file
+across the vault rewrites that one field and touches nothing on any account. A
+4 GB film moves as fast as a note, and its parts stay on exactly the clouds they
+were scattered to.
+
+A folder is the same thing again: it is a path in the index and nothing more, so
+moving one carries every file beneath it, at any depth, in a single write. There
+is no moment where half the tree answers to its old name. The thumbnails and the
+film-details setting come along too — both are filed under the folder rather than
+inside it.
+
+```bash
+./sand mv /draft.txt /final/published.txt   # rename, and move it
+./sand mv /draft.txt /final                 # into a folder, keeping its name
+./sand mv /photos/2024 /archive/2024        # a folder, with everything in it
+```
+
+In the browser every row carries **→** for this, beside Download and Delete on a
+file and beside **⇄** on a folder; on a phone, and on any tile, it is *Move to
+another folder* in the row's menu. Tick several rows and **→ Folder** in the
+selection bar moves the lot — the button next to it, **⇄ Clouds**, is the other
+move, the one that copies parts between accounts.
+
+Either way it opens on the folder the thing is already in and walks the vault's
+own tree from there, with a **+ New folder here** for a destination that does not
+exist yet. Nothing that cannot happen is offered: a folder cannot be moved inside
+itself, and anything already in the folder you are looking at says so rather than
+being moved onto its own path. A name already taken in the destination is
+refused, one item at a time, and the rest of a selection still moves.
+
+---
+
 ## Changing the password
 
 ```bash
@@ -694,7 +730,7 @@ sand find <query> [--path /dir] [--type file|folder] [--limit N] [-l]
 sand put <file>... [--path /dir] [--overwrite] [--accounts a,b,c]
 sand get <path-or-id> [-o out]     Rebuild and decrypt
 sand mkdir <path>
-sand mv <path> <new-path>          Index only — parts never move
+sand mv <path> <new-path>          A file or a folder; index only, parts never move
 sand relocate <path> --accounts a,b,c [--dry-run]
                                    Move a file or folder onto other clouds
 sand rm <path> [-r]                Erases every part from every account
@@ -779,8 +815,13 @@ pipe the password on stdin.
   normally wanted and reversing when chosen again; folders always lead. The view
   and the sort are remembered between visits
 - **Selection** — tick rows singly, in a run with `Shift`, or all of them with
-  `Ctrl+A`, then download, move to other clouds, or delete the lot. A move
-  prices the whole selection as one number before it starts
+  `Ctrl+A`, then download, move into another folder, move to other clouds, or
+  delete the lot. A move onto other clouds prices the whole selection as one
+  number before it starts
+- **Move between folders** — `→` on any row, or *Move to another folder* in its
+  menu, opens the vault's own folder tree; nothing is uploaded or downloaded and
+  the parts stay on the clouds they are on — see [Moving something to another
+  folder](#moving-something-to-another-folder)
 - **Search** — a box in the toolbar finds a file or folder anywhere in the
   vault, each hit shown with the folder it lives in; searching inside a folder
   looks there first and offers to widen to the whole vault
@@ -1005,9 +1046,11 @@ not endorsed or certified by TMDB.
 | GET · POST · DELETE | `/api/files/{id}/movie` | What film this is / look it up (`query`, `year`, `tmdb_id`) / forget it |
 | GET | `/api/files/{id}/movie/candidates?q=` | Search the database without storing anything, to correct a match |
 | GET | `/api/files/{id}/health` | Per-part reachability |
-| POST | `/api/files/{id}/move` | Rename / move |
+| POST | `/api/files/{id}/move` | Rename / move into another folder |
 | DELETE | `/api/files/{id}` | Erase every part |
+| GET | `/api/folders` | Every folder in the vault, for a destination picker |
 | POST · DELETE | `/api/folders` | Create / delete folders |
+| POST | `/api/folders/move` | Move a folder, and everything under it, `from` one path `to` another |
 | POST | `/api/relocate` | Move a file (`id`) or folder (`path`) onto other `accounts`; `preview` prices it without moving anything |
 | GET | `/api/system/folders?path=` | Folders on this machine, for the folder picker |
 | POST | `/api/archive` · `/api/restore` | Standalone mode |
@@ -1403,7 +1446,7 @@ sand/
 │   ├── navigation.js  view.js   # the trail of folders walked; view + sort prefs
 │   └── components/              # LockScreen, AccountsPanel, ConnectCloud,
 │                                #   FileBrowser, Toolbar, FileEntry, BulkActions,
-│                                #   PreviewModal, PdfPreview, FilmDetails,
+│                                #   MoveToFolder, PreviewModal, PdfPreview, FilmDetails,
 │                                #   StreamLink, RecoverVault, ReclaimVault, ui
 │   ├── public/                  # app icon, home-screen icons + manifest,
 │   │                            #   developer badge
