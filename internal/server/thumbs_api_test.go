@@ -216,7 +216,7 @@ func TestDeletedFileLosesItsThumbnail(t *testing.T) {
 // it: the answer is the ID of a file that already has a thumbnail, drawn
 // through the same endpoint that file's own row draws through.
 
-func TestAFolderIsDrawnWithAPictureFromInsideIt(t *testing.T) {
+func TestAFolderIsDrawnWithAPictureOnlyOnceOneIsPicked(t *testing.T) {
 	c := newTestClient(t)
 	c.setup("pw", 3)
 
@@ -225,28 +225,18 @@ func TestAFolderIsDrawnWithAPictureFromInsideIt(t *testing.T) {
 		[]byte("pretend this is a film"), samplePNG(t, 400, 600))
 	second := c.uploadWithThumb("The Dark Knight 2008.mkv", "/films/batman",
 		[]byte("pretend this is a film"), samplePNG(t, 400, 600))
-	inside := map[string]bool{first["id"].(string): true, second["id"].(string): true}
 
-	// The listing of the folder above says what each subfolder is drawn with,
-	// so nothing has to be asked for a folder at a time.
+	// The listing of the folder above carries an entry for the subfolder, so
+	// the browser knows there is something to choose — and no picture, because
+	// nothing chooses one on anybody's behalf.
 	_, listing := c.json(http.MethodGet, "/api/files?path=/films", nil)
 	art, _ := listing["folder_art"].(map[string]any)
-	batman, _ := art["/films/batman"].(map[string]any)
-	if batman == nil {
-		t.Fatalf("no picture for /films/batman: %v", listing["folder_art"])
+	batman, listed := art["/films/batman"].(map[string]any)
+	if !listed {
+		t.Fatalf("no entry for /films/batman: %v", listing["folder_art"])
 	}
-	picked, _ := batman["id"].(string)
-	if !inside[picked] {
-		t.Fatalf("folder art = %v, want one of the films inside it", batman)
-	}
-	if batman["chosen"] == true {
-		t.Error("nobody picked it yet")
-	}
-
-	// And it is the same picture the next time somebody looks.
-	_, again := c.json(http.MethodGet, "/api/files?path=/films", nil)
-	if got := again["folder_art"].(map[string]any)["/films/batman"].(map[string]any)["id"]; got != picked {
-		t.Errorf("the folder changed its face between listings: %v then %v", picked, got)
+	if batman["id"] != nil {
+		t.Fatalf("the folder picked a picture for itself: %v", batman)
 	}
 
 	// The picker offers both, and choosing one sticks.
@@ -254,16 +244,14 @@ func TestAFolderIsDrawnWithAPictureFromInsideIt(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("folder art: %d %v", w.Code, body)
 	}
+	if body["art"] != nil {
+		t.Errorf("art = %v, want nothing chosen", body["art"])
+	}
 	if candidates, _ := body["candidates"].([]any); len(candidates) != 2 {
 		t.Fatalf("candidates = %v, want both films", body["candidates"])
 	}
 
-	var wanted string
-	for id := range inside {
-		if id != picked {
-			wanted = id
-		}
-	}
+	wanted := second["id"].(string)
 	if w, body := c.json(http.MethodPost, "/api/folders/art",
 		map[string]any{"path": "/films/batman", "id": wanted}); w.Code != http.StatusOK {
 		t.Fatalf("choosing: %d %v", w.Code, body)
@@ -271,19 +259,24 @@ func TestAFolderIsDrawnWithAPictureFromInsideIt(t *testing.T) {
 
 	_, listing = c.json(http.MethodGet, "/api/files?path=/films", nil)
 	chosen := listing["folder_art"].(map[string]any)["/films/batman"].(map[string]any)
-	if chosen["id"] != wanted || chosen["chosen"] != true {
-		t.Errorf("after choosing = %v, want %s picked by hand", chosen, wanted)
+	if chosen["id"] != wanted {
+		t.Errorf("after choosing = %v, want %s", chosen, wanted)
 	}
 
-	// Handing the choice back leaves the vault picking again.
+	// Another choice replaces it; an empty one takes the picture away and
+	// leaves the folder as it started.
+	if w, _ := c.json(http.MethodPost, "/api/folders/art",
+		map[string]any{"path": "/films/batman", "id": first["id"]}); w.Code != http.StatusOK {
+		t.Fatalf("choosing again: %d", w.Code)
+	}
 	if w, body := c.json(http.MethodPost, "/api/folders/art",
 		map[string]any{"path": "/films/batman", "id": ""}); w.Code != http.StatusOK {
 		t.Fatalf("clearing: %d %v", w.Code, body)
 	}
 	_, listing = c.json(http.MethodGet, "/api/files?path=/films", nil)
 	back := listing["folder_art"].(map[string]any)["/films/batman"].(map[string]any)
-	if back["id"] != picked || back["chosen"] == true {
-		t.Errorf("after clearing = %v, want the automatic pick %s", back, picked)
+	if back["id"] != nil {
+		t.Errorf("after clearing = %v, want no picture", back)
 	}
 }
 
@@ -301,10 +294,10 @@ func TestAFolderPictureMustBeSomethingInsideTheFolder(t *testing.T) {
 		t.Error("a folder was allowed to wear a picture of something it does not hold")
 	}
 
-	// A folder with nothing picturable in it simply has no picture, which is
-	// what keeps the icon on screen rather than a broken image.
+	// A folder with nothing picturable in it is left out of the map entirely,
+	// which is what keeps the control to choose one off the screen.
 	_, listing := c.json(http.MethodGet, "/api/files?path=/", nil)
 	if art, _ := listing["folder_art"].(map[string]any); art["/films"] != nil {
-		t.Errorf("empty folder has a picture: %v", art["/films"])
+		t.Errorf("a folder with nothing picturable inside it offers something: %v", art["/films"])
 	}
 }

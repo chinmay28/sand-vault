@@ -2,50 +2,54 @@ package vault
 
 import (
 	"fmt"
-	"hash/fnv"
 	"path"
 	"sort"
 	"strings"
 )
 
-// A folder is drawn with a picture of something inside it.
+// A folder can be given a picture of something inside it.
 //
-// A folder of films was a row of identical 📁 icons, which is the same problem
-// the files inside it had before they got posters: the name of a folder holding
-// The Dark Knight Trilogy tells you rather less than the poster of any film in
-// it. So a folder borrows one — and borrowing is exactly what it does. Nothing
-// new is stored: the answer here is the ID of a file that already has a
+// A folder of films is otherwise a row of identical 📁 icons — the same problem
+// the files inside it had before they got posters, since the name of a folder
+// holding The Dark Knight Trilogy tells you rather less than the poster of any
+// film in it. So a folder can borrow one, and borrowing is exactly what it does.
+// Nothing new is stored: what is recorded is the ID of a file that already has a
 // thumbnail, and the browser draws it through the same endpoint it draws that
-// file's row with. A folder's picture therefore costs no upload, no extra
-// object on any account, and nothing at all to change.
+// file's row with. A folder's picture therefore costs no upload, no extra object
+// on any account, and nothing at all to change or to take away again.
 //
-// What it does cost is the thumbnail pack of the folder the picture lives in,
-// gathered the first time it is drawn (§4.3's packs are one per folder). Opening
-// a parent of twenty folders can therefore gather twenty packs — but only for
-// the tiles actually on screen, since the browser loads them lazily, and only
-// once, since a gathered pack is held in memory until the vault locks. It is the
-// same cost as opening each of those folders in turn, paid where the folders are
-// listed instead.
+// Nothing is picked automatically. A folder keeps its icon until somebody says
+// otherwise, and saying so is one click on a list of what is actually in there.
+// Guessing was the alternative and it is the wrong trade: which film stands for
+// a trilogy is a matter of taste, a guess would have to be explained and undone
+// rather than simply made, and a picture arriving by itself on a folder somebody
+// never asked about is a surprise — the wrong kind, in an app whose whole
+// posture is that nothing happens to your files unless you ask for it.
 //
-// The choice is the vault's until somebody makes it. Left alone it picks one of
-// the films inside — stably, so a folder does not change its face on every
-// refresh, and unpredictably enough that twenty folders do not all show whatever
-// happens to sort first. Picked by hand, it is recorded in the manifest by file
-// ID, which is why renaming the file, moving it deeper, or moving the whole
-// folder somewhere else all leave the choice standing.
+// What this file still works out for every folder is whether there is anything
+// to offer at all, which is what decides whether the control to choose one is on
+// screen. That is one walk of the index per listing and contacts no account.
+//
+// The picture itself costs the thumbnail pack of the folder holding it, gathered
+// the first time it is drawn (§4.3's packs are one per folder). A parent whose
+// folders have all been given pictures can therefore gather one pack per folder
+// — but only for the tiles actually on screen, since the browser loads them
+// lazily, and only once, since a gathered pack is held in memory until the vault
+// locks. It is the same cost as opening each of those folders in turn, paid
+// where the folders are listed instead.
 
-// FolderArt names the picture a folder is drawn with.
+// FolderArt is what a folder is drawn with.
 type FolderArt struct {
-	// ID is the file whose stored thumbnail stands for the folder.
-	ID string `json:"id"`
+	// ID is the file whose stored thumbnail stands for the folder, and is empty
+	// when nobody has chosen one — which is every folder until somebody does.
+	// An entry exists either way: a folder with nothing picturable inside it is
+	// absent from the map entirely, and that is the difference between "no
+	// picture yet" and "no picture possible".
+	ID string `json:"id,omitempty"`
 
 	// Film says the picture is a matched film's poster, which is two-by-three
 	// rather than square — the grid has to know before it lays anything out.
 	Film bool `json:"film,omitempty"`
-
-	// Chosen says somebody picked this one. Otherwise the vault did, and it
-	// will pick again if the file it chose goes away.
-	Chosen bool `json:"chosen,omitempty"`
 }
 
 // folderArtChoiceLimit caps how many files the picker is offered. A folder of
@@ -66,8 +70,8 @@ type ArtChoice struct {
 	Film  bool   `json:"film,omitempty"`
 }
 
-// FolderArtFor answers what one folder is drawn with, and whether it has
-// anything to be drawn with at all.
+// FolderArtFor answers what one folder is drawn with, and whether it is drawn
+// with anything at all.
 func (v *Vault) FolderArtFor(dir string) (FolderArt, bool) {
 	dir = CleanDir(dir)
 
@@ -76,8 +80,8 @@ func (v *Vault) FolderArtFor(dir string) (FolderArt, bool) {
 	if v.dataKey == nil {
 		return FolderArt{}, false
 	}
-	art, ok := v.folderArtForLocked([]string{dir})[dir]
-	return art, ok
+	art := v.folderArtForLocked([]string{dir})[dir]
+	return art, art.ID != ""
 }
 
 // FolderArtChoices lists the pictures a folder could be drawn with: every file
@@ -138,8 +142,8 @@ func (v *Vault) FolderArtChoices(dir string) ([]ArtChoice, bool, error) {
 	return out, false, nil
 }
 
-// SetFolderArt fixes the picture a folder is drawn with. An empty id hands the
-// choice back to the vault.
+// SetFolderArt gives a folder a picture, or takes it away again with an empty
+// id — which is also the state every folder starts in.
 //
 // The file has to be one inside the folder and it has to have a thumbnail:
 // a folder's picture is a picture of what is in it, and one that pointed
@@ -189,61 +193,25 @@ func (v *Vault) SetFolderArt(dir, id string) (FolderArt, error) {
 	return v.folderArtForLocked([]string{dir})[dir], nil
 }
 
-// artPick is the best candidate found for one folder so far.
-type artPick struct {
-	id    string
-	film  bool
-	score uint64
-	found bool
-}
-
-// offer keeps the better of what is held and what is handed in.
+// folderArtForLocked answers, for each of the folders named, what it is drawn
+// with — and, for the ones drawn with nothing, whether there is anything inside
+// them to choose from. A folder with nothing picturable under it is left out of
+// the map altogether, so a browser can tell "not chosen yet" from "nothing to
+// choose".
 //
-// A film beats anything else, because a folder of films is what this exists
-// for. Between two of the same kind the higher score wins, and the score is a
-// hash of the folder and the file together — so the choice is fixed for as long
-// as the folder holds that file, and two folders holding the same films do not
-// both show the first one.
-func (p *artPick) offer(dir, id string, film bool) {
-	score := artScore(dir, id)
-	if p.found && !betterArt(film, score, p.film, p.score) {
-		return
-	}
-	p.id, p.film, p.score, p.found = id, film, score, true
-}
-
-// betterArt compares a candidate against what is already held.
-func betterArt(film bool, score uint64, heldFilm bool, heldScore uint64) bool {
-	if film != heldFilm {
-		return film
-	}
-	return score > heldScore
-}
-
-func artScore(dir, id string) uint64 {
-	h := fnv.New64a()
-	h.Write([]byte(dir))
-	h.Write([]byte{0})
-	h.Write([]byte(id))
-	return h.Sum64()
-}
-
-// folderArtForLocked resolves the picture for each of the folders named, in one
-// walk of the index rather than one per folder.
-//
-// Every file is offered to each of the wanted folders that contains it, which
-// is why the walk goes up from the file rather than down from the folder: a
-// listing's folders are siblings and a search's are not, and a file deep under
-// two of them should count for both. The caller must hold at least the read
-// lock.
+// It is one walk of the index rather than one per folder, and every file is
+// counted towards each of the wanted folders that contains it — which is why the
+// walk goes up from the file rather than down from the folder: a listing's
+// folders are siblings and a search's are not, and a file deep under two of them
+// counts for both. The caller must hold at least the read lock.
 func (v *Vault) folderArtForLocked(dirs []string) map[string]FolderArt {
 	if len(dirs) == 0 {
 		return nil
 	}
 
-	wanted := make(map[string]*artPick, len(dirs))
+	wanted := make(map[string]bool, len(dirs))
 	for _, dir := range dirs {
-		wanted[CleanDir(dir)] = &artPick{}
+		wanted[CleanDir(dir)] = false
 	}
 
 	thumbed := v.thumbIndexLocked()
@@ -252,10 +220,9 @@ func (v *Vault) folderArtForLocked(dirs []string) map[string]FolderArt {
 		if !thumbed[e.Dir][e.ID] {
 			continue
 		}
-		film := v.manifest.Movies[e.ID] != nil
 		for at := CleanDir(e.Dir); ; {
-			if pick, ok := wanted[at]; ok {
-				pick.offer(at, e.ID, film)
+			if offered, ok := wanted[at]; ok && !offered {
+				wanted[at] = true
 			}
 			if at == "/" {
 				break
@@ -265,15 +232,15 @@ func (v *Vault) folderArtForLocked(dirs []string) map[string]FolderArt {
 	}
 
 	out := make(map[string]FolderArt, len(wanted))
-	for dir, pick := range wanted {
-		// A choice made by hand outranks the one made for it, as long as it
-		// still points at something that is there.
-		if chosen, ok := v.chosenArtLocked(dir, v.manifest.FolderArt[dir]); ok {
+	for dir, offered := range wanted {
+		chosen, ok := v.chosenArtLocked(dir, v.manifest.FolderArt[dir])
+		switch {
+		case ok:
 			out[dir] = chosen
-			continue
-		}
-		if pick.found {
-			out[dir] = FolderArt{ID: pick.id, Film: pick.film}
+		case offered:
+			// Nothing chosen, but something to choose: the folder keeps its
+			// icon and offers the control that changes that.
+			out[dir] = FolderArt{}
 		}
 	}
 	return out
@@ -289,7 +256,7 @@ func (v *Vault) chosenArtLocked(dir, id string) (FolderArt, bool) {
 	if e == nil || !underDir(e.Dir, dir) || !v.hasThumbLocked(e) {
 		return FolderArt{}, false
 	}
-	return FolderArt{ID: id, Film: v.manifest.Movies[id] != nil, Chosen: true}, true
+	return FolderArt{ID: id, Film: v.manifest.Movies[id] != nil}, true
 }
 
 // hasThumbLocked reports whether a file's folder pack holds a picture of it.

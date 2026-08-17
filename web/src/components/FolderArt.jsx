@@ -7,17 +7,16 @@ import { TILE_POSTER, TILE_SQUARE } from './FileEntry'
 
 /* Choosing the picture a folder wears.
 
-   A folder of films was a row of identical 📁, which is the same thing the
-   files inside it looked like before they had posters. So a folder borrows one
-   from what is inside it — and borrowing is all it does: what is stored is a
-   file id, and the picture drawn is that file's own thumbnail, through the
-   endpoint every other picture in the app comes through. Nothing is uploaded by
-   choosing one, nothing is erased by changing it.
+   A folder of films is otherwise a row of identical 📁, which is the same thing
+   the files inside it looked like before they had posters. So a folder can
+   borrow one from what is inside it — and borrowing is all it does: what is
+   stored is a file id, and the picture drawn is that file's own thumbnail,
+   through the endpoint every other picture in the app comes through. Nothing is
+   uploaded by choosing one, nothing is erased by changing it or taking it away.
 
-   Left alone, the vault picks a film from inside the folder and keeps picking
-   the same one, so a folder does not change its face every time the listing
-   refreshes. This is for when it picked the wrong one — which for a trilogy it
-   half the time will, because there is no right one. */
+   Nothing is picked for you. A folder keeps its icon until somebody says
+   otherwise here, and which film stands for a trilogy is exactly the sort of
+   question an app should not answer on its own. */
 
 export default function FolderArtPicker({ path, name, onClose, onDone }) {
   const mobile = useIsMobile()
@@ -70,7 +69,7 @@ export default function FolderArtPicker({ path, name, onClose, onDone }) {
     onClose()
   }
 
-  const chosen = art?.chosen ? art.id : null
+  const chosen = art?.id || null
 
   return (
     <Modal
@@ -86,16 +85,17 @@ export default function FolderArtPicker({ path, name, onClose, onDone }) {
         fontFamily: FONT.sans, fontSize: '12px', color: COLORS.textMuted, lineHeight: 1.6,
       }}>
         Nothing is stored by choosing one. The folder points at a file that is already inside it and
-        draws that file's own thumbnail, so changing its picture costs nothing and erases nothing.
+        draws that file's own thumbnail, so giving it a picture, changing it, or taking it away again
+        all cost nothing and erase nothing.
       </p>
 
       {loading ? (
         <div style={{ display: 'flex', justifyContent: 'center', padding: '40px 0' }}><Spinner size={20} /></div>
       ) : candidates.length === 0 ? (
         <Empty icon="🖼" title="Nothing in here has a picture yet">
-          A folder wears a picture of something inside it — a film's poster, or the thumbnail of a
-          photograph or a PDF. Look the films up, or upload something with a picture, and this folder
-          will have a face.
+          A folder can wear a picture of something inside it — a film's poster, or the thumbnail of a
+          photograph or a PDF. Look the films up, or upload something with a picture, and there will
+          be something to choose from.
         </Empty>
       ) : (
         <>
@@ -104,17 +104,10 @@ export default function FolderArtPicker({ path, name, onClose, onDone }) {
             marginBottom: '12px',
             fontFamily: FONT.mono, fontSize: '11px', color: COLORS.textMuted,
           }}>
-            <span>
-              {chosen
-                ? 'Picked by hand'
-                /* Says which pile it was drawn from, because a folder of films
-                   and a folder of photographs are picked from differently: a
-                   film's poster wins wherever there is one. */
-                : `Picked by SAND, from the ${art?.film ? 'films' : 'pictures'} inside`}
-            </span>
+            <span>{chosen ? 'Wearing one of these' : 'No picture — this folder shows its icon'}</span>
             {chosen && (
               <Button size="sm" variant="ghost" disabled={!!busy} onClick={() => choose('')}>
-                {busy === 'auto' ? <Spinner size={10} /> : null}Let SAND choose
+                {busy === 'auto' ? <Spinner size={10} /> : null}Use no picture
               </Button>
             )}
           </div>
@@ -132,8 +125,7 @@ export default function FolderArtPicker({ path, name, onClose, onDone }) {
                 key={c.id}
                 candidate={c}
                 aspect={aspect}
-                current={art?.id === c.id}
-                chosen={chosen === c.id}
+                current={chosen === c.id}
                 busy={busy === c.id}
                 disabled={!!busy}
                 onChoose={() => choose(c.id)}
@@ -160,7 +152,7 @@ export default function FolderArtPicker({ path, name, onClose, onDone }) {
 /* One thing the folder could be drawn with. Captioned by the film's name where
    there is one, because that is what the picture is of — the file name is the
    hover text, the same bargain the grid of posters makes. */
-function Candidate({ candidate, aspect, current, chosen, busy, disabled, onChoose }) {
+function Candidate({ candidate, aspect, current, busy, disabled, onChoose }) {
   const [failed, setFailed] = useState(false)
   const [hover, setHover] = useState(false)
 
@@ -225,7 +217,7 @@ function Candidate({ candidate, aspect, current, chosen, busy, disabled, onChoos
           fontFamily: FONT.mono, fontSize: '9.5px', color: COLORS.textMuted,
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
         }}>
-          {chosen ? 'chosen' : current ? 'in use' : candidate.year || ''}
+          {current ? 'in use' : candidate.year || ''}
         </span>
       </span>
     </button>

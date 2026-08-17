@@ -426,10 +426,10 @@ inside it.
 ```
 
 In the browser every row carries **→** for this, beside Download and Delete on a
-file and beside **⇄** on a folder; on a phone, and on any tile, it is *Move to
-another folder* in the row's menu. Tick several rows and **→ Folder** in the
-selection bar moves the lot — the button next to it, **⇄ Clouds**, is the other
-move, the one that copies parts between accounts.
+file and beside **⇄** on a folder; it is also *Move to another folder* in the
+row's menu, which every row now carries under **⋯**. Tick several rows and
+**→ Folder** in the selection bar moves the lot — the button next to it,
+**⇄ Clouds**, is the other move, the one that copies parts between accounts.
 
 Either way it opens on the folder the thing is already in and walks the vault's
 own tree from there, with a **+ New folder here** for a destination that does not
@@ -437,6 +437,27 @@ exist yet. Nothing that cannot happen is offered: a folder cannot be moved insid
 itself, and anything already in the folder you are looking at says so rather than
 being moved onto its own path. A name already taken in the destination is
 refused, one item at a time, and the rest of a selection still moves.
+
+### Renaming
+
+The same operation with the folder left alone, and just as free: a name is a
+field in the encrypted index, and a file's parts are named after the file's
+random archive ID rather than after its name, so renaming rewrites that field and
+touches no account. Renaming a folder carries everything beneath it in one write,
+exactly as moving one does.
+
+*Rename* sits in every row's **⋯** menu, and on the command line it is the same
+`sand mv`:
+
+```bash
+./sand mv /draft.txt /published.txt      # a file
+./sand mv /photos/2024 /photos/holiday   # a folder, with everything in it
+```
+
+The dialog opens with the name selected up to the extension, so typing replaces
+the words and keeps the `.mkv`. A name is one segment — a `/` in it is a move,
+and the field says so rather than quietly making folders — and a name already
+taken in that folder is refused.
 
 ---
 
@@ -816,14 +837,18 @@ pipe the password on stdin.
   `Ctrl+A`, then download, move into another folder, move to other clouds, or
   delete the lot. A move onto other clouds prices the whole selection as one
   number before it starts
-- **Folder pictures** — a folder is drawn with a picture of something inside it,
-  a film's poster for choice, reaching as deep as it needs to. Nothing is stored
-  for it and `🖼` on the row says which picture — see [A folder wears one
-  too](#a-folder-wears-one-too)
+- **Folder pictures** — a folder can be given a picture of something inside it, a
+  film's poster or any other thumbnail, reaching as deep as it needs to. Never
+  chosen for you, nothing is stored for it, and `🖼` on the row picks or removes
+  it — see [A folder can wear one too](#a-folder-can-wear-one-too)
 - **Move between folders** — `→` on any row, or *Move to another folder* in its
   menu, opens the vault's own folder tree; nothing is uploaded or downloaded and
   the parts stay on the clouds they are on — see [Moving something to another
   folder](#moving-something-to-another-folder)
+- **Rename** — *Rename* in any row's menu, for a file or a folder; the name is
+  index, so nothing is transferred — see [Renaming](#renaming)
+- **Row menu** — `⋯` on every row opens the same sheet a phone gets, so a desk
+  reaches everything a file can do without the row growing a control per feature
 - **Search** — a box in the toolbar finds a file or folder anywhere in the
   vault, each hit shown with the folder it lives in; searching inside a folder
   looks there first and offers to widen to the whole vault
@@ -1011,36 +1036,36 @@ already found exactly where it is.
 Details and artwork come from The Movie Database. SAND uses the TMDB API but is
 not endorsed or certified by TMDB.
 
-### A folder wears one too
+### A folder can wear one too
 
-A folder of films was a row of identical `📁` — the same problem its files had
-before they had posters. So a folder borrows a picture from what is inside it: a
-poster where there is one, and otherwise the thumbnail of whatever photograph or
-PDF is in there. It reaches as deep as it needs to, so a library whose films sit
-in a folder each still has a face.
+A folder of films is otherwise a row of identical `📁` — the same problem its
+files had before they had posters. So a folder can borrow a picture from what is
+inside it: a film's poster, or the thumbnail of a photograph or a PDF. It reaches
+as deep as it needs to, so a library whose films sit in a folder each can wear
+one from two levels down.
 
-**Nothing is stored to do it.** The folder points at a file that already has a
-thumbnail and draws that file's own picture, through the same address its row
-draws through. A folder's picture therefore costs no upload, no extra object on
-any account, and nothing at all to change — and it is not artwork you can lose,
-because it is not a copy of anything.
+**Nothing is picked for you.** A folder keeps its icon until you say otherwise —
+which film stands for a trilogy is a matter of taste, and a picture appearing on
+a folder you never asked about is the wrong kind of surprise. **🖼 on the
+folder's row**, or *Folder picture* in its menu, shows everything inside it that
+has a picture and lets you pick one; **Use no picture** takes it away again. Both
+controls appear only where there is something to choose from.
 
-SAND picks one for you, from the films first, and keeps picking the same one so a
-folder does not change its face every time the listing refreshes. When it picks
-the wrong one — which for a trilogy it half the time will, there being no right
-one — **🖼 on the folder's row**, or *Folder picture* in its menu, shows
-everything inside it that has a picture and lets you say which. **Let SAND
-choose** hands the choice back.
+**Nothing is stored to do it either.** The folder points at a file that already
+has a thumbnail and draws that file's own picture, through the same address its
+row draws through. A folder's picture therefore costs no upload, no extra object
+on any account, and nothing at all to change or to remove — and it is not artwork
+you can lose, because it is not a copy of anything.
 
-The picture is remembered by file, not by name or place, so renaming that file,
-moving it deeper, or moving the whole folder somewhere else all leave your choice
-standing. Deleting it hands the folder back to choosing for itself.
+Your choice is remembered by file, not by name or place, so renaming that file,
+moving it deeper, or moving the whole folder somewhere else all leave it
+standing. Deleting the file puts the folder back to its icon.
 
-One cost worth knowing: thumbnails are stored one pack per folder, so drawing a
-parent of twenty folders can gather twenty packs the first time. Only the tiles
-actually on screen fetch anything, and each pack is gathered once and kept until
-the vault locks — it is the same cost as opening those twenty folders, paid where
-they are listed instead.
+One cost worth knowing: thumbnails are stored one pack per folder, so a parent
+whose folders have all been given pictures gathers a pack per folder the first
+time it is drawn. Only the tiles actually on screen fetch anything, and each pack
+is gathered once and kept until the vault locks — it is the same cost as opening
+those folders, paid where they are listed instead.
 
 ---
 
@@ -1082,7 +1107,7 @@ they are listed instead.
 | POST | `/api/files/{id}/move` | Rename / move into another folder |
 | DELETE | `/api/files/{id}` | Erase every part |
 | GET | `/api/folders` | Every folder in the vault, for a destination picker |
-| GET · POST | `/api/folders/art?path=` | Which file's thumbnail a folder is drawn with, and what else it could be (`id` to pick, `""` to hand it back) |
+| GET · POST | `/api/folders/art?path=` | Which file's thumbnail a folder is drawn with, and what else it could be (`id` to pick one, `""` for none) |
 | POST · DELETE | `/api/folders` | Create / delete folders |
 | POST | `/api/folders/move` | Move a folder, and everything under it, `from` one path `to` another |
 | POST | `/api/relocate` | Move a file (`id`) or folder (`path`) onto other `accounts`; `preview` prices it without moving anything |
@@ -1480,8 +1505,8 @@ sand/
 │   ├── navigation.js  view.js   # the trail of folders walked; view + sort prefs
 │   └── components/              # LockScreen, AccountsPanel, ConnectCloud,
 │                                #   FileBrowser, Toolbar, FileEntry, BulkActions,
-│                                #   MoveToFolder, FolderArt, PreviewModal, PdfPreview,
-│                                #   FilmDetails,
+│                                #   MoveToFolder, Rename, FolderArt, PreviewModal,
+│                                #   PdfPreview, FilmDetails,
 │                                #   StreamLink, RecoverVault, ReclaimVault, ui
 │   ├── public/                  # app icon, home-screen icons + manifest,
 │   │                            #   developer badge

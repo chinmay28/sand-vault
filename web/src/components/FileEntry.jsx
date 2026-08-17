@@ -8,6 +8,7 @@ import ConvertFile from './ConvertFile'
 import { RelocateClouds, fileScheme, schemeName, storedParts } from './CloudSelect'
 import MoveToFolder from './MoveToFolder'
 import FolderArtPicker from './FolderArt'
+import RenameDialog from './Rename'
 
 /* One file or one folder, drawn as a row or as a tile.
 
@@ -18,14 +19,19 @@ import FolderArtPicker from './FolderArt'
    are two arrangements of what it hands back. */
 
 /* Name, size, modified, parts, actions. The four fixed columns come to nearly
-   550px, which is why the phone layout stacks instead of shrinking them. */
-export const COLUMNS = 'minmax(0,1fr) 92px 150px 132px 144px'
+   600px, which is why the phone layout stacks instead of shrinking them.
+
+   The last of them ends in a ⋯ that opens the same sheet a phone gets, which
+   is what stops this column growing by a button every time a file learns to do
+   something new: the quick controls are the three or four things worth a click
+   from the row, and everything else lives one click deeper. */
+export const COLUMNS = 'minmax(0,1fr) 92px 150px 132px 180px'
 
 /* The same again in a folder that has asked for film details, where a video
    row carries one control more. The column grows by exactly one button rather
    than the ones already there being crowded together — and it grows for the
    whole table, because a heading has to sit over the column it names. */
-export const FILM_COLUMNS = 'minmax(0,1fr) 92px 150px 132px 180px'
+export const FILM_COLUMNS = 'minmax(0,1fr) 92px 150px 132px 216px'
 
 /* Everything a file row or tile can do, and every dialog it can open.
 
@@ -44,6 +50,7 @@ export function useFileActions({ file, providers, film, onPreview, onInspect, on
   const [converting, setConverting] = useState(null)
   const [relocating, setRelocating] = useState(false)
   const [moving, setMoving] = useState(false)
+  const [renaming, setRenaming] = useState(false)
 
   /* A file stored before chunked storage existed. It cannot be read at an
      offset, so nothing opens or streams it until it has been converted — the
@@ -147,9 +154,15 @@ export function useFileActions({ file, providers, film, onPreview, onInspect, on
               hint: describeParts(file),
               onSelect: onInspect,
             },
-            /* The two moves, next to each other and named for what they move
-               it onto. This one is free and instant whatever the file weighs;
-               the one under it copies bytes between clouds. */
+            /* Rename and the two moves, together: all three change where a
+               file answers from and none of them touch what is stored. */
+            {
+              key: 'rename',
+              glyph: '✎',
+              label: 'Rename',
+              hint: 'Only the index changes — the parts are not named after the file',
+              onSelect: () => setRenaming(true),
+            },
             {
               key: 'move',
               glyph: '→',
@@ -224,6 +237,16 @@ export function useFileActions({ file, providers, film, onPreview, onInspect, on
           onDone={onRefresh}
         />
       )}
+
+      {renaming && (
+        <RenameDialog
+          kind="file"
+          name={file.name}
+          file={file}
+          onClose={() => setRenaming(false)}
+          onDone={onRefresh}
+        />
+      )}
     </>
   )
 
@@ -235,6 +258,7 @@ export function useFileActions({ file, providers, film, onPreview, onInspect, on
     confirmDelete: () => setConfirming(true),
     relocate: () => setRelocating(true),
     moveTo: () => setMoving(true),
+    rename: () => setRenaming(true),
   }
 }
 
@@ -584,6 +608,15 @@ export function FileRow({
         disabled={a.busy}
         onClick={a.confirmDelete}
       />
+      {/* Everything else a file can do, in the same sheet a phone gets. A row
+          cannot grow a control per feature — renaming would have been the
+          fifth — and the things that end up here are the ones worth a click
+          rather than a glance: rename, the parts, the other move, the film. */}
+      <IconButton
+        glyph="⋯"
+        label={`Actions for ${file.name}`}
+        onClick={a.openMenu}
+      />
     </span>
   )
 
@@ -669,6 +702,7 @@ function useFolderActions({ name, path, art, providers, onNavigate, onRefresh, o
   const [confirming, setConfirming] = useState(false)
   const [relocating, setRelocating] = useState(false)
   const [moving, setMoving] = useState(false)
+  const [renaming, setRenaming] = useState(false)
   const [picturing, setPicturing] = useState(false)
   const [busy, setBusy] = useState(false)
 
@@ -698,17 +732,24 @@ function useFolderActions({ name, path, art, providers, onNavigate, onRefresh, o
           onClose={() => setMenu(false)}
           items={[
             { key: 'open', glyph: '▸', label: 'Open folder', onSelect: open },
-            /* Only where there is a picture to change. A folder with nothing
-               picturable inside it has nothing to offer, and the entry would
-               open a dialog whose whole content is an apology. */
+            /* Only where there is something to choose from. A folder with
+               nothing picturable inside it has nothing to offer, and the entry
+               would open a dialog whose whole content is an apology. */
             art && {
               key: 'art',
               glyph: '🖼',
               label: 'Folder picture',
-              hint: art.chosen
-                ? 'Drawn with the one you picked — pick another, or hand it back'
-                : 'Drawn with one of the pictures inside it — pick which',
+              hint: art.id
+                ? 'Wearing one of the pictures inside it — pick another, or take it away'
+                : 'Give it a picture of something inside it',
               onSelect: () => setPicturing(true),
+            },
+            {
+              key: 'rename',
+              glyph: '✎',
+              label: 'Rename',
+              hint: 'Everything inside it comes along, and nothing is transferred',
+              onSelect: () => setRenaming(true),
             },
             {
               key: 'move',
@@ -781,6 +822,16 @@ function useFolderActions({ name, path, art, providers, onNavigate, onRefresh, o
           onDone={onRefresh}
         />
       )}
+
+      {renaming && (
+        <RenameDialog
+          kind="folder"
+          name={name}
+          path={path}
+          onClose={() => setRenaming(false)}
+          onDone={onRefresh}
+        />
+      )}
     </>
   )
 
@@ -791,6 +842,7 @@ function useFolderActions({ name, path, art, providers, onNavigate, onRefresh, o
     confirmDelete: () => setConfirming(true),
     relocate: () => setRelocating(true),
     moveTo: () => setMoving(true),
+    rename: () => setRenaming(true),
     pickArt: () => setPicturing(true),
   }
 }
@@ -811,7 +863,7 @@ export function FolderRow({
       /* The picture of something inside it, where the icon was — the same
          swap a file's row made when thumbnails arrived, and the same fall
          back to the icon when there is nothing to draw. */
-      icon={<Thumb id={art?.id} icon="📁" size={mobile ? 34 : 26} expected={!!art} />}
+      icon={<Thumb id={art?.id} icon="📁" size={mobile ? 34 : 26} expected={!!art?.id} />}
       label={name}
       location={location}
       chevron="▸"
@@ -830,13 +882,16 @@ export function FolderRow({
     />
   ) : (
     <span style={{ display: 'flex', gap: '2px', justifyContent: 'flex-end' }}>
-      {/* Only where there is a picture to change: no picture means nothing
-          inside has one, and so there is nothing to choose between. */}
+      {/* Only where there is something to choose from: an absent entry means
+          nothing inside has a picture, so there is nothing to choose between. */}
       {art && (
         <IconButton
           glyph="🖼"
           label={`Choose the picture for ${name}`}
-          title="Which of the pictures inside it this folder is drawn with"
+          title={art.id
+            ? 'Which of the pictures inside it this folder is drawn with'
+            : 'Give this folder a picture of something inside it'}
+          tone={art.id ? 'dim' : 'muted'}
           onClick={a.pickArt}
           style={{ fontSize: '13px' }}
         />
@@ -854,6 +909,7 @@ export function FolderRow({
         onClick={a.relocate}
       />
       <IconButton glyph="✕" label="Delete folder" tone="muted" onClick={a.confirmDelete} />
+      <IconButton glyph="⋯" label={`Actions for ${name}`} onClick={a.openMenu} />
     </span>
   )
 
@@ -1066,14 +1122,15 @@ export function FolderTile({
       )}
     >
       <TileFace onClick={a.open} title="Open folder">
-        {/* The whole point of the tile: a folder of films drawn as one of its
-            posters rather than as the same 📁 as every other folder. */}
+        {/* The whole point of the tile, for a folder that has been given one: a
+            folder of films drawn as one of its posters rather than as the same
+            📁 as every other folder. */}
         <span style={{
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           width: '100%', aspectRatio: aspect, overflow: 'hidden', fontSize: '34px',
           background: COLORS.bg, borderBottom: `1px solid ${COLORS.border}`,
         }}>
-          <Thumb id={art?.id} icon="📁" expected={!!art} fill />
+          <Thumb id={art?.id} icon="📁" expected={!!art?.id} fill />
         </span>
         <TileCaption name={name} location={location} meta={<span>Folder</span>} />
       </TileFace>

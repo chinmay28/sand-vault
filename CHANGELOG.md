@@ -871,33 +871,57 @@ brings them back for one image fetch each and no searching.
 Details and artwork come from The Movie Database. SAND uses the TMDB API but is
 not endorsed or certified by TMDB.
 
-### A folder wears a picture of what is inside it
+### Renaming, and a menu on every row
+
+A file or a folder can be renamed from the browser. It was on the command line
+all along (`sand mv`) and reachable over WebDAV, and nowhere in the app.
+
+*Rename* sits in any row's menu. The dialog opens with the name selected up to
+the extension, the way every file manager does, so typing replaces the words and
+keeps the `.mkv`; a `/` in the name is a move rather than a name and the field
+says so instead of quietly making folders; and a name already taken in that
+folder is refused. Renaming a folder carries everything inside it in one index
+write, so there is never a moment where half a tree answers to its old name.
+
+Nothing is transferred, for the same reason moving between folders transfers
+nothing: a name is a field in the encrypted index, and a file's parts are named
+after its random archive ID rather than after its name.
+
+Getting there is the other half of this. A desktop row's controls were the three
+or four things worth a click, and renaming would have been the fifth — so every
+row now ends in `⋯`, opening the same sheet a phone has always had. That is
+where Rename lives, and with it the things a desk could only reach sideways
+before: the parts inspector, moving to other clouds, copying a file's address,
+looking up a film. The row grows by one button once, rather than by one button
+per feature.
+
+### A folder can wear a picture of what is inside it
 
 The films got posters and the folders holding them did not, so a library was a
 row of identical `📁` — exactly the problem the files themselves had before. A
-folder is now drawn with a picture of something inside it: a poster where there
-is one, otherwise the thumbnail of whatever photograph or PDF is in there, and it
-reaches as deep as it needs to, so a library whose films sit one folder each
-still has a face.
+folder can now be given a picture of something inside it: a film's poster, or
+the thumbnail of a photograph or a PDF. It reaches as deep as it needs to, so a
+library whose films sit one folder each can wear one from two levels down.
 
-**Nothing is stored to do it.** The folder points at a file that already has a
-thumbnail and draws that file's own picture, through the same address its row
-draws through — no cover object on any account, nothing to keep in step, nothing
-to lose. SAND picks one for you, films first, and keeps picking the same one so a
-folder does not change its face every time the listing refreshes.
+**Nothing is picked for you.** A folder keeps its icon until you say otherwise:
+which film stands for a trilogy is a matter of taste, and a picture appearing on
+a folder you never asked about is the wrong kind of surprise. `🖼` on the
+folder's row, or **Folder picture** in its menu, shows everything inside it that
+has a picture and lets you pick one; **Use no picture** takes it away again.
+Both controls appear only where there is something to choose from, so a folder
+of text files is exactly as it was.
 
-When it picks the wrong one — which for a trilogy it half the time will, there
-being no right one — `🖼` on the folder's row, or **Folder picture** in its menu,
-shows everything inside it that has a picture and lets you say which. **Let SAND
-choose** hands the choice back. What you pick is remembered by file rather than
-by name or place, so renaming that file, moving it deeper, or moving the whole
-folder somewhere else all leave your choice standing; deleting it hands the
-folder back to choosing for itself.
+**Nothing is stored to do it either.** The folder points at a file that already
+has a thumbnail and draws that file's own picture, through the same address its
+row draws through — no cover object on any account, nothing to keep in step,
+nothing to lose. Your choice is remembered by file rather than by name or place,
+so renaming that file, moving it deeper, or moving the whole folder somewhere
+else all leave it standing; deleting the file puts the folder back to its icon.
 
-Thumbnails are stored a pack per folder, so drawing a parent of twenty folders
-can gather twenty packs the first time. Only the tiles on screen fetch anything
-and each pack is gathered once, which makes it the same cost as opening those
-twenty folders — paid where they are listed instead.
+Thumbnails are stored a pack per folder, so a parent whose folders have all been
+given pictures gathers a pack per folder the first time it is drawn. Only the
+tiles on screen fetch anything and each pack is gathered once, which makes it the
+same cost as opening those folders — paid where they are listed instead.
 
 ### Quick start
 

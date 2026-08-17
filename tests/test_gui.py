@@ -1053,12 +1053,101 @@ class TestMovingBetweenFolders:
         app.wait_for_selector("text=This folder is empty", timeout=20000)
 
 
-class TestFolderPictures:
-    """A folder is drawn with a picture of something inside it.
+class TestRenaming:
+    """Renaming a file or a folder.
 
-    Nothing is stored to do it: the folder points at a file that already has a
-    thumbnail and draws that file's own picture, which is why changing its mind
-    is free and why the picker is a list of what is already in there.
+    The cheapest thing in the vault: a name is a field in the encrypted index,
+    and a file's shards are named after the file rather than after its name — so
+    what has to be proved is that the row answers to the new name and the shards
+    are exactly where they were.
+    """
+
+    def shard_owners(self, page, name):
+        """Which account holds each shard of a listed file, as its row says."""
+        row = page.locator('button[title="Open"]', has_text=name).locator("xpath=..")
+        return sorted(row.locator("span[title^='Shard ']").evaluate_all(
+            "els => els.map((e) => e.getAttribute('title'))"))
+
+    def test_a_file_is_renamed_without_its_shards_moving(self, app, tmp_path):
+        make_folder(app, "rename-files")
+        app.get_by_text("rename-files").first.click()
+        app.wait_for_load_state("networkidle")
+
+        source = tmp_path / "draft.txt"
+        source.write_text("the contents do not change")
+        upload_and_settle(app, source)
+        before = self.shard_owners(app, "draft.txt")
+
+        app.locator('button[aria-label="Actions for draft.txt"]').click()
+        app.get_by_text("Rename", exact=True).click()
+        dialog = app.get_by_role("dialog", name="Rename file")
+        dialog.wait_for(timeout=20000)
+
+        # It opens on the name with the stem selected, so typing replaces the
+        # words and keeps the extension.
+        field = dialog.get_by_label("New file name")
+        assert field.input_value() == "draft.txt"
+        assert app.evaluate("() => document.activeElement.selectionEnd") == len("draft")
+
+        # A name is one segment; a path is a move, and the dialog says so
+        # rather than quietly making a folder.
+        field.fill("elsewhere/final.txt")
+        expect(dialog.get_by_role("button", name="Rename")).to_be_disabled()
+        expect(dialog.get_by_text("A name is one segment", exact=False)).to_have_count(1)
+
+        field.fill("published.txt")
+        dialog.get_by_role("button", name="Rename").click()
+
+        app.wait_for_selector("text=published.txt", timeout=20000)
+        assert app.get_by_text("draft.txt", exact=True).count() == 0
+        assert self.shard_owners(app, "published.txt") == before
+
+        # And the name is the vault's to refuse: a second file cannot take it.
+        second = tmp_path / "other.txt"
+        second.write_text("another one")
+        upload_and_settle(app, second)
+        app.locator('button[aria-label="Actions for other.txt"]').click()
+        app.get_by_text("Rename", exact=True).click()
+        dialog = app.get_by_role("dialog", name="Rename file")
+        dialog.wait_for(timeout=20000)
+        dialog.get_by_label("New file name").fill("published.txt")
+        dialog.get_by_role("button", name="Rename").click()
+        expect(dialog.get_by_text("already exists", exact=False)).to_have_count(1, timeout=20000)
+        dialog.get_by_role("button", name="Cancel").click()
+        assert app.get_by_text("other.txt", exact=True).count() > 0
+
+    def test_a_folder_is_renamed_with_everything_in_it(self, app, tmp_path):
+        make_folder(app, "rename-outer")
+        app.get_by_text("rename-outer").first.click()
+        app.wait_for_load_state("networkidle")
+        source = tmp_path / "inside.txt"
+        source.write_text("still here afterwards")
+        upload_and_settle(app, source)
+        app.locator('button[aria-label="Up"]').click()
+        app.wait_for_selector("text=rename-outer", timeout=20000)
+
+        app.locator('button[aria-label="Actions for rename-outer"]').click()
+        app.get_by_text("Rename", exact=True).click()
+        dialog = app.get_by_role("dialog", name="Rename folder")
+        dialog.wait_for(timeout=20000)
+        dialog.get_by_label("New folder name").fill("rename-renamed")
+        dialog.get_by_role("button", name="Rename").click()
+
+        app.wait_for_selector("text=rename-renamed", timeout=20000)
+        assert app.get_by_text("rename-outer", exact=True).count() == 0
+
+        # Everything inside came along.
+        app.get_by_text("rename-renamed").first.click()
+        app.wait_for_selector("text=inside.txt", timeout=20000)
+
+
+class TestFolderPictures:
+    """A folder can be given a picture of something inside it.
+
+    Nothing is picked for you — a folder keeps its icon until somebody says
+    otherwise. Nothing is stored to do it either: the folder points at a file
+    that already has a thumbnail and draws that file's own picture, which is why
+    choosing, changing and unchoosing are all free.
     """
 
     def picture(self, page, name):
@@ -1067,7 +1156,7 @@ class TestFolderPictures:
         img = row.locator("img")
         return img.first.get_attribute("src") if img.count() else None
 
-    def test_a_folder_wears_a_picture_of_what_is_inside_it(self, app, tmp_path):
+    def test_a_folder_wears_a_picture_only_once_one_is_picked(self, app, tmp_path):
         make_folder(app, "art-library")
         app.get_by_text("art-library").first.click()
         app.wait_for_load_state("networkidle")
@@ -1085,43 +1174,41 @@ class TestFolderPictures:
         app.locator('button[aria-label="Up"]').click()
         app.wait_for_selector("text=art-trilogy", timeout=20000)
 
-        # The folder is drawn with one of the pictures from inside it, and with
-        # the same one the next time the listing is drawn — a folder that
-        # changed its face on every refresh would be worse than the icon.
-        drawn = self.picture(app, "art-trilogy")
-        assert drawn is not None, "the folder kept its icon"
-        app.get_by_role("button", name="Refresh").click()
-        app.wait_for_timeout(600)
-        assert self.picture(app, "art-trilogy") == drawn
+        # Nothing was picked for it, so it is still a folder icon — but the
+        # control to give it a picture is there, because there is something to
+        # choose from.
+        assert self.picture(app, "art-trilogy") is None
+        picker = app.locator('button[aria-label="Choose the picture for art-trilogy"]')
+        assert picker.count() == 1
 
-        # Picking another one sticks, and the row draws it.
-        app.locator('button[aria-label="Choose the picture for art-trilogy"]').click()
+        picker.click()
         dialog = app.get_by_role("dialog", name="Folder picture")
         dialog.wait_for(timeout=20000)
-        expect(dialog.get_by_text("Picked by SAND", exact=False)).to_have_count(1)
+        expect(dialog.get_by_text("No picture", exact=False)).to_have_count(1)
 
-        others = dialog.get_by_role("button", name=re.compile("^Draw this folder with"))
-        expect(others).to_have_count(3, timeout=10000)
-        for i in range(3):
-            if "in use" not in (others.nth(i).inner_text() or ""):
-                others.nth(i).click()
-                break
+        choices = dialog.get_by_role("button", name=re.compile("^Draw this folder with"))
+        expect(choices).to_have_count(3, timeout=10000)
+        choices.first.click()
         app.wait_for_selector("text=art-trilogy", timeout=20000)
         app.wait_for_timeout(800)
 
         chosen = self.picture(app, "art-trilogy")
-        assert chosen is not None and chosen != drawn, "the choice did not reach the row"
+        assert chosen is not None, "the choice did not reach the row"
 
-        # And handing the choice back puts the vault's own pick on screen again.
+        # It stays put across a redraw, being recorded rather than guessed.
+        app.get_by_role("button", name="Refresh").click()
+        app.wait_for_timeout(600)
+        assert self.picture(app, "art-trilogy") == chosen
+
+        # And taking it away puts the icon back rather than some other picture.
         app.locator('button[aria-label="Choose the picture for art-trilogy"]').click()
         dialog = app.get_by_role("dialog", name="Folder picture")
         dialog.wait_for(timeout=20000)
-        expect(dialog.get_by_text("Picked by hand")).to_have_count(1)
-        dialog.get_by_role("button", name="Let SAND choose").click()
+        dialog.get_by_role("button", name="Use no picture").click()
         app.wait_for_timeout(800)
-        assert self.picture(app, "art-trilogy") == drawn
+        assert self.picture(app, "art-trilogy") is None
 
-    def test_a_folder_with_nothing_picturable_keeps_its_icon(self, app, tmp_path):
+    def test_a_folder_with_nothing_picturable_is_not_offered_a_picture(self, app, tmp_path):
         make_folder(app, "art-plain")
         app.get_by_text("art-plain").first.click()
         app.wait_for_load_state("networkidle")
@@ -1133,7 +1220,7 @@ class TestFolderPictures:
         app.wait_for_selector("text=art-plain", timeout=20000)
 
         assert self.picture(app, "art-plain") is None
-        # And nothing offers to change a picture that cannot exist.
+        # Nothing inside has a picture, so nothing offers to choose one.
         assert app.locator('button[aria-label="Choose the picture for art-plain"]').count() == 0
 
 
