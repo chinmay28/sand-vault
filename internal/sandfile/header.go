@@ -15,6 +15,7 @@ import (
 	"io"
 
 	"github.com/chinmay28/sand-vault/internal/crypto"
+	"github.com/chinmay28/sand-vault/internal/splitter"
 )
 
 // Magic bytes identifying a SAND part file.
@@ -46,6 +47,21 @@ const LegacyFormatVersion = 1
 // version 2 for exactly that reason — it has no vault and no data key.
 const ChunkedFormatVersion = 3
 
+// ErasureFormatVersion is the layout the vault writes now: a chunk cut into k
+// data shards and n−k parity shards, any k of which rebuild it.
+//
+// It is a different version from 3 rather than a wider part number on it,
+// because a reader has to know k and n before it can invert anything, and a
+// version 3 part does not say — it could not, since the only code it could
+// describe was two of three. Both numbers therefore sit in the cleartext
+// header, which also makes them associated data: a shard cannot be relabelled
+// into a different scheme without failing its tag.
+//
+// Version 3 parts are still read, so vaults written by older builds keep
+// working untouched; `sand convert` moves a file onto this format when it is
+// asked to.
+const ErasureFormatVersion = 4
+
 // MaxFilenameLength is the maximum allowed original filename length.
 const MaxFilenameLength = 512
 
@@ -59,8 +75,12 @@ const saltLength = 16
 // The archive ID is random and shared by a file's three parts, which is what
 // lets a caller group parts that belong together without decrypting them.
 type Header struct {
-	Version    uint8
-	PartNumber uint8    // 1, 2, or 3
+	Version uint8
+
+	// PartNumber is which shard of the chunk this is, counted from one. Up to
+	// version 3 it was one of three parts; from version 4 it runs to
+	// TotalShards, which the same field in a wider code needs it to.
+	PartNumber uint8
 	ArchiveID  [16]byte // random per archived file
 
 	// ChunkIndex is which chunk of the archive this part belongs to, and is
@@ -69,6 +89,14 @@ type Header struct {
 	// anything. Being in the header also makes it associated data, which is what
 	// stops a chunk being replayed at another offset in the same file.
 	ChunkIndex uint32
+
+	// DataShards and TotalShards describe the erasure code this shard belongs
+	// to — k and n — and are carried by version 4 only. A reader needs both
+	// before it can rebuild anything, and they are per file rather than global
+	// because a vault holds files written under different schemes: widening a
+	// vault does not rewrite what is already in it.
+	DataShards  uint8
+	TotalShards uint8
 
 	// Argon2id parameters, carried by versions 1 and 2 only. Version 3 derives
 	// its key from the vault's data key rather than a password, so it has
@@ -122,8 +150,8 @@ type Part struct {
 // MarshalHeader serializes the cleartext header. The result is also the
 // associated data for the payload's AES-GCM tag.
 func MarshalHeader(h *Header) ([]byte, error) {
-	if h.PartNumber < 1 || h.PartNumber > 3 {
-		return nil, fmt.Errorf("invalid part number: %d", h.PartNumber)
+	if err := checkShardNumber(h); err != nil {
+		return nil, err
 	}
 	if len(h.Nonce) != crypto.NonceSize {
 		return nil, fmt.Errorf("nonce must be %d bytes, got %d", crypto.NonceSize, len(h.Nonce))
@@ -148,13 +176,38 @@ func MarshalHeader(h *Header) ([]byte, error) {
 		// No salt and no Argon2 parameters: the key is derived from the vault's
 		// data key and this index, and both sides already know the derivation.
 		binary.Write(buf, binary.BigEndian, h.ChunkIndex)
+	case ErasureFormatVersion:
+		binary.Write(buf, binary.BigEndian, h.ChunkIndex)
+		buf.WriteByte(h.DataShards)
+		buf.WriteByte(h.TotalShards)
 	default:
-		return nil, fmt.Errorf("cannot write format version %d, this build writes %d and %d",
-			h.Version, FormatVersion, ChunkedFormatVersion)
+		return nil, fmt.Errorf("cannot write format version %d, this build writes %d, %d and %d",
+			h.Version, FormatVersion, ChunkedFormatVersion, ErasureFormatVersion)
 	}
 
 	buf.Write(h.Nonce)
 	return buf.Bytes(), nil
+}
+
+// checkShardNumber validates a header's shard number against the code it
+// claims. Up to version 3 a part is one of three; from version 4 it is one of
+// however many the header says, and a scheme the coder cannot build is refused
+// here rather than at the point someone tries to read it back.
+func checkShardNumber(h *Header) error {
+	if h.Version != ErasureFormatVersion {
+		if h.PartNumber < 1 || h.PartNumber > 3 {
+			return fmt.Errorf("invalid part number: %d", h.PartNumber)
+		}
+		return nil
+	}
+	if err := splitter.ValidateScheme(int(h.DataShards), int(h.TotalShards)); err != nil {
+		return err
+	}
+	if h.PartNumber < 1 || h.PartNumber > h.TotalShards {
+		return fmt.Errorf("invalid shard number %d for a code of %d shards",
+			h.PartNumber, h.TotalShards)
+	}
+	return nil
 }
 
 // MarshalMetadata serializes the metadata block that precedes the part data
@@ -328,7 +381,7 @@ func Seal(h *Header, m *Metadata, partData, key []byte) ([]byte, error) {
 	}
 
 	marshalMeta := MarshalMetadata
-	if h.Version == ChunkedFormatVersion {
+	if h.Version == ChunkedFormatVersion || h.Version == ErasureFormatVersion {
 		marshalMeta = MarshalChunkMetadata
 	}
 	metaBytes, err := marshalMeta(m)
@@ -362,6 +415,8 @@ func ReadPart(data []byte) (*Part, error) {
 	}
 
 	switch version := data[4]; version {
+	case ErasureFormatVersion:
+		return readV4(data)
 	case ChunkedFormatVersion:
 		return readV3(data)
 	case FormatVersion:
@@ -395,6 +450,48 @@ func readV3(data []byte) (*Part, error) {
 	}
 	if err := binary.Read(r, binary.BigEndian, &h.ChunkIndex); err != nil {
 		return nil, fmt.Errorf("reading chunk index: %w", err)
+	}
+	h.Nonce = make([]byte, crypto.NonceSize)
+	if _, err := io.ReadFull(r, h.Nonce); err != nil {
+		return nil, fmt.Errorf("reading nonce: %w", err)
+	}
+
+	headerLen := len(data) - r.Len()
+	ciphertext, err := readPayload(r, data, headerLen)
+	if err != nil {
+		return nil, err
+	}
+	return &Part{Header: h, AAD: data[:headerLen], Ciphertext: ciphertext}, nil
+}
+
+// readV4 parses the erasure layout: version 3's header with the code's shape —
+// k and n — spliced in after the chunk index.
+func readV4(data []byte) (*Part, error) {
+	r := bytes.NewReader(data)
+	h := &Header{}
+
+	var magic [4]byte
+	binary.Read(r, binary.BigEndian, &magic)
+	if err := binary.Read(r, binary.BigEndian, &h.Version); err != nil {
+		return nil, fmt.Errorf("reading version: %w", err)
+	}
+	if err := binary.Read(r, binary.BigEndian, &h.PartNumber); err != nil {
+		return nil, fmt.Errorf("reading shard number: %w", err)
+	}
+	if err := binary.Read(r, binary.BigEndian, &h.ArchiveID); err != nil {
+		return nil, fmt.Errorf("reading archive ID: %w", err)
+	}
+	if err := binary.Read(r, binary.BigEndian, &h.ChunkIndex); err != nil {
+		return nil, fmt.Errorf("reading chunk index: %w", err)
+	}
+	if err := binary.Read(r, binary.BigEndian, &h.DataShards); err != nil {
+		return nil, fmt.Errorf("reading data shard count: %w", err)
+	}
+	if err := binary.Read(r, binary.BigEndian, &h.TotalShards); err != nil {
+		return nil, fmt.Errorf("reading total shard count: %w", err)
+	}
+	if err := checkShardNumber(h); err != nil {
+		return nil, err
 	}
 	h.Nonce = make([]byte, crypto.NonceSize)
 	if _, err := io.ReadFull(r, h.Nonce); err != nil {
@@ -568,7 +665,7 @@ func (p *Part) Open(key []byte) (*Metadata, []byte, error) {
 	}
 
 	unmarshal := unmarshalMetadata
-	if p.Header.Version == ChunkedFormatVersion {
+	if p.Header.Version == ChunkedFormatVersion || p.Header.Version == ErasureFormatVersion {
 		unmarshal = unmarshalChunkMetadata
 	}
 	meta, partData, err := unmarshal(plaintext)
@@ -594,7 +691,7 @@ func (p *Part) OpenInPlace(key []byte) (*Metadata, []byte, error) {
 	}
 
 	unmarshal := unmarshalMetadata
-	if p.Header.Version == ChunkedFormatVersion {
+	if p.Header.Version == ChunkedFormatVersion || p.Header.Version == ErasureFormatVersion {
 		unmarshal = unmarshalChunkMetadata
 	}
 	meta, partData, err := unmarshal(plaintext)

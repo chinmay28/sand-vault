@@ -338,7 +338,9 @@ type relocateRequest struct {
 	ID   string `json:"id"`
 	Path string `json:"path"`
 
-	// Accounts is where the parts should end up — at most one per part.
+	// Accounts is where the shards should end up, and how many are named settles
+	// the scheme. Naming a different *count* from the one the file is on now
+	// changes its code, which rebuilds the file rather than moving it.
 	Accounts []string `json:"accounts"`
 
 	// Preview asks what the move would do without doing any of it. The answer

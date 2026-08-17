@@ -179,6 +179,9 @@ func (v *Vault) DefaultAccounts() []string {
 // nothing clears the default and hands the choice back to the per-file random
 // pick.
 //
+// How many accounts are named is also what settles the erasure code every
+// upload is cut with: three is 2-of-3, six is 4-of-6, nine is 6-of-9.
+//
 // The selection is checked against what is actually connected, because a
 // default naming an account that has gone away would quietly become a smaller
 // spread than the user asked for on every upload after it.
@@ -197,14 +200,13 @@ func (v *Vault) SetDefaultAccounts(ids []string) error {
 			return fmt.Errorf("no connected account with id %s", id)
 		}
 		if seen[id] {
-			return fmt.Errorf("%s is listed twice — a file's parts each go to a different account", cfg.Name)
+			return fmt.Errorf("%s is listed twice — every shard of a file goes to a different account", cfg.Name)
 		}
 		seen[id] = true
 		chosen = append(chosen, id)
 	}
-	if len(chosen) > AccountsPerFile {
-		return fmt.Errorf("a file has only %d parts — choose at most %d accounts (got %d)",
-			archive.PartCount, AccountsPerFile, len(chosen))
+	if !ValidSpread(len(chosen)) {
+		return ErrSpread(len(chosen))
 	}
 	if len(chosen) > 0 && len(chosen) < archive.MinPartsToRestore {
 		return fmt.Errorf(
@@ -791,13 +793,16 @@ func (v *Vault) RemoveProvider(id string, force bool) error {
 	if !force {
 		var stranded []string
 		for _, e := range v.manifest.Entries {
-			reachable := 0
+			// Counted against the file's own code: a 4-of-6 file loses nothing
+			// it needs when one of its six accounts goes, where a 2-of-3 one on
+			// the same account might.
+			reachable := map[int]bool{}
 			for _, s := range e.Shards {
 				if surviving[s.ProviderID] {
-					reachable++
+					reachable[s.Part] = true
 				}
 			}
-			if reachable < archive.MinPartsToRestore {
+			if len(reachable) < e.Scheme().Data {
 				stranded = append(stranded, e.Path())
 			}
 		}
@@ -818,6 +823,12 @@ func (v *Vault) RemoveProvider(id string, force bool) error {
 			if surviving[def] {
 				kept = append(kept, def)
 			}
+		}
+		// What is left has to still name a scheme. A default of six that loses
+		// one account becomes a default of three rather than of five, which is
+		// no scheme at all.
+		for !ValidSpread(len(kept)) && len(kept) > 0 {
+			kept = kept[:len(kept)-1]
 		}
 		if len(kept) < archive.MinPartsToRestore {
 			// Too little left to be a default at all; the per-file random pick
@@ -1293,7 +1304,7 @@ func (v *Vault) Stats() (Stats, error) {
 		for _, sh := range e.Shards {
 			s.StoredBytes += sh.Size
 		}
-		if len(e.Shards) < archive.PartCount {
+		if e.Redundancy() < e.Scheme().Total {
 			s.Degraded++
 		}
 		if e.KeyID != v.dataKeyID {

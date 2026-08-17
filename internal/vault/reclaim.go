@@ -161,7 +161,13 @@ func (v *Vault) Reclaim(ctx context.Context, accounts []string, progress Progres
 				return nil, fmt.Errorf("no connected account with id %s", id)
 			}
 		}
-		if _, err := BuildPlan(accounts, policy, 0); err != nil {
+		// How many accounts were named settles the scheme, so a count that
+		// names none is caught here too — before the key is rotated.
+		scheme, err := SchemeFor(len(accounts))
+		if err != nil {
+			return nil, err
+		}
+		if _, err := BuildPlan(accounts, policy, scheme, 0); err != nil {
 			return nil, err
 		}
 	}

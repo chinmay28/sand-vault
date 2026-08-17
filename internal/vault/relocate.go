@@ -16,7 +16,7 @@ import (
 // one in this package, and the difference is that it never needs a key.
 //
 // A part is an opaque blob whose object key is derived from the file's random
-// archive ID and the part number alone (§5.4) — nothing in it depends on which
+// archive ID and the part number alone (§5.5) — nothing in it depends on which
 // account it happens to sit on. So changing the accounts a file lives on is a
 // copy of those blobs from one account to another under the same name, and a
 // rewrite of the index rows that say where they went. The vault has to be
@@ -54,7 +54,7 @@ const relocateWindow = 4
 // megabyte of JSON.
 const relocationPreviewLimit = 200
 
-// PartMove is one part of one file changing accounts.
+// PartMove is one copy of one part of one file changing accounts.
 type PartMove struct {
 	Part     int    `json:"part"`
 	From     string `json:"from"`
@@ -74,21 +74,35 @@ type FilePlan struct {
 	Path string `json:"path"`
 	Size int64  `json:"size"`
 
-	// Moves are the parts that have to be copied to another account. Stay names
+	// Moves are the shards that have to be copied to another account. Stay names
 	// the ones already on an account that is being kept, which cost nothing at
 	// all: their blobs are not read and their index rows are not rewritten.
 	Moves []PartMove `json:"moves,omitempty"`
 	Stay  []int      `json:"stay,omitempty"`
 
-	// Drop names parts erased because the chosen accounts have no room for
-	// them — three parts asked to live on two accounts under the strict policy,
-	// where no account may hold two parts of the same file.
+	// Drop names shards erased because the chosen accounts have no room for
+	// them — three shards asked to live on two accounts under the strict policy,
+	// where no account may hold two shards of the same file.
 	Drop []int `json:"drop,omitempty"`
 
-	// Stranded names parts that cannot be moved because the account holding
+	// Stranded names shards that cannot be moved because the account holding
 	// them is no longer connected, so there is nothing to copy from. They are
 	// left recorded where they are rather than quietly dropped.
 	Stranded []int `json:"stranded,omitempty"`
+
+	// Recode is set when the chosen accounts imply a different erasure code
+	// from the one the file is stored under — three clouds to six, say. A file
+	// in that state cannot be moved shard by shard, because a 2-of-3 file and a
+	// 4-of-6 file have no shards in common: it is gathered, cut again under
+	// From → To, and written out whole. Moves and Drop are empty when this is
+	// set, because neither describes what happens.
+	Recode bool   `json:"recode,omitempty"`
+	From   string `json:"from_scheme,omitempty"`
+	To     string `json:"to_scheme,omitempty"`
+
+	// Bytes is what a re-encode would move: the file, down and up again. It is
+	// zero for a shard-by-shard move, where the per-move figures are the cost.
+	Bytes int64 `json:"bytes,omitempty"`
 
 	// archiveID is carried so the commit can check the file was not rewritten
 	// underneath the move — by a password change's re-encryption, say.
@@ -97,7 +111,7 @@ type FilePlan struct {
 }
 
 // Changed reports whether this file would be touched at all.
-func (p *FilePlan) Changed() bool { return len(p.Moves) > 0 || len(p.Drop) > 0 }
+func (p *FilePlan) Changed() bool { return p.Recode || len(p.Moves) > 0 || len(p.Drop) > 0 }
 
 // RelocationPlan is what a relocation would do, worked out from the index alone
 // — no account is contacted to produce it.
@@ -120,6 +134,14 @@ type RelocationPlan struct {
 	Moves     int   `json:"moves"`
 	Drops     int   `json:"drops"`
 	Bytes     int64 `json:"bytes"`
+
+	// Recoded is how many files have to be cut again because the chosen accounts
+	// call for a different scheme, and RecodeBytes what that would move. They
+	// are counted apart from Moves because they are a different operation and a
+	// different order of cost: a moved shard is 1/k of a file copied between two
+	// clouds, a re-encoded file is the whole of it down and back up again.
+	Recoded     int   `json:"recoded"`
+	RecodeBytes int64 `json:"recode_bytes"`
 
 	// Outgoing and Incoming are the bytes leaving and arriving at each account,
 	// by account ID — the answer to "how much is this going to cost me on
@@ -147,6 +169,10 @@ type RelocationReport struct {
 	Failed     int `json:"failed"`
 	PartsMoved int `json:"parts_moved"`
 	PartsDrop  int `json:"parts_dropped"`
+
+	// Recoded is how many files were cut again under a different scheme rather
+	// than having their shards carried across.
+	Recoded int `json:"recoded"`
 
 	// Bytes is how much was actually copied between accounts.
 	Bytes int64 `json:"bytes"`
@@ -209,6 +235,12 @@ func (v *Vault) planRelocation(target string, accounts []string) (*RelocationPla
 	if err != nil {
 		return nil, err
 	}
+	// How many accounts were chosen settles the code, and whether that matches
+	// what each file is already cut with settles whether it moves or is rebuilt.
+	want, err := SchemeFor(len(targets))
+	if err != nil {
+		return nil, err
+	}
 
 	plan := &RelocationPlan{
 		Path:     dir,
@@ -221,9 +253,13 @@ func (v *Vault) planRelocation(target string, accounts []string) (*RelocationPla
 	}
 
 	for _, entry := range entries {
-		fp := planFileRelocation(entry, targets, byID, capacity)
+		fp := planFileRelocation(entry, targets, byID, capacity, want)
 		if !fp.Changed() {
 			plan.Unchanged++
+		}
+		if fp.Recode {
+			plan.Recoded++
+			plan.RecodeBytes += fp.Bytes
 		}
 		plan.Moves += len(fp.Moves)
 		plan.Drops += len(fp.Drop)
@@ -234,13 +270,19 @@ func (v *Vault) planRelocation(target string, accounts []string) (*RelocationPla
 		}
 		for _, part := range fp.Stranded {
 			plan.Warnings = append(plan.Warnings, fmt.Sprintf(
-				"%s: part %d stays where it is — the account holding it is no longer connected, "+
+				"%s: shard %d stays where it is — the account holding it is no longer connected, "+
 					"so there is nothing to copy from", fp.Path, part))
 		}
 		if len(fp.Drop) > 0 {
 			plan.Warnings = append(plan.Warnings, fmt.Sprintf(
-				"%s: part %s will be erased — %d accounts have no room for %d parts under the %s policy",
+				"%s: shard %s will be erased — %d accounts have no room for %d shards under the %s policy",
 				fp.Path, joinParts(fp.Drop), len(targets), len(entry.Shards), policy))
+		}
+		if fp.Recode {
+			plan.Warnings = append(plan.Warnings, fmt.Sprintf(
+				"%s is stored as %s and %d clouds is %s, so it has to be rebuilt rather than moved — "+
+					"the whole file comes down and goes back up",
+				fp.Path, fp.From, len(targets), fp.To))
 		}
 		plan.Files = append(plan.Files, fp)
 	}
@@ -289,11 +331,14 @@ func (v *Vault) Relocate(ctx context.Context, target string, accounts []string, 
 			continue
 		}
 
-		outcome, err := v.relocateEntry(ctx, fp)
+		outcome, err := v.relocateEntry(ctx, fp, plan.Accounts)
 		report.Warnings = append(report.Warnings, outcome.warnings...)
 		report.PartsMoved += outcome.moved
 		report.PartsDrop += outcome.dropped
 		report.Bytes += outcome.bytes
+		if err == nil && fp.Recode {
+			report.Recoded++
+		}
 
 		switch {
 		case err != nil:
@@ -306,7 +351,7 @@ func (v *Vault) Relocate(ctx context.Context, target string, accounts []string, 
 					"the vault was locked before the move finished")
 				return report, ErrLocked
 			}
-		case outcome.moved < len(fp.Moves):
+		case !fp.Recode && outcome.moved < len(fp.Moves):
 			report.Partial++
 		default:
 			report.Relocated++
@@ -332,6 +377,10 @@ func (v *Vault) Relocate(ctx context.Context, target string, accounts []string, 
 // somebody named, and it deliberately answers exactly what an upload to the same
 // accounts would: a relocation must not be able to produce a placement that
 // could not have been uploaded.
+//
+// Widening the spread does not widen this. Six accounts under strict still hold
+// one part each — the second group of three holds the second copy of each part,
+// not a second part on the same account.
 func relocationCapacity(policy Policy, targets int) (int, error) {
 	switch policy {
 	case PolicyStrict:
@@ -349,15 +398,26 @@ func relocationCapacity(policy Policy, targets int) (int, error) {
 	return 0, fmt.Errorf("unknown placement policy %q", policy)
 }
 
-// planFileRelocation decides where each of one file's parts should end up.
+// planFileRelocation decides where each of one file's shards should end up.
 //
-// The rule is "keep what is already right". A part sitting on an account that is
-// being kept stays there — it is not read, not rewritten, and not counted — and
-// only what is left over is assigned to whatever room the chosen accounts still
-// have. That is what makes changing one cloud out of three cost one part rather
-// than a whole file, and it is also why the answer does not depend on the order
-// the parts happen to be recorded in.
-func planFileRelocation(entry *Entry, targets []string, byID map[string]provider.Config, capacity int) FilePlan {
+// There are two shapes of answer, and which applies is settled by the accounts
+// chosen rather than by anything about the file.
+//
+// If they call for the code the file already has, this is a *move*: the rule is
+// "keep what is already right". A shard sitting on an account that is being kept
+// stays there — it is not read, not rewritten, and not counted — and only what
+// is left over is assigned to whatever room the chosen accounts still have. That
+// is what makes changing one cloud out of three cost one shard rather than a
+// whole file, and it is also why the answer does not depend on the order the
+// shards happen to be recorded in.
+//
+// If they call for a different code — three clouds to six, or six back to three
+// — no shard of the old file is a shard of the new one, so there is nothing to
+// keep and nothing to move. The file is gathered, cut again and written out.
+// That is expensive and is reported as its own thing rather than hidden among
+// the moves, because a person deciding whether to widen a vault should see the
+// bill before agreeing to it.
+func planFileRelocation(entry *Entry, targets []string, byID map[string]provider.Config, capacity int, want archive.Scheme) FilePlan {
 	plan := FilePlan{
 		ID:         entry.ID,
 		Path:       entry.Path(),
@@ -366,8 +426,19 @@ func planFileRelocation(entry *Entry, targets []string, byID map[string]provider
 		chunkCount: entry.ChunkCount,
 	}
 
+	if have := entry.Scheme(); have != want {
+		plan.Recode = true
+		plan.From = have.String()
+		plan.To = want.String()
+		// Down once and up once: the shards that rebuild it, then the whole new
+		// set. Both are about the file's own size, the second by the scheme's
+		// ratio.
+		plan.Bytes = entry.Size + entry.Size*int64(want.Total)/int64(want.Data)
+		return plan
+	}
+
 	shards := append([]Shard(nil), entry.Shards...)
-	sort.Slice(shards, func(i, j int) bool { return shards[i].Part < shards[j].Part })
+	sortShards(shards)
 
 	free := make(map[string]int, len(targets))
 	for _, id := range targets {
@@ -375,7 +446,7 @@ func planFileRelocation(entry *Entry, targets []string, byID map[string]provider
 	}
 
 	// First pass: anything already in the right place claims its account, so a
-	// later part cannot be handed the room it is standing in.
+	// later shard cannot be handed the room it is standing in.
 	settled := make(map[int]bool, len(shards))
 	for _, s := range shards {
 		if free[s.ProviderID] > 0 {
@@ -483,8 +554,12 @@ type relocateOutcome struct {
 // A part that will not copy is reported and left where it was: the file is
 // still whole, just not yet all in the right place, and running the relocation
 // again picks up exactly that part. Only parts that really landed are recorded.
-func (v *Vault) relocateEntry(ctx context.Context, plan *FilePlan) (relocateOutcome, error) {
+func (v *Vault) relocateEntry(ctx context.Context, plan *FilePlan, accounts []string) (relocateOutcome, error) {
 	var out relocateOutcome
+
+	if plan.Recode {
+		return v.recodeEntry(ctx, plan, accounts)
+	}
 
 	v.mu.RLock()
 	if v.dataKey == nil {
@@ -539,6 +614,39 @@ func (v *Vault) relocateEntry(ctx context.Context, plan *FilePlan) (relocateOutc
 	return out, nil
 }
 
+// recodeEntry rebuilds one file under the scheme the chosen accounts call for.
+//
+// It is the expensive branch, and the one that cannot be avoided: a 2-of-3
+// file's shards are halves of the compressed stream and a 4-of-6 file's are
+// quarters, so there is no blob to carry across and no index rewrite that would
+// do. The file comes down, is cut again, and goes back up — which is exactly
+// what migrateFile does for a password change, pointed at different accounts.
+//
+// The ordering guarantees are migrateFile's, and they are the same ones the
+// copy path gives: the index moves to the new shards in one write, the old ones
+// are erased only after it, and an interruption leaves unreferenced objects
+// rather than an unreadable file.
+func (v *Vault) recodeEntry(ctx context.Context, plan *FilePlan, accounts []string) (relocateOutcome, error) {
+	var out relocateOutcome
+
+	_, _, warnings, err := v.migrateFile(ctx, plan.ID, accounts)
+	out.warnings = append(out.warnings, warnings...)
+	if err != nil {
+		return out, err
+	}
+
+	// Every shard of the file was written, so the whole of it counts as moved
+	// and the bytes are what the plan estimated rather than what any single
+	// copy reported.
+	v.mu.RLock()
+	if entry := v.manifest.ByID(plan.ID); entry != nil {
+		out.moved = len(entry.Shards)
+	}
+	v.mu.RUnlock()
+	out.bytes = plan.Bytes
+	return out, nil
+}
+
 // copyParts copies each moving part's objects to its new account, and returns
 // the moves that really landed.
 //
@@ -569,7 +677,7 @@ func (v *Vault) copyParts(
 				name = move.ToName
 			}
 			warnings = append(warnings, fmt.Sprintf(
-				"%s: part %d was not moved — %s is no longer connected", plan.Path, move.Part, name))
+				"%s: shard %d was not moved — %s is no longer connected", plan.Path, move.Part, name))
 			continue
 		}
 
@@ -589,7 +697,7 @@ func (v *Vault) copyParts(
 			defer mu.Unlock()
 			if err != nil {
 				warnings = append(warnings, fmt.Sprintf(
-					"%s: part %d could not be moved from %s to %s: %v",
+					"%s: shard %d could not be moved from %s to %s: %v",
 					plan.Path, move.Part, src.Name, dst.Name, err))
 				return
 			}
@@ -610,7 +718,7 @@ func (v *Vault) copyParts(
 // copyPart copies one part of one file from one account to another.
 //
 // The object keys are identical on both ends — they are derived from the
-// archive ID and the part number and nothing else (§5.4) — so this is a read and
+// archive ID and the part number and nothing else (§5.5) — so this is a read and
 // a write of the same encrypted bytes under the same name, with no decryption
 // and no re-encoding anywhere in it.
 func (v *Vault) copyPart(
@@ -724,18 +832,18 @@ func (v *Vault) commitRelocation(ctx context.Context, plan *FilePlan, landed []P
 		drop[part] = true
 	}
 
-	// Erasing a part must never take a file below what it takes to rebuild it.
+	// Erasing a shard must never take a file below what it takes to rebuild it.
 	// The plan cannot ask for that on its own, but a move that failed can leave
-	// the file with fewer parts in play than the plan assumed.
+	// the file with fewer shards in play than the plan assumed.
 	remaining := 0
 	for _, s := range entry.Shards {
 		if !drop[s.Part] {
 			remaining++
 		}
 	}
-	if remaining < archive.MinPartsToRestore {
+	if remaining < entry.Scheme().Data {
 		out.warnings = append(out.warnings, fmt.Sprintf(
-			"%s: kept part %s rather than erasing it — dropping it would have left too few parts to rebuild the file",
+			"%s: kept shard %s rather than erasing it — dropping it would have left too few to rebuild the file",
 			plan.Path, joinParts(plan.Drop)))
 		drop = nil
 	}
@@ -753,7 +861,7 @@ func (v *Vault) commitRelocation(ctx context.Context, plan *FilePlan, landed []P
 		if move, moved := byPart[s.Part]; moved {
 			stale = append(stale, s)
 			// The object key does not change: it never named the account, only
-			// the file and the part.
+			// the file and the shard.
 			s.ProviderID = move.To
 			s.ProviderName = move.ToName
 			if cfg, ok := v.configForLocked(move.To); ok {
@@ -762,6 +870,7 @@ func (v *Vault) commitRelocation(ctx context.Context, plan *FilePlan, landed []P
 		}
 		kept = append(kept, s)
 	}
+	sortShards(kept)
 	entry.Shards = kept
 
 	// The file did not change, only where its parts sit, so ModifiedAt is left
@@ -822,7 +931,9 @@ func (v *Vault) relocateThumbPacks(ctx context.Context, plan *RelocationPlan) []
 			continue
 		}
 		// Already entirely on the chosen accounts: nothing to do, and asking
-		// would cost a gather and a scatter to find that out.
+		// would cost a gather and a scatter to find that out. A pack is two of
+		// three wherever it lives, so its width never has to change — only
+		// which accounts it sits on.
 		settled := true
 		for _, s := range pack.Shards {
 			if !wanted[s.ProviderID] {
@@ -857,7 +968,7 @@ func (v *Vault) relocateThumbPacks(ctx context.Context, plan *RelocationPlan) []
 	return warnings
 }
 
-// joinParts renders a set of part numbers for a sentence: "3", or "2 and 3".
+// joinParts renders a set of shard numbers for a sentence: "3", or "2 and 3".
 func joinParts(parts []int) string {
 	switch len(parts) {
 	case 0:
@@ -871,3 +982,6 @@ func joinParts(parts []int) string {
 	}
 	return strings.Join(labels[:len(labels)-1], ", ") + " and " + labels[len(labels)-1]
 }
+
+// packCopies is gone with the copies it counted; a pack is two of three
+// wherever it lives.

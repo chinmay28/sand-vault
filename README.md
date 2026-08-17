@@ -317,8 +317,9 @@ file, so two parts on one account means that account could rebuild it.
 
 **`strict`** (default) — one part per account, never two on the same one.
 
-- 3+ accounts → all three parts placed separately. Full redundancy, and no
-  single provider can reconstruct anything.
+- 3+ accounts → every shard placed separately. Full redundancy, and no single
+  provider can reconstruct anything. Six or nine accounts cut the file finer
+  instead of wider — still one shard per account, see below.
 - 2 accounts → parts 1 and 2 only. Recoverable and confidential, but no spare.
 - 1 account → refused.
 
@@ -358,53 +359,50 @@ two parts and says that the file has no spare, instead of quietly putting the
 third somewhere you did not choose. Disconnecting an account drops it from the
 default.
 
-### Moving something to different clouds
+### A wider spread, when you have the clouds for it
 
-A file already stored can be picked up and set down on other accounts, and so
-can a whole folder:
+How many clouds you choose settles the erasure code the file is cut with. One
+rule: clouds go in groups of three, and two thirds of the shards rebuild the
+file.
+
+| Clouds | Scheme | Storage | Clouds that can go dark | Clouds needed to rebuild |
+|---|---|---|---|---|
+| 3 | `2-of-3` | 1.5× | 1 | 2 |
+| 6 | `4-of-6` | 1.5× | 2 | 4 |
+| 9 | `6-of-9` | 1.5× | 3 | 6 |
+| 12 | `8-of-12` | 1.5× | 4 | 8 |
+| 3m | `2m-of-3m` | 1.5× | m | 2m |
+
+The table stops where patience does, not where the code does — every multiple of
+three works, up to 255 clouds. Each group you add buys one more cloud that can
+fail and two more that would have to collude, and costs nothing in storage:
+every scheme in the family stores 1.5×, so **widening costs accounts, not
+bytes**.
 
 ```bash
-./sand relocate /photos --accounts box,r2-cold,nextcloud
-./sand relocate /taxes/2024.pdf --accounts box,nextcloud --dry-run
+./sand vault defaults box s3 drive dropbox onedrive proton   # 4-of-6 from now on
+./sand put taxes.pdf --accounts box,s3,drive,dropbox,onedrive,proton
 ```
 
-**Only what has to move moves.** A part already sitting on one of the clouds you
-chose stays exactly where it is, so swapping one of three copies one part rather
-than rewriting the file. And what does move is carried across as the encrypted
-blob it already is — an object's name is derived from the file's random archive
-ID and the part number, never from the account holding it, so moving a part is a
-download and an upload of the same bytes under the same name. Nothing is
-decrypted on the way, and the file keeps its identity, its hash and its chunk
-layout.
+Every cloud holds exactly one shard at every width, so the promise that a single
+compromised provider yields noise is as true across thirty as across three — and
+gets stronger, since one shard of twenty is a twentieth of the file rather than
+a half.
 
-`--dry-run` prints what would travel and stops:
+Three is still what an upload takes when nobody says otherwise. Counts that are
+not whole groups — 4, 5, 7, 8 — are refused rather than rounded, because there
+is no code that uses them without leaving a cloud with no shard to hold.
 
-```
-folder /photos: 37 file(s), 0 already in place
-4 part(s) to move, 1.2 GB in all
-  /photos/rome.mov   part 3   dropbox → box   612 MB
-  …
+**Changing an existing file's width rebuilds it.** A 2-of-3 file's shards are
+halves and a 4-of-6 file's are quarters, so nothing carries across:
+
+```bash
+./sand relocate /taxes --accounts box,s3,drive,dropbox,onedrive,proton --dry-run
 ```
 
-The browser offers the same thing on any row: click the part badges for *Where
-this file lives* and the **⇄ Move to other clouds** button sits beside the
-read-out, or use *Move to other clouds* in the phone's menu. A folder's row has
-the **⇄** button directly on it. Either way the change is priced live as you
-pick the clouds, from the index alone, without contacting a single account.
-
-Two things worth knowing before you press it:
-
-- **A move can erase a spare part.** Sending a three-part file to two clouds
-  under the `strict` policy leaves one part with nowhere to live, since no
-  account may hold two parts of the same file. It is dropped, and both the CLI
-  and the dialog say so first.
-- **It is resumable.** Each file commits on its own, so an interrupted move — a
-  cloud that stops answering, a laptop that sleeps — costs the file in flight and
-  nothing else. Nothing is ever erased before its replacement is confirmed to be
-  in place, so a half-finished move leaves every file readable. Run it again to
-  finish it.
-
----
+Moving a file between clouds *at the same width* is still the cheap case — only
+the shards that have to move are copied, and nothing is decrypted. The dry run
+says which of the two is about to happen.
 
 ## Moving something to another folder
 

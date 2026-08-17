@@ -5,7 +5,7 @@ import { useDownload } from '../download'
 import { ActionSheet, ConfirmDialog, IconButton } from './ui'
 import StreamLink from './StreamLink'
 import ConvertFile from './ConvertFile'
-import { RelocateClouds } from './CloudSelect'
+import { RelocateClouds, fileScheme, schemeName, storedParts } from './CloudSelect'
 import MoveToFolder from './MoveToFolder'
 import FolderArtPicker from './FolderArt'
 
@@ -49,8 +49,10 @@ export function useFileActions({ file, providers, film, onPreview, onInspect, on
      offset, so nothing opens or streams it until it has been converted — the
      row says so rather than letting a click fail. */
   const legacy = !file.chunk_count
-  const degraded = file.shards.length < 3
-  const dead = file.shards.length < 2
+  /* Counted against the file's own scheme: a 4-of-6 file with five shards is
+     whole with a spare, where a 2-of-3 one with five would be impossible. */
+  const degraded = storedParts(file.shards) < fileScheme(file).total
+  const dead = storedParts(file.shards) < fileScheme(file).data
   // Only what a player is any use for gets offered one.
   const playable = isPlayable(file.mime, file.name)
 
@@ -141,8 +143,8 @@ export function useFileActions({ file, providers, film, onPreview, onInspect, on
             {
               key: 'parts',
               glyph: '◈',
-              label: 'Where the parts live',
-              hint: `${file.shards.length} of 3 parts stored`,
+              label: 'Where the shards live',
+              hint: describeParts(file),
               onSelect: onInspect,
             },
             /* The two moves, next to each other and named for what they move
@@ -205,7 +207,7 @@ export function useFileActions({ file, providers, film, onPreview, onInspect, on
         <RelocateClouds
           target={{ id: file.id }}
           title={`Move ${file.name}`}
-          subtitle={`${formatBytes(file.size)} — pick the clouds its ${file.shards.length} part(s) should live on`}
+          subtitle={`${formatBytes(file.size)} — ${schemeName(fileScheme(file))}; pick the clouds its shards should live on`}
           /* Already selected: where the parts are now, so the dialog opens on
              the truth and a swap is one click rather than four. */
           current={file.shards.map((s) => s.provider_id)}
@@ -402,29 +404,44 @@ function NameButton({ mobile, icon, label, location, chevron, disabled, title, o
   )
 }
 
-/* Which account holds each of the three parts, as three coloured squares. */
+/* What a file's placement comes to, in one line: the scheme, and how much of
+   it is actually stored. */
+function describeParts(file) {
+  const scheme = fileScheme(file)
+  return `${schemeName(scheme)} · ${storedParts(file.shards)} of ${scheme.total} shards stored`
+}
+
+/* Which account holds each of the file's shards, as one coloured square each.
+
+   A 2-of-3 file draws three and a 6-of-9 file draws nine, so the row says at a
+   glance how widely the file is spread as well as whether anything is missing.
+   The squares narrow past three so that nine of them still fit the column. */
 function PartBadges({ file, mobile }) {
-  const degraded = file.shards.length < 3
-  const dead = file.shards.length < 2
+  const scheme = fileScheme(file)
+  const degraded = storedParts(file.shards) < scheme.total
+  const dead = storedParts(file.shards) < scheme.data
+  const tight = scheme.total > 3
 
   return (
     <>
-      {[1, 2, 3].map((part) => {
+      {Array.from({ length: scheme.total }, (_, i) => i + 1).map((part) => {
         const shard = file.shards.find((s) => s.part === part)
         return (
           <span
             key={part}
-            title={shard ? `Part ${part} on ${shard.provider_name}` : `Part ${part} not stored`}
+            title={shard
+              ? `Shard ${part} on ${shard.provider_name}`
+              : `Shard ${part} not stored`}
             style={{
               /* The badges share the phone's second line with the size and
                  the date now that the picture has taken the left column, so
                  they are the desktop's width there too — that is the
                  difference between reading the date and truncating it. */
-              width: '19px',
+              width: tight ? '12px' : '19px',
               height: mobile ? '16px' : '15px',
               borderRadius: '3px',
               fontFamily: FONT.mono,
-              fontSize: mobile ? '9.5px' : '8.5px',
+              fontSize: tight ? '7.5px' : (mobile ? '9.5px' : '8.5px'),
               fontWeight: 700,
               display: 'flex',
               alignItems: 'center',
@@ -478,14 +495,14 @@ export function FileRow({
      the shortcut they have always been. */
   const parts = mobile ? (
     <span
-      title={`${file.shards.length} of 3 parts stored`}
+      title={describeParts(file)}
       style={{ display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 0 }}
     ><PartBadges file={file} mobile /></span>
   ) : (
     <button
       onClick={onInspect}
-      title="Where the parts live"
-      aria-label="Where the parts live"
+      title="Where the shards live"
+      aria-label="Where the shards live"
       style={{
         display: 'flex', alignItems: 'center', gap: '3px',
         background: 'none', border: 'none', padding: 0,
@@ -1009,7 +1026,7 @@ export function FileTile({
                 {film?.year ? film.year : formatBytes(file.size)}
               </span>
               <span
-                title={`${file.shards.length} of 3 parts stored`}
+                title={describeParts(file)}
                 style={{ marginLeft: 'auto', display: 'flex', gap: '3px', flexShrink: 0 }}
               ><PartBadges file={file} /></span>
             </>

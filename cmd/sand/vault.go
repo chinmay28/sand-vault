@@ -126,7 +126,7 @@ func vaultStatusCmd() *cobra.Command {
 			fmt.Printf("Original size:    %s\n", formatBytes(stats.Bytes))
 			fmt.Printf("Stored size:      %s (compressed, split and encrypted)\n", formatBytes(stats.StoredBytes))
 			if stats.Degraded > 0 {
-				fmt.Printf("Degraded:         %d file(s) are stored with fewer than 3 parts\n", stats.Degraded)
+				fmt.Printf("Degraded:         %d file(s) are missing shards their scheme calls for\n", stats.Degraded)
 			}
 			if stats.Pending > 0 {
 				fmt.Printf("Awaiting re-key:  %d file(s) are still under the previous key — run 'sand vault migrate'\n",
@@ -380,9 +380,23 @@ func vaultDefaultsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "defaults [account]...",
 		Short: "Show or set the accounts uploads go to by default",
-		Long: `Every file is split into three parts, each of which goes to a different
-account. With more than three connected, this is which three an upload uses
-when it does not say otherwise — 'sand put --accounts' overrides it per upload.
+		Long: `Every file is cut into shards, each of which goes to a different account.
+With more than three connected, this is which ones an upload uses when it does
+not say otherwise — 'sand put --accounts' overrides it per upload.
+
+How many accounts are named chooses the erasure code. Clouds go in groups of
+three, and two thirds of the shards rebuild the file:
+
+  3 accounts   2-of-3    any 2 shards rebuild it, 1 can go dark
+  6 accounts   4-of-6    any 4 shards rebuild it, 2 can go dark
+  9 accounts   6-of-9    any 6 shards rebuild it, 3 can go dark
+  12 accounts  8-of-12   any 8 shards rebuild it, 4 can go dark
+  ...          2m-of-3m  any 2m rebuild it, m can go dark
+
+Every one of them stores 1.5x the file, so a wider spread costs accounts rather
+than bytes. What it buys grows with the width: one more cloud can fail per
+group, and an attacker needs two more of your providers together before what
+they hold is enough to rebuild anything.
 
 With no default set, each file picks its own three at random, so a large vault
 still spreads over everything connected instead of filling the same three.`,

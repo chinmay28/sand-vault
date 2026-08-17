@@ -6,7 +6,7 @@ import { useDownload } from '../download'
 import { thumbnailFromElement } from '../thumbs'
 import PdfPreview from './PdfPreview'
 import StreamLink from './StreamLink'
-import { RelocateClouds } from './CloudSelect'
+import { RelocateClouds, fileScheme, schemeName, storedParts } from './CloudSelect'
 import FilmDetails, { FilmSummary, filmLabel } from './FilmDetails'
 import { Banner, Button, Modal, Spinner } from './ui'
 
@@ -116,7 +116,7 @@ export default function PreviewModal({ file, hasThumb, film, onClose, onThumbSto
       title={filmLabel(record || film) || file.name}
       subtitle={[
         film ? file.name : null,
-        `${formatBytes(file.size)} · rebuilt from ${file.shards.length} part${file.shards.length === 1 ? '' : 's'} across ${new Set(file.shards.map((s) => s.provider_id)).size} account(s)`,
+        `${formatBytes(file.size)} · ${schemeName(fileScheme(file))}, rebuilt from ${storedParts(file.shards)} shard${storedParts(file.shards) === 1 ? '' : 's'} across ${new Set(file.shards.map((s) => s.provider_id)).size} account(s)`,
       ].filter(Boolean).join(' · ')}
       onClose={onClose}
       width={920}
@@ -309,7 +309,8 @@ export function ShardInspector({ file, providers = [], onClose, onChanged }) {
   return (
     <Modal
       title="Where this file lives"
-      subtitle={`${file.name} — split into ${file.shards.length} encrypted part(s). Any two rebuild the original; any one on its own is noise.`}
+      subtitle={`${file.name} — cut ${schemeName(fileScheme(file))} into encrypted shards. Any ${
+        fileScheme(file).data} of them rebuild the original; fewer is noise.`}
       onClose={onClose}
       width={620}
     >
@@ -325,7 +326,9 @@ export function ShardInspector({ file, providers = [], onClose, onChanged }) {
           </Banner>
 
           {health.shards.map((shard) => (
-            <div key={shard.part} style={{
+            /* Keyed by the copy and not the part: a file spread over six
+                clouds has two rows for every part. */
+            <div key={`${shard.part}-${shard.provider_id}`} style={{
               display: 'flex',
               alignItems: 'center',
               gap: '12px',
@@ -356,7 +359,7 @@ export function ShardInspector({ file, providers = [], onClose, onChanged }) {
               />
 
               <span style={{ flex: 1, minWidth: 0 }}>
-                <span style={{ color: COLORS.text }}>Part {shard.part}</span>
+                <span style={{ color: COLORS.text }}>Shard {shard.part}</span>
                 <span style={{ color: COLORS.textMuted }}> on </span>
                 <span style={{ color: COLORS.text }}>{shard.provider_name}</span>
                 <span style={{ color: COLORS.textMuted }}> ({shard.provider_kind})</span>
@@ -377,10 +380,18 @@ export function ShardInspector({ file, providers = [], onClose, onChanged }) {
             </div>
           ))}
 
-          {file.shards.length < 3 && (
+          {storedParts(file.shards) < fileScheme(file).total && (
             <Banner tone="warn">
-              Only {file.shards.length} of 3 parts were stored, so there is no spare copy.
-              Connect another account and re-upload this file to restore full redundancy.
+              Only {storedParts(file.shards)} of {fileScheme(file).total} shards were stored, so the
+              file has less margin than {schemeName(fileScheme(file))} allows for. Connect another
+              account and re-upload it to restore the full spread.
+            </Banner>
+          )}
+
+          {health.spare > 0 && (
+            <Banner tone="success">
+              Any {health.needed} of these shards rebuild the file, so {health.spare} more
+              account{health.spare === 1 ? '' : 's'} could go dark before it was at risk.
             </Banner>
           )}
         </>
@@ -395,7 +406,7 @@ export function ShardInspector({ file, providers = [], onClose, onChanged }) {
           variant="primary"
           onClick={() => setRelocating(true)}
           disabled={providers.length === 0}
-          title="Move the parts to other clouds"
+          title="Move the shards to other clouds"
         >⇄ Move to other clouds</Button>
       </div>
 
@@ -403,7 +414,7 @@ export function ShardInspector({ file, providers = [], onClose, onChanged }) {
         <RelocateClouds
           target={{ id: file.id }}
           title={`Move ${file.name}`}
-          subtitle={`${formatBytes(file.size)} — pick the clouds its ${file.shards.length} part(s) should live on`}
+          subtitle={`${formatBytes(file.size)} — ${schemeName(fileScheme(file))}; pick the clouds its shards should live on`}
           /* Already selected: where the parts are now, so the dialog opens on
              the truth and a swap is one click rather than four. */
           current={file.shards.map((s) => s.provider_id)}

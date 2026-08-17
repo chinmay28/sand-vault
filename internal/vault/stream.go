@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -182,12 +181,13 @@ func (v *Vault) scatterStream(ctx context.Context, name string, src io.ReaderAt,
 	out.archiveID = hex.EncodeToString(archiveID[:])
 
 	seed := binary.BigEndian.Uint64(archiveID[:8])
-	plan, err := target.planFor(seed)
+	plan, scheme, err := target.planFor(seed)
 	if err != nil {
 		return out, err
 	}
+	out.scheme = scheme
 
-	chunks, err := archive.PlanChunks(archiveID, name, hash, uint64(size), chunkSize)
+	chunks, err := archive.PlanChunks(archiveID, name, hash, uint64(size), chunkSize, scheme)
 	if err != nil {
 		return out, err
 	}
@@ -214,18 +214,18 @@ func (v *Vault) scatterStream(ctx context.Context, name string, src io.ReaderAt,
 		return out, err
 	}
 
-	for part, reason := range failures {
+	for shard, reason := range failures {
 		out.warnings = append(out.warnings, reason)
-		v.erasePartChunks(context.WithoutCancel(ctx), target, plan, out.archiveID, part, chunks.ChunkCount)
+		v.eraseShardChunks(context.WithoutCancel(ctx), target, plan, out.archiveID, shard, chunks.ChunkCount)
 	}
 
 	out.shards = written
-	sort.Slice(out.shards, func(i, j int) bool { return out.shards[i].Part < out.shards[j].Part })
+	sortShards(out.shards)
 
-	if len(out.shards) < archive.MinPartsToRestore {
+	if distinctShards(out.shards) < scheme.Data {
 		v.eraseChunks(context.WithoutCancel(ctx), target, plan, out.archiveID, chunks.ChunkCount)
-		err := fmt.Errorf("stored only %d of %d parts, need at least %d: %s",
-			len(out.shards), archive.PartCount, archive.MinPartsToRestore,
+		err := fmt.Errorf("stored only %d of %d shards, need at least %d: %s",
+			distinctShards(out.shards), scheme.Total, scheme.Data,
 			strings.Join(out.warnings, "; "))
 		out.shards = nil
 		return out, err
@@ -242,19 +242,21 @@ func (v *Vault) commitUpload(ctx context.Context, dir, name string, size int64, 
 
 	now := time.Now().UTC()
 	entry := &Entry{
-		ID:         uuid.NewString(),
-		Dir:        dir,
-		Name:       name,
-		Size:       size,
-		Hash:       hex.EncodeToString(placed.originalHash[:]),
-		MIME:       mime,
-		ArchiveID:  placed.archiveID,
-		KeyID:      placed.keyID,
-		CreatedAt:  now,
-		ModifiedAt: now,
-		Shards:     shards,
-		ChunkSize:  placed.chunkSize,
-		ChunkCount: placed.chunkCount,
+		ID:          uuid.NewString(),
+		Dir:         dir,
+		Name:        name,
+		Size:        size,
+		Hash:        hex.EncodeToString(placed.originalHash[:]),
+		MIME:        mime,
+		ArchiveID:   placed.archiveID,
+		KeyID:       placed.keyID,
+		CreatedAt:   now,
+		ModifiedAt:  now,
+		Shards:      shards,
+		ChunkSize:   placed.chunkSize,
+		ChunkCount:  placed.chunkCount,
+		DataShards:  placed.scheme.Data,
+		TotalShards: placed.scheme.Total,
 	}
 
 	v.mu.Lock()
@@ -298,10 +300,12 @@ func (v *Vault) commitUpload(ctx context.Context, dir, name string, size int64, 
 		v.removeThumbs(context.WithoutCancel(ctx), dir, replaced.ID)
 	}
 
-	if len(shards) < archive.PartCount {
+	if stored := distinctShards(shards); stored < placed.scheme.Total {
+		spare := stored - placed.scheme.Data
 		warnings = append(warnings, fmt.Sprintf(
-			"stored %d of %d parts — the file is recoverable but has no spare copy",
-			len(shards), archive.PartCount))
+			"stored %d of the %d shards %s calls for — the file is recoverable, but only %d more "+
+				"account(s) can go dark before it is not",
+			stored, placed.scheme.Total, placed.scheme, spare))
 	}
 
 	return entry, warnings, nil

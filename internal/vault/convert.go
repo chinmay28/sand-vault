@@ -266,16 +266,29 @@ func (v *Vault) fetchLegacyParts(ctx context.Context, entry *Entry, configs map[
 		shard Shard
 		cfg   provider.Config
 	}
+	// Ordered so that every distinct part comes before any second copy of one.
+	// Two copies of part 1 rebuild nothing, so the spares are worth reading only
+	// after a part with no other source has failed.
 	var sources []source
+	var spares []source
+	seen := map[int]bool{}
 	for _, shard := range entry.Shards {
-		if cfg, ok := configs[shard.ProviderID]; ok {
-			sources = append(sources, source{shard: shard, cfg: cfg})
+		cfg, ok := configs[shard.ProviderID]
+		if !ok {
+			continue
 		}
+		if seen[shard.Part] {
+			spares = append(spares, source{shard: shard, cfg: cfg})
+			continue
+		}
+		seen[shard.Part] = true
+		sources = append(sources, source{shard: shard, cfg: cfg})
 	}
 	if len(sources) < archive.MinPartsToRestore {
-		return nil, fmt.Errorf("%s needs %d parts and only %d of its accounts are connected",
+		return nil, fmt.Errorf("%s needs %d parts and only %d of them are on connected accounts",
 			entry.Path(), archive.MinPartsToRestore, len(sources))
 	}
+	sources = append(sources, spares...)
 
 	fetch := func(s source) ([]byte, error) {
 		p, err := v.buildProvider(s.cfg)
@@ -291,20 +304,21 @@ func (v *Vault) fetchLegacyParts(ctx context.Context, entry *Entry, configs map[
 
 	// The first MinPartsToRestore together, then the spares one at a time only
 	// if they are needed.
-	type result struct {
+	type partResult struct {
+		part int
 		blob []byte
 		err  error
 	}
 	wanted := sources[:archive.MinPartsToRestore]
-	results := make(chan result, len(wanted))
+	results := make(chan partResult, len(wanted))
 	for _, s := range wanted {
 		go func(s source) {
 			blob, err := fetch(s)
-			results <- result{blob: blob, err: err}
+			results <- partResult{part: s.shard.Part, blob: blob, err: err}
 		}(s)
 	}
 
-	var blobs [][]byte
+	held := map[int][]byte{}
 	var failures []string
 	for range wanted {
 		r := <-results
@@ -312,23 +326,26 @@ func (v *Vault) fetchLegacyParts(ctx context.Context, entry *Entry, configs map[
 			failures = append(failures, r.err.Error())
 			continue
 		}
-		blobs = append(blobs, r.blob)
+		held[r.part] = r.blob
 	}
 
-	for i := archive.MinPartsToRestore; i < len(sources) && len(blobs) < archive.MinPartsToRestore; i++ {
+	for i := archive.MinPartsToRestore; i < len(sources) && len(held) < archive.MinPartsToRestore; i++ {
+		if _, already := held[sources[i].shard.Part]; already {
+			continue
+		}
 		blob, err := fetch(sources[i])
 		if err != nil {
 			failures = append(failures, err.Error())
 			continue
 		}
-		blobs = append(blobs, blob)
+		held[sources[i].shard.Part] = blob
 	}
 
-	if len(blobs) < archive.MinPartsToRestore {
+	if len(held) < archive.MinPartsToRestore {
 		return nil, fmt.Errorf("could not gather %d parts for %s (got %d): %v",
-			archive.MinPartsToRestore, entry.Path(), len(blobs), failures)
+			archive.MinPartsToRestore, entry.Path(), len(held), failures)
 	}
-	return blobs, nil
+	return collectParts(held), nil
 }
 
 // ConvertAll works through every file still in the old format, one at a time,

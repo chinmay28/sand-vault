@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/chinmay28/sand-vault/internal/archive"
 	"github.com/chinmay28/sand-vault/internal/crypto"
 	"github.com/chinmay28/sand-vault/internal/provider"
 )
@@ -159,7 +158,9 @@ func (v *Vault) unreachableLocked() (unresolved, stranded int) {
 				unresolved++
 			}
 		}
-		if reachable < archive.MinPartsToRestore {
+		// Against the file's own code: a 4-of-6 file needs four shards where a
+		// 2-of-3 one needs two, and a vault can hold both (§5.3).
+		if reachable < e.Scheme().Data {
 			stranded++
 		}
 	}
@@ -423,7 +424,7 @@ func (v *Vault) Recover(ctx context.Context, snapshot *Snapshot, dryRun bool) (*
 		report.Files++
 		report.Bytes += entry.Size
 		switch {
-		case reachable >= archive.MinPartsToRestore:
+		case reachable >= entry.Scheme().Data:
 			report.Recoverable++
 			report.RecoverableBytes += entry.Size
 			if reachable < len(entry.Shards) {
@@ -438,7 +439,7 @@ func (v *Vault) Recover(ctx context.Context, snapshot *Snapshot, dryRun bool) (*
 					Path:        entry.Path(),
 					Size:        entry.Size,
 					PartsFound:  reachable,
-					PartsNeeded: archive.MinPartsToRestore,
+					PartsNeeded: entry.Scheme().Data,
 					Accounts:    lost.names,
 				})
 			} else {
@@ -623,7 +624,7 @@ func (v *Vault) Reconcile(ctx context.Context, dryRun bool) (*RecoveryReport, er
 			folders[entry.Dir] = true
 		}
 
-		if reachable >= archive.MinPartsToRestore {
+		if reachable >= entry.Scheme().Data {
 			report.Recoverable++
 			report.RecoverableBytes += entry.Size
 			if reachable < len(entry.Shards) {
@@ -640,7 +641,7 @@ func (v *Vault) Reconcile(ctx context.Context, dryRun bool) (*RecoveryReport, er
 				Path:        entry.Path(),
 				Size:        entry.Size,
 				PartsFound:  reachable,
-				PartsNeeded: archive.MinPartsToRestore,
+				PartsNeeded: entry.Scheme().Data,
 				Accounts:    lost.names,
 			})
 		} else {

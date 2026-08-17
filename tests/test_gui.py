@@ -338,7 +338,7 @@ class TestConnectingAnAccount:
 class TestEditingAnAccount:
     """What a cloud is called, and the colour it wears.
 
-    The colour is the same shade on the account's card and on every part badge
+    The colour is the same shade on the account's card and on every shard badge
     for a file it holds, which is what makes "which clouds is this file on" a
     question you answer by eye. Both are stored in the vault, so both survive a
     reload — and neither reaches the account itself.
@@ -540,11 +540,11 @@ class TestUploadAndPreview:
 
         upload_and_settle(app, source)
 
-        row = app.locator('button[title="Where the parts live"]').first
+        row = app.locator('button[title="Where the shards live"]').first
         assert row.count() > 0
 
     def test_each_account_wears_a_colour_of_its_own(self, app, tmp_path):
-        """A part badge and the sidebar card for the account holding that part
+        """A shard badge and the sidebar card for the account holding that shard
         are the same colour, and no two accounts share one — which is the whole
         of how a row says which three clouds a file went to."""
         source = tmp_path / "colours.txt"
@@ -564,7 +564,7 @@ class TestUploadAndPreview:
             )
             colours[name] = swatch.evaluate(background)
 
-            badge = row.get_by_title(re.compile(rf"Part \d on {name}$"))
+            badge = row.get_by_title(re.compile(rf"Shard \d on {name}$"))
             assert badge.count() == 1
             assert badge.evaluate(background) == colours[name]
 
@@ -576,12 +576,12 @@ class TestUploadAndPreview:
 
         upload_and_settle(app, source)
 
-        app.locator('button[title="Where the parts live"]').first.click()
+        app.locator('button[title="Where the shards live"]').first.click()
         app.wait_for_selector("text=Where this file lives", timeout=20000)
         app.wait_for_selector("text=Enough parts are reachable", timeout=30000)
 
         body = app.content()
-        assert "Part 1" in body and "Part 2" in body and "Part 3" in body
+        assert "Shard 1" in body and "Shard 2" in body and "Shard 3" in body
         # Each part must name the account holding it.
         assert re.search(r"ui-(one|two|three)", body)
 
@@ -598,7 +598,7 @@ class TestUploadAndPreview:
         # Reached through the badges, beside the read-out of where the parts
         # are now — the row itself has only three controls' worth of room.
         travel = app.locator('button[title="Open"]', has_text="travel.txt").locator("xpath=..")
-        travel.locator('button[title="Where the parts live"]').click()
+        travel.locator('button[title="Where the shards live"]').click()
         app.wait_for_selector("text=Where this file lives", timeout=20000)
         app.get_by_role("button", name=re.compile("Move to other clouds")).click()
         app.wait_for_selector("text=Move travel.txt", timeout=20000)
@@ -607,21 +607,23 @@ class TestUploadAndPreview:
         # for them again is asking for nothing.
         app.wait_for_selector("text=Already there", timeout=20000)
 
-        # Swap the third for the fourth: one part, and only one, travels.
+        # Swap the third for the fourth: one shard, and only one, travels —
+        # the count of clouds has not changed, so the scheme has not either and
+        # nothing is rebuilt.
         select_clouds(app, ["ui-one", "ui-two", "ui-four"])
-        app.wait_for_selector("text=1 part to move", timeout=20000)
+        app.wait_for_selector("text=1 shard to move", timeout=20000)
 
-        app.get_by_role("button", name=re.compile("Move the parts")).click()
-        app.wait_for_selector("text=Moved 1 part", timeout=90000)
+        app.get_by_role("button", name=re.compile("Move the shards")).click()
+        app.wait_for_selector("text=Moved 1 shard", timeout=90000)
         app.get_by_role("button", name="Done").click()
 
         # The row now names the fourth cloud and no longer names the third.
         # Waited for rather than read straight off: closing the dialog is what
         # asks the listing to refresh.
         row = app.locator('button[title="Open"]', has_text="travel.txt").locator("xpath=..")
-        expect(row.get_by_title(re.compile(r"Part \d on ui-four$"))).to_have_count(1, timeout=20000)
-        expect(row.get_by_title(re.compile(r"Part \d on ui-three$"))).to_have_count(0)
-        expect(row.get_by_title(re.compile(r"Part \d on ui-(one|two)$"))).to_have_count(2)
+        expect(row.get_by_title(re.compile(r"Shard \d on ui-four$"))).to_have_count(1, timeout=20000)
+        expect(row.get_by_title(re.compile(r"Shard \d on ui-three$"))).to_have_count(0)
+        expect(row.get_by_title(re.compile(r"Shard \d on ui-(one|two)$"))).to_have_count(2)
 
         # And it still rebuilds.
         app.locator('button[title="Open"]', has_text="travel.txt").click()
@@ -658,7 +660,7 @@ class TestUploadAndPreview:
         assert app.url == before
         # The file browser is still on screen, which it would not be if the
         # window had gone to the content endpoint.
-        assert app.locator('button[title="Where the parts live"]').first.is_visible()
+        assert app.locator('button[title="Where the shards live"]').first.is_visible()
 
 
 class TestPdfPreview:
@@ -904,8 +906,8 @@ class TestChoosingClouds:
         # Each badge in the row names the account holding that part, so the
         # row itself says where the file did and did not go.
         row = app.locator('button[title="Open"]', has_text="two-clouds.txt").locator("xpath=..")
-        assert row.get_by_title(re.compile(r"Part \d on ui-three")).count() == 0
-        assert row.get_by_title("Part 3 not stored").count() == 1
+        assert row.get_by_title(re.compile(r"Shard \d on ui-three")).count() == 0
+        assert row.get_by_title("Shard 3 not stored").count() == 1
 
     def test_a_default_is_marked_and_preselected(self, app, tmp_path):
         self._set_default_clouds(app, ["ui-one", "ui-two"])
@@ -947,16 +949,16 @@ class TestFolders:
 class TestMovingBetweenFolders:
     """Moving a file or a folder somewhere else in the vault.
 
-    The other Move changes which clouds hold the parts and copies bytes to do
+    The other Move changes which clouds hold the shards and copies bytes to do
     it. This one is an index change: what has to be proved is that the file
-    turns up in the new folder, comes back out of it whole, and that its parts
+    turns up in the new folder, comes back out of it whole, and that its shards
     never left the accounts they were scattered to.
     """
 
     def part_owners(self, page, name):
-        """Which account holds each part of a listed file, as its row says."""
+        """Which account holds each shard of a listed file, as its row says."""
         row = page.locator('button[title="Open"]', has_text=name).locator("xpath=..")
-        return sorted(row.locator("span[title^='Part ']").evaluate_all(
+        return sorted(row.locator("span[title^='Shard ']").evaluate_all(
             "els => els.map((e) => e.getAttribute('title'))"))
 
     def test_a_file_moves_folder_without_its_parts_moving(self, app, tmp_path):
@@ -1691,7 +1693,7 @@ class TestMobileLayout:
         # The paired icons are gone; one menu button takes their place.
         assert app.get_by_label("Download menu.txt").count() == 0
         app.locator('button[aria-label="Actions for menu.txt"]').click()
-        app.wait_for_selector("text=Where the parts live", timeout=10000)
+        app.wait_for_selector("text=Where the shards live", timeout=10000)
 
         # Downloading from the sheet still hands the bytes back without taking
         # the window with it — the sheet closes, the app stays put.
@@ -1702,17 +1704,17 @@ class TestMobileLayout:
         assert app.url == before
         app.wait_for_timeout(400)
 
-        # The part badges are only a read-out on a phone, so the inspector they
+        # The shard badges are only a read-out on a phone, so the inspector they
         # open on a desktop has to be reachable from the menu instead.
         app.locator('button[aria-label="Actions for menu.txt"]').click()
-        app.wait_for_selector("text=Where the parts live", timeout=10000)
-        app.get_by_text("Where the parts live").click()
+        app.wait_for_selector("text=Where the shards live", timeout=10000)
+        app.get_by_text("Where the shards live").click()
         app.wait_for_selector("text=Where this file lives", timeout=20000)
         app.keyboard.press("Escape")
         app.wait_for_timeout(400)
 
         app.locator('button[aria-label="Actions for menu.txt"]').click()
-        app.wait_for_selector("text=Where the parts live", timeout=10000)
+        app.wait_for_selector("text=Where the shards live", timeout=10000)
         app.get_by_text("Delete", exact=True).click()
         app.wait_for_selector("text=Delete menu.txt?", timeout=10000)
 
@@ -2020,3 +2022,58 @@ class TestDisasterRecovery:
         expect(page.get_by_role("button", name="Re-encrypt under your key")).to_have_count(0, timeout=30000)
         for name in names:
             expect(page.get_by_text(name, exact=True).first).to_be_visible(timeout=30000)
+
+class TestWiderSchemes:
+    """Six clouds and nine are the same choice as three, made wider.
+
+    These run last on purpose. They connect accounts, and a connected account
+    stays connected for the rest of the session — every random three-cloud pick
+    after them would be drawing from a larger pool than the test that wrote it
+    expected.
+    """
+
+    def test_six_clouds_cut_the_file_four_of_six(self, app, tmp_path, clouds):
+        """Picking six clouds chooses a different erasure code, and the picker
+        says which before a byte leaves the machine."""
+        for name in ("ui-four", "ui-five", "ui-six"):
+            connect_cloud(app, name, clouds)
+
+        source = tmp_path / "wide.txt"
+        source.write_text("cut four of six")
+        app.set_input_files("input[type=file]", str(source))
+        app.wait_for_selector("text=/Upload to \\d+ cloud/", timeout=20000)
+
+        select_clouds(app, ["ui-one", "ui-two", "ui-three", "ui-four", "ui-five", "ui-six"])
+        # The dialog names the scheme and what it buys, not just the count.
+        app.wait_for_selector("text=4-of-6", timeout=20000)
+        app.get_by_role("button", name="↑ Upload to 6 clouds").click()
+        app.wait_for_selector('button[title="Open"]:has-text("wide.txt")', timeout=90000)
+        app.wait_for_load_state("networkidle")
+
+        # Six shards, one per cloud, and the row says the scheme.
+        row = app.locator('button[title="Open"]', has_text="wide.txt").locator("xpath=..")
+        for name in ("ui-one", "ui-two", "ui-three", "ui-four", "ui-five", "ui-six"):
+            expect(row.get_by_title(re.compile(rf"Shard \d on {name}$"))).to_have_count(1)
+
+        # And it still rebuilds.
+        app.locator('button[title="Open"]', has_text="wide.txt").click()
+        app.wait_for_selector("text=cut four of six", timeout=60000)
+        app.keyboard.press("Escape")
+
+    def test_a_count_with_no_scheme_cannot_be_uploaded(self, app, tmp_path, clouds):
+        """Four clouds names no code, so the picker refuses it and says which
+        counts it does have — rather than silently dropping one."""
+        connect_cloud(app, "ui-four", clouds)
+
+        source = tmp_path / "between.txt"
+        source.write_text("four is not a scheme")
+        app.set_input_files("input[type=file]", str(source))
+        app.wait_for_selector("text=/Upload to \\d+ cloud/", timeout=20000)
+
+        select_clouds(app, ["ui-one", "ui-two", "ui-three", "ui-four"])
+        app.wait_for_selector("text=4 clouds names no scheme", timeout=20000)
+        expect(app.get_by_role("button", name=re.compile("Upload to 4 clouds"))).to_be_disabled()
+
+        app.get_by_role("button", name="Cancel").click()
+        app.wait_for_selector("text=/Upload to \\d+ cloud/", state="detached", timeout=20000)
+        assert app.get_by_text("between.txt").count() == 0

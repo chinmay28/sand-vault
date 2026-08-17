@@ -5,7 +5,12 @@ import (
 	"fmt"
 )
 
-// Split divides data into two equal halves. If the data has an odd number of
+// Split divides data into two equal halves.
+//
+// It is half of the original two-of-three construction, kept because parts
+// written under formats 1 to 3 are still read. Everything written now goes
+// through Encode in erasure.go, which is the same idea over a field wide
+// enough to widen. If the data has an odd number of
 // bytes, a single 0x00 byte is appended before splitting. The wasPadded flag
 // indicates whether padding was applied.
 func Split(data []byte) (part1, part2 []byte, wasPadded bool) {
@@ -89,7 +94,10 @@ func Halves(parts map[int][]byte) (first, second []byte, err error) {
 	return first, second, nil
 }
 
-func Reconstruct(parts map[int][]byte, wasPadded bool) ([]byte, error) {
+// ReconstructXOR rebuilds the original from any two of the three XOR-scheme
+// parts. It reads formats 1 to 3; Reconstruct in erasure.go reads what is
+// written now.
+func ReconstructXOR(parts map[int][]byte, wasPadded bool) ([]byte, error) {
 	part1, part2, err := Halves(parts)
 	if err != nil {
 		return nil, err

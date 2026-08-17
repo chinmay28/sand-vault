@@ -36,18 +36,27 @@ type ChunkPlan struct {
 	OriginalSize uint64
 	ChunkSize    uint32
 	ChunkCount   uint32
+
+	// Scheme is the erasure code every chunk of this archive is cut with. It is
+	// fixed for the file, because a reader seeking into the middle of one must
+	// not have to discover that its chunks disagree about how many shards they
+	// have.
+	Scheme Scheme
 }
 
 // PlanChunks works out how a file of the given size is cut up.
 //
 // A zero-length file is one empty chunk rather than none, so that every stored
 // file has at least one object and an empty file round-trips like any other.
-func PlanChunks(archiveID [16]byte, filename string, originalHash [32]byte, originalSize uint64, chunkSize uint32) (ChunkPlan, error) {
+func PlanChunks(archiveID [16]byte, filename string, originalHash [32]byte, originalSize uint64, chunkSize uint32, scheme Scheme) (ChunkPlan, error) {
 	if filename == "" {
 		return ChunkPlan{}, fmt.Errorf("filename must not be empty")
 	}
 	if chunkSize == 0 {
 		return ChunkPlan{}, fmt.Errorf("chunk size must not be zero")
+	}
+	if err := scheme.check(); err != nil {
+		return ChunkPlan{}, err
 	}
 
 	count := uint64(1)
@@ -67,6 +76,7 @@ func PlanChunks(archiveID [16]byte, filename string, originalHash [32]byte, orig
 		OriginalSize: originalSize,
 		ChunkSize:    chunkSize,
 		ChunkCount:   uint32(count),
+		Scheme:       scheme,
 	}, nil
 }
 
@@ -83,14 +93,27 @@ func (p ChunkPlan) PlaintextSize(index uint32) (uint64, error) {
 	return uint64(p.ChunkSize), nil
 }
 
-// EncodedChunk is one chunk's three parts, ready to scatter.
+// EncodedChunk is one chunk's shards, ready to scatter.
 type EncodedChunk struct {
 	Index          uint32
 	CompressedSize uint64
 
-	// Parts holds the serialized part files indexed by part number - 1, the
-	// same way Encoded does.
-	Parts [PartCount][]byte
+	// Parts holds the serialized part files indexed by shard number − 1, the
+	// same way Encoded does. There are Scheme.Total of them.
+	Parts [][]byte
+
+	// Scheme is the code they were cut with, repeated here so a caller that
+	// planned the archive does not have to carry the plan alongside.
+	Scheme Scheme
+}
+
+// schemeOf reads the code a parsed shard belongs to. Anything older than
+// version 4 predates schemes and is two of three by construction.
+func schemeOf(h *sandfile.Header) Scheme {
+	if h.Version != sandfile.ErasureFormatVersion {
+		return LegacyScheme()
+	}
+	return Scheme{Data: int(h.DataShards), Total: int(h.TotalShards)}
 }
 
 // DecodedChunk is one chunk rebuilt from its parts.
@@ -121,15 +144,18 @@ func EncodeChunk(plan ChunkPlan, index uint32, plaintext, master []byte) (*Encod
 			index, plan.ChunkCount, want, len(plaintext))
 	}
 
+	if err := plan.Scheme.check(); err != nil {
+		return nil, err
+	}
+
 	compressed, err := compress.Compress(plaintext)
 	if err != nil {
 		return nil, fmt.Errorf("compressing chunk %d: %w", index, err)
 	}
 
-	part1, part2, wasPadded := splitter.Split(compressed)
-	part3, err := splitter.XOR(part1, part2)
+	shards, err := splitter.Encode(compressed, plan.Scheme.Data, plan.Scheme.Total)
 	if err != nil {
-		return nil, fmt.Errorf("generating XOR part for chunk %d: %w", index, err)
+		return nil, fmt.Errorf("encoding chunk %d as %s: %w", index, plan.Scheme, err)
 	}
 
 	key, err := crypto.DeriveChunkKey(master, plan.ArchiveID, index)
@@ -143,37 +169,46 @@ func EncodeChunk(plan ChunkPlan, index uint32, plaintext, master []byte) (*Encod
 	// a hundred bytes against a 16 MiB chunk. What it buys is the property §7
 	// already had — any two parts are self-sufficient — surviving the move to
 	// chunking, so a recovered chunk still knows what file it belongs to.
+	// WasPadded is not written from version 4 on. The coder pads the compressed
+	// bytes up to a multiple of k, and CompressedSize already records what the
+	// true length was, so the flag has nothing left to say that the number does
+	// not say exactly.
 	meta := &sandfile.Metadata{
 		Filename:       plan.Filename,
 		OriginalHash:   plan.OriginalHash,
 		OriginalSize:   plan.OriginalSize,
 		CompressedSize: uint64(len(compressed)),
-		WasPadded:      wasPadded,
 		ChunkCount:     plan.ChunkCount,
 		ChunkSize:      plan.ChunkSize,
 	}
 
-	out := &EncodedChunk{Index: index, CompressedSize: uint64(len(compressed))}
-	parts := [PartCount][]byte{part1, part2, part3}
-	for i, partData := range parts {
-		partNum := uint8(i + 1)
+	out := &EncodedChunk{
+		Index:          index,
+		CompressedSize: uint64(len(compressed)),
+		Scheme:         plan.Scheme,
+		Parts:          make([][]byte, plan.Scheme.Total),
+	}
+	for i, shard := range shards {
+		shardNum := uint8(i + 1)
 
 		nonce, err := crypto.GenerateNonce()
 		if err != nil {
-			return nil, fmt.Errorf("generating nonce for chunk %d part %d: %w", index, partNum, err)
+			return nil, fmt.Errorf("generating nonce for chunk %d shard %d: %w", index, shardNum, err)
 		}
 
 		header := &sandfile.Header{
-			Version:    sandfile.ChunkedFormatVersion,
-			PartNumber: partNum,
-			ArchiveID:  plan.ArchiveID,
-			ChunkIndex: index,
-			Nonce:      nonce,
+			Version:     sandfile.ErasureFormatVersion,
+			PartNumber:  shardNum,
+			ArchiveID:   plan.ArchiveID,
+			ChunkIndex:  index,
+			DataShards:  uint8(plan.Scheme.Data),
+			TotalShards: uint8(plan.Scheme.Total),
+			Nonce:       nonce,
 		}
 
-		blob, err := sandfile.Seal(header, meta, partData, key)
+		blob, err := sandfile.Seal(header, meta, shard, key)
 		if err != nil {
-			return nil, fmt.Errorf("writing chunk %d part %d: %w", index, partNum, err)
+			return nil, fmt.Errorf("writing chunk %d shard %d: %w", index, shardNum, err)
 		}
 		out.Parts[i] = blob
 	}
@@ -181,12 +216,19 @@ func EncodeChunk(plan ChunkPlan, index uint32, plaintext, master []byte) (*Encod
 	return out, nil
 }
 
-// DecodeChunk rebuilds one chunk from any two or three of its parts. The blobs
-// may arrive in any order and carry their own part numbers.
+// DecodeChunk rebuilds one chunk from enough of its shards. The blobs may
+// arrive in any order and carry their own shard numbers and, from format
+// version 4, the code they belong to.
+//
+// It reads both layouts. A version 3 chunk is two of three under the XOR
+// construction, which is what every file written before schemes existed is; a
+// version 4 chunk says in its header how many shards it was cut into and how
+// many rebuild it. Which one is in hand is read off the parts rather than
+// passed in, because a vault holds both at once — widening does not rewrite
+// what is already stored.
 func DecodeChunk(blobs [][]byte, master []byte) (*DecodedChunk, error) {
-	if len(blobs) < MinPartsToRestore || len(blobs) > PartCount {
-		return nil, fmt.Errorf("need %d or %d parts, got %d",
-			MinPartsToRestore, PartCount, len(blobs))
+	if len(blobs) == 0 {
+		return nil, fmt.Errorf("no parts to rebuild a chunk from")
 	}
 
 	parsed := make(map[int]*sandfile.Part, len(blobs))
@@ -195,14 +237,16 @@ func DecodeChunk(blobs [][]byte, master []byte) (*DecodedChunk, error) {
 		if err != nil {
 			return nil, fmt.Errorf("parsing part %d: %w", i+1, err)
 		}
-		if part.Header.Version != sandfile.ChunkedFormatVersion {
+		switch part.Header.Version {
+		case sandfile.ChunkedFormatVersion, sandfile.ErasureFormatVersion:
+		default:
 			return nil, fmt.Errorf("part %d is format version %d, not a chunk",
 				i+1, part.Header.Version)
 		}
 
 		pn := int(part.Header.PartNumber)
 		if _, exists := parsed[pn]; exists {
-			return nil, fmt.Errorf("duplicate part number %d", pn)
+			return nil, fmt.Errorf("duplicate shard number %d", pn)
 		}
 		parsed[pn] = part
 	}
@@ -223,6 +267,18 @@ func DecodeChunk(blobs [][]byte, master []byte) (*DecodedChunk, error) {
 			return nil, fmt.Errorf("chunk index mismatch: parts belong to chunks %d and %d",
 				refHeader.ChunkIndex, p.Header.ChunkIndex)
 		}
+		if p.Header.Version != refHeader.Version ||
+			p.Header.DataShards != refHeader.DataShards ||
+			p.Header.TotalShards != refHeader.TotalShards {
+			return nil, fmt.Errorf("shards were cut with different codes: %s and %s",
+				schemeOf(refHeader), schemeOf(p.Header))
+		}
+	}
+
+	scheme := schemeOf(refHeader)
+	if len(parsed) < scheme.Data {
+		return nil, fmt.Errorf("rebuilding a %s chunk needs %d shards, got %d",
+			scheme, scheme.Data, len(parsed))
 	}
 
 	key, err := crypto.DeriveChunkKey(master, refHeader.ArchiveID, refHeader.ChunkIndex)
@@ -248,7 +304,13 @@ func DecodeChunk(blobs [][]byte, master []byte) (*DecodedChunk, error) {
 		used = append(used, pn)
 	}
 
-	compressed, err := splitter.Reconstruct(decryptedParts, refMeta.WasPadded)
+	var compressed []byte
+	if refHeader.Version == sandfile.ErasureFormatVersion {
+		compressed, err = splitter.Reconstruct(
+			decryptedParts, scheme.Data, scheme.Total, int(refMeta.CompressedSize))
+	} else {
+		compressed, err = splitter.ReconstructXOR(decryptedParts, refMeta.WasPadded)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("reconstructing chunk %d: %w", refHeader.ChunkIndex, err)
 	}

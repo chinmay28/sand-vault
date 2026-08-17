@@ -7,7 +7,7 @@ import EditAccount from './EditAccount'
 import ChangePassword from './ChangePassword'
 import ReclaimVault from './ReclaimVault'
 import MountDrive from './MountDrive'
-import { DefaultClouds, PARTS_PER_FILE } from './CloudSelect'
+import { DefaultClouds, PARTS_PER_FILE, schemeFor, schemeName } from './CloudSelect'
 import { DevMark } from './Brand'
 
 /* One number and the word for what it counts. The figure carries the weight —
@@ -341,7 +341,8 @@ export default function AccountsPanel({
               icon="☁️"
               label="Defaults"
               hint={defaults.length > 0
-                ? `${defaults.length} of ${providers.length} clouds`
+                ? `${defaults.length} of ${providers.length} clouds${
+                  defaults.length > PARTS_PER_FILE ? ` · ${schemeName(schemeFor(defaults.length))}` : ''}`
                 : `${PARTS_PER_FILE} per upload`}
               onClick={() => setChoosingDefaults(true)}
             />

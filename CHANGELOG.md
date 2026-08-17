@@ -469,6 +469,77 @@ On the command line it is `sand put report.pdf --accounts usb-drive,nextcloud`
 for one upload and `sand vault defaults` for the standing answer; over HTTP,
 an `accounts` field on the upload and `POST /api/vault/defaults`.
 
+### A file can be spread over six or nine clouds, not just three
+
+Three clouds, one part each, was the widest a file could go — and it was not a
+choice so much as a consequence. The split was two halves and their XOR, which
+is addition in GF(2), and over that field two symbols have exactly three
+non-zero combinations. There was no fourth shard to make.
+
+The coder now works in GF(2⁸), where every byte is a usable coefficient, so the
+same idea generalises to **k of n**. How many clouds you pick chooses the code —
+one rule, clouds in groups of three, two thirds of the shards rebuilding:
+
+| Clouds | Scheme | Storage | Clouds that can go dark | Clouds needed to rebuild |
+|---|---|---|---|---|
+| 3 | `2-of-3` | 1.5× | 1 | 2 |
+| 6 | `4-of-6` | 1.5× | 2 | 4 |
+| 9 | `6-of-9` | 1.5× | 3 | 6 |
+| 12 | `8-of-12` | 1.5× | 4 | 8 |
+| 3m | `2m-of-3m` | 1.5× | m | 2m |
+
+The table stops where patience does, not where the code does: every multiple of
+three works, to a ceiling of 255 clouds set by the one byte a shard number
+occupies. Each group you add buys one more cloud that can fail and two more that
+would have to collude.
+
+Every scheme stores 1.5×, so **widening costs accounts rather than bytes** —
+thirty clouds is not a byte more than three. What it buys is on both axes SAND
+cares about. More clouds can fail. And more of them have to be broken into
+together before what they hold is enough to rebuild anything: `6-of-9` means six
+of your providers colluding, where every previous version of SAND meant two.
+
+It also shrinks what one compromised account plus your password yields. Shards
+are consecutive slices of the compressed stream, so an account holds 1/k of a
+file — a sixth at `6-of-9`, against the half it held at `2-of-3`.
+
+Every account still holds exactly one shard, at every width. The promise that a
+single provider's copy is noise is not weakened by spreading further; it is
+strengthened.
+
+Three remains what an upload takes when nobody says otherwise, whatever is
+connected. Set it per upload or save it as the default:
+
+```bash
+sand vault defaults box s3 drive dropbox onedrive proton
+sand put taxes.pdf --accounts box,s3,drive,dropbox,onedrive,proton
+```
+
+Counts that are not whole groups — 4, 5, 7, 8 — are refused rather than rounded
+down, in the picker and on the command line alike. There is no code that uses
+them without leaving a cloud with no shard of its own to hold.
+
+Widening does not cost memory or per-provider load either. The chunk window
+bounds requests per provider whatever the width, and the bytes in flight are
+`window × n × chunkSize/k` — with n/k fixed at 1.5, a thirty-cloud vault holds
+exactly as much as a three-cloud one. What does grow is the total object count:
+a chunk becomes n objects, so a 4 GB file is 768 of them at `2-of-3` and 7,680
+at `20-of-30`, spread over ten times as many accounts.
+
+**Changing an existing file's width rebuilds it.** A `2-of-3` file's shards are
+halves of its compressed stream and a `4-of-6` file's are quarters, so nothing
+carries across: the file is gathered, cut again and written out. That is a whole
+download and upload, against 1/k of a file per shard for a move at the same
+width, and both `--dry-run` and the browser's estimate label it as a rebuild and
+price it separately. Moving a file between clouds without changing the count is
+still the cheap case it always was.
+
+Everything already stored keeps working untouched. Parts written under formats 1
+to 3 are all `2-of-3` and are still read; new writes use format 4, whose header
+carries k and n so that a shard says which code it belongs to — and so that an
+offline restore from part files and a manifest backup needs no index to work it
+out. `sand convert` moves an old file onto the new format when you ask it to.
+
 ### Moving what is already stored to different clouds
 
 Choosing where a file goes was a decision you made once, at upload, and could

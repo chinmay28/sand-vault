@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/chinmay28/sand-vault/internal/archive"
 	"github.com/chinmay28/sand-vault/internal/provider"
 )
 
@@ -761,7 +762,7 @@ func TestRelocatePlanIsIndependentOfShardOrder(t *testing.T) {
 	}
 	entry := &Entry{ID: "x", Name: "x.txt", Dir: "/", ArchiveID: "ff", Shards: shards}
 
-	plan := planFileRelocation(entry, []string{"a", "b", "d"}, byID, 1)
+	plan := planFileRelocation(entry, []string{"a", "b", "d"}, byID, 1, archive.SchemeDefault)
 	if len(plan.Moves) != 1 || plan.Moves[0].Part != 3 || plan.Moves[0].To != "d" {
 		t.Fatalf("plan = %+v, want part 3 to d", plan.Moves)
 	}
@@ -770,5 +771,224 @@ func TestRelocatePlanIsIndependentOfShardOrder(t *testing.T) {
 	}
 	if plan.Moves[0].Bytes != 30 {
 		t.Errorf("move weighs %d, want the shard's 30", plan.Moves[0].Bytes)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Changing the scheme a file is stored under
+// ---------------------------------------------------------------------------
+
+// Asking for six clouds having lived on three is not a move at all: a 2-of-3
+// file and a 4-of-6 file share no shards, so the file is gathered, cut again
+// and written out. The plan says so before it happens.
+func TestRelocateToSixCloudsRecodesTheFile(t *testing.T) {
+	v, _ := newTestVault(t, 6)
+	ctx := context.Background()
+	ids := accountIDs(t, v)
+
+	payload := []byte("three clouds now, four of six afterwards\n")
+	entry, _, err := v.Upload(ctx, "/", "widen.txt", payload, UploadOptions{Accounts: ids[:3]})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if got := entry.Scheme(); got != archive.SchemeDefault {
+		t.Fatalf("uploaded as %s, want %s", got, archive.SchemeDefault)
+	}
+
+	plan, err := v.PlanRelocation(entry.ID, ids)
+	if err != nil {
+		t.Fatalf("PlanRelocation: %v", err)
+	}
+	if plan.Recoded != 1 {
+		t.Fatalf("plan re-encodes %d files, want 1", plan.Recoded)
+	}
+	if plan.Moves != 0 {
+		t.Errorf("plan moves %d shards, want none — nothing is portable across schemes", plan.Moves)
+	}
+	if plan.RecodeBytes == 0 {
+		t.Error("a re-encode has to be priced, not reported as free")
+	}
+	fp := plan.Files[0]
+	if fp.From != "2-of-3" || fp.To != "4-of-6" {
+		t.Errorf("plan says %s → %s, want 2-of-3 → 4-of-6", fp.From, fp.To)
+	}
+	// The whole point of saying so: the estimate is loud about the cost.
+	if len(plan.Warnings) == 0 {
+		t.Error("re-encoding a file should warn that the whole of it moves")
+	}
+
+	report, err := v.Relocate(ctx, entry.ID, ids, nil)
+	if err != nil {
+		t.Fatalf("Relocate: %v", err)
+	}
+	if !report.Done() {
+		t.Fatalf("relocation did not finish: %+v", report.Warnings)
+	}
+	if report.Recoded != 1 {
+		t.Errorf("report re-encoded %d files, want 1", report.Recoded)
+	}
+
+	after := v.manifest.ByID(entry.ID)
+	if got := after.Scheme(); got != archive.SchemeWide {
+		t.Fatalf("file is stored as %s, want %s", got, archive.SchemeWide)
+	}
+	if len(after.Shards) != 6 {
+		t.Fatalf("the file has %d shards, want 6", len(after.Shards))
+	}
+	perAccount := map[string]int{}
+	for _, sh := range after.Shards {
+		perAccount[sh.ProviderID]++
+	}
+	if len(perAccount) != 6 {
+		t.Errorf("the six shards landed on %d accounts, want 6", len(perAccount))
+	}
+	for id, n := range perAccount {
+		if n != 1 {
+			t.Errorf("account %s holds %d shards of one file, want 1", id, n)
+		}
+	}
+
+	data, _, err := v.Fetch(ctx, entry.ID)
+	if err != nil {
+		t.Fatalf("Fetch after re-encoding: %v", err)
+	}
+	if !bytes.Equal(data, payload) {
+		t.Error("the re-encoded file does not match the original")
+	}
+}
+
+// A 4-of-6 file survives any two of its accounts going dark, which is the whole
+// reason for choosing it.
+func TestAWideFileSurvivesTwoAccountsGoingDark(t *testing.T) {
+	v, _ := newTestVault(t, 6)
+	ctx := context.Background()
+	ids := accountIDs(t, v)
+
+	payload := bytes.Repeat([]byte("durable across six clouds\n"), 5000)
+	entry, _, err := v.Upload(ctx, "/", "durable.bin", payload, UploadOptions{Accounts: ids})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if got := entry.Scheme(); got != archive.SchemeWide {
+		t.Fatalf("uploaded as %s, want %s", got, archive.SchemeWide)
+	}
+
+	for _, id := range ids[:2] {
+		if err := v.RemoveProvider(id, true); err != nil {
+			t.Fatalf("RemoveProvider: %v", err)
+		}
+	}
+
+	data, _, err := v.Fetch(ctx, entry.ID)
+	if err != nil {
+		t.Fatalf("Fetch with two of six accounts gone: %v", err)
+	}
+	if !bytes.Equal(data, payload) {
+		t.Error("the file rebuilt from four shards does not match the original")
+	}
+}
+
+// Narrowing back to three re-encodes in the other direction, and erases every
+// shard the wide scheme had written.
+func TestRelocateBackToThreeCloudsRecodesAndCleansUp(t *testing.T) {
+	v, roots := newTestVault(t, 6)
+	ctx := context.Background()
+	ids := accountIDs(t, v)
+
+	payload := []byte("six clouds now, three afterwards\n")
+	entry, _, err := v.Upload(ctx, "/", "narrow.txt", payload, UploadOptions{Accounts: ids})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+
+	report, err := v.Relocate(ctx, entry.ID, ids[:3], nil)
+	if err != nil {
+		t.Fatalf("Relocate: %v", err)
+	}
+	if !report.Done() {
+		t.Fatalf("relocation did not finish: %+v", report.Warnings)
+	}
+
+	after := v.manifest.ByID(entry.ID)
+	if got := after.Scheme(); got != archive.SchemeDefault {
+		t.Fatalf("file is stored as %s, want %s", got, archive.SchemeDefault)
+	}
+	kept := map[string]bool{ids[0]: true, ids[1]: true, ids[2]: true}
+	for _, sh := range after.Shards {
+		if !kept[sh.ProviderID] {
+			t.Errorf("shard %d is on %s, which was not chosen", sh.Part, sh.ProviderName)
+		}
+	}
+	// Nothing of the old wide layout is left behind on the dropped accounts.
+	for _, root := range roots[3:] {
+		if n := objectsIn(t, root); n != 0 {
+			t.Errorf("%s still holds %d object(s) of the narrowed file", root, n)
+		}
+	}
+
+	data, _, err := v.Fetch(ctx, entry.ID)
+	if err != nil {
+		t.Fatalf("Fetch after narrowing: %v", err)
+	}
+	if !bytes.Equal(data, payload) {
+		t.Error("the narrowed file does not match the original")
+	}
+}
+
+// Moving a wide file sideways — six clouds to six different clouds — is still a
+// shard-by-shard copy, because the scheme has not changed.
+func TestRelocateBetweenSixCloudsMovesShardsRatherThanRecoding(t *testing.T) {
+	v, _ := newTestVault(t, 7)
+	ctx := context.Background()
+	ids := accountIDs(t, v)
+
+	payload := []byte("sideways, not rebuilt\n")
+	entry, _, err := v.Upload(ctx, "/", "sideways.txt", payload, UploadOptions{Accounts: ids[:6]})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+
+	// Swap one of the six for the seventh account.
+	targets := append(append([]string{}, ids[:5]...), ids[6])
+	plan, err := v.PlanRelocation(entry.ID, targets)
+	if err != nil {
+		t.Fatalf("PlanRelocation: %v", err)
+	}
+	if plan.Recoded != 0 {
+		t.Fatalf("same-width move re-encoded %d files, want none", plan.Recoded)
+	}
+	if plan.Moves != 1 {
+		t.Fatalf("plan moves %d shards, want 1", plan.Moves)
+	}
+
+	if _, err := v.Relocate(ctx, entry.ID, targets, nil); err != nil {
+		t.Fatalf("Relocate: %v", err)
+	}
+	after := v.manifest.ByID(entry.ID)
+	if got := after.Scheme(); got != archive.SchemeWide {
+		t.Errorf("the scheme changed to %s during a sideways move", got)
+	}
+
+	data, _, err := v.Fetch(ctx, entry.ID)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if !bytes.Equal(data, payload) {
+		t.Error("the moved file does not match the original")
+	}
+}
+
+// A relocation is offered the same widths an upload is.
+func TestRelocateRejectsACountThatNamesNoScheme(t *testing.T) {
+	v, _ := newTestVault(t, 6)
+	ctx := context.Background()
+	ids := accountIDs(t, v)
+
+	entry, _, err := v.Upload(ctx, "/", "odd.txt", []byte("x"), UploadOptions{Accounts: ids[:3]})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if _, err := v.PlanRelocation(entry.ID, ids[:4]); err == nil {
+		t.Fatal("expected a relocation onto four accounts to be refused")
 	}
 }
