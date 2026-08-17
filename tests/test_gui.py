@@ -1054,11 +1054,12 @@ class TestMovingBetweenFolders:
 
 
 class TestFolderPictures:
-    """A folder is drawn with a picture of something inside it.
+    """A folder can be given a picture of something inside it.
 
-    Nothing is stored to do it: the folder points at a file that already has a
-    thumbnail and draws that file's own picture, which is why changing its mind
-    is free and why the picker is a list of what is already in there.
+    Nothing is picked for you — a folder keeps its icon until somebody says
+    otherwise. Nothing is stored to do it either: the folder points at a file
+    that already has a thumbnail and draws that file's own picture, which is why
+    choosing, changing and unchoosing are all free.
     """
 
     def picture(self, page, name):
@@ -1067,7 +1068,7 @@ class TestFolderPictures:
         img = row.locator("img")
         return img.first.get_attribute("src") if img.count() else None
 
-    def test_a_folder_wears_a_picture_of_what_is_inside_it(self, app, tmp_path):
+    def test_a_folder_wears_a_picture_only_once_one_is_picked(self, app, tmp_path):
         make_folder(app, "art-library")
         app.get_by_text("art-library").first.click()
         app.wait_for_load_state("networkidle")
@@ -1085,43 +1086,41 @@ class TestFolderPictures:
         app.locator('button[aria-label="Up"]').click()
         app.wait_for_selector("text=art-trilogy", timeout=20000)
 
-        # The folder is drawn with one of the pictures from inside it, and with
-        # the same one the next time the listing is drawn — a folder that
-        # changed its face on every refresh would be worse than the icon.
-        drawn = self.picture(app, "art-trilogy")
-        assert drawn is not None, "the folder kept its icon"
-        app.get_by_role("button", name="Refresh").click()
-        app.wait_for_timeout(600)
-        assert self.picture(app, "art-trilogy") == drawn
+        # Nothing was picked for it, so it is still a folder icon — but the
+        # control to give it a picture is there, because there is something to
+        # choose from.
+        assert self.picture(app, "art-trilogy") is None
+        picker = app.locator('button[aria-label="Choose the picture for art-trilogy"]')
+        assert picker.count() == 1
 
-        # Picking another one sticks, and the row draws it.
-        app.locator('button[aria-label="Choose the picture for art-trilogy"]').click()
+        picker.click()
         dialog = app.get_by_role("dialog", name="Folder picture")
         dialog.wait_for(timeout=20000)
-        expect(dialog.get_by_text("Picked by SAND", exact=False)).to_have_count(1)
+        expect(dialog.get_by_text("No picture", exact=False)).to_have_count(1)
 
-        others = dialog.get_by_role("button", name=re.compile("^Draw this folder with"))
-        expect(others).to_have_count(3, timeout=10000)
-        for i in range(3):
-            if "in use" not in (others.nth(i).inner_text() or ""):
-                others.nth(i).click()
-                break
+        choices = dialog.get_by_role("button", name=re.compile("^Draw this folder with"))
+        expect(choices).to_have_count(3, timeout=10000)
+        choices.first.click()
         app.wait_for_selector("text=art-trilogy", timeout=20000)
         app.wait_for_timeout(800)
 
         chosen = self.picture(app, "art-trilogy")
-        assert chosen is not None and chosen != drawn, "the choice did not reach the row"
+        assert chosen is not None, "the choice did not reach the row"
 
-        # And handing the choice back puts the vault's own pick on screen again.
+        # It stays put across a redraw, being recorded rather than guessed.
+        app.get_by_role("button", name="Refresh").click()
+        app.wait_for_timeout(600)
+        assert self.picture(app, "art-trilogy") == chosen
+
+        # And taking it away puts the icon back rather than some other picture.
         app.locator('button[aria-label="Choose the picture for art-trilogy"]').click()
         dialog = app.get_by_role("dialog", name="Folder picture")
         dialog.wait_for(timeout=20000)
-        expect(dialog.get_by_text("Picked by hand")).to_have_count(1)
-        dialog.get_by_role("button", name="Let SAND choose").click()
+        dialog.get_by_role("button", name="Use no picture").click()
         app.wait_for_timeout(800)
-        assert self.picture(app, "art-trilogy") == drawn
+        assert self.picture(app, "art-trilogy") is None
 
-    def test_a_folder_with_nothing_picturable_keeps_its_icon(self, app, tmp_path):
+    def test_a_folder_with_nothing_picturable_is_not_offered_a_picture(self, app, tmp_path):
         make_folder(app, "art-plain")
         app.get_by_text("art-plain").first.click()
         app.wait_for_load_state("networkidle")
@@ -1133,7 +1132,7 @@ class TestFolderPictures:
         app.wait_for_selector("text=art-plain", timeout=20000)
 
         assert self.picture(app, "art-plain") is None
-        # And nothing offers to change a picture that cannot exist.
+        # Nothing inside has a picture, so nothing offers to choose one.
         assert app.locator('button[aria-label="Choose the picture for art-plain"]').count() == 0
 
 

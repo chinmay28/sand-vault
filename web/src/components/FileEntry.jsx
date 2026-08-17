@@ -698,16 +698,16 @@ function useFolderActions({ name, path, art, providers, onNavigate, onRefresh, o
           onClose={() => setMenu(false)}
           items={[
             { key: 'open', glyph: '▸', label: 'Open folder', onSelect: open },
-            /* Only where there is a picture to change. A folder with nothing
-               picturable inside it has nothing to offer, and the entry would
-               open a dialog whose whole content is an apology. */
+            /* Only where there is something to choose from. A folder with
+               nothing picturable inside it has nothing to offer, and the entry
+               would open a dialog whose whole content is an apology. */
             art && {
               key: 'art',
               glyph: '🖼',
               label: 'Folder picture',
-              hint: art.chosen
-                ? 'Drawn with the one you picked — pick another, or hand it back'
-                : 'Drawn with one of the pictures inside it — pick which',
+              hint: art.id
+                ? 'Wearing one of the pictures inside it — pick another, or take it away'
+                : 'Give it a picture of something inside it',
               onSelect: () => setPicturing(true),
             },
             {
@@ -811,7 +811,7 @@ export function FolderRow({
       /* The picture of something inside it, where the icon was — the same
          swap a file's row made when thumbnails arrived, and the same fall
          back to the icon when there is nothing to draw. */
-      icon={<Thumb id={art?.id} icon="📁" size={mobile ? 34 : 26} expected={!!art} />}
+      icon={<Thumb id={art?.id} icon="📁" size={mobile ? 34 : 26} expected={!!art?.id} />}
       label={name}
       location={location}
       chevron="▸"
@@ -830,13 +830,16 @@ export function FolderRow({
     />
   ) : (
     <span style={{ display: 'flex', gap: '2px', justifyContent: 'flex-end' }}>
-      {/* Only where there is a picture to change: no picture means nothing
-          inside has one, and so there is nothing to choose between. */}
+      {/* Only where there is something to choose from: an absent entry means
+          nothing inside has a picture, so there is nothing to choose between. */}
       {art && (
         <IconButton
           glyph="🖼"
           label={`Choose the picture for ${name}`}
-          title="Which of the pictures inside it this folder is drawn with"
+          title={art.id
+            ? 'Which of the pictures inside it this folder is drawn with'
+            : 'Give this folder a picture of something inside it'}
+          tone={art.id ? 'dim' : 'muted'}
           onClick={a.pickArt}
           style={{ fontSize: '13px' }}
         />
@@ -1066,14 +1069,15 @@ export function FolderTile({
       )}
     >
       <TileFace onClick={a.open} title="Open folder">
-        {/* The whole point of the tile: a folder of films drawn as one of its
-            posters rather than as the same 📁 as every other folder. */}
+        {/* The whole point of the tile, for a folder that has been given one: a
+            folder of films drawn as one of its posters rather than as the same
+            📁 as every other folder. */}
         <span style={{
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           width: '100%', aspectRatio: aspect, overflow: 'hidden', fontSize: '34px',
           background: COLORS.bg, borderBottom: `1px solid ${COLORS.border}`,
         }}>
-          <Thumb id={art?.id} icon="📁" expected={!!art} fill />
+          <Thumb id={art?.id} icon="📁" expected={!!art?.id} fill />
         </span>
         <TileCaption name={name} location={location} meta={<span>Folder</span>} />
       </TileFace>

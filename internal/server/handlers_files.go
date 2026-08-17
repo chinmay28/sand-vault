@@ -520,15 +520,16 @@ func (s *Server) handleFolderCreate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]string{"path": vault.CleanDir(req.Path)})
 }
 
-// folderArtRequest fixes the picture a folder is drawn with, or hands the
-// choice back to the vault with an empty ID.
+// folderArtRequest gives a folder a picture, or takes it away again with an
+// empty ID.
 type folderArtRequest struct {
 	Path string `json:"path"`
 	ID   string `json:"id"`
 }
 
-// handleFolderArt answers what a folder is drawn with and what else it could be
-// drawn with — every file under it that has a thumbnail, films first.
+// handleFolderArt answers what a folder is drawn with — nothing, until somebody
+// picks — and what it could be drawn with: every file under it that has a
+// thumbnail, films first.
 //
 // The picture itself is not here and never was: the answer is a file ID, and the
 // browser draws it through the thumbnail endpoint that file's own row uses. A
@@ -561,7 +562,7 @@ func (s *Server) handleFolderArt(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleFolderArtSet records the picture somebody picked for a folder, or drops
-// the choice so the vault picks again.
+// it so the folder goes back to its icon.
 func (s *Server) handleFolderArtSet(w http.ResponseWriter, r *http.Request) {
 	var req folderArtRequest
 	if err := decodeJSON(r, &req); err != nil {
