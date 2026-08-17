@@ -74,7 +74,11 @@ func (v *Vault) ChangePassword(ctx context.Context, oldPassword, newPassword str
 	// migrated: making one again costs a resize, and re-encrypting one costs
 	// the same gather-and-scatter a real file does. Erasing them first means
 	// it happens while the old key is still the vault's own.
-	v.dropAllThumbs(ctx)
+	//
+	// The main vault's alone. A sub vault's packs are sealed under a key this
+	// change does not touch, and erasing them would cost the user their
+	// pictures to no purpose.
+	v.dropAllThumbs(ctx, MainScope)
 
 	if err := v.rotate(oldPassword, newPassword); err != nil {
 		return nil, err
@@ -116,6 +120,15 @@ func (v *Vault) rotate(oldPassword, newPassword string) error {
 		return err
 	}
 	sf.ManifestBackupDisabled = v.store.ManifestBackupDisabled
+
+	// The sub vaults come across untouched, and this line is the whole of what
+	// "a password change does not touch a sub vault" means on disk. Their
+	// sections are sealed under their own passwords, so there is nothing here
+	// to re-wrap — but a fresh store file starts with none of them, and leaving
+	// this out silently destroys every sub vault that was not open in memory at
+	// the time. An open one would be written back by the next save and hide the
+	// bug; a locked one is gone, and nothing is left to say what was in it.
+	sf.SubVaults = append([]subVaultRecord(nil), v.store.SubVaults...)
 	// Every copy on every account is now sealed under a password that no
 	// longer opens this vault, and carries a data key that is being retired.
 	// They have to be replaced, and the vault remembers that until they are.
@@ -129,7 +142,8 @@ func (v *Vault) rotate(oldPassword, newPassword string) error {
 	newVaultKey := crypto.DeriveKey(newPassword, salt, params)
 
 	// Any thumbnail pack ChangePassword did not manage to erase — the vault was
-	// locked, or an account was unreachable — is dropped from the index here.
+	// locked, or an account was unreachable — is dropped from the main index
+	// here.
 	// Its parts are sealed under a key that is about to be retired with nothing
 	// pointing at it, so keeping the pointer would only promise a picture that
 	// can no longer be drawn.
@@ -138,7 +152,7 @@ func (v *Vault) rotate(oldPassword, newPassword string) error {
 	// The keys the stored files are on have to survive the change, or the
 	// files become unreadable the moment the password is typed. Only the
 	// generations something still points at are kept.
-	retained, err := retainedKeys(current, current.manifest)
+	retained, err := retainedKeys(current, current.manifest, v.store.SubVaults)
 	if err != nil {
 		current.zero()
 		crypto.ZeroBytes(newVaultKey)
@@ -209,10 +223,27 @@ func (v *Vault) rotate(oldPassword, newPassword string) error {
 
 // retainedKeys picks out the data keys a manifest still depends on. A vault
 // with no files keeps none: the old key has nothing left to protect and goes.
-func retainedKeys(u *unsealed, manifest *Manifest) (map[string][]byte, error) {
+//
+// It is asked about the main vault's index alone. A sub vault's entries name
+// keys sealed under the sub vault's own password, which this change neither
+// holds nor needs: their record is carried across untouched, keys and all.
+func retainedKeys(u *unsealed, manifest *Manifest, subs []subVaultRecord) (map[string][]byte, error) {
 	available := map[string][]byte{u.dataKeyID: u.dataKey}
 	for id, key := range u.retired {
 		available[id] = key
+	}
+
+	// A file assigned out of a sub vault keeps that sub vault's generation until
+	// the re-encryption behind the move catches up, so the main index can name a
+	// key the main vault has never held and never should. It is not missing —
+	// the sub vault has it, sealed under its own password — so it is skipped
+	// rather than demanded, and the file stays readable exactly as it was:
+	// whenever that sub vault is open.
+	elsewhere := map[string]bool{}
+	for _, rec := range subs {
+		for _, id := range rec.keyIDs() {
+			elsewhere[id] = true
+		}
 	}
 
 	retained := map[string][]byte{}
@@ -222,6 +253,9 @@ func retainedKeys(u *unsealed, manifest *Manifest) (map[string][]byte, error) {
 		}
 		key, ok := available[e.KeyID]
 		if !ok {
+			if elsewhere[e.KeyID] {
+				continue
+			}
 			// Nothing can open this file already — the key it names is not in
 			// the vault — but carrying on would quietly bake that in, so say
 			// so and let the user decide.
@@ -236,16 +270,33 @@ func retainedKeys(u *unsealed, manifest *Manifest) (map[string][]byte, error) {
 }
 
 // PendingMigration counts the files still stored under an older data key.
+//
+// The main vault's files. A sub vault has its own generations and its own
+// deferred re-encryptions, which are its own business and are reported through
+// SubVaultInfo.Pending — folding them in here would make the main vault look
+// like it had work outstanding that its password change cannot do.
 func (v *Vault) PendingMigration() int {
+	return v.PendingMigrationIn(MainScope)
+}
+
+// PendingMigrationIn counts the files in one vault still stored under one of
+// that vault's older data keys.
+func (v *Vault) PendingMigrationIn(scope Scope) int {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
-	if v.dataKey == nil {
+
+	m, err := v.manifestForLocked(scope)
+	if err != nil {
+		return 0
+	}
+	active, err := v.dataKeyIDForLocked(scope)
+	if err != nil {
 		return 0
 	}
 
 	pending := 0
-	for _, e := range v.manifest.Entries {
-		if e.KeyID != v.dataKeyID {
+	for _, e := range m.Entries {
+		if e.KeyID != active {
 			pending++
 		}
 	}
@@ -271,14 +322,27 @@ func (v *Vault) MigrateFiles(ctx context.Context, progress ProgressFunc) (*Migra
 // are the ones a vault that no longer exists chose. accounts nil keeps each
 // file where it is.
 func (v *Vault) MigrateFilesTo(ctx context.Context, accounts []string, progress ProgressFunc) (*MigrationReport, error) {
+	return v.MigrateFilesIn(ctx, MainScope, accounts, progress)
+}
+
+// MigrateFilesIn is MigrateFilesTo for one vault inside the file. A sub vault
+// defers re-encryption exactly as the main vault does — after its own password
+// change, and after files are assigned into it — so it needs the same pass.
+func (v *Vault) MigrateFilesIn(ctx context.Context, scope Scope, accounts []string, progress ProgressFunc) (*MigrationReport, error) {
 	v.mu.RLock()
-	if v.dataKey == nil {
+	m, err := v.manifestForLocked(scope)
+	if err != nil {
 		v.mu.RUnlock()
-		return nil, ErrLocked
+		return nil, err
+	}
+	active, err := v.dataKeyIDForLocked(scope)
+	if err != nil {
+		v.mu.RUnlock()
+		return nil, err
 	}
 	var pending []string
-	for _, e := range v.manifest.Entries {
-		if e.KeyID != v.dataKeyID {
+	for _, e := range m.Entries {
+		if e.KeyID != active {
 			pending = append(pending, e.ID)
 		}
 	}
@@ -292,7 +356,7 @@ func (v *Vault) MigrateFilesTo(ctx context.Context, accounts []string, progress 
 			break
 		}
 
-		path, size, warnings, err := v.migrateFile(ctx, id, accounts)
+		path, size, warnings, err := v.migrateFile(ctx, scope, id, accounts)
 		report.Warnings = append(report.Warnings, warnings...)
 		switch {
 		case errors.Is(err, ErrLocked):
@@ -313,7 +377,7 @@ func (v *Vault) MigrateFilesTo(ctx context.Context, accounts []string, progress 
 		}
 	}
 
-	report.Remaining = v.PendingMigration()
+	report.Remaining = v.PendingMigrationIn(scope)
 	return report, nil
 }
 
@@ -334,13 +398,17 @@ func (v *Vault) MigrateFilesTo(ctx context.Context, accounts []string, progress 
 //
 // accounts, when given, is where the new shards go — followed exactly, since it
 // is a choice somebody made rather than a default to top up.
-func (v *Vault) migrateFile(ctx context.Context, id string, accounts []string) (path string, size int64, warnings []string, err error) {
+//
+// scope is which of the vaults inside the file the entry belongs to, since an
+// assignment can leave one naming a key generation that is not this vault's.
+func (v *Vault) migrateFile(ctx context.Context, scope Scope, id string, accounts []string) (path string, size int64, warnings []string, err error) {
 	v.mu.RLock()
-	if v.dataKey == nil {
+	m, err := v.manifestForLocked(scope)
+	if err != nil {
 		v.mu.RUnlock()
-		return "", 0, nil, ErrLocked
+		return "", 0, nil, err
 	}
-	entry := v.manifest.ByID(id)
+	entry := m.ByID(id)
 	if entry == nil {
 		// Deleted since the list was taken; nothing to move.
 		v.mu.RUnlock()
@@ -378,7 +446,7 @@ func (v *Vault) migrateFile(ctx context.Context, id string, accounts []string) (
 	// chunking existed comes back chunked. That is the cheapest moment to do it:
 	// the file has already been gathered and is about to be scattered again, so
 	// changing format costs nothing beyond what the re-encryption was paying.
-	placed, err := v.scatterChunked(ctx, name, data, current, exact, v.uploadChunkSize())
+	placed, err := v.scatterChunked(ctx, scope, name, data, current, exact, v.uploadChunkSize())
 	warnings = placed.warnings
 	if err != nil {
 		return path, 0, warnings, fmt.Errorf("re-encoding %s: %w", path, err)
@@ -393,12 +461,12 @@ func (v *Vault) migrateFile(ctx context.Context, id string, accounts []string) (
 	}
 
 	v.mu.Lock()
-	if v.dataKey == nil {
+	if m, err = v.manifestForLocked(scope); err != nil {
 		v.mu.Unlock()
 		v.deleteEntryShards(context.WithoutCancel(ctx), fresh)
-		return path, 0, warnings, ErrLocked
+		return path, 0, warnings, err
 	}
-	e := v.manifest.ByID(id)
+	e := m.ByID(id)
 	if e == nil {
 		// Deleted while it was being re-encrypted. The parts just written are
 		// referenced by nothing, so they go the same way the old ones did.
@@ -454,6 +522,14 @@ func (v *Vault) pruneRetiredKeysLocked() {
 	inUse := make(map[string]bool, len(v.manifest.Entries))
 	for _, e := range v.manifest.Entries {
 		inUse[e.KeyID] = true
+	}
+	// A thumbnail pack names a generation too, and dropping the key it is
+	// sealed under would leave the pack unreadable — the pictures would go
+	// silently, one folder at a time.
+	for _, pack := range v.manifest.Thumbs {
+		if pack != nil {
+			inUse[pack.KeyID] = true
+		}
 	}
 
 	dropped := false

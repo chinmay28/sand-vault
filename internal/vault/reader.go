@@ -201,8 +201,8 @@ func (v *Vault) OpenReader(id string) (*ChunkedReader, error) {
 	if v.dataKey == nil {
 		return nil, ErrLocked
 	}
-	entry := v.manifest.ByID(id)
-	if entry == nil {
+	_, entry, ok := v.scopeOfEntryLocked(id)
+	if !ok {
 		return nil, fmt.Errorf("no such file: %s", id)
 	}
 	if !entry.Chunked() {

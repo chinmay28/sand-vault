@@ -61,6 +61,75 @@ else. Standalone mode follows the same scheme: `sand archive` writes
 each part's key is recorded in the manifest when it is written, so parts stored
 under the old layout are still found where they are.
 
+### A vault inside your vault
+
+Some things should not be readable by whoever holds your vault password —
+which, once a vault is mounted as a drive and left open on a laptop, is a
+broader set of people than it sounds. So a vault can now hold **sub vaults**,
+each sealed under a password of its own. Your vault password lists them and
+opens none of them.
+
+A sub vault has its own tree, so nothing collides with what is already stored,
+and its own encryption keys, so a password change on your vault carries it
+across untouched. Moving a folder into one keeps its path and is instant: the
+index changes and not a byte travels between your clouds. The files are then
+re-encrypted onto the destination's own key behind the move; until that
+finishes, they can only be read while the vault they came from is open, because
+no key is ever handed from one vault to the other.
+
+They never appear on a WebDAV mount. Not while locked, and not while unlocked
+either, and there is no setting for it: a mounted drive is a folder every
+process running as you can read, and what goes in a sub vault is what should
+not be reachable that way. In the browser they are behind *Show sub vaults*,
+where a locked one is still listed — you are meant to see there is a place
+called Taxes and be asked for a password, rather than have it be invisible
+until you think to go looking.
+
+What your vault password does see is the name, and an inventory of which
+accounts hold the parts and how big they are. That boundary is deliberate: it
+is what lets a sub vault whose password you have forgotten still be erased from
+your clouds rather than leaving its parts there for good, and what stops
+disconnecting an account silently stranding files nothing in the process can
+see. It sees no path, no filename, no size and no type.
+
+There is no recovery for a sub vault's password — not from your vault password,
+and not from a `manifest.sand`. The backups carry a sub vault sealed, so a
+recovery brings it back shut and its own password opens it afterwards.
+
+```
+sand sub new Taxes
+sand sub assign /Papers Taxes
+sand ls --in Taxes /Papers
+```
+
+### A cloud you reconnect can tell you it already holds a vault
+
+Every vault keeps a copy of its encrypted index on each account it uses, so an
+account from a machine that has since died still carries one. Connecting it to
+a new vault now says so, and offers to bring what is there in as a sub vault.
+
+That is the case `sand vault recover` could never handle: recovery replaces the
+vault's data key, so it refuses to run against a vault that already holds
+anything. A backup carries an index, a data key and a password that opens it —
+which is exactly what a sub vault is — so what was found lands beside what you
+have rather than replacing it, and the restriction simply does not arise.
+
+You give the old vault's password to open its index and choose a new one for
+the sub vault. The second costs nothing: the old data key is adopted as it
+stands, so no file is re-encrypted by the import. Rotating that key afterwards
+is what finally makes the old password useless, and the app offers it.
+
+Only whether a backup is yours can be told without a password. When it was
+written, what it holds and how big it is are all inside the envelope — an
+account holding someone's backup should not be able to describe it to whoever
+connects it next.
+
+### Index backup has a switch now
+
+The one setting that decides whether a lost machine is recoverable could only be
+reached from the command line. It joins the rest of them in vault settings,
+alongside a line for your sub vaults.
+
 ### The part format no longer says what it holds
 
 Until now a part's header carried the original filename, the plaintext SHA-256

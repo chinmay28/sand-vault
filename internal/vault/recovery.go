@@ -352,7 +352,15 @@ func (v *Vault) Recover(ctx context.Context, snapshot *Snapshot, dryRun bool) (*
 		v.mu.RUnlock()
 		return nil, fmt.Errorf(
 			"this vault already holds %d file(s) — recovering would replace its data key and "+
-				"strand them; recover into a fresh vault instead", len(v.manifest.Entries))
+				"strand them; recover into a fresh vault instead, or import the backup as a "+
+				"sub vault of this one", len(v.manifest.Entries))
+	}
+	if len(v.store.SubVaults) > 0 {
+		v.mu.RUnlock()
+		return nil, fmt.Errorf(
+			"this vault already holds %d sub vault(s) — recovering would replace them with the "+
+				"backup's, and nothing here can open them to say what would be lost; recover into "+
+				"a fresh vault instead", len(v.store.SubVaults))
 	}
 	configs := append([]provider.Config(nil), v.providers...)
 	v.mu.RUnlock()
@@ -388,6 +396,10 @@ func (v *Vault) Recover(ctx context.Context, snapshot *Snapshot, dryRun bool) (*
 
 	recovered := newManifest()
 	recovered.Folders = append([]string(nil), snapshot.Manifest.Folders...)
+	// The names and inventories of the sub vaults come back with the sealed
+	// records they describe. Without them the recovered vault would hold the
+	// ciphertext and have nothing to call it.
+	recovered.SubVaults = append([]*SubVaultMeta(nil), snapshot.Manifest.SubVaults...)
 	report := &RecoveryReport{Warnings: warnings}
 	absent := newAbsentAccounts(snapshot)
 
@@ -455,6 +467,13 @@ func (v *Vault) Recover(ctx context.Context, snapshot *Snapshot, dryRun bool) (*
 		}
 	}
 
+	// The sub vaults cannot be opened here, so their shard records cannot be
+	// rewritten the way the main vault's just were. What can be done is to work
+	// out the translation from the inventory — which names every object they
+	// own and the account it was on — and leave it for the moment each one is
+	// opened. See Manifest.AccountRemap.
+	recovered.AccountRemap = remapForSealedSubVaults(recovered.SubVaults, holders, byOldID)
+
 	folders := map[string]bool{}
 	for _, f := range recovered.Folders {
 		folders[f] = true
@@ -502,15 +521,20 @@ func (v *Vault) Recover(ctx context.Context, snapshot *Snapshot, dryRun bool) (*
 		retired   map[string][]byte
 		wrapped   sealed
 		retiredOn []wrappedKey
+		subVaults []subVaultRecord
 		policy    Policy
 		manifest  *Manifest
 		inherited string
-	}{v.dataKey, v.dataKeyID, v.retired, v.store.DataKey, v.store.RetiredKeys, v.store.Policy,
-		v.manifest, v.store.InheritedKeyID}
+	}{v.dataKey, v.dataKeyID, v.retired, v.store.DataKey, v.store.RetiredKeys, v.store.SubVaults,
+		v.store.Policy, v.manifest, v.store.InheritedKeyID}
 
 	v.store.DataKey = wrapped
 	v.store.DataKeyID = snapshot.KeyID
 	v.store.RetiredKeys = wrappedRetired
+	// The sealed records come back as they were. Nothing here can open them,
+	// and nothing needs to: they are ciphertext to this vault until someone
+	// types the password that made them.
+	v.store.SubVaults = append([]subVaultRecord(nil), snapshot.SubVaults...)
 	// Adopted, not minted. Until these files are re-encrypted, the password of
 	// the vault that died still opens their parts — see Reclaim.
 	v.store.InheritedKeyID = snapshot.KeyID
@@ -533,6 +557,7 @@ func (v *Vault) Recover(ctx context.Context, snapshot *Snapshot, dryRun bool) (*
 		v.store.DataKey = previous.wrapped
 		v.store.DataKeyID = previous.dataKeyID
 		v.store.RetiredKeys = previous.retiredOn
+		v.store.SubVaults = previous.subVaults
 		v.store.Policy = previous.policy
 		v.manifest = previous.manifest
 		v.store.InheritedKeyID = previous.inherited
@@ -843,4 +868,52 @@ func (v *Vault) locateShards(ctx context.Context, configs []provider.Config) (ma
 
 	sort.Strings(warnings)
 	return holders, warnings
+}
+
+// remapForSealedSubVaults works out which account each sealed sub vault's parts
+// are really on now, and rewrites the inventory to match.
+//
+// The object keys are derivable from the archive ID, so the accounts can be
+// asked what they hold and matched exactly, the same way the main vault's own
+// shards are matched. Where a part cannot be found — its account offline during
+// the listing, or not reconnected at all — the account is matched by name and
+// kind instead, which is the same fallback the main path uses.
+func remapForSealedSubVaults(
+	metas []*SubVaultMeta,
+	holders map[string]provider.Config,
+	byOldID map[string]provider.Config,
+) map[string]string {
+	remap := map[string]string{}
+
+	for _, meta := range metas {
+		if meta == nil {
+			continue
+		}
+		for i := range meta.Inventory {
+			item := &meta.Inventory[i]
+			for j := range item.Parts {
+				part := &item.Parts[j]
+
+				key := ShardKey(item.ArchiveID, part.Part)
+				if item.ChunkCount > 0 {
+					key = ChunkShardKey(item.ArchiveID, 0, part.Part)
+				}
+				cfg, ok := holders[key]
+				if !ok {
+					if cfg, ok = byOldID[part.ProviderID]; !ok {
+						continue
+					}
+				}
+				if cfg.ID != part.ProviderID {
+					remap[part.ProviderID] = cfg.ID
+					part.ProviderID = cfg.ID
+				}
+			}
+		}
+	}
+
+	if len(remap) == 0 {
+		return nil
+	}
+	return remap
 }

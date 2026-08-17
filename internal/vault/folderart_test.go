@@ -14,12 +14,12 @@ func filmsFolder(t *testing.T, v *Vault, dir string, titles ...string) []string 
 	t.Helper()
 	ctx := context.Background()
 
-	if err := v.Mkdir(dir); err != nil {
+	if err := v.Mkdir(MainScope, dir); err != nil {
 		t.Fatalf("Mkdir %s: %v", dir, err)
 	}
 	ids := make([]string, 0, len(titles))
 	for _, title := range titles {
-		entry, _, err := v.Upload(ctx, dir, title+".mkv", []byte("pretend this is "+title), UploadOptions{})
+		entry, _, err := v.Upload(ctx, MainScope, dir, title+".mkv", []byte("pretend this is "+title), UploadOptions{})
 		if err != nil {
 			t.Fatalf("Upload %s: %v", title, err)
 		}
@@ -37,14 +37,14 @@ func TestAFolderHasNoPictureUntilOneIsPicked(t *testing.T) {
 
 	filmsFolder(t, v, "/films", "Alien", "Aliens", "Alien 3")
 
-	if art, ok := v.FolderArtFor("/films"); ok {
+	if art, ok := v.FolderArtFor(MainScope, "/films"); ok {
 		t.Errorf("a folder picked a picture for itself: %+v — nothing should happen until asked", art)
 	}
 
 	// The listing still carries an entry for it, empty, because "nothing chosen
 	// yet" and "nothing to choose" are different things and the browser draws a
 	// different row for each.
-	listing, err := v.List("/")
+	listing, err := v.List(MainScope, "/")
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -63,14 +63,14 @@ func TestAFolderWithNothingPicturableOffersNothing(t *testing.T) {
 	v, _ := newTestVault(t, 3)
 	ctx := context.Background()
 
-	if err := v.Mkdir("/plain"); err != nil {
+	if err := v.Mkdir(MainScope, "/plain"); err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
-	if _, _, err := v.Upload(ctx, "/plain", "notes.txt", []byte("no picture here"), UploadOptions{}); err != nil {
+	if _, _, err := v.Upload(ctx, MainScope, "/plain", "notes.txt", []byte("no picture here"), UploadOptions{}); err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 
-	listing, err := v.List("/")
+	listing, err := v.List(MainScope, "/")
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestFolderArtReachesIntoSubfolders(t *testing.T) {
 
 	ids := filmsFolder(t, v, "/library/batman", "Batman Begins", "The Dark Knight")
 
-	choices, _, err := v.FolderArtChoices("/library")
+	choices, _, err := v.FolderArtChoices(MainScope, "/library")
 	if err != nil {
 		t.Fatalf("FolderArtChoices: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestFolderArtReachesIntoSubfolders(t *testing.T) {
 		t.Fatalf("choices = %d, want the %d films one level down", len(choices), len(ids))
 	}
 
-	art, err := v.SetFolderArt("/library", ids[1])
+	art, err := v.SetFolderArt(MainScope, "/library", ids[1])
 	if err != nil {
 		t.Fatalf("SetFolderArt: %v", err)
 	}
@@ -109,21 +109,21 @@ func TestAPhotographCanStandForAFolder(t *testing.T) {
 	v, _ := newTestVault(t, 3)
 	ctx := context.Background()
 
-	if err := v.Mkdir("/photos"); err != nil {
+	if err := v.Mkdir(MainScope, "/photos"); err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
-	entry, _, err := v.Upload(ctx, "/photos", "hike.jpg", []byte("not really a photo"), UploadOptions{})
+	entry, _, err := v.Upload(ctx, MainScope, "/photos", "hike.jpg", []byte("not really a photo"), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 
 	// Nothing has a picture yet, so there is nothing to offer either.
-	if _, err := v.SetFolderArt("/photos", entry.ID); err == nil {
+	if _, err := v.SetFolderArt(MainScope, "/photos", entry.ID); err == nil {
 		t.Error("a file with no thumbnail was accepted as a folder's picture")
 	}
 
 	storeThumb(t, v, entry.ID, "thumbnail-bytes")
-	art, err := v.SetFolderArt("/photos", entry.ID)
+	art, err := v.SetFolderArt(MainScope, "/photos", entry.ID)
 	if err != nil {
 		t.Fatalf("SetFolderArt: %v", err)
 	}
@@ -140,35 +140,35 @@ func TestChoosingAndUnchoosingAFolderPicture(t *testing.T) {
 
 	ids := filmsFolder(t, v, "/films", "Alien", "Aliens", "Alien 3")
 
-	art, err := v.SetFolderArt("/films", ids[1])
+	art, err := v.SetFolderArt(MainScope, "/films", ids[1])
 	if err != nil {
 		t.Fatalf("SetFolderArt: %v", err)
 	}
 	if art.ID != ids[1] {
 		t.Errorf("art = %+v, want %s", art, ids[1])
 	}
-	if got, ok := v.FolderArtFor("/films"); !ok || got.ID != ids[1] {
+	if got, ok := v.FolderArtFor(MainScope, "/films"); !ok || got.ID != ids[1] {
 		t.Errorf("the choice did not stick: %+v", got)
 	}
 
 	// Picking another replaces it rather than adding to it.
-	if _, err := v.SetFolderArt("/films", ids[2]); err != nil {
+	if _, err := v.SetFolderArt(MainScope, "/films", ids[2]); err != nil {
 		t.Fatalf("SetFolderArt again: %v", err)
 	}
-	if got, _ := v.FolderArtFor("/films"); got.ID != ids[2] {
+	if got, _ := v.FolderArtFor(MainScope, "/films"); got.ID != ids[2] {
 		t.Errorf("second choice did not stick: %+v", got)
 	}
 
 	// And taking it away puts the folder back to its icon rather than to some
 	// other picture.
-	cleared, err := v.SetFolderArt("/films", "")
+	cleared, err := v.SetFolderArt(MainScope, "/films", "")
 	if err != nil {
 		t.Fatalf("SetFolderArt(clear): %v", err)
 	}
 	if cleared.ID != "" {
 		t.Errorf("clearing left %+v behind", cleared)
 	}
-	if got, ok := v.FolderArtFor("/films"); ok {
+	if got, ok := v.FolderArtFor(MainScope, "/films"); ok {
 		t.Errorf("after clearing = %+v, want no picture at all", got)
 	}
 	if v.manifest.FolderArt != nil {
@@ -182,10 +182,10 @@ func TestAFolderPictureHasToBeSomethingInsideIt(t *testing.T) {
 	filmsFolder(t, v, "/films", "Alien")
 	elsewhere := filmsFolder(t, v, "/other", "Aliens")
 	ctx := context.Background()
-	if err := v.Mkdir("/plain"); err != nil {
+	if err := v.Mkdir(MainScope, "/plain"); err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
-	noPicture, _, err := v.Upload(ctx, "/plain", "notes.txt", []byte("no picture here"), UploadOptions{})
+	noPicture, _, err := v.Upload(ctx, MainScope, "/plain", "notes.txt", []byte("no picture here"), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestAFolderPictureHasToBeSomethingInsideIt(t *testing.T) {
 		{"a file that has no picture", "/plain", noPicture.ID},
 		{"a file that does not exist", "/films", "not-an-id"},
 	} {
-		if _, err := v.SetFolderArt(tc.dir, tc.id); err == nil {
+		if _, err := v.SetFolderArt(MainScope, tc.dir, tc.id); err == nil {
 			t.Errorf("%s was accepted as a folder's picture", tc.name)
 		}
 	}
@@ -208,26 +208,26 @@ func TestAChosenFolderPictureSurvivesAMoveAndDiesWithItsFile(t *testing.T) {
 	ctx := context.Background()
 
 	ids := filmsFolder(t, v, "/films", "Alien", "Aliens")
-	if _, err := v.SetFolderArt("/films", ids[1]); err != nil {
+	if _, err := v.SetFolderArt(MainScope, "/films", ids[1]); err != nil {
 		t.Fatalf("SetFolderArt: %v", err)
 	}
 
-	if err := v.MoveFolder(ctx, "/films", "/cinema"); err != nil {
+	if err := v.MoveFolder(ctx, MainScope, "/films", "/cinema"); err != nil {
 		t.Fatalf("MoveFolder: %v", err)
 	}
-	if got, _ := v.FolderArtFor("/cinema"); got.ID != ids[1] {
+	if got, _ := v.FolderArtFor(MainScope, "/cinema"); got.ID != ids[1] {
 		t.Errorf("after moving the folder = %+v, want the chosen picture %s", got, ids[1])
 	}
 
 	// Moving the file itself deeper leaves it inside the folder, so the choice
 	// still stands.
-	if err := v.Mkdir("/cinema/extras"); err != nil {
+	if err := v.Mkdir(MainScope, "/cinema/extras"); err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
 	if _, err := v.Move(ctx, ids[1], "/cinema/extras", ""); err != nil {
 		t.Fatalf("Move: %v", err)
 	}
-	if got, _ := v.FolderArtFor("/cinema"); got.ID != ids[1] {
+	if got, _ := v.FolderArtFor(MainScope, "/cinema"); got.ID != ids[1] {
 		t.Errorf("after moving the file deeper = %+v, want it to still stand", got)
 	}
 
@@ -237,7 +237,7 @@ func TestAChosenFolderPictureSurvivesAMoveAndDiesWithItsFile(t *testing.T) {
 	if _, err := v.Delete(ctx, ids[1]); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if got, ok := v.FolderArtFor("/cinema"); ok {
+	if got, ok := v.FolderArtFor(MainScope, "/cinema"); ok {
 		t.Errorf("after deleting the chosen file = %+v; want no picture", got)
 	}
 	if v.manifest.FolderArt != nil {
@@ -250,13 +250,13 @@ func TestFolderArtChoicesListFilmsFirst(t *testing.T) {
 	ctx := context.Background()
 
 	filmsFolder(t, v, "/films", "Zulu", "Alien")
-	plain, _, err := v.Upload(ctx, "/films", "cover.jpg", []byte("not really a photo"), UploadOptions{})
+	plain, _, err := v.Upload(ctx, MainScope, "/films", "cover.jpg", []byte("not really a photo"), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 	storeThumb(t, v, plain.ID, "thumbnail-bytes")
 
-	choices, truncated, err := v.FolderArtChoices("/films")
+	choices, truncated, err := v.FolderArtChoices(MainScope, "/films")
 	if err != nil {
 		t.Fatalf("FolderArtChoices: %v", err)
 	}
@@ -277,10 +277,10 @@ func TestFolderArtChoicesListFilmsFirst(t *testing.T) {
 	}
 
 	// A file with no picture is not something a folder can be drawn with.
-	if _, _, err := v.Upload(ctx, "/films", "notes.txt", []byte("x"), UploadOptions{}); err != nil {
+	if _, _, err := v.Upload(ctx, MainScope, "/films", "notes.txt", []byte("x"), UploadOptions{}); err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
-	choices, _, err = v.FolderArtChoices("/films")
+	choices, _, err = v.FolderArtChoices(MainScope, "/films")
 	if err != nil {
 		t.Fatalf("FolderArtChoices: %v", err)
 	}

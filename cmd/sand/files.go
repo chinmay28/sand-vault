@@ -29,13 +29,13 @@ func lsCmd() *cobra.Command {
 				path = args[0]
 			}
 
-			v, err := openVault(cmd)
+			v, scope, err := openVaultIn(cmd)
 			if err != nil {
 				return err
 			}
 			defer closeVault(v)
 
-			listing, err := v.List(path)
+			listing, err := v.List(scope, path)
 			if err != nil {
 				return err
 			}
@@ -92,10 +92,10 @@ func missingShards(health *vault.FileHealth) int {
 
 func findCmd() *cobra.Command {
 	var (
-		scope string
-		kind  string
-		limit int
-		long  bool
+		within string
+		kind   string
+		limit  int
+		long   bool
 	)
 
 	cmd := &cobra.Command{
@@ -111,15 +111,16 @@ The index is only readable while the vault is open, so this is the only way to
 search at all — no connected account can be asked what it is holding.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			v, err := openVault(cmd)
+			v, scope, err := openVaultIn(cmd)
 			if err != nil {
 				return err
 			}
 			defer closeVault(v)
 
 			results, err := v.Search(vault.SearchOptions{
+				Vault: scope,
 				Query: args[0],
-				Dir:   scope,
+				Dir:   within,
 				Kind:  vault.SearchKind(kind),
 				Limit: limit,
 			})
@@ -159,7 +160,7 @@ search at all — no connected account can be asked what it is holding.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&scope, "path", "/", "only search inside this folder")
+	cmd.Flags().StringVar(&within, "path", "/", "only search inside this folder")
 	cmd.Flags().StringVar(&kind, "type", string(vault.SearchAll), "what to look for: all, file or folder")
 	cmd.Flags().IntVar(&limit, "limit", vault.DefaultSearchLimit, "most matches to print")
 	cmd.Flags().BoolVarP(&long, "long", "l", false, "also show entry IDs")
@@ -178,7 +179,7 @@ func putCmd() *cobra.Command {
 		Short: "Upload files into the vault",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			v, err := openVault(cmd)
+			v, scope, err := openVaultIn(cmd)
 			if err != nil {
 				return err
 			}
@@ -196,7 +197,7 @@ func putCmd() *cobra.Command {
 					return fmt.Errorf("reading %s: %w", path, err)
 				}
 
-				entry, warnings, err := v.Upload(ctx, dest, filepath.Base(path), data, vault.UploadOptions{
+				entry, warnings, err := v.Upload(ctx, scope, dest, filepath.Base(path), data, vault.UploadOptions{
 					Overwrite: overwrite,
 					Accounts:  chosen,
 				})
@@ -258,13 +259,13 @@ func getCmd() *cobra.Command {
 		Short: "Download and decrypt a file",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			v, err := openVault(cmd)
+			v, scope, err := openVaultIn(cmd)
 			if err != nil {
 				return err
 			}
 			defer closeVault(v)
 
-			entry, err := resolveEntry(v, args[0])
+			entry, err := resolveEntry(v, scope, args[0])
 			if err != nil {
 				return err
 			}
@@ -316,7 +317,7 @@ func rmCmd() *cobra.Command {
 		Short: "Delete a file, or a folder with --recursive",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			v, err := openVault(cmd)
+			v, scope, err := openVaultIn(cmd)
 			if err != nil {
 				return err
 			}
@@ -326,9 +327,9 @@ func rmCmd() *cobra.Command {
 			target := args[0]
 
 			// A path that names a folder is only ever a folder delete.
-			if listing, listErr := v.List(target); listErr == nil && vault.CleanDir(target) != "/" {
+			if listing, listErr := v.List(scope, target); listErr == nil && vault.CleanDir(target) != "/" {
 				_ = listing
-				warnings, err := v.Rmdir(ctx, target, recursive)
+				warnings, err := v.Rmdir(ctx, scope, target, recursive)
 				printWarnings(warnings)
 				if err != nil {
 					return err
@@ -337,7 +338,7 @@ func rmCmd() *cobra.Command {
 				return nil
 			}
 
-			entry, err := resolveEntry(v, target)
+			entry, err := resolveEntry(v, scope, target)
 			if err != nil {
 				return err
 			}
@@ -361,13 +362,13 @@ func mkdirCmd() *cobra.Command {
 		Short: "Create a folder",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			v, err := openVault(cmd)
+			v, scope, err := openVaultIn(cmd)
 			if err != nil {
 				return err
 			}
 			defer closeVault(v)
 
-			if err := v.Mkdir(args[0]); err != nil {
+			if err := v.Mkdir(scope, args[0]); err != nil {
 				return err
 			}
 			fmt.Printf("Created %s\n", vault.CleanDir(args[0]))
@@ -389,7 +390,7 @@ on your cloud accounts, whichever of the two this is.
   sand mv /photos/2024 /archive/2024        a folder, with everything in it`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			v, err := openVault(cmd)
+			v, scope, err := openVaultIn(cmd)
 			if err != nil {
 				return err
 			}
@@ -397,11 +398,11 @@ on your cloud accounts, whichever of the two this is.
 
 			// A folder first: it is the only reading of the source that cannot
 			// also be a file, since the two namespaces never collide.
-			if from := vault.CleanDir(args[0]); from != "/" && v.FolderExists(from) {
-				return moveFolderTo(v, from, args[1])
+			if from := vault.CleanDir(args[0]); from != "/" && v.FolderExists(scope, from) {
+				return moveFolderTo(v, scope, from, args[1])
 			}
 
-			entry, err := resolveEntry(v, args[0])
+			entry, err := resolveEntry(v, scope, args[0])
 			if err != nil {
 				return err
 			}
@@ -411,7 +412,7 @@ on your cloud accounts, whichever of the two this is.
 
 			dir, name := splitPath(args[1])
 			// "sand mv a.txt /folder" moves into the folder, keeping the name.
-			if _, listErr := v.List(args[1]); listErr == nil {
+			if _, listErr := v.List(scope, args[1]); listErr == nil {
 				dir, name = vault.CleanDir(args[1]), entry.Name
 			}
 
@@ -428,14 +429,14 @@ on your cloud accounts, whichever of the two this is.
 // moveFolderTo carries out the folder half of "sand mv", where the destination
 // reads the same way it does for a file: a folder that already exists means
 // "inside it, keeping the name", and anything else is the new name in full.
-func moveFolderTo(v *vault.Vault, from, target string) error {
+func moveFolderTo(v *vault.Vault, scope vault.Scope, from, target string) error {
 	to := vault.CleanDir(target)
-	if v.FolderExists(to) {
+	if v.FolderExists(scope, to) {
 		_, name := splitPath(from)
 		to = vault.JoinPath(to, name)
 	}
 
-	if err := v.MoveFolder(context.Background(), from, to); err != nil {
+	if err := v.MoveFolder(context.Background(), scope, from, to); err != nil {
 		return err
 	}
 	fmt.Printf("%s → %s\n", from, to)
@@ -477,7 +478,7 @@ repeat — run it again and it moves whatever is still in the wrong place.
 				return fmt.Errorf("name the accounts to move onto with --accounts")
 			}
 
-			v, err := openVault(cmd)
+			v, scope, err := openVaultIn(cmd)
 			if err != nil {
 				return err
 			}
@@ -488,7 +489,7 @@ repeat — run it again and it moves whatever is still in the wrong place.
 				return err
 			}
 
-			plan, err := v.PlanRelocation(args[0], chosen)
+			plan, err := v.PlanRelocation(scope, args[0], chosen)
 			if err != nil {
 				return err
 			}
@@ -505,7 +506,7 @@ repeat — run it again and it moves whatever is still in the wrong place.
 				return nil
 			}
 
-			report, err := v.Relocate(cmd.Context(), args[0], chosen, progressLine)
+			report, err := v.Relocate(cmd.Context(), scope, args[0], chosen, progressLine)
 			clearProgressLine()
 			printWarnings(report.Warnings)
 			if err != nil {
@@ -578,7 +579,7 @@ func checkCmd() *cobra.Command {
 				return fmt.Errorf("give a file to check, or pass --all")
 			}
 
-			v, err := openVault(cmd)
+			v, scope, err := openVaultIn(cmd)
 			if err != nil {
 				return err
 			}
@@ -588,12 +589,12 @@ func checkCmd() *cobra.Command {
 			var targets []*vault.Entry
 
 			if all {
-				targets, err = collectAll(v, "/")
+				targets, err = collectAll(v, scope, "/")
 				if err != nil {
 					return err
 				}
 			} else {
-				entry, err := resolveEntry(v, args[0])
+				entry, err := resolveEntry(v, scope, args[0])
 				if err != nil {
 					return err
 				}
@@ -641,15 +642,15 @@ func checkCmd() *cobra.Command {
 }
 
 // collectAll walks the vault namespace and returns every entry.
-func collectAll(v *vault.Vault, dir string) ([]*vault.Entry, error) {
-	listing, err := v.List(dir)
+func collectAll(v *vault.Vault, scope vault.Scope, dir string) ([]*vault.Entry, error) {
+	listing, err := v.List(scope, dir)
 	if err != nil {
 		return nil, err
 	}
 
 	out := append([]*vault.Entry{}, listing.Files...)
 	for _, folder := range listing.Folders {
-		nested, err := collectAll(v, vault.JoinPath(dir, folder))
+		nested, err := collectAll(v, scope, vault.JoinPath(dir, folder))
 		if err != nil {
 			return nil, err
 		}

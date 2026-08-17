@@ -72,13 +72,15 @@ func (p *ThumbPack) holds(id string) bool {
 
 // ThumbIDs returns the files in a folder that have a stored thumbnail. It
 // answers from the index alone — no account is contacted.
-func (v *Vault) ThumbIDs(dir string) []string {
+func (v *Vault) ThumbIDs(scope Scope, dir string) []string {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
-	if v.dataKey == nil || v.manifest == nil {
+
+	m, err := v.manifestForLocked(scope)
+	if err != nil {
 		return nil
 	}
-	pack := v.manifest.Thumbs[CleanDir(dir)]
+	pack := m.Thumbs[CleanDir(dir)]
 	if pack == nil {
 		return nil
 	}
@@ -87,11 +89,12 @@ func (v *Vault) ThumbIDs(dir string) []string {
 
 // thumbIDsForLocked collects the thumbnails stored for a set of entries that
 // may span folders, which is what a search result is. The caller must hold at
-// least the read lock.
-func (v *Vault) thumbIDsForLocked(entries []*Entry) []string {
+// least the read lock, and the entries must all come from the manifest passed
+// in — a pack belongs to the vault whose index names it.
+func (v *Vault) thumbIDsForLocked(m *Manifest, entries []*Entry) []string {
 	var out []string
 	for _, e := range entries {
-		pack := v.manifest.Thumbs[e.Dir]
+		pack := m.Thumbs[e.Dir]
 		if pack != nil && pack.holds(e.ID) {
 			out = append(out, e.ID)
 		}
@@ -107,20 +110,25 @@ func (v *Vault) Thumb(ctx context.Context, id string) ([]byte, error) {
 		v.mu.RUnlock()
 		return nil, ErrLocked
 	}
-	entry := v.manifest.ByID(id)
-	if entry == nil {
+	scope, entry, ok := v.scopeOfEntryLocked(id)
+	if !ok {
 		v.mu.RUnlock()
 		return nil, fmt.Errorf("no such file: %s", id)
 	}
+	m, err := v.manifestForLocked(scope)
+	if err != nil {
+		v.mu.RUnlock()
+		return nil, err
+	}
 	dir := entry.Dir
-	pack := v.manifest.Thumbs[dir]
+	pack := m.Thumbs[dir]
 	v.mu.RUnlock()
 
 	if pack == nil || !pack.holds(id) {
 		return nil, ErrNoThumb
 	}
 
-	items, err := v.loadPack(ctx, dir)
+	items, err := v.loadPack(ctx, scope, dir)
 	if err != nil {
 		return nil, err
 	}
@@ -149,15 +157,15 @@ func (v *Vault) SetThumb(ctx context.Context, id string, thumb []byte) error {
 		v.mu.RUnlock()
 		return ErrLocked
 	}
-	entry := v.manifest.ByID(id)
-	if entry == nil {
+	scope, entry, ok := v.scopeOfEntryLocked(id)
+	if !ok {
 		v.mu.RUnlock()
 		return fmt.Errorf("no such file: %s", id)
 	}
 	dir := entry.Dir
 	v.mu.RUnlock()
 
-	items, err := v.loadPack(ctx, dir)
+	items, err := v.loadPack(ctx, scope, dir)
 	if err != nil {
 		// An unreadable pack is not a reason to refuse a new thumbnail: start
 		// a fresh one and let the rest be made again as files are opened.
@@ -169,9 +177,9 @@ func (v *Vault) SetThumb(ctx context.Context, id string, thumb []byte) error {
 		next[k] = val
 	}
 	next[id] = thumb
-	v.trimPack(dir, next, id)
+	v.trimPack(scope, dir, next, id)
 
-	return v.savePack(ctx, dir, next)
+	return v.savePack(ctx, scope, dir, next)
 }
 
 // SetThumbs stores a batch of thumbnails at once, all of them for files in the
@@ -187,23 +195,24 @@ func (v *Vault) SetThumb(ctx context.Context, id string, thumb []byte) error {
 // Files outside dir are skipped rather than refused: a caller sweeping a tree
 // has already grouped them, and one stray entry should not throw away a folder
 // of good pictures.
-func (v *Vault) SetThumbs(ctx context.Context, dir string, thumbs map[string][]byte) error {
+func (v *Vault) SetThumbs(ctx context.Context, scope Scope, dir string, thumbs map[string][]byte) error {
 	if len(thumbs) == 0 {
 		return nil
 	}
 	dir = CleanDir(dir)
 
 	v.mu.RLock()
-	if v.dataKey == nil {
+	m, err := v.manifestForLocked(scope)
+	if err != nil {
 		v.mu.RUnlock()
-		return ErrLocked
+		return err
 	}
 	wanted := make(map[string][]byte, len(thumbs))
 	for id, data := range thumbs {
 		if len(data) == 0 || len(data) > MaxThumbBytes {
 			continue
 		}
-		if entry := v.manifest.ByID(id); entry != nil && entry.Dir == dir {
+		if entry := m.ByID(id); entry != nil && entry.Dir == dir {
 			wanted[id] = data
 		}
 	}
@@ -213,7 +222,7 @@ func (v *Vault) SetThumbs(ctx context.Context, dir string, thumbs map[string][]b
 		return nil
 	}
 
-	items, err := v.loadPack(ctx, dir)
+	items, err := v.loadPack(ctx, scope, dir)
 	if err != nil {
 		// An unreadable pack is not a reason to refuse new pictures; the rest
 		// are made again as files are opened. Same rule as SetThumb.
@@ -229,21 +238,24 @@ func (v *Vault) SetThumbs(ctx context.Context, dir string, thumbs map[string][]b
 		next[id] = data
 		last = id
 	}
-	v.trimPack(dir, next, last)
+	v.trimPack(scope, dir, next, last)
 
-	return v.savePack(ctx, dir, next)
+	return v.savePack(ctx, scope, dir, next)
 }
 
 // trimPack keeps a pack under the entry ceiling, dropping the thumbnails of
 // whichever files are no longer in the folder first and then the ones the
 // folder lists last. keep is never dropped — it is the one just stored.
-func (v *Vault) trimPack(dir string, items map[string][]byte, keep string) {
+func (v *Vault) trimPack(scope Scope, dir string, items map[string][]byte, keep string) {
 	if len(items) <= maxPackEntries {
 		return
 	}
 
 	v.mu.RLock()
-	_, files := v.manifest.Children(dir)
+	var files []*Entry
+	if m, err := v.manifestForLocked(scope); err == nil {
+		_, files = m.Children(dir)
+	}
 	v.mu.RUnlock()
 
 	order := make([]string, 0, len(items))
@@ -280,19 +292,18 @@ func (v *Vault) trimPack(dir string, items map[string][]byte, keep string) {
 // deleting or moving a file calls, and it never fails the operation that asked
 // for it: a stale thumbnail is a cosmetic problem, and the next write of the
 // pack clears it anyway.
-func (v *Vault) removeThumbs(ctx context.Context, dir string, ids ...string) {
+func (v *Vault) removeThumbs(ctx context.Context, scope Scope, dir string, ids ...string) {
 	if len(ids) == 0 {
 		return
 	}
 
 	v.mu.RLock()
-	locked := v.dataKey == nil
 	pack := (*ThumbPack)(nil)
-	if !locked {
-		pack = v.manifest.Thumbs[CleanDir(dir)]
+	if m, err := v.manifestForLocked(scope); err == nil {
+		pack = m.Thumbs[CleanDir(dir)]
 	}
 	v.mu.RUnlock()
-	if locked || pack == nil {
+	if pack == nil {
 		return
 	}
 
@@ -307,9 +318,9 @@ func (v *Vault) removeThumbs(ctx context.Context, dir string, ids ...string) {
 		return
 	}
 
-	items, err := v.loadPack(ctx, dir)
+	items, err := v.loadPack(ctx, scope, dir)
 	if err != nil {
-		v.dropPack(ctx, dir)
+		v.dropPack(ctx, scope, dir)
 		return
 	}
 	next := make(map[string][]byte, len(items))
@@ -319,31 +330,30 @@ func (v *Vault) removeThumbs(ctx context.Context, dir string, ids ...string) {
 	for _, id := range ids {
 		delete(next, id)
 	}
-	if err := v.savePack(ctx, dir, next); err != nil {
-		v.dropPack(ctx, dir)
+	if err := v.savePack(ctx, scope, dir, next); err != nil {
+		v.dropPack(ctx, scope, dir)
 	}
 }
 
 // moveThumb carries a file's thumbnail from one folder's pack to another's,
 // so renaming a file does not cost it its picture.
-func (v *Vault) moveThumb(ctx context.Context, id, from, to string) {
+func (v *Vault) moveThumb(ctx context.Context, scope Scope, id, from, to string) {
 	from, to = CleanDir(from), CleanDir(to)
 	if from == to {
 		return
 	}
 
 	v.mu.RLock()
-	locked := v.dataKey == nil
 	pack := (*ThumbPack)(nil)
-	if !locked {
-		pack = v.manifest.Thumbs[from]
+	if m, err := v.manifestForLocked(scope); err == nil {
+		pack = m.Thumbs[from]
 	}
 	v.mu.RUnlock()
-	if locked || pack == nil || !pack.holds(id) {
+	if pack == nil || !pack.holds(id) {
 		return
 	}
 
-	items, err := v.loadPack(ctx, from)
+	items, err := v.loadPack(ctx, scope, from)
 	if err != nil {
 		return
 	}
@@ -357,11 +367,11 @@ func (v *Vault) moveThumb(ctx context.Context, id, from, to string) {
 	if err := v.SetThumb(ctx, id, thumb); err != nil {
 		return
 	}
-	v.removeThumbs(ctx, from, id)
+	v.removeThumbs(ctx, scope, from, id)
 }
 
 // dropThumbFolders erases the packs of a folder and everything under it.
-func (v *Vault) dropThumbFolders(ctx context.Context, dir string) {
+func (v *Vault) dropThumbFolders(ctx context.Context, scope Scope, dir string) {
 	dir = CleanDir(dir)
 	prefix := dir
 	if prefix != "/" {
@@ -370,8 +380,8 @@ func (v *Vault) dropThumbFolders(ctx context.Context, dir string) {
 
 	v.mu.RLock()
 	var doomed []string
-	if v.dataKey != nil {
-		for stored := range v.manifest.Thumbs {
+	if m, err := v.manifestForLocked(scope); err == nil {
+		for stored := range m.Thumbs {
 			if stored == dir || len(stored) > len(prefix) && stored[:len(prefix)] == prefix {
 				doomed = append(doomed, stored)
 			}
@@ -380,25 +390,25 @@ func (v *Vault) dropThumbFolders(ctx context.Context, dir string) {
 	v.mu.RUnlock()
 
 	for _, stored := range doomed {
-		v.dropPack(ctx, stored)
+		v.dropPack(ctx, scope, stored)
 	}
 }
 
 // dropAllThumbs erases every pack. A password change calls it: the packs are
 // sealed under the key being retired, and re-encrypting derived data is work
 // that regenerating it does for free.
-func (v *Vault) dropAllThumbs(ctx context.Context) {
+func (v *Vault) dropAllThumbs(ctx context.Context, scope Scope) {
 	v.mu.RLock()
 	var dirs []string
-	if v.dataKey != nil {
-		for dir := range v.manifest.Thumbs {
+	if m, err := v.manifestForLocked(scope); err == nil {
+		for dir := range m.Thumbs {
 			dirs = append(dirs, dir)
 		}
 	}
 	v.mu.RUnlock()
 
 	for _, dir := range dirs {
-		v.dropPack(ctx, dir)
+		v.dropPack(ctx, scope, dir)
 	}
 }
 
@@ -407,18 +417,19 @@ func (v *Vault) dropAllThumbs(ctx context.Context) {
 //
 // The cached copy is decrypted, so it is held in memory only and cleared when
 // the vault locks — the same rule the rebuilt file content follows.
-func (v *Vault) loadPack(ctx context.Context, dir string) (map[string][]byte, error) {
+func (v *Vault) loadPack(ctx context.Context, scope Scope, dir string) (map[string][]byte, error) {
 	dir = CleanDir(dir)
-	if items, ok := v.cachedPack(dir); ok {
+	if items, ok := v.cachedPack(scope, dir); ok {
 		return items, nil
 	}
 
 	v.mu.RLock()
-	if v.dataKey == nil {
+	m, err := v.manifestForLocked(scope)
+	if err != nil {
 		v.mu.RUnlock()
-		return nil, ErrLocked
+		return nil, err
 	}
-	pack := v.manifest.Thumbs[dir]
+	pack := m.Thumbs[dir]
 	v.mu.RUnlock()
 
 	if pack == nil {
@@ -431,7 +442,7 @@ func (v *Vault) loadPack(ctx context.Context, dir string) (map[string][]byte, er
 	v.thumbLoad.Lock()
 	defer v.thumbLoad.Unlock()
 
-	if items, ok := v.cachedPack(dir); ok {
+	if items, ok := v.cachedPack(scope, dir); ok {
 		return items, nil
 	}
 
@@ -444,14 +455,14 @@ func (v *Vault) loadPack(ctx context.Context, dir string) (map[string][]byte, er
 		return nil, fmt.Errorf("reading the thumbnails for %s: %w", dir, err)
 	}
 
-	v.cacheThumbs(dir, items)
+	v.cacheThumbs(scope, dir, items)
 	return items, nil
 }
 
 // savePack scatters a folder's thumbnails as one archive and points the index
 // at it, erasing whatever the folder's previous pack was stored as.
-func (v *Vault) savePack(ctx context.Context, dir string, items map[string][]byte) error {
-	return v.savePackOn(ctx, dir, items, nil)
+func (v *Vault) savePack(ctx context.Context, scope Scope, dir string, items map[string][]byte) error {
+	return v.savePackOn(ctx, scope, dir, items, nil)
 }
 
 // savePackOn is savePack onto a named set of accounts, which is what moving a
@@ -468,17 +479,17 @@ func (v *Vault) savePack(ctx context.Context, dir string, items map[string][]byt
 // browser can draw again from a file that is itself stored properly. What the
 // narrowing does buy is that a folder on nine clouds does not fail to save its
 // pictures.
-func (v *Vault) savePackOn(ctx context.Context, dir string, items map[string][]byte, accounts []string) error {
+func (v *Vault) savePackOn(ctx context.Context, scope Scope, dir string, items map[string][]byte, accounts []string) error {
 	dir = CleanDir(dir)
 	if len(items) == 0 {
-		v.dropPack(ctx, dir)
+		v.dropPack(ctx, scope, dir)
 		return nil
 	}
 	if len(accounts) > archive.SchemeDefault.Total {
 		accounts = accounts[:archive.SchemeDefault.Total]
 	}
 
-	placed, err := v.scatter(ctx, thumbArchiveName, encodePack(items), accounts, len(accounts) > 0)
+	placed, err := v.scatter(ctx, scope, thumbArchiveName, encodePack(items), accounts, len(accounts) > 0)
 	if err != nil {
 		return err
 	}
@@ -497,22 +508,23 @@ func (v *Vault) savePackOn(ctx context.Context, dir string, items map[string][]b
 	}
 
 	v.mu.Lock()
-	if v.dataKey == nil {
+	m, err := v.manifestForLocked(scope)
+	if err != nil {
 		v.mu.Unlock()
 		v.deleteShards(context.WithoutCancel(ctx), placed.shards)
-		return ErrLocked
+		return err
 	}
-	if v.manifest.Thumbs == nil {
-		v.manifest.Thumbs = map[string]*ThumbPack{}
+	if m.Thumbs == nil {
+		m.Thumbs = map[string]*ThumbPack{}
 	}
-	previous, had := v.manifest.Thumbs[dir]
-	v.manifest.Thumbs[dir] = pack
+	previous, had := m.Thumbs[dir]
+	m.Thumbs[dir] = pack
 	err = v.persistLocked()
 	if err != nil {
 		if had {
-			v.manifest.Thumbs[dir] = previous
+			m.Thumbs[dir] = previous
 		} else {
-			delete(v.manifest.Thumbs, dir)
+			delete(m.Thumbs, dir)
 		}
 	}
 	v.mu.Unlock()
@@ -529,61 +541,70 @@ func (v *Vault) savePackOn(ctx context.Context, dir string, items map[string][]b
 		v.deleteShards(context.WithoutCancel(ctx), previous.Shards)
 	}
 
-	v.cacheThumbs(dir, items)
+	v.cacheThumbs(scope, dir, items)
 	return nil
 }
 
 // dropPack erases a folder's pack from the accounts and from the index.
-func (v *Vault) dropPack(ctx context.Context, dir string) {
+func (v *Vault) dropPack(ctx context.Context, scope Scope, dir string) {
 	dir = CleanDir(dir)
 
 	v.mu.Lock()
-	if v.dataKey == nil {
+	m, err := v.manifestForLocked(scope)
+	if err != nil {
 		v.mu.Unlock()
 		return
 	}
-	pack, ok := v.manifest.Thumbs[dir]
+	pack, ok := m.Thumbs[dir]
 	if !ok {
 		v.mu.Unlock()
-		v.forgetThumbs(dir)
+		v.forgetThumbs(scope, dir)
 		return
 	}
-	delete(v.manifest.Thumbs, dir)
-	if len(v.manifest.Thumbs) == 0 {
-		v.manifest.Thumbs = nil
+	delete(m.Thumbs, dir)
+	if len(m.Thumbs) == 0 {
+		m.Thumbs = nil
 	}
-	err := v.persistLocked()
+	err = v.persistLocked()
 	v.mu.Unlock()
 
-	v.forgetThumbs(dir)
+	v.forgetThumbs(scope, dir)
 	if err == nil && pack != nil {
 		v.deleteShards(context.WithoutCancel(ctx), pack.Shards)
 	}
 }
 
+// packKey names one pack in the memory cache. Two vaults inside the same file
+// can each have a folder called /Photos holding different pictures, so the
+// folder alone is not the identity of a pack — which vault it belongs to is
+// half of it.
+func packKey(scope Scope, dir string) string {
+	return string(scope) + "\x00" + CleanDir(dir)
+}
+
 // cachedPack returns a folder's thumbnails if they are already in memory.
-func (v *Vault) cachedPack(dir string) (map[string][]byte, bool) {
+func (v *Vault) cachedPack(scope Scope, dir string) (map[string][]byte, bool) {
 	v.thumbMu.Lock()
 	defer v.thumbMu.Unlock()
-	items, ok := v.thumbs[dir]
+	items, ok := v.thumbs[packKey(scope, dir)]
 	return items, ok
 }
 
 // cacheThumbs remembers a folder's thumbnails for the rest of the session.
-func (v *Vault) cacheThumbs(dir string, items map[string][]byte) {
+func (v *Vault) cacheThumbs(scope Scope, dir string, items map[string][]byte) {
 	v.thumbMu.Lock()
 	defer v.thumbMu.Unlock()
 	if v.thumbs == nil {
 		v.thumbs = map[string]map[string][]byte{}
 	}
-	v.thumbs[dir] = items
+	v.thumbs[packKey(scope, dir)] = items
 }
 
 // forgetThumbs drops one folder from the memory cache.
-func (v *Vault) forgetThumbs(dir string) {
+func (v *Vault) forgetThumbs(scope Scope, dir string) {
 	v.thumbMu.Lock()
 	defer v.thumbMu.Unlock()
-	delete(v.thumbs, dir)
+	delete(v.thumbs, packKey(scope, dir))
 }
 
 // forgetAllThumbs empties the memory cache. Locking the vault calls it: the

@@ -235,3 +235,92 @@ export function BulkDownload({ items, onClose }) {
     </Modal>
   )
 }
+
+/* Moving a whole selection into a sub vault, or back out of one.
+
+   Each item goes across on its own, so a failure part-way leaves the rest where
+   they were rather than half a folder in each place — and the dialog says which
+   ones landed. The move itself is an index change per item; nothing travels
+   between clouds. */
+export function BulkAssign({ items, from, targets, onClose, onDone, onError }) {
+  const [to, setTo] = useState(targets[0]?.id ?? '')
+  const [busy, setBusy] = useState(false)
+  const [at, setAt] = useState(-1)
+  const [done, setDone] = useState(null)
+
+  const destination = targets.find((t) => t.id === to)
+
+  const run = async () => {
+    setBusy(true)
+    const failed = []
+    const warnings = []
+
+    for (let i = 0; i < items.length; i++) {
+      setAt(i)
+      const entry = items[i]
+      const target = entry.kind === 'folder' ? entry.path : entry.file.id
+      try {
+        const report = await api.assign({ target, from, to })
+        if (report.warnings?.length) warnings.push(...report.warnings)
+      } catch (err) {
+        failed.push(`${entry.name}: ${err.message}`)
+      }
+    }
+
+    if (warnings.length) onError(warnings.join('\n'))
+    if (failed.length) onError(failed.join('\n'))
+    // Once, after the whole batch, rather than per item: it walks the whole
+    // destination either way.
+    api.migrateVault(to).catch(() => {})
+    setDone(items.length - failed.length)
+    setBusy(false)
+  }
+
+  if (done !== null) {
+    onDone()
+    return null
+  }
+
+  return (
+    <Modal
+      title={from ? `Take ${items.length} item${items.length === 1 ? '' : 's'} out` : `Move ${items.length} item${items.length === 1 ? '' : 's'} into a sub vault`}
+      onClose={busy ? undefined : onClose}
+      width={460}
+    >
+      {busy ? (
+        <Progress items={items} at={Math.max(0, at)} verb="Moving" />
+      ) : (
+        <>
+          <p style={{
+            margin: '0 0 14px', fontFamily: FONT.sans, fontSize: '11.5px',
+            color: COLORS.textMuted, lineHeight: 1.6,
+          }}>
+            The paths are kept and nothing travels between your clouds — this is an
+            index change. Each is re-encrypted onto {destination?.label || 'the destination'}’s
+            own key afterwards; until that finishes, the vault it is leaving can
+            still read it.
+          </p>
+
+          {targets.length > 1 && (
+            <select
+              value={to}
+              onChange={(e) => setTo(e.target.value)}
+              style={{
+                width: '100%', padding: '10px 12px', marginBottom: '14px',
+                background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: '6px',
+                color: COLORS.text, fontFamily: FONT.mono, fontSize: '13px',
+              }}
+            >
+              {targets.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+            </select>
+          )}
+
+          <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+            <Button variant="ghost" onClick={onClose}>Cancel</Button>
+            <Button variant="primary" onClick={run}>Move</Button>
+          </div>
+        </>
+      )}
+    </Modal>
+  )
+}

@@ -88,7 +88,7 @@ everything meaningful is encrypted. It is the only persistent state SAND has.
 
 ```json
 {
-  "version":     2,
+  "version":     3,
   "kdf":         { "salt": "…", "time": 3, "memory": 65536, "threads": 4 },
   "check":       { "nonce": "…", "ciphertext": "…" },
   "data_key":    { "nonce": "…", "ciphertext": "…" },
@@ -97,9 +97,20 @@ everything meaningful is encrypted. It is the only persistent state SAND has.
   "manifest":    { "nonce": "…", "ciphertext": "…" },
   "settings":    { "nonce": "…", "ciphertext": "…" },
   "policy":      "strict",
-  "default_accounts": ["…", "…", "…"]
+  "default_accounts": ["…", "…", "…"],
+  "sub_vaults":  [ { "id": "…", "kdf": { … }, "check": { … },
+                    "data_key": { … }, "data_key_id": "…",
+                    "section": { "nonce": "…", "ciphertext": "…" } } ]
 }
 ```
+
+Version 3 reads a version 2 vault as it stands and upgrades it on the first
+write; every version 3 field is additive, so a vault with no sub vaults is
+byte-for-byte what version 2 always was. The number had to go up all the same:
+a sub vault's section is the only copy of what it holds, and an older build
+would parse the file, discard the field it had never heard of, and write it
+back without it. Refusing an unknown version is what that build already does,
+which is what makes the discarding impossible.
 
 Only the KDF parameters, the policy, the key generation labels and the default
 accounts are in the clear — those last are the random IDs of accounts whose
@@ -115,6 +126,7 @@ under the **vault key**, derived from your password with Argon2id.
 | `providers` | Account configs **including credentials** | A stolen vault file must not yield cloud access |
 | `manifest` | Filenames, folders, sizes, part placement, film details (§3.10) | Filenames and folder structure are themselves sensitive |
 | `settings` | The preferences that are secrets — today the film database key | It is a credential for a third-party service; absent entirely until one is set, and never copied into a manifest backup |
+| `sub_vaults[].section` | One sub vault's whole index (§3.8) | Sealed under **its own** password — the vault key does not open it |
 
 ### 3.2 Two keys, not one
 
@@ -494,6 +506,116 @@ opening those folders, paid where they are listed instead. Storing a copy of eac
 cover in the parent's own pack would trade that for an extra stored object per
 folder and a second thing to invalidate; pointing at what is already there is the
 cheaper bargain in both directions.
+
+---
+
+### 3.8 Sub vaults
+
+A sub vault is a vault inside the vault, with a password of its own. It exists
+for what should not be readable by whoever holds the main password — which,
+once a vault is mounted as a drive and left open on a laptop, is a broader set
+of people than it sounds.
+
+It is sealed under Argon2id of its own password and nothing else. The main
+password unwraps every other section of the file and does not unwrap this one.
+
+Three properties follow, and they are the design:
+
+**Its own namespace.** A sub vault's files are not hidden main-vault files at
+hidden main-vault paths; they live in a separate tree with its own root.
+Nothing can collide, and nothing has to be checked against paths that cannot be
+read while the sub vault is shut. In code this is `vault.Scope`: the zero value
+is the main vault, and the seven path-addressed reads take one. Everything
+addressed by file ID takes none — an ID is unique across every vault, so the
+vault resolves it against whatever is open, and reading, moving, deleting,
+streaming and thumbnailing stay exactly the operations they were.
+
+**Its own data keys.** A file records the key generation it was sealed under,
+and a sub vault's generations belong to the sub vault. The machinery for "this
+file is on a key the vault holds somewhere" already existed for password
+changes, so it carries sub vaults with almost nothing added — including
+deferring re-encryption, which is what makes assignment instant.
+
+**Never on a WebDAV mount.** Not while locked, and not while unlocked either.
+`internal/davfs` is pinned to `MainScope` by a constant, so the guarantee holds
+by construction rather than by every call site remembering it. A mounted drive
+is a folder every process running as you can read; what goes in a sub vault is
+what should not be reachable that way.
+
+#### What the main password can see
+
+Deliberately bounded, and worth stating exactly. It sees that a sub vault
+exists, what it is called, when it was made, and an **inventory** of the objects
+it owns — archive IDs, which account each part sits on, and how big each is. It
+sees no path, no filename, no per-file size, no type, and no content.
+
+The inventory is the price of two things that would otherwise be impossible. A
+sub vault whose password is forgotten can never be opened again, and without a
+list of its objects they would sit on the accounts for good, unattributable and
+undeletable. And disconnecting an account has to refuse when it would strand
+files — a check that would silently pass if it could not count what a shut sub
+vault has there.
+
+#### Assignment
+
+Moving a file or a folder between vaults keeps its path: `/Papers/2019` in the
+main vault arrives at `/Papers/2019` in the sub vault, with the folders above it
+made as it lands, so sending it back puts it where it was.
+
+The index move is one write and it is instant. Nothing is uploaded or
+downloaded, and the entries keep the key generation they were sealed under until
+the re-encryption behind the move catches up.
+
+**No key crosses the boundary.** An earlier version of this copied the source's
+generation into the destination so a moved file would read immediately — which
+handed the destination the key sealing everything *else* in the source, because
+a vault's files share one active generation. Assigning one receipt out of a sub
+vault therefore gave the main password the whole sub vault, and since
+`snapshotLocked` replicates every retired key to every connected account
+alongside the inventory naming the objects, the main password plus any one
+account was a complete break of the guarantee above.
+
+So nothing is adopted. A moved file is readable while both vaults are open,
+because key lookup searches every open vault; once the source is shut it reports
+`ErrSubVaultLocked` until the re-encryption has moved it. That is the honest
+state, and it is why the pass matters rather than being a tidy-up: the file is
+only fully independent of the vault it came from once it is on the destination's
+own key and the old parts are erased.
+
+#### Importing a vault found on an account
+
+Every vault replicates its index to every account it uses, so an account that
+has been used before carries a `manifest.sand`. Reconnecting an old cloud after
+a machine died means looking straight at your own files — and `Recover` refuses
+to run against a vault that already holds anything, because adopting a snapshot
+replaces the data key and would strand everything already there.
+
+Importing as a sub vault dissolves that restriction rather than working around
+it: a snapshot carries an index, a data key and a password that opens it, which
+is precisely what a sub vault is. The found vault lands beside yours instead of
+replacing it.
+
+Connecting an account probes it for a backup and reports only whether it is
+ours — everything else is inside the envelope, which is right: an account
+holding someone's backup should not be able to describe it to whoever connects
+it next. The import asks for the old password to open the snapshot and a new one
+for the sub vault; the second is free, because the snapshot's data key is
+adopted as it stands and only the section wrapping is derived afresh. Parts are
+matched to accounts by asking what object keys are really there, the way a
+recovery does.
+
+#### Backup and recovery
+
+A backup carries the sealed records verbatim, so a recovery restores a vault
+with its sub vaults present and shut, each opened afterwards by its own
+password. A backup that dropped them would restore a vault missing exactly what
+its owner had been most deliberate about protecting, and would do it silently.
+
+One wrinkle: a recovery rewrites every shard record to point at the account that
+really holds the part, since reconnecting an account gives it a fresh ID — and
+it cannot do that inside a sealed section. So the translation is worked out from
+the inventory, written into the main manifest as `account_remap`, and applied
+the first time each sub vault is opened.
 
 ---
 
@@ -1305,10 +1427,21 @@ reveals only whether a vault exists.
 | POST | `/api/vault/migrate` | Finish a re-encryption that was deferred or interrupted |
 | POST | `/api/vault/policy` | Change placement policy |
 | POST | `/api/vault/defaults` | Set the accounts uploads use by default — any multiple of 3, which chooses the scheme (§5.3); empty list = pick per file |
+| POST | `/api/vault/backup` | Turn replication of the index to the accounts on or off (off erases the copies out there) |
 | GET | `/api/vault/recovery` | Is a connected account carrying a vault this one could recover? (§3.7) |
 | POST | `/api/vault/recovery` | Adopt that index (`password` — the *lost* vault's, `provider_id`, `dry_run`) |
 | POST | `/api/vault/recovery/resume` | Re-point the index at accounts reconnected since (`dry_run`; no password) |
 | POST | `/api/vault/reclaim` | Fresh data key under this password, every file rebuilt onto it, onto `accounts` (§3.7) |
+| GET | `/api/subvaults` | The vaults inside this one, and whether each is open (§3.8) |
+| POST | `/api/subvaults` | Make one, sealed under a password of its own |
+| POST | `/api/subvaults/{id}/unlock` | Open one — a second password on top of the session, never a way around it |
+| POST | `/api/subvaults/{id}/lock` | Shut it; drops the chunk cache and every stream link |
+| PATCH | `/api/subvaults/{id}` | Rename it (metadata the main vault keeps, so its own password is not needed) |
+| POST | `/api/subvaults/{id}/password` | New password, new data key, its files re-encrypted onto it |
+| POST | `/api/subvaults/{id}/migrate` | Finish a re-encryption inside one |
+| DELETE | `/api/subvaults/{id}` | Delete it and erase its parts (`?force=1` when it is locked and cannot be listed) |
+| POST | `/api/assign` | Move a file or folder between vaults (`from`, `to`, `target`) |
+| POST | `/api/vaults/import` | Bring a vault the recovery scan found in as a sub vault, rather than recovering over this one |
 | GET | `/api/providers/specs` | Backend descriptions for the connect form |
 | GET | `/api/providers` | Connected accounts: online, parts held, quota |
 | POST | `/api/providers` | Connect an account (pings before saving) |
@@ -1320,8 +1453,8 @@ reveals only whether a vault exists.
 | POST | `/api/providers/{id}/test` | Re-check one account |
 | PATCH | `/api/providers/{id}` | Rename it / set its colour — index only, the backend is never contacted (§3.9) |
 | DELETE | `/api/providers/{id}` | Disconnect (`?force=1` to override the guard) |
-| GET | `/api/files?path=` | List a folder |
-| GET | `/api/search?q=` | Find files and folders by name (`&path=` scopes to a subtree, `&type=file\|folder`, `&limit=`) |
+| GET | `/api/files?path=` | List a folder (`&vault=` for a sub vault; absent is the main one) |
+| GET | `/api/search?q=` | Find files and folders by name (`&path=` scopes to a subtree, `&vault=`, `&type=file\|folder`, `&limit=`) |
 | POST | `/api/files` | Upload (multipart `files[]`, `path`, `overwrite`, `accounts`) |
 | GET | `/api/files/{id}` | Metadata including part placement |
 | GET | `/api/files/{id}/content` | **Serve at an offset** through `ChunkedReader` (`?download=1` to save) |
@@ -1569,7 +1702,8 @@ in front of it (`scripts/nginx-sand.conf`, or Tailscale Serve), or set
 
 ```
 sand/
-├── cmd/sand/                  # CLI: serve, vault, remote, ls/find/put/get/rm/relocate,
+├── cmd/sand/                  # CLI: serve, vault, sub, remote,
+│                              #   ls/find/put/get/rm/relocate (all take --in),
 │                              #   archive/restore, manifest ls,
 │                              #   vault backup/recover
 ├── internal/
@@ -1584,15 +1718,17 @@ sand/
 │   ├── vault/                 # store (encrypted file), manifest, placement, transfer,
 │   │                          #   relocate (moving parts between accounts), rekey,
 │   │                          #   backup (writing the index out), recovery (reading it
-│   │                          #   back), reclaim (onto a key of your own)
+│   │                          #   back), reclaim (onto a key of your own),
+│   │                          #   subvault (vaults inside the vault), discover (import)
 │   └── server/                # sessions, handlers, embedded SPA
 ├── web/src/                   # React file browser
 │   ├── api.js  theme.js  App.jsx
-│   ├── navigation.js          # the trail of folders walked — Back/Forward/Up
+│   ├── navigation.js          # the trail walked — vault and path per step
 │   ├── view.js                # list or grid, sort key and direction (persisted)
 │   └── components/            # LockScreen, AccountsPanel, FileBrowser, Toolbar,
 │                              #   FileEntry (rows + tiles), BulkActions,
 │                              #   MoveToFolder, Rename, FolderArt, PreviewModal,
+│                              #   SubVaults, ImportVault,
 │                              #   PdfPreview (pdf.js), FilmDetails, ui
 └── tests/                     # pytest e2e: CLI, API, vault flow, browser
 ```

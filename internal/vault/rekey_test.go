@@ -89,7 +89,7 @@ func TestChangePasswordRotatesTheKeyThatOpensTheParts(t *testing.T) {
 	ctx := context.Background()
 
 	payload := bytes.Repeat([]byte("everything under the old key "), 200)
-	entry, _, err := v.Upload(ctx, "/", "rotated.txt", payload, UploadOptions{})
+	entry, _, err := v.Upload(ctx, MainScope, "/", "rotated.txt", payload, UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -165,11 +165,11 @@ func TestDeferredMigrationKeepsFilesReadableAndResumes(t *testing.T) {
 	v, _ := newTestVault(t, 3)
 	ctx := context.Background()
 
-	first, _, err := v.Upload(ctx, "/", "one.txt", []byte("the first file"), UploadOptions{})
+	first, _, err := v.Upload(ctx, MainScope, "/", "one.txt", []byte("the first file"), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
-	second, _, err := v.Upload(ctx, "/", "two.txt", []byte("the second file"), UploadOptions{})
+	second, _, err := v.Upload(ctx, MainScope, "/", "two.txt", []byte("the second file"), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -251,11 +251,11 @@ func TestMigrationLeavesUnreadableFilesOnTheOldKey(t *testing.T) {
 	v, roots := newTestVault(t, 2)
 	ctx := context.Background()
 
-	readable, _, err := v.Upload(ctx, "/", "reachable.txt", []byte("this one is fine"), UploadOptions{})
+	readable, _, err := v.Upload(ctx, MainScope, "/", "reachable.txt", []byte("this one is fine"), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
-	stranded, _, err := v.Upload(ctx, "/", "stranded.txt", []byte("this one is not"), UploadOptions{})
+	stranded, _, err := v.Upload(ctx, MainScope, "/", "stranded.txt", []byte("this one is not"), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -319,7 +319,7 @@ func TestDeletingTheLastFileOnAnOldKeyDropsIt(t *testing.T) {
 	v, _ := newTestVault(t, 3)
 	ctx := context.Background()
 
-	entry, _, err := v.Upload(ctx, "/", "doomed.txt", []byte("not for long"), UploadOptions{})
+	entry, _, err := v.Upload(ctx, MainScope, "/", "doomed.txt", []byte("not for long"), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -359,7 +359,7 @@ func TestChangePasswordRejectsTheWrongCurrentPassword(t *testing.T) {
 	v, _ := newTestVault(t, 3)
 	ctx := context.Background()
 
-	if _, _, err := v.Upload(ctx, "/", "untouched.txt", []byte("safe"), UploadOptions{}); err != nil {
+	if _, _, err := v.Upload(ctx, MainScope, "/", "untouched.txt", []byte("safe"), UploadOptions{}); err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 
@@ -386,7 +386,7 @@ func TestRecoveryAfterAnInterruptedPasswordChange(t *testing.T) {
 	original, roots := newTestVault(t, 3)
 
 	old := bytes.Repeat([]byte("written before the change "), 100)
-	if _, _, err := original.Upload(ctx, "/", "before.txt", old, UploadOptions{}); err != nil {
+	if _, _, err := original.Upload(ctx, MainScope, "/", "before.txt", old, UploadOptions{}); err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 
@@ -397,7 +397,7 @@ func TestRecoveryAfterAnInterruptedPasswordChange(t *testing.T) {
 	}
 
 	fresh := []byte("written after the change")
-	if _, _, err := original.Upload(ctx, "/", "after.txt", fresh, UploadOptions{}); err != nil {
+	if _, _, err := original.Upload(ctx, MainScope, "/", "after.txt", fresh, UploadOptions{}); err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 	original.AwaitBackupSync()
@@ -477,7 +477,7 @@ func TestBackupsAreReplacedAfterAPasswordChangeEvenIfThePushFailed(t *testing.T)
 	v, roots := newTestVault(t, 3)
 	ctx := context.Background()
 
-	if _, _, err := v.Upload(ctx, "/", "indexed.txt", []byte("in the index"), UploadOptions{}); err != nil {
+	if _, _, err := v.Upload(ctx, MainScope, "/", "indexed.txt", []byte("in the index"), UploadOptions{}); err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 	v.AwaitBackupSync()
@@ -544,7 +544,7 @@ func TestBackupsAreReplacedAfterAPasswordChangeEvenIfThePushFailed(t *testing.T)
 func entryAt(t *testing.T, v *Vault, path string) *Entry {
 	t.Helper()
 
-	listing, err := v.List("/")
+	listing, err := v.List(MainScope, "/")
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -562,7 +562,7 @@ func TestMigrationProgressReportsEveryFile(t *testing.T) {
 	ctx := context.Background()
 
 	for _, name := range []string{"a.txt", "b.txt", "c.txt"} {
-		if _, _, err := v.Upload(ctx, "/", name, []byte(name), UploadOptions{}); err != nil {
+		if _, _, err := v.Upload(ctx, MainScope, "/", name, []byte(name), UploadOptions{}); err != nil {
 			t.Fatalf("Upload %s: %v", name, err)
 		}
 	}

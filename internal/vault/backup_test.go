@@ -25,7 +25,7 @@ func readBackup(t *testing.T, root string) []byte {
 
 func TestBackupLandsOnEveryAccount(t *testing.T) {
 	v, roots := newTestVault(t, 3)
-	if _, _, err := v.Upload(context.Background(), "/", "notes.txt", []byte("hello"), UploadOptions{}); err != nil {
+	if _, _, err := v.Upload(context.Background(), MainScope, "/", "notes.txt", []byte("hello"), UploadOptions{}); err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 	v.AwaitBackupSync()
@@ -57,7 +57,7 @@ func TestBackupLandsOnEveryAccount(t *testing.T) {
 
 func TestBackupOpensWithThePasswordAlone(t *testing.T) {
 	v, roots := newTestVault(t, 3)
-	if _, _, err := v.Upload(context.Background(), "/", "notes.txt", []byte("hello"), UploadOptions{}); err != nil {
+	if _, _, err := v.Upload(context.Background(), MainScope, "/", "notes.txt", []byte("hello"), UploadOptions{}); err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 	if _, err := v.SyncManifestBackup(context.Background(), false); err != nil {
@@ -197,14 +197,14 @@ func TestRecoverAfterLosingTheVault(t *testing.T) {
 	ctx := context.Background()
 	original, roots := newTestVault(t, 3)
 
-	if err := original.Mkdir("/work/reports"); err != nil {
+	if err := original.Mkdir(MainScope, "/work/reports"); err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
 	payload := bytes.Repeat([]byte("the quarterly numbers "), 500)
-	if _, _, err := original.Upload(ctx, "/work/reports", "q4.txt", payload, UploadOptions{}); err != nil {
+	if _, _, err := original.Upload(ctx, MainScope, "/work/reports", "q4.txt", payload, UploadOptions{}); err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
-	if _, _, err := original.Upload(ctx, "/", "readme.md", []byte("top level"), UploadOptions{}); err != nil {
+	if _, _, err := original.Upload(ctx, MainScope, "/", "readme.md", []byte("top level"), UploadOptions{}); err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 	if warnings, err := original.SyncManifestBackup(ctx, false); err != nil {
@@ -251,7 +251,7 @@ func TestRecoverAfterLosingTheVault(t *testing.T) {
 	if dryRun.Files != 2 || dryRun.Recoverable != 2 {
 		t.Fatalf("dry run = %+v, want 2 files, both recoverable", dryRun)
 	}
-	if listing, err := fresh.List("/"); err == nil && len(listing.Files) > 0 {
+	if listing, err := fresh.List(MainScope, "/"); err == nil && len(listing.Files) > 0 {
 		t.Fatal("a dry run should not have changed the vault")
 	}
 
@@ -272,7 +272,7 @@ func TestRecoverAfterLosingTheVault(t *testing.T) {
 	}
 
 	// The tree is back.
-	listing, err := fresh.List("/work/reports")
+	listing, err := fresh.List(MainScope, "/work/reports")
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -294,7 +294,7 @@ func TestRecoverAfterLosingTheVault(t *testing.T) {
 func TestRecoverRefusesAVaultThatAlreadyHoldsFiles(t *testing.T) {
 	ctx := context.Background()
 	source, _ := newTestVault(t, 3)
-	if _, _, err := source.Upload(ctx, "/", "a.txt", []byte("a"), UploadOptions{}); err != nil {
+	if _, _, err := source.Upload(ctx, MainScope, "/", "a.txt", []byte("a"), UploadOptions{}); err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 	if _, err := source.SyncManifestBackup(ctx, false); err != nil {
@@ -307,7 +307,7 @@ func TestRecoverRefusesAVaultThatAlreadyHoldsFiles(t *testing.T) {
 	}
 
 	target, _ := newTestVault(t, 3)
-	if _, _, err := target.Upload(ctx, "/", "b.txt", []byte("b"), UploadOptions{}); err != nil {
+	if _, _, err := target.Upload(ctx, MainScope, "/", "b.txt", []byte("b"), UploadOptions{}); err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 	_, err = target.Recover(ctx, snapshot, false)
@@ -320,7 +320,7 @@ func TestSnapshotShardPasswordOpensStoredParts(t *testing.T) {
 	ctx := context.Background()
 	v, roots := newTestVault(t, 3)
 	payload := bytes.Repeat([]byte("recoverable without a vault "), 200)
-	entry, _, err := v.Upload(ctx, "/", "offline.txt", payload, UploadOptions{})
+	entry, _, err := v.Upload(ctx, MainScope, "/", "offline.txt", payload, UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -374,7 +374,7 @@ func TestSnapshotShardPasswordOpensStoredParts(t *testing.T) {
 func TestRecoverRollsBackWhenTheVaultCannotBeWritten(t *testing.T) {
 	ctx := context.Background()
 	source, roots := newTestVault(t, 3)
-	if _, _, err := source.Upload(ctx, "/", "a.txt", []byte("a"), UploadOptions{}); err != nil {
+	if _, _, err := source.Upload(ctx, MainScope, "/", "a.txt", []byte("a"), UploadOptions{}); err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 	if _, err := source.SyncManifestBackup(ctx, false); err != nil {
@@ -409,7 +409,7 @@ func TestRecoverRollsBackWhenTheVaultCannotBeWritten(t *testing.T) {
 
 	// The failure must leave nothing half-applied: a retry has to be possible,
 	// which it would not be if the recovered entries were still in memory.
-	listing, err := target.List("/")
+	listing, err := target.List(MainScope, "/")
 	if err != nil {
 		t.Fatalf("List after the failed recovery: %v", err)
 	}

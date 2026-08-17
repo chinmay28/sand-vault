@@ -109,7 +109,9 @@ function ActionTile({ icon, label, hint, onClick }) {
    same panel becomes a drawer over the file browser — the file list is what you
    came for on a phone, and the accounts are a place you visit. */
 export default function AccountsPanel({
-  providers, loading, stats, webdav, mobile, open, onClose, onRefresh, onChanged,
+  providers, loading, status, stats, webdav, mobile, open,
+  subVaults = [], showSubVaults, onToggleSubVaults, onOpenSubVault,
+  onClose, onRefresh, onChanged,
 }) {
   // A sign-in that took over the tab is still in flight when the app reloads:
   // reopen the dialog on it rather than making the user start again.
@@ -350,6 +352,10 @@ export default function AccountsPanel({
           providers={providers}
           stats={stats}
           webdav={webdav}
+          subVaults={subVaults}
+          showSubVaults={showSubVaults}
+          onToggleSubVaults={onToggleSubVaults}
+          onOpenSubVault={onOpenSubVault}
           onClose={() => setSettingsOpen(false)}
           onChanged={onChanged}
         />

@@ -72,15 +72,17 @@ type ArtChoice struct {
 
 // FolderArtFor answers what one folder is drawn with, and whether it is drawn
 // with anything at all.
-func (v *Vault) FolderArtFor(dir string) (FolderArt, bool) {
+func (v *Vault) FolderArtFor(scope Scope, dir string) (FolderArt, bool) {
 	dir = CleanDir(dir)
 
 	v.mu.RLock()
 	defer v.mu.RUnlock()
-	if v.dataKey == nil {
+
+	m, err := v.manifestForLocked(scope)
+	if err != nil {
 		return FolderArt{}, false
 	}
-	art := v.folderArtForLocked([]string{dir})[dir]
+	art := v.folderArtForLocked(m, []string{dir})[dir]
 	return art, art.ID != ""
 }
 
@@ -90,27 +92,29 @@ func (v *Vault) FolderArtFor(dir string) (FolderArt, bool) {
 // It reports whether the list was cut short, because a picker that silently
 // showed the first three hundred of a thousand would be lying about what the
 // folder holds.
-func (v *Vault) FolderArtChoices(dir string) ([]ArtChoice, bool, error) {
+func (v *Vault) FolderArtChoices(scope Scope, dir string) ([]ArtChoice, bool, error) {
 	dir = CleanDir(dir)
 
 	v.mu.RLock()
 	defer v.mu.RUnlock()
-	if v.dataKey == nil {
-		return nil, false, ErrLocked
+
+	m, err := v.manifestForLocked(scope)
+	if err != nil {
+		return nil, false, err
 	}
-	if !v.manifest.FolderExists(dir) {
+	if !m.FolderExists(dir) {
 		return nil, false, fmt.Errorf("no such folder: %s", dir)
 	}
 
-	thumbed := v.thumbIndexLocked()
+	thumbed := v.thumbIndexLocked(m)
 
 	var out []ArtChoice
-	for _, e := range v.manifest.Entries {
+	for _, e := range m.Entries {
 		if !underDir(e.Dir, dir) || !thumbed[e.Dir][e.ID] {
 			continue
 		}
 		choice := ArtChoice{ID: e.ID, Name: e.Name, Dir: e.Dir}
-		if info := v.manifest.Movies[e.ID]; info != nil {
+		if info := m.Movies[e.ID]; info != nil {
 			choice.Title, choice.Year, choice.Film = info.Title, info.Year, true
 		}
 		out = append(out, choice)
@@ -149,48 +153,50 @@ func (v *Vault) FolderArtChoices(dir string) ([]ArtChoice, bool, error) {
 // a folder's picture is a picture of what is in it, and one that pointed
 // somewhere else would be a way to make a folder claim to hold something it
 // does not.
-func (v *Vault) SetFolderArt(dir, id string) (FolderArt, error) {
+func (v *Vault) SetFolderArt(scope Scope, dir, id string) (FolderArt, error) {
 	dir, id = CleanDir(dir), strings.TrimSpace(id)
 
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if v.dataKey == nil {
-		return FolderArt{}, ErrLocked
+
+	m, err := v.manifestForLocked(scope)
+	if err != nil {
+		return FolderArt{}, err
 	}
-	if !v.manifest.FolderExists(dir) {
+	if !m.FolderExists(dir) {
 		return FolderArt{}, fmt.Errorf("no such folder: %s", dir)
 	}
 
-	previous, had := v.manifest.FolderArt[dir]
+	previous, had := m.FolderArt[dir]
 	if id == "" {
 		if !had {
-			return v.folderArtForLocked([]string{dir})[dir], nil
+			return v.folderArtForLocked(m, []string{dir})[dir], nil
 		}
-		v.manifest.forgetFolderArtAt(dir)
+		m.forgetFolderArtAt(dir)
 	} else {
-		if _, ok := v.chosenArtLocked(dir, id); !ok {
+		if _, ok := v.chosenArtLocked(m, dir, id); !ok {
 			return FolderArt{}, fmt.Errorf(
 				"that file cannot stand for %s — a folder's picture has to be something stored inside it, with a picture of its own", dir)
 		}
-		if v.manifest.FolderArt == nil {
-			v.manifest.FolderArt = map[string]string{}
+		if m.FolderArt == nil {
+			m.FolderArt = map[string]string{}
 		}
-		v.manifest.FolderArt[dir] = id
+		m.FolderArt[dir] = id
 	}
 
 	if err := v.persistLocked(); err != nil {
 		// Put the map back the way the file on disk still has it.
 		if had {
-			if v.manifest.FolderArt == nil {
-				v.manifest.FolderArt = map[string]string{}
+			if m.FolderArt == nil {
+				m.FolderArt = map[string]string{}
 			}
-			v.manifest.FolderArt[dir] = previous
+			m.FolderArt[dir] = previous
 		} else {
-			v.manifest.forgetFolderArtAt(dir)
+			m.forgetFolderArtAt(dir)
 		}
 		return FolderArt{}, err
 	}
-	return v.folderArtForLocked([]string{dir})[dir], nil
+	return v.folderArtForLocked(m, []string{dir})[dir], nil
 }
 
 // folderArtForLocked answers, for each of the folders named, what it is drawn
@@ -204,7 +210,7 @@ func (v *Vault) SetFolderArt(dir, id string) (FolderArt, error) {
 // walk goes up from the file rather than down from the folder: a listing's
 // folders are siblings and a search's are not, and a file deep under two of them
 // counts for both. The caller must hold at least the read lock.
-func (v *Vault) folderArtForLocked(dirs []string) map[string]FolderArt {
+func (v *Vault) folderArtForLocked(m *Manifest, dirs []string) map[string]FolderArt {
 	if len(dirs) == 0 {
 		return nil
 	}
@@ -214,9 +220,9 @@ func (v *Vault) folderArtForLocked(dirs []string) map[string]FolderArt {
 		wanted[CleanDir(dir)] = false
 	}
 
-	thumbed := v.thumbIndexLocked()
+	thumbed := v.thumbIndexLocked(m)
 
-	for _, e := range v.manifest.Entries {
+	for _, e := range m.Entries {
 		if !thumbed[e.Dir][e.ID] {
 			continue
 		}
@@ -233,7 +239,7 @@ func (v *Vault) folderArtForLocked(dirs []string) map[string]FolderArt {
 
 	out := make(map[string]FolderArt, len(wanted))
 	for dir, offered := range wanted {
-		chosen, ok := v.chosenArtLocked(dir, v.manifest.FolderArt[dir])
+		chosen, ok := v.chosenArtLocked(m, dir, m.FolderArt[dir])
 		switch {
 		case ok:
 			out[dir] = chosen
@@ -248,20 +254,20 @@ func (v *Vault) folderArtForLocked(dirs []string) map[string]FolderArt {
 
 // chosenArtLocked reports whether a hand-picked file can still stand for a
 // folder: it has to exist, sit inside it, and have a thumbnail to draw.
-func (v *Vault) chosenArtLocked(dir, id string) (FolderArt, bool) {
+func (v *Vault) chosenArtLocked(m *Manifest, dir, id string) (FolderArt, bool) {
 	if id == "" {
 		return FolderArt{}, false
 	}
-	e := v.manifest.ByID(id)
-	if e == nil || !underDir(e.Dir, dir) || !v.hasThumbLocked(e) {
+	e := m.ByID(id)
+	if e == nil || !underDir(e.Dir, dir) || !v.hasThumbLocked(m, e) {
 		return FolderArt{}, false
 	}
-	return FolderArt{ID: id, Film: v.manifest.Movies[id] != nil}, true
+	return FolderArt{ID: id, Film: m.Movies[id] != nil}, true
 }
 
 // hasThumbLocked reports whether a file's folder pack holds a picture of it.
-func (v *Vault) hasThumbLocked(e *Entry) bool {
-	pack := v.manifest.Thumbs[e.Dir]
+func (v *Vault) hasThumbLocked(m *Manifest, e *Entry) bool {
+	pack := m.Thumbs[e.Dir]
 	return pack != nil && pack.holds(e.ID)
 }
 
@@ -272,9 +278,9 @@ func (v *Vault) hasThumbLocked(e *Entry) bool {
 // on disk and the wrong one for asking about every file in the vault: the walk
 // below asks once per entry, and a linear scan of a 512-entry pack per question
 // is the difference between a listing costing microseconds and milliseconds.
-func (v *Vault) thumbIndexLocked() map[string]map[string]bool {
-	out := make(map[string]map[string]bool, len(v.manifest.Thumbs))
-	for dir, pack := range v.manifest.Thumbs {
+func (v *Vault) thumbIndexLocked(m *Manifest) map[string]map[string]bool {
+	out := make(map[string]map[string]bool, len(m.Thumbs))
+	for dir, pack := range m.Thumbs {
 		ids := make(map[string]bool, len(pack.IDs))
 		for _, id := range pack.IDs {
 			ids[id] = true

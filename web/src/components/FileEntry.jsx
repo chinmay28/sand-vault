@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { COLORS, FONT, accountColor, fileIcon, formatBytes, formatDate, isPlayable } from '../theme'
 import { api } from '../api'
 import { useDownload } from '../download'
-import { ActionSheet, ConfirmDialog, IconButton } from './ui'
+import { ActionSheet, Banner, Button, ConfirmDialog, IconButton, Modal } from './ui'
 import StreamLink from './StreamLink'
 import ConvertFile from './ConvertFile'
 import { RelocateClouds, fileScheme, schemeName, storedParts } from './CloudSelect'
@@ -39,7 +39,10 @@ export const FILM_COLUMNS = 'minmax(0,1fr) 92px 150px 132px 216px'
    before chunking cannot be opened or streamed until it is converted, and one
    down to a single part cannot be rebuilt at all. Working that out twice —
    once for rows and once for tiles — is how the two views drift apart. */
-export function useFileActions({ file, providers, film, onPreview, onInspect, onFilm, onRefresh, onError }) {
+export function useFileActions({
+  file, providers, film, vault = '', subVaults = [],
+  onPreview, onInspect, onFilm, onRefresh, onError,
+}) {
   const [busy, setBusy] = useState(false)
   const [download, downloading] = useDownload(onError)
   const [menu, setMenu] = useState(false)
@@ -51,6 +54,14 @@ export function useFileActions({ file, providers, film, onPreview, onInspect, on
   const [relocating, setRelocating] = useState(false)
   const [moving, setMoving] = useState(false)
   const [renaming, setRenaming] = useState(false)
+  const [assigning, setAssigning] = useState(false)
+
+  /* Where this could be sent. Standing in the main vault that is every open
+     sub vault; standing inside one it is the way back out. A locked sub vault
+     is not offered — the move has to write into its index. */
+  const assignTargets = vault
+    ? [{ id: '', label: 'the main vault' }]
+    : subVaults.filter((s) => s.unlocked).map((s) => ({ id: s.id, label: s.label }))
 
   /* A file stored before chunked storage existed. It cannot be read at an
      offset, so nothing opens or streams it until it has been converted — the
@@ -177,6 +188,17 @@ export function useFileActions({ file, providers, film, onPreview, onInspect, on
               hint: 'Only the parts that have to move are copied',
               onSelect: () => setRelocating(true),
             },
+            // Only where there is somewhere to send it. A vault with no sub
+            // vaults should not be offered a move into one.
+            assignTargets.length > 0 && {
+              key: 'assign',
+              glyph: '🔒',
+              label: vault ? 'Move out of this sub vault' : 'Move into a sub vault',
+              hint: vault
+                ? 'Back into the main vault, where a mounted drive can see it again'
+                : 'Sealed under its own password, and never on a mounted drive',
+              onSelect: () => setAssigning(true),
+            },
             {
               key: 'delete',
               glyph: '✕',
@@ -235,6 +257,18 @@ export function useFileActions({ file, providers, film, onPreview, onInspect, on
           items={[{ kind: 'file', name: file.name, file }]}
           onClose={() => setMoving(false)}
           onDone={onRefresh}
+        />
+      )}
+
+      {assigning && (
+        <AssignToVault
+          label={file.name}
+          target={file.id}
+          from={vault}
+          targets={assignTargets}
+          onClose={() => setAssigning(false)}
+          onDone={() => { setAssigning(false); onRefresh() }}
+          onError={onError}
         />
       )}
 
@@ -490,8 +524,11 @@ function PartBadges({ file, mobile }) {
 export function FileRow({
   file, location, mobile, providers, hasThumb, film, columns, selecting, selected,
   onSelect, onPreview, onInspect, onFilm, onRefresh, onError,
+  vault = '', subVaults = [],
 }) {
-  const a = useFileActions({ file, providers, film, onPreview, onInspect, onFilm, onRefresh, onError })
+  const a = useFileActions({
+    file, providers, film, vault, subVaults, onPreview, onInspect, onFilm, onRefresh, onError,
+  })
   const icon = fileIcon(file.mime, file.name)
 
   const check = selecting && (
@@ -697,21 +734,29 @@ export function FileRow({
 /* Everything a folder row or tile can do. Far shorter than a file's, because a
    folder is a name in the index rather than something stored: it can be walked
    into, moved onto other clouds wholesale, or deleted with what is inside it. */
-function useFolderActions({ name, path, art, providers, onNavigate, onRefresh, onError }) {
+function useFolderActions({
+  name, path, art, providers, vault = '', subVaults = [], onNavigate, onRefresh, onError,
+}) {
   const [menu, setMenu] = useState(false)
   const [confirming, setConfirming] = useState(false)
   const [relocating, setRelocating] = useState(false)
   const [moving, setMoving] = useState(false)
   const [renaming, setRenaming] = useState(false)
   const [picturing, setPicturing] = useState(false)
+  const [assigning, setAssigning] = useState(false)
+
   const [busy, setBusy] = useState(false)
+
+  const assignTargets = vault
+    ? [{ id: '', label: 'the main vault' }]
+    : subVaults.filter((s) => s.unlocked).map((s) => ({ id: s.id, label: s.label }))
 
   const open = () => onNavigate(path)
 
   const remove = async () => {
     setBusy(true)
     try {
-      const resp = await api.deleteFolder(path, true)
+      const resp = await api.deleteFolder(path, true, vault)
       if (resp.warnings?.length) onError(resp.warnings.join('\n'))
       setConfirming(false)
       onRefresh()
@@ -765,6 +810,15 @@ function useFolderActions({ name, path, art, providers, onNavigate, onRefresh, o
               hint: 'Everything inside it, and only the parts that have to move',
               onSelect: () => setRelocating(true),
             },
+            assignTargets.length > 0 && {
+              key: 'assign',
+              glyph: '🔒',
+              label: vault ? 'Move out of this sub vault' : 'Move into a sub vault',
+              hint: vault
+                ? 'The folder and everything in it, back into the main vault'
+                : 'The folder and everything in it, at the path it already has',
+              onSelect: () => setAssigning(true),
+            },
             {
               key: 'delete',
               glyph: '✕',
@@ -814,6 +868,19 @@ function useFolderActions({ name, path, art, providers, onNavigate, onRefresh, o
         />
       )}
 
+      {assigning && (
+        <AssignToVault
+          label={name}
+          target={path}
+          from={vault}
+          targets={assignTargets}
+          folder
+          onClose={() => setAssigning(false)}
+          onDone={() => { setAssigning(false); onRefresh() }}
+          onError={onError}
+        />
+      )}
+
       {picturing && (
         <FolderArtPicker
           path={path}
@@ -850,8 +917,9 @@ function useFolderActions({ name, path, art, providers, onNavigate, onRefresh, o
 export function FolderRow({
   name, path, location, art, mobile, providers, columns, selecting, selected,
   onSelect, onNavigate, onRefresh, onError,
+  vault = '', subVaults = [],
 }) {
-  const a = useFolderActions({ name, path, art, providers, onNavigate, onRefresh, onError })
+  const a = useFolderActions({ name, path, art, providers, vault, subVaults, onNavigate, onRefresh, onError })
 
   const check = selecting && (
     <SelectBox mobile={mobile} checked={selected} label={`Select ${name}`} onChange={onSelect} />
@@ -1033,8 +1101,11 @@ export function FileTile({
   file, location, mobile, providers, hasThumb, film, aspect = TILE_SQUARE,
   selecting, selected,
   onSelect, onPreview, onInspect, onFilm, onRefresh, onError,
+  vault = '', subVaults = [],
 }) {
-  const a = useFileActions({ file, providers, film, onPreview, onInspect, onFilm, onRefresh, onError })
+  const a = useFileActions({
+    file, providers, film, vault, subVaults, onPreview, onInspect, onFilm, onRefresh, onError,
+  })
   const icon = fileIcon(file.mime, file.name)
 
   return (
@@ -1097,8 +1168,9 @@ export function FileTile({
 export function FolderTile({
   name, path, location, art, mobile, providers, aspect = TILE_SQUARE, selecting, selected,
   onSelect, onNavigate, onRefresh, onError,
+  vault = '', subVaults = [],
 }) {
-  const a = useFolderActions({ name, path, art, providers, onNavigate, onRefresh, onError })
+  const a = useFolderActions({ name, path, art, providers, vault, subVaults, onNavigate, onRefresh, onError })
 
   return (
     <Tile
@@ -1136,5 +1208,85 @@ export function FolderTile({
       </TileFace>
       {a.dialogs}
     </Tile>
+  )
+}
+
+/* Moving something from one vault inside the file into another.
+
+   The move itself is instant — the index changes and the parts stay exactly
+   where they are — so this dialog is short. What it has to be honest about is
+   the re-encryption running behind it: until that finishes, the vault the file
+   came from can still read it, which is the same window a password change has. */
+function AssignToVault({ label, target, from, targets, folder, onClose, onDone, onError }) {
+  const [to, setTo] = useState(targets[0]?.id ?? '')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+
+  const destination = targets.find((t) => t.id === to)
+
+  const submit = async (e) => {
+    e.preventDefault()
+    setBusy(true)
+    setError(null)
+    try {
+      const report = await api.assign({ target, from, to })
+      if (report.warnings?.length) onError(report.warnings.join('\n'))
+      /* The move has landed; the re-encryption onto the destination's own key
+         runs behind it. Not awaited — that is what keeps assigning a folder of
+         films instant — but it has to be started, because until it finishes the
+         file can only be read while the vault it left is open. */
+      api.migrateVault(to).catch(() => {})
+      onDone()
+    } catch (err) {
+      setError(err.message)
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal
+      title={from ? `Move ${label} out` : `Move ${label} into a sub vault`}
+      subtitle={folder ? 'The folder and everything under it' : null}
+      onClose={() => !busy && onClose()}
+      width={440}
+      zIndex={120}
+    >
+      <form onSubmit={submit}>
+        {error && <Banner tone="error">{error}</Banner>}
+
+        <p style={{
+          fontFamily: FONT.mono, fontSize: '10px', lineHeight: 1.6,
+          color: COLORS.textDim, margin: '0 0 12px',
+        }}>
+          Nothing is uploaded or downloaded — the path is kept and the parts stay
+          where they are. The files are re-encrypted onto the destination’s own key
+          afterwards; until that finishes, the vault it is leaving can still read
+          them.
+        </p>
+
+        {targets.length > 1 ? (
+          <select
+            value={to}
+            onChange={(e) => setTo(e.target.value)}
+            style={{
+              width: '100%', padding: '10px 12px', marginBottom: '14px',
+              background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: '6px',
+              color: COLORS.text, fontFamily: FONT.mono, fontSize: '13px',
+            }}
+          >
+            {targets.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+          </select>
+        ) : (
+          <p style={{ fontFamily: FONT.mono, fontSize: '11px', color: COLORS.text, margin: '0 0 14px' }}>
+            Into <strong>{destination?.label}</strong>.
+          </p>
+        )}
+
+        <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+          <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>Cancel</Button>
+          <Button type="submit" variant="primary" disabled={busy}>{busy ? 'Moving…' : 'Move'}</Button>
+        </div>
+      </form>
+    </Modal>
   )
 }

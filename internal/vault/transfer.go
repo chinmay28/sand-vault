@@ -41,32 +41,25 @@ type UploadOptions struct {
 //
 // It returns the new entry plus any non-fatal warnings, such as one account
 // being unreachable while enough others accepted their part.
-func (v *Vault) Upload(ctx context.Context, dir, name string, data []byte, opts UploadOptions) (*Entry, []string, error) {
+func (v *Vault) Upload(ctx context.Context, scope Scope, dir, name string, data []byte, opts UploadOptions) (*Entry, []string, error) {
 	name, err := SanitizeName(name)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	v.mu.RLock()
-	if v.dataKey == nil {
-		v.mu.RUnlock()
-		return nil, nil, ErrLocked
+	dir, err = v.destinationLocked(scope, dir)
+	if err != nil {
+		return nil, nil, err
 	}
-	dir = CleanDir(dir)
-	if !v.manifest.FolderExists(dir) {
-		v.mu.RUnlock()
-		return nil, nil, fmt.Errorf("no such folder: %s", dir)
-	}
-	v.mu.RUnlock()
 
 	// Either the upload's own choice or, left to itself, the vault's default —
 	// and whichever it turns out to be is followed exactly. Only a vault with
 	// neither picks accounts of its own, inside the scatter.
-	placed, err := v.scatterChunked(ctx, name, data, opts.Accounts, true, v.uploadChunkSize())
+	placed, err := v.scatterChunked(ctx, scope, name, data, opts.Accounts, true, v.uploadChunkSize())
 	if err != nil {
 		return nil, placed.warnings, err
 	}
-	return v.commitUpload(ctx, dir, name, int64(len(data)), DetectMIME(name, data), placed, opts)
+	return v.commitUpload(ctx, scope, dir, name, int64(len(data)), DetectMIME(name, data), placed, opts)
 }
 
 // resolveAccounts turns an explicit account selection into the list of IDs to
@@ -135,16 +128,31 @@ type transferTarget struct {
 // snapshotTarget takes what a scatter needs from the vault and settles which
 // accounts are in play, before anything is encoded: a selection naming an
 // account that is not connected is a mistake to report, not work to do.
-func (v *Vault) snapshotTarget(preferred []string, exact bool) (*transferTarget, error) {
+// The scope decides one thing and one thing only: which data key the parts are
+// sealed under. Where they are allowed to land is a vault-wide question —
+// the policy, the connected accounts and the default selection are the same
+// whichever vault inside the file the bytes belong to, because they are answers
+// about storage rather than about secrecy.
+func (v *Vault) snapshotTarget(scope Scope, preferred []string, exact bool) (*transferTarget, error) {
 	v.mu.RLock()
 	if v.dataKey == nil {
 		v.mu.RUnlock()
 		return nil, ErrLocked
 	}
+	keyID, err := v.dataKeyIDForLocked(scope)
+	if err != nil {
+		v.mu.RUnlock()
+		return nil, err
+	}
+	dataKey, err := v.dataKeyForLocked(keyID)
+	if err != nil {
+		v.mu.RUnlock()
+		return nil, err
+	}
 	t := &transferTarget{
-		keyID:         v.dataKeyID,
-		shardPassword: v.shardPasswordLocked(),
-		dataKey:       append([]byte(nil), v.dataKey...),
+		keyID:         keyID,
+		shardPassword: shardPasswordFor(dataKey),
+		dataKey:       dataKey,
 		policy:        v.store.Policy,
 	}
 	defaults := append([]string(nil), v.store.DefaultAccounts...)
@@ -221,8 +229,8 @@ func (t *transferTarget) planFor(seed uint64) (Plan, archive.Scheme, error) {
 // records in the returned shards is really on the accounts — on too few parts
 // landing it erases the ones that did and returns an error, so a caller never
 // has to clean up after a failure of its own.
-func (v *Vault) scatter(ctx context.Context, name string, data []byte, preferred []string, exact bool) (placement, error) {
-	target, err := v.snapshotTarget(preferred, exact)
+func (v *Vault) scatter(ctx context.Context, scope Scope, name string, data []byte, preferred []string, exact bool) (placement, error) {
+	target, err := v.snapshotTarget(scope, preferred, exact)
 	if err != nil {
 		return placement{}, err
 	}
@@ -336,8 +344,8 @@ func (v *Vault) Fetch(ctx context.Context, id string) ([]byte, *Entry, error) {
 		v.mu.RUnlock()
 		return nil, nil, ErrLocked
 	}
-	entry := v.manifest.ByID(id)
-	if entry == nil {
+	_, entry, ok := v.scopeOfEntryLocked(id)
+	if !ok {
 		v.mu.RUnlock()
 		return nil, nil, fmt.Errorf("no such file: %s", id)
 	}
@@ -477,8 +485,8 @@ func (v *Vault) Delete(ctx context.Context, id string) ([]string, error) {
 		v.mu.RUnlock()
 		return nil, ErrLocked
 	}
-	entry := v.manifest.ByID(id)
-	if entry == nil {
+	scope, entry, ok := v.scopeOfEntryLocked(id)
+	if !ok {
 		v.mu.RUnlock()
 		return nil, fmt.Errorf("no such file: %s", id)
 	}
@@ -490,19 +498,20 @@ func (v *Vault) Delete(ctx context.Context, id string) ([]string, error) {
 	warnings := v.deleteEntryShards(ctx, &doomed)
 
 	v.mu.Lock()
-	if v.dataKey == nil {
+	m, err := v.manifestForLocked(scope)
+	if err != nil {
 		v.mu.Unlock()
-		return warnings, ErrLocked
+		return warnings, err
 	}
-	v.manifest.remove(id)
+	m.remove(id)
 	// Whatever film it was matched to goes with it, in the same write: a
 	// stored title outliving the file it described would show up as a phantom
 	// in nothing at all, but it would sit in the index forever.
-	v.manifest.forgetMovies(id)
+	m.forgetMovies(id)
 	// And any folder that was told to wear this file's picture goes back to
 	// choosing one for itself, rather than pointing at a file that is gone.
-	v.manifest.forgetFolderArt(id)
-	err := v.persistLocked()
+	m.forgetFolderArt(id)
+	err = v.persistLocked()
 	v.mu.Unlock()
 
 	if err != nil {
@@ -511,29 +520,30 @@ func (v *Vault) Delete(ctx context.Context, id string) ([]string, error) {
 
 	// After the file itself is gone, so a failure to rewrite the pack cannot
 	// keep a deleted file in the listing.
-	v.removeThumbs(ctx, dir, id)
+	v.removeThumbs(ctx, scope, dir, id)
 	return warnings, nil
 }
 
 // Rmdir removes a folder. Without recursive it refuses to touch a folder that
 // still has contents.
-func (v *Vault) Rmdir(ctx context.Context, dir string, recursive bool) ([]string, error) {
+func (v *Vault) Rmdir(ctx context.Context, scope Scope, dir string, recursive bool) ([]string, error) {
 	dir = CleanDir(dir)
 	if dir == "/" {
 		return nil, fmt.Errorf("cannot remove the root folder")
 	}
 
 	v.mu.RLock()
-	if v.dataKey == nil {
+	m, err := v.manifestForLocked(scope)
+	if err != nil {
 		v.mu.RUnlock()
-		return nil, ErrLocked
+		return nil, err
 	}
-	if !v.manifest.FolderExists(dir) {
+	if !m.FolderExists(dir) {
 		v.mu.RUnlock()
 		return nil, fmt.Errorf("no such folder: %s", dir)
 	}
-	doomed := v.manifest.Descendants(dir)
-	subfolders, files := v.manifest.Children(dir)
+	doomed := m.Descendants(dir)
+	subfolders, files := m.Children(dir)
 	v.mu.RUnlock()
 
 	if !recursive && (len(subfolders) > 0 || len(files) > 0) {
@@ -548,19 +558,19 @@ func (v *Vault) Rmdir(ctx context.Context, dir string, recursive bool) ([]string
 	}
 
 	v.mu.Lock()
-	if v.dataKey == nil {
+	if m, err = v.manifestForLocked(scope); err != nil {
 		v.mu.Unlock()
-		return warnings, ErrLocked
+		return warnings, err
 	}
 	for _, id := range ids {
-		v.manifest.remove(id)
+		m.remove(id)
 	}
-	v.manifest.forgetMovies(ids...)
-	v.manifest.forgetFolderArt(ids...)
-	v.manifest.removeFolders(dir)
-	v.manifest.dropMovieFolders(dir)
-	v.manifest.dropFolderArt(dir)
-	err := v.persistLocked()
+	m.forgetMovies(ids...)
+	m.forgetFolderArt(ids...)
+	m.removeFolders(dir)
+	m.dropMovieFolders(dir)
+	m.dropFolderArt(dir)
+	err = v.persistLocked()
 	v.mu.Unlock()
 
 	if err != nil {
@@ -569,7 +579,7 @@ func (v *Vault) Rmdir(ctx context.Context, dir string, recursive bool) ([]string
 
 	// The folder and everything under it is gone, and so are the thumbnails
 	// that were stored a folder at a time.
-	v.dropThumbFolders(ctx, dir)
+	v.dropThumbFolders(ctx, scope, dir)
 	return warnings, nil
 }
 
@@ -728,8 +738,8 @@ func (v *Vault) Health(ctx context.Context, id string) (*FileHealth, error) {
 		v.mu.RUnlock()
 		return nil, ErrLocked
 	}
-	entry := v.manifest.ByID(id)
-	if entry == nil {
+	_, entry, ok := v.scopeOfEntryLocked(id)
+	if !ok {
 		v.mu.RUnlock()
 		return nil, fmt.Errorf("no such file: %s", id)
 	}

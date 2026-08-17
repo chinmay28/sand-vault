@@ -823,6 +823,204 @@ class TestCLI:
 
 
 # ---------------------------------------------------------------------------
+# Sub vaults
+# ---------------------------------------------------------------------------
+
+def sub_cli(sand_bin, root, *args, password="sv-passphrase", sub=None, new_sub=None,
+            backup=None, check=True):
+    """Run a sand subcommand with the vault password and, where a sub vault is
+    involved, its own."""
+    env = dict(os.environ)
+    env["SAND_PASSWORD"] = password
+    if sub is not None:
+        env["SAND_SUB_PASSWORD"] = sub
+    if new_sub is not None:
+        env["SAND_NEW_SUB_PASSWORD"] = new_sub
+    if backup is not None:
+        env["SAND_BACKUP_PASSWORD"] = backup
+
+    result = subprocess.run(
+        [sand_bin, "--vault", os.path.join(root, "cli-vault.sand"), *args],
+        capture_output=True, text=True, env=env,
+    )
+    if check:
+        assert result.returncode == 0, f"{args}\nstdout: {result.stdout}\nstderr: {result.stderr}"
+    return result
+
+
+class TestSubVaults:
+    """A vault inside the vault, sealed under a password of its own.
+
+    Driven through the real binary, because the claim being tested is about
+    what a second password does and does not open — which is only true if it is
+    true of the file on disk.
+    """
+
+    def build(self, sand_bin, root):
+        """A vault with three accounts, a file in the main tree and a sub vault."""
+        os.makedirs(root, exist_ok=True)
+        sub_cli(sand_bin, root, "vault", "init")
+        for name in ("sv-a", "sv-b", "sv-c"):
+            path = os.path.join(root, "sv-clouds", name)
+            sub_cli(sand_bin, root, "remote", "add", "local", "--name", name,
+                    "--set", f"path={path}")
+
+        public = os.path.join(root, "public.txt")
+        with open(public, "w") as f:
+            f.write("nothing secret")
+        private = os.path.join(root, "p60-2019.pdf")
+        with open(private, "w") as f:
+            f.write("a payslip")
+
+        sub_cli(sand_bin, root, "mkdir", "/Papers")
+        sub_cli(sand_bin, root, "put", public)
+        sub_cli(sand_bin, root, "put", private, "--path", "/Papers")
+        sub_cli(sand_bin, root, "sub", "new", "Taxes", sub="taxes-passphrase")
+        return root
+
+    def test_assigned_files_leave_the_main_vault_and_keep_their_path(self, sand_bin, tmp_path):
+        root = self.build(sand_bin, str(tmp_path / "assign"))
+        sub_cli(sand_bin, root, "sub", "assign", "/Papers", "Taxes", sub="taxes-passphrase")
+
+        main = sub_cli(sand_bin, root, "ls")
+        assert "Papers" not in main.stdout
+        assert "public.txt" in main.stdout
+
+        inside = sub_cli(sand_bin, root, "ls", "--in", "Taxes", "/Papers", sub="taxes-passphrase")
+        assert "p60-2019.pdf" in inside.stdout
+
+    def test_the_vault_password_does_not_open_a_sub_vault(self, sand_bin, tmp_path):
+        root = self.build(sand_bin, str(tmp_path / "closed"))
+        sub_cli(sand_bin, root, "sub", "assign", "/Papers", "Taxes", sub="taxes-passphrase")
+
+        # It is listed — that is what the vault password is allowed to see.
+        listed = sub_cli(sand_bin, root, "sub", "ls")
+        assert "Taxes" in listed.stdout
+
+        # And it does not open it.
+        refused = sub_cli(sand_bin, root, "ls", "--in", "Taxes",
+                          sub="sv-passphrase", check=False)
+        assert refused.returncode != 0
+        assert "wrong password" in (refused.stderr + refused.stdout).lower()
+
+    def test_nothing_inside_is_readable_in_the_vault_file(self, sand_bin, tmp_path):
+        root = self.build(sand_bin, str(tmp_path / "opaque"))
+        sub_cli(sand_bin, root, "sub", "assign", "/Papers", "Taxes", sub="taxes-passphrase")
+
+        blob = open(os.path.join(root, "cli-vault.sand"), "rb").read()
+        # The name is meant to be there; it is how you know which one to open.
+        # Nothing about what is inside is.
+        assert b"p60-2019.pdf" not in blob
+        assert b"Papers" not in blob
+
+    def test_a_vault_password_change_leaves_a_sub_vault_alone(self, sand_bin, tmp_path):
+        root = self.build(sand_bin, str(tmp_path / "rekey"))
+        sub_cli(sand_bin, root, "sub", "assign", "/Papers", "Taxes", sub="taxes-passphrase")
+
+        # Change the vault password. Its own files move onto a new key; the sub
+        # vault is on a key this never touches.
+        env = dict(os.environ)
+        changed = subprocess.run(
+            [sand_bin, "--vault", os.path.join(root, "cli-vault.sand"), "vault", "passwd"],
+            input="sv-passphrase\nsv-second-passphrase\n",
+            capture_output=True, text=True, env=env,
+        )
+        assert changed.returncode == 0, changed.stderr
+
+        # The sub vault still answers to what it always did, under the new
+        # vault password.
+        inside = sub_cli(sand_bin, root, "ls", "--in", "Taxes", "/Papers",
+                         password="sv-second-passphrase", sub="taxes-passphrase")
+        assert "p60-2019.pdf" in inside.stdout
+
+    def test_deleting_a_locked_sub_vault_erases_its_parts(self, sand_bin, tmp_path):
+        root = self.build(sand_bin, str(tmp_path / "erase"))
+        sub_cli(sand_bin, root, "sub", "assign", "/Papers", "Taxes", sub="taxes-passphrase")
+
+        def parts():
+            total = 0
+            for name in ("sv-a", "sv-b", "sv-c"):
+                folder = os.path.join(root, "sv-clouds", name)
+                total += len([f for f in os.listdir(folder)
+                              if f.endswith(".sand") and f != "manifest.sand"])
+            return total
+
+        before = parts()
+        # Locked, so it cannot be listed first — which is why this needs --force.
+        refused = sub_cli(sand_bin, root, "sub", "rm", "Taxes", check=False)
+        assert refused.returncode != 0
+
+        sub_cli(sand_bin, root, "sub", "rm", "Taxes", "--force")
+        assert parts() < before, "the sub vault's parts were left on the accounts"
+        assert "Taxes" not in sub_cli(sand_bin, root, "sub", "ls").stdout
+
+
+class TestImportingAFoundVault:
+    """An account reconnected to a different vault still carries its index."""
+
+    def abandoned(self, sand_bin, root):
+        """A vault that stores files through three accounts and then goes away."""
+        os.makedirs(root, exist_ok=True)
+        old = os.path.join(root, "old")
+        os.makedirs(old, exist_ok=True)
+
+        sub_cli(sand_bin, old, "vault", "init", password="old-passphrase")
+        clouds = []
+        for name in ("im-a", "im-b", "im-c"):
+            path = os.path.join(root, "im-clouds", name)
+            clouds.append(path)
+            sub_cli(sand_bin, old, "remote", "add", "local", "--name", name,
+                    "--set", f"path={path}", password="old-passphrase")
+
+        deed = os.path.join(root, "deed.pdf")
+        with open(deed, "w") as f:
+            f.write("the deed")
+        sub_cli(sand_bin, old, "mkdir", "/Papers", password="old-passphrase")
+        sub_cli(sand_bin, old, "put", deed, "--path", "/Papers", password="old-passphrase")
+        sub_cli(sand_bin, old, "vault", "backup", password="old-passphrase")
+        return clouds
+
+    def test_scan_finds_another_vault_and_import_brings_it_in(self, sand_bin, tmp_path):
+        root = str(tmp_path / "import")
+        clouds = self.abandoned(sand_bin, root)
+
+        # A new vault on a new machine, with its own file, connected to the
+        # same accounts.
+        sub_cli(sand_bin, root, "vault", "init")
+        for i, path in enumerate(clouds):
+            sub_cli(sand_bin, root, "remote", "add", "local",
+                    "--name", f"reconnected-{i}", "--set", f"path={path}")
+        mine = os.path.join(root, "mine.txt")
+        with open(mine, "w") as f:
+            f.write("already here")
+        sub_cli(sand_bin, root, "put", mine)
+
+        found = sub_cli(sand_bin, root, "sub", "scan")
+        assert "another vault" in found.stdout + found.stderr
+
+        # A recovery would refuse: this vault already holds a file.
+        refused = sub_cli(sand_bin, root, "vault", "recover", "--from", "reconnected-0",
+                          check=False)
+        assert refused.returncode != 0
+
+        # Importing does not, because nothing is replaced.
+        sub_cli(sand_bin, root, "sub", "import", "reconnected-0", "--name", "Old laptop",
+                backup="old-passphrase", sub="imported-passphrase")
+
+        assert "mine.txt" in sub_cli(sand_bin, root, "ls").stdout
+        inside = sub_cli(sand_bin, root, "ls", "--in", "Old laptop", "/Papers",
+                         sub="imported-passphrase")
+        assert "deed.pdf" in inside.stdout
+
+        # And the file really opens, which is what says the data keys came
+        # across rather than only the index.
+        out = os.path.join(root, "recovered.pdf")
+        sub_cli(sand_bin, root, "get", "--in", "Old laptop", "/Papers/deed.pdf",
+                "-o", out, sub="imported-passphrase")
+        assert open(out).read() == "the deed"
+
+
+# ---------------------------------------------------------------------------
 # Losing the vault file
 # ---------------------------------------------------------------------------
 

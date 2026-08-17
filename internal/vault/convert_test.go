@@ -199,7 +199,7 @@ func TestConvertingAnAlreadyChunkedFileDoesNothing(t *testing.T) {
 	ctx := context.Background()
 
 	payload := readerPayload(20000)
-	entry, _, err := v.Upload(ctx, "/", "already.bin", payload, UploadOptions{})
+	entry, _, err := v.Upload(ctx, MainScope, "/", "already.bin", payload, UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestPendingConversionListsOnlyTheOldFormat(t *testing.T) {
 	v, _ := chunkedVault(t, 3, 4096)
 	ctx := context.Background()
 
-	if _, _, err := v.Upload(ctx, "/", "new.bin", readerPayload(5000), UploadOptions{}); err != nil {
+	if _, _, err := v.Upload(ctx, MainScope, "/", "new.bin", readerPayload(5000), UploadOptions{}); err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 	old1 := addWholeEntry(t, v, "old-1", "one.bin", readerPayload(3000))

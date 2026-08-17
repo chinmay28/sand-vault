@@ -29,7 +29,7 @@ func TestChunkedReaderReadsAtOffsets(t *testing.T) {
 	ctx := context.Background()
 
 	payload := readerPayload(5000)
-	entry, _, err := v.Upload(ctx, "/", "film.mkv", payload, UploadOptions{})
+	entry, _, err := v.Upload(ctx, MainScope, "/", "film.mkv", payload, UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestChunkedReaderReadAtSemantics(t *testing.T) {
 	ctx := context.Background()
 
 	payload := readerPayload(2500)
-	entry, _, err := v.Upload(ctx, "/", "edges.bin", payload, UploadOptions{})
+	entry, _, err := v.Upload(ctx, MainScope, "/", "edges.bin", payload, UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestChunkedReaderFetchesOnlyTheChunksItTouches(t *testing.T) {
 	v, _ := chunkedVault(t, 3, 1024)
 	ctx := context.Background()
 
-	entry, _, err := v.Upload(ctx, "/", "big.bin", readerPayload(20000), UploadOptions{})
+	entry, _, err := v.Upload(ctx, MainScope, "/", "big.bin", readerPayload(20000), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestChunkedReaderIsSafeConcurrently(t *testing.T) {
 	ctx := context.Background()
 
 	payload := readerPayload(8000)
-	entry, _, err := v.Upload(ctx, "/", "parallel.bin", payload, UploadOptions{})
+	entry, _, err := v.Upload(ctx, MainScope, "/", "parallel.bin", payload, UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestSectionReaderReadsTheWholeFile(t *testing.T) {
 	ctx := context.Background()
 
 	payload := readerPayload(4500)
-	entry, _, err := v.Upload(ctx, "/", "seekable.bin", payload, UploadOptions{})
+	entry, _, err := v.Upload(ctx, MainScope, "/", "seekable.bin", payload, UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -219,7 +219,7 @@ func TestOpenReaderRefusesAWholeFileEntry(t *testing.T) {
 	v, _ := newTestVault(t, 3)
 	ctx := context.Background()
 
-	placed, err := v.scatter(ctx, "legacy.txt", []byte("stored whole"), nil, false)
+	placed, err := v.scatter(ctx, MainScope, "legacy.txt", []byte("stored whole"), nil, false)
 	if err != nil {
 		t.Fatalf("scatter: %v", err)
 	}
@@ -240,7 +240,7 @@ func TestChunkCacheIsDroppedOnLock(t *testing.T) {
 	v, _ := chunkedVault(t, 3, 1024)
 	ctx := context.Background()
 
-	entry, _, err := v.Upload(ctx, "/", "cached.bin", readerPayload(5000), UploadOptions{})
+	entry, _, err := v.Upload(ctx, MainScope, "/", "cached.bin", readerPayload(5000), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -306,7 +306,7 @@ func TestUploadStreamRoundTrip(t *testing.T) {
 	ctx := context.Background()
 
 	payload := readerPayload(9000)
-	entry, warnings, err := v.UploadStream(ctx, "/", "streamed.bin", bytes.NewReader(payload), UploadOptions{})
+	entry, warnings, err := v.UploadStream(ctx, MainScope, "/", "streamed.bin", bytes.NewReader(payload), UploadOptions{})
 	if err != nil {
 		t.Fatalf("UploadStream: %v (%v)", err, warnings)
 	}
@@ -330,7 +330,7 @@ func TestUploadStreamRoundTrip(t *testing.T) {
 
 	// A streamed upload and an in-memory one must agree about the hash, since
 	// both record it as the file's identity.
-	inMemory, _, err := v.Upload(ctx, "/", "in-memory.bin", payload, UploadOptions{})
+	inMemory, _, err := v.Upload(ctx, MainScope, "/", "in-memory.bin", payload, UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -343,12 +343,12 @@ func TestUploadStreamLeavesNoSpoolBehind(t *testing.T) {
 	v, _ := chunkedVault(t, 3, 1024)
 	ctx := context.Background()
 
-	if _, _, err := v.UploadStream(ctx, "/", "tidy.bin", bytes.NewReader(readerPayload(4000)), UploadOptions{}); err != nil {
+	if _, _, err := v.UploadStream(ctx, MainScope, "/", "tidy.bin", bytes.NewReader(readerPayload(4000)), UploadOptions{}); err != nil {
 		t.Fatalf("UploadStream: %v", err)
 	}
 	// And on the failure path too: no accounts means the scatter cannot commit.
 	failing, _ := newTestVault(t, 0)
-	_, _, _ = failing.UploadStream(ctx, "/", "doomed.bin", bytes.NewReader([]byte("x")), UploadOptions{})
+	_, _, _ = failing.UploadStream(ctx, MainScope, "/", "doomed.bin", bytes.NewReader([]byte("x")), UploadOptions{})
 
 	for _, dir := range []string{filepath.Dir(v.Path()), filepath.Dir(failing.Path())} {
 		entries, err := os.ReadDir(dir)
@@ -405,7 +405,7 @@ func TestReadingAWholeFileEntryLeavesItAlone(t *testing.T) {
 func addWholeEntry(t *testing.T, v *Vault, id, name string, payload []byte) *Entry {
 	t.Helper()
 
-	placed, err := v.scatter(context.Background(), name, payload, nil, false)
+	placed, err := v.scatter(context.Background(), MainScope, name, payload, nil, false)
 	if err != nil {
 		t.Fatalf("scatter: %v", err)
 	}
@@ -435,13 +435,13 @@ func TestOpenReadSeekerRefusesAPreChunkingFile(t *testing.T) {
 	ctx := context.Background()
 
 	chunkedPayload := readerPayload(5000)
-	chunked, _, err := v.Upload(ctx, "/", "chunked.bin", chunkedPayload, UploadOptions{})
+	chunked, _, err := v.Upload(ctx, MainScope, "/", "chunked.bin", chunkedPayload, UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 
 	wholePayload := readerPayload(3000)
-	placed, err := v.scatter(ctx, "whole.bin", wholePayload, nil, false)
+	placed, err := v.scatter(ctx, MainScope, "whole.bin", wholePayload, nil, false)
 	if err != nil {
 		t.Fatalf("scatter: %v", err)
 	}

@@ -492,6 +492,80 @@ vault file still opens the parts that have not moved.
 
 ---
 
+## Sub vaults
+
+A sub vault is a vault inside your vault, with a password of its own. Your vault
+password lists it and cannot open it.
+
+That is worth having because "unlocked" is not a small state. A vault mounted as
+a drive is a folder every process running as you can read, that a backup agent
+will happily copy elsewhere, and that stays mounted long after you have walked
+away from the machine. A sub vault is where the things go that should not be
+reachable that way.
+
+```bash
+./sand sub new Taxes                    # asks for a password of its own
+./sand sub ls                           # what exists, and how much each holds
+./sand sub assign /Papers Taxes         # move a folder in, keeping its path
+./sand ls --in Taxes /Papers            # work inside it
+./sand put --in Taxes ./p60.pdf --path /Papers
+./sand sub assign /Papers Taxes --out   # and back out again
+```
+
+In the browser it is **Vault settings → Sub vaults**. Tick *Show them at the top
+of the vault* there and they appear alongside your folders, locked ones included
+— click one and it asks for its password.
+
+What holds:
+
+- **Never on a WebDAV mount.** Not while locked, and not while unlocked either.
+  There is no setting for this; the share only ever sees the main vault.
+- **A password change on your vault does not touch it.** Its section is sealed
+  under its own password, so it is carried across untouched.
+- **Your vault password reveals the name and nothing else.** Not a path, not a
+  filename, not a size, not a type. It does reveal an inventory of which
+  accounts hold its parts and how big they are — which is what lets a forgotten
+  sub vault still be erased from your clouds, and what stops disconnecting an
+  account silently stranding files nobody can see.
+- **There is no recovery for the password.** Not from your vault password, and
+  not from a `manifest.sand` — the backups carry a sub vault sealed.
+
+Moving something in is instant: the index changes and the parts stay where they
+are. The files are then re-encrypted onto the destination's own key in the
+background, and until that finishes they can only be read while the vault they
+came from is open — no key is handed across, so a file assigned out of a sub
+vault still needs that sub vault open until the re-encryption has moved it.
+
+---
+
+## Finding a vault on an account you reconnect
+
+Every vault keeps a copy of its encrypted index on each account it uses. So an
+account you used on a machine that has since died still carries one — and when
+you connect that account to a new vault, SAND now says so.
+
+```bash
+./sand sub scan                    # which accounts hold a vault index, and whose
+./sand sub import old-dropbox      # bring one in as a sub vault of this one
+```
+
+This is what to reach for when `sand vault recover` refuses because your vault
+already holds files — `sand sub scan` asks the same question the recovery scan
+does, and importing is what it can offer that recovering cannot. A backup carries an index, a data key and a password that
+opens it — which is exactly what a sub vault is — so what was found lands beside
+what you have rather than replacing it.
+
+You are asked for two passwords: the old vault's, to open its index, and the one
+the sub vault will answer to from now on. The second costs nothing, because the
+old data key is adopted as it stands and no file is re-encrypted by the import
+itself. Run `sand sub passwd` afterwards to rotate that key too, which is what
+finally makes the old password useless.
+
+Files whose parts sit on accounts you have not connected come in anyway and are
+counted; connect those accounts and the files come back with them.
+
+---
+
 ## Losing the vault file
 
 Parts are encrypted under a random 256-bit key that lives inside your vault
@@ -701,6 +775,30 @@ sand vault recover [--from ACCOUNT]           Rebuild a lost vault from an accou
 sand vault recover --resume                   Finish one, once the rest of the clouds are back
 sand vault reclaim [--account NAME]...        Re-encrypt recovered files under your own key
 ```
+
+### Sub vaults
+
+```
+sand sub ls                                   The vaults inside your vault
+sand sub new <name>                           Make one, with a password of its own
+sand sub passwd <name> [--no-migrate]         Change its password, re-encrypt its files
+sand sub assign <path> <name> [--out]         Move a file or folder in, or back out
+sand sub rm <name> [--force]                  Delete it and erase its parts
+sand sub scan                                 Look for other vaults on your accounts
+sand sub import <account> [--name N]          Bring one in as a sub vault
+```
+
+Every ordinary command takes `--in <name>` to work inside one:
+
+```
+sand ls --in Taxes /Papers
+sand put --in Taxes ./p60.pdf --path /Papers
+sand get --in Taxes /Papers/p60.pdf -o ./
+```
+
+For scripts, `SAND_SUB_PASSWORD` is to a sub vault what `SAND_PASSWORD` is to
+the vault; `sand sub passwd` also reads `SAND_NEW_SUB_PASSWORD`, and
+`sand sub import` reads `SAND_BACKUP_PASSWORD` for the vault being imported.
 
 ### Converting old files
 

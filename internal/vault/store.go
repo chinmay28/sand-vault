@@ -10,14 +10,29 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/chinmay28/sand-vault/internal/crypto"
 	"github.com/chinmay28/sand-vault/internal/provider"
 	"github.com/google/uuid"
 )
 
-// StoreVersion is the on-disk vault format version.
-const StoreVersion = 2
+// StoreVersion is the on-disk vault format version written by this build.
+const StoreVersion = 3
+
+// minStoreVersion is the oldest format this build still opens. A version 2
+// vault is read as it stands and upgraded the first time anything is written,
+// because every version 3 field is additive: a vault with no sub vaults is
+// byte-for-byte what version 2 always was.
+//
+// The bump matters in the other direction. Sub-vault sections are the only copy
+// of what they hold, and an older build parsing this file would discard the
+// field it does not know about and then write the file back without it —
+// destroying them silently. Refusing to open a version it has never heard of is
+// what that build already does, so raising the number is what makes the
+// discarding impossible.
+const minStoreVersion = 2
 
 // checkPlaintext is sealed under the vault key at init and re-opened on every
 // unlock; a successful GCM tag check is what verifies the password.
@@ -146,6 +161,13 @@ type storeFile struct {
 	// read them before the machine died, and the vault has to keep saying so
 	// until they have been re-encrypted. Cleared by RotateDataKey.
 	InheritedKeyID string `json:"inherited_key_id,omitempty"`
+
+	// SubVaults are the vaults inside this one, each sealed under a password of
+	// its own rather than under the vault key. Nothing here opens with the main
+	// password, which is the entire point: a sub vault's file tree is as hidden
+	// from someone holding the main password as it is from someone holding
+	// nothing.
+	SubVaults []subVaultRecord `json:"sub_vaults,omitempty"`
 }
 
 // vaultSettings is the plaintext of the settings section.
@@ -159,6 +181,210 @@ type vaultSettings struct {
 // touched these writes no section rather than an encrypted empty object.
 func (s *vaultSettings) empty() bool {
 	return s == nil || *s == vaultSettings{}
+}
+
+// subVaultRecord is one sub vault as it sits on disk: its own KDF salt, its own
+// verifier, its own data keys, and its file index sealed under a key derived
+// from its own password.
+//
+// It is deliberately self-contained. A main password change rewrites every
+// other section of the vault file under a fresh vault key; these records are
+// carried across untouched, because nothing in them was ever sealed under the
+// key being replaced. That is what makes "change the vault password" and "there
+// are sub vaults" two facts that never have to be reconciled.
+type subVaultRecord struct {
+	ID  string    `json:"id"`
+	KDF kdfParams `json:"kdf"`
+
+	// Check is the verifier for this sub vault's password, the same
+	// constant-time GCM check the main vault uses.
+	Check sealed `json:"check"`
+
+	// DataKey and DataKeyID are the generation new files in this sub vault are
+	// sealed under; RetiredKeys are the generations its files are still on
+	// while a re-encryption finishes. Exactly the main vault's arrangement,
+	// because a sub vault changes its password the same way and defers the same
+	// work.
+	DataKey     sealed       `json:"data_key"`
+	DataKeyID   string       `json:"data_key_id"`
+	RetiredKeys []wrappedKey `json:"retired_keys,omitempty"`
+
+	// Section is this sub vault's Manifest: its entries, its folders and its
+	// thumbnail packs. It is the only copy — nothing about the files inside a
+	// sub vault is recorded anywhere the main password reaches.
+	Section sealed `json:"section"`
+}
+
+// keyIDs lists the data key generations this record advertises. They are in the
+// clear so that a file naming one of them can be told apart from a file naming
+// a key that is simply gone: the first is a locked sub vault and asks for a
+// password, the second is a corrupt index and asks for a recovery.
+func (r subVaultRecord) keyIDs() []string {
+	ids := make([]string, 0, len(r.RetiredKeys)+1)
+	ids = append(ids, r.DataKeyID)
+	for _, k := range r.RetiredKeys {
+		ids = append(ids, k.ID)
+	}
+	return ids
+}
+
+// newSubVaultRecord creates a sub vault sealed under password, with a fresh
+// random data key of its own and an empty index.
+func newSubVaultRecord(id, password string) (subVaultRecord, *subVault, error) {
+	if strings.TrimSpace(password) == "" {
+		return subVaultRecord{}, nil, fmt.Errorf("password must not be empty")
+	}
+
+	params := crypto.DefaultArgon2Params()
+	salt, err := crypto.GenerateSalt(params.SaltLen)
+	if err != nil {
+		return subVaultRecord{}, nil, err
+	}
+
+	sectionKey := crypto.DeriveKey(password, salt, params)
+	dataKey := make([]byte, DataKeySize)
+	if _, err := io.ReadFull(rand.Reader, dataKey); err != nil {
+		crypto.ZeroBytes(sectionKey)
+		return subVaultRecord{}, nil, fmt.Errorf("generating data key: %w", err)
+	}
+
+	open := &subVault{
+		id: id,
+		kdf: kdfParams{
+			Salt:    base64.StdEncoding.EncodeToString(salt),
+			Time:    params.Time,
+			Memory:  params.Memory,
+			Threads: params.Threads,
+		},
+		sectionKey: sectionKey,
+		dataKey:    dataKey,
+		dataKeyID:  newKeyID(),
+		retired:    map[string][]byte{},
+		manifest:   newManifest(),
+	}
+
+	rec, err := open.record()
+	if err != nil {
+		open.zero()
+		return subVaultRecord{}, nil, err
+	}
+	return rec, open, nil
+}
+
+// subVault is an opened sub vault: the key that seals its section, the data
+// keys that protect its files, and its decrypted index.
+type subVault struct {
+	id string
+
+	// kdf is the salt and cost this sub vault's section key was derived with.
+	// Carried so that re-sealing the section — which happens on every index
+	// change — writes the record back under the parameters it was opened with.
+	// Only a password change mints new ones, and it does so by building a whole
+	// new record.
+	kdf kdfParams
+
+	// sectionKey is Argon2id of this sub vault's password. It seals the
+	// section and nothing else — file content answers to the data keys below,
+	// which is what lets the password change without re-encrypting anything.
+	sectionKey []byte
+
+	dataKey   []byte
+	dataKeyID string
+	retired   map[string][]byte
+
+	manifest *Manifest
+}
+
+// zero wipes every key this holds.
+func (s *subVault) zero() {
+	if s == nil {
+		return
+	}
+	crypto.ZeroBytes(s.sectionKey)
+	crypto.ZeroBytes(s.dataKey)
+	for _, k := range s.retired {
+		crypto.ZeroBytes(k)
+	}
+}
+
+// record re-seals the sub vault into the form it takes on disk. The KDF
+// parameters travel with the open sub vault, so re-sealing never moves one onto
+// a different salt behind its own back — only a password change does that, by
+// building a new record outright.
+func (s *subVault) record() (subVaultRecord, error) {
+	check, err := seal(s.sectionKey, []byte(checkPlaintext))
+	if err != nil {
+		return subVaultRecord{}, err
+	}
+	dataKey, err := seal(s.sectionKey, s.dataKey)
+	if err != nil {
+		return subVaultRecord{}, err
+	}
+	section, err := sealJSON(s.sectionKey, s.manifest)
+	if err != nil {
+		return subVaultRecord{}, err
+	}
+
+	rec := subVaultRecord{
+		ID:        s.id,
+		KDF:       s.kdf,
+		Check:     check,
+		DataKey:   dataKey,
+		DataKeyID: s.dataKeyID,
+		Section:   section,
+	}
+	for id, key := range s.retired {
+		wrapped, err := seal(s.sectionKey, key)
+		if err != nil {
+			return subVaultRecord{}, err
+		}
+		rec.RetiredKeys = append(rec.RetiredKeys, wrappedKey{ID: id, Key: wrapped})
+	}
+	sort.Slice(rec.RetiredKeys, func(i, j int) bool { return rec.RetiredKeys[i].ID < rec.RetiredKeys[j].ID })
+	return rec, nil
+}
+
+// unsealSubVault opens one sub vault record with its password.
+func unsealSubVault(rec subVaultRecord, password string) (*subVault, error) {
+	params, salt, err := rec.KDF.toArgon2()
+	if err != nil {
+		return nil, err
+	}
+
+	s := &subVault{
+		id:         rec.ID,
+		kdf:        rec.KDF,
+		sectionKey: crypto.DeriveKey(password, salt, params),
+		dataKeyID:  rec.DataKeyID,
+		retired:    map[string][]byte{},
+	}
+
+	plain, err := open(s.sectionKey, rec.Check)
+	if err != nil || subtle.ConstantTimeCompare(plain, []byte(checkPlaintext)) != 1 {
+		s.zero()
+		return nil, ErrWrongPassword
+	}
+
+	if s.dataKey, err = open(s.sectionKey, rec.DataKey); err != nil {
+		s.zero()
+		return nil, fmt.Errorf("unwrapping the sub vault's data key: %w", err)
+	}
+	for _, retired := range rec.RetiredKeys {
+		key, err := open(s.sectionKey, retired.Key)
+		if err != nil {
+			s.zero()
+			return nil, fmt.Errorf("unwrapping the data key the sub vault's files are still stored under: %w", err)
+		}
+		s.retired[retired.ID] = key
+	}
+
+	s.manifest = newManifest()
+	if err := openJSON(s.sectionKey, rec.Section, s.manifest); err != nil {
+		s.zero()
+		return nil, fmt.Errorf("decrypting the sub vault's file index: %w", err)
+	}
+	s.manifest.normalize()
+	return s, nil
 }
 
 // seal encrypts plaintext under key with a fresh random nonce.
@@ -222,9 +448,9 @@ func readStore(path string) (*storeFile, error) {
 	if err := json.Unmarshal(data, &sf); err != nil {
 		return nil, fmt.Errorf("parsing vault at %s: %w", path, err)
 	}
-	if sf.Version != StoreVersion {
-		return nil, fmt.Errorf("unsupported vault version %d (this build understands %d)",
-			sf.Version, StoreVersion)
+	if sf.Version < minStoreVersion || sf.Version > StoreVersion {
+		return nil, fmt.Errorf("unsupported vault version %d (this build understands %d to %d)",
+			sf.Version, minStoreVersion, StoreVersion)
 	}
 	if !sf.Policy.Valid() {
 		sf.Policy = PolicyStrict
@@ -235,6 +461,10 @@ func readStore(path string) (*storeFile, error) {
 // writeStore serializes the vault and replaces the file atomically, so an
 // interrupted write can never destroy an existing index.
 func writeStore(path string, sf *storeFile) error {
+	// Anything this build writes is written in this build's format, so a vault
+	// opened at version 2 is upgraded by the first change made to it.
+	sf.Version = StoreVersion
+
 	data, err := json.MarshalIndent(sf, "", "  ")
 	if err != nil {
 		return fmt.Errorf("serializing vault: %w", err)
@@ -399,12 +629,7 @@ func unsealStore(sf *storeFile, password string) (*unsealed, error) {
 		u.zero()
 		return nil, fmt.Errorf("decrypting file index: %w", err)
 	}
-	if u.manifest.Entries == nil {
-		u.manifest.Entries = []*Entry{}
-	}
-	if u.manifest.Folders == nil {
-		u.manifest.Folders = []string{}
-	}
+	u.manifest.normalize()
 
 	u.settings = &vaultSettings{}
 	if sf.Settings != nil {

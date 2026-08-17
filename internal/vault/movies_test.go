@@ -10,10 +10,10 @@ import (
 func TestMovieLookupIsInheritedDownwards(t *testing.T) {
 	v, _ := newTestVault(t, 3)
 
-	if err := v.Mkdir("/films/2019/Parasite (2019)"); err != nil {
+	if err := v.Mkdir(MainScope, "/films/2019/Parasite (2019)"); err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
-	if got := v.MovieLookupFor("/films"); got.Enabled {
+	if got := v.MovieLookupFor(MainScope, "/films"); got.Enabled {
 		t.Fatalf("lookup = %+v, want off until it is asked for", got)
 	}
 
@@ -24,23 +24,23 @@ func TestMovieLookupIsInheritedDownwards(t *testing.T) {
 	// The folder it was set on, and everything under it, with the source
 	// naming the folder that actually carries the setting.
 	for _, dir := range []string{"/films", "/films/2019", "/films/2019/Parasite (2019)"} {
-		got := v.MovieLookupFor(dir)
+		got := v.MovieLookupFor(MainScope, dir)
 		if !got.Enabled || got.Source != "/films" {
 			t.Errorf("MovieLookupFor(%q) = %+v, want on from /films", dir, got)
 		}
 	}
-	if v.MovieLookupFor("/films").Inherited("/films") {
+	if v.MovieLookupFor(MainScope, "/films").Inherited("/films") {
 		t.Error("the folder the setting was made on reports itself as inheriting it")
 	}
-	if !v.MovieLookupFor("/films/2019").Inherited("/films/2019") {
+	if !v.MovieLookupFor(MainScope, "/films/2019").Inherited("/films/2019") {
 		t.Error("a subfolder does not report the setting as inherited")
 	}
 
 	// And nothing beside it.
-	if got := v.MovieLookupFor("/photos"); got.Enabled {
+	if got := v.MovieLookupFor(MainScope, "/photos"); got.Enabled {
 		t.Errorf("MovieLookupFor(/photos) = %+v, want off", got)
 	}
-	if got := v.MovieLookupFor("/"); got.Enabled {
+	if got := v.MovieLookupFor(MainScope, "/"); got.Enabled {
 		t.Errorf("MovieLookupFor(/) = %+v — the root must not inherit from below it", got)
 	}
 }
@@ -50,10 +50,10 @@ func TestMovieLookupIsInheritedDownwards(t *testing.T) {
 func TestTurningLookupOffKeepsWhatWasFound(t *testing.T) {
 	v, _ := newTestVault(t, 3)
 
-	if err := v.Mkdir("/films"); err != nil {
+	if err := v.Mkdir(MainScope, "/films"); err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
-	entry, _, err := v.Upload(context.Background(), "/films", "The.Thing.1982.mkv",
+	entry, _, err := v.Upload(context.Background(), MainScope, "/films", "The.Thing.1982.mkv",
 		[]byte("pretend this is a film"), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
@@ -71,7 +71,7 @@ func TestTurningLookupOffKeepsWhatWasFound(t *testing.T) {
 	if got := v.Movie(entry.ID); got == nil || got.Title != "The Thing" {
 		t.Errorf("movie = %+v, want it kept", got)
 	}
-	if got := v.MovieLookupFor("/films"); got.Enabled {
+	if got := v.MovieLookupFor(MainScope, "/films"); got.Enabled {
 		t.Errorf("lookup = %+v, want off", got)
 	}
 
@@ -89,20 +89,20 @@ func TestTurningLookupOffKeepsWhatWasFound(t *testing.T) {
 func TestMovingAFolderCarriesItsLookupSetting(t *testing.T) {
 	v, _ := newTestVault(t, 3)
 
-	if err := v.Mkdir("/films/2019"); err != nil {
+	if err := v.Mkdir(MainScope, "/films/2019"); err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
 	if err := v.SetMovieLookup("/films", true); err != nil {
 		t.Fatalf("SetMovieLookup: %v", err)
 	}
-	if err := v.MoveFolder(context.Background(), "/films", "/cinema"); err != nil {
+	if err := v.MoveFolder(context.Background(), MainScope, "/films", "/cinema"); err != nil {
 		t.Fatalf("MoveFolder: %v", err)
 	}
 
-	if got := v.MovieLookupFor("/cinema/2019"); !got.Enabled || got.Source != "/cinema" {
+	if got := v.MovieLookupFor(MainScope, "/cinema/2019"); !got.Enabled || got.Source != "/cinema" {
 		t.Errorf("MovieLookupFor(/cinema/2019) = %+v, want on from /cinema", got)
 	}
-	if got := v.MovieLookupFor("/films"); got.Enabled {
+	if got := v.MovieLookupFor(MainScope, "/films"); got.Enabled {
 		t.Errorf("MovieLookupFor(/films) = %+v — the folder is not there any more", got)
 	}
 }
@@ -111,10 +111,10 @@ func TestMovingAFolderCarriesItsLookupSetting(t *testing.T) {
 func TestDeletingTakesTheFilmWithIt(t *testing.T) {
 	v, _ := newTestVault(t, 3)
 
-	if err := v.Mkdir("/films"); err != nil {
+	if err := v.Mkdir(MainScope, "/films"); err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
-	entry, _, err := v.Upload(context.Background(), "/films", "Alien.1979.mkv",
+	entry, _, err := v.Upload(context.Background(), MainScope, "/films", "Alien.1979.mkv",
 		[]byte("pretend this is a film"), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
@@ -134,10 +134,10 @@ func TestDeletingTakesTheFilmWithIt(t *testing.T) {
 func TestDeletingAFolderTakesItsSettingAndFilms(t *testing.T) {
 	v, _ := newTestVault(t, 3)
 
-	if err := v.Mkdir("/films/2019"); err != nil {
+	if err := v.Mkdir(MainScope, "/films/2019"); err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
-	entry, _, err := v.Upload(context.Background(), "/films/2019", "Parasite.2019.mkv",
+	entry, _, err := v.Upload(context.Background(), MainScope, "/films/2019", "Parasite.2019.mkv",
 		[]byte("pretend this is a film"), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
@@ -149,7 +149,7 @@ func TestDeletingAFolderTakesItsSettingAndFilms(t *testing.T) {
 		t.Fatalf("SetMovie: %v", err)
 	}
 
-	if _, err := v.Rmdir(context.Background(), "/films", true); err != nil {
+	if _, err := v.Rmdir(context.Background(), MainScope, "/films", true); err != nil {
 		t.Fatalf("Rmdir: %v", err)
 	}
 	if got := v.Movie(entry.ID); got != nil {

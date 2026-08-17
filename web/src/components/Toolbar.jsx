@@ -43,7 +43,7 @@ export function NavCluster({ nav, mobile }) {
 
 /* The trail. Every crumb is a folder you can land on, and the first one is the
    root of the vault. */
-export function Breadcrumbs({ path, mobile, onNavigate }) {
+export function Breadcrumbs({ path, vault = '', mobile, onNavigate }) {
   const segments = path === '/' ? [] : path.slice(1).split('/')
 
   return (
@@ -54,7 +54,16 @@ export function Breadcrumbs({ path, mobile, onNavigate }) {
         gap: '5px', fontFamily: FONT.mono, fontSize: '12px', flexWrap: 'wrap',
       }}
     >
-      <Crumb label="▣ /" mobile={mobile} onClick={() => onNavigate('/')} active={path === '/'} />
+      {/* The root crumb names which vault you are in. A sub vault has a root of
+          its own, so an unqualified "/" would be the same trail for two
+          different trees — and the one place it matters most whether you know
+          which of them you are putting a file into. */}
+      <Crumb
+        label={vault ? `🔒 ${vault} /` : '▣ /'}
+        mobile={mobile}
+        onClick={() => onNavigate('/')}
+        active={path === '/'}
+      />
       {segments.map((segment, i) => {
         const target = '/' + segments.slice(0, i + 1).join('/')
         return (
@@ -112,14 +121,18 @@ function Crumb({ label, mobile, onClick, active }) {
    which is readable four folders deep where crumbs are not, and carries
    Forward when there is somewhere to go forward to. */
 export function FolderHeader({
-  nav, path, stats, prefs, view, selecting, canUpload, search, film,
+  nav, path, vault = '', stats, prefs, view, selecting, canUpload, search, film,
   onSelecting, onSearch, onNewFolder, onUpload,
 }) {
   const [jumping, setJumping] = useState(false)
   const [sorting, setSorting] = useState(false)
 
   const segments = path === '/' ? [] : path.slice(1).split('/')
-  const here = segments.length ? segments[segments.length - 1] : 'Vault'
+  // At the root, the heading is the name of the tree you are standing in —
+  // which on a phone is the only thing saying whether the next upload lands in
+  // the vault or in a sub vault.
+  const root = vault ? `🔒 ${vault}` : 'Vault'
+  const here = segments.length ? segments[segments.length - 1] : root
   const grid = prefs.view === 'grid'
   // Nothing to drop at the root of an unwalked vault: no folders above this
   // one, and nowhere forward to go either.
@@ -452,8 +465,8 @@ function SortSheet({ prefs, view, onClose }) {
 /* What is picked, and what can be done with it. Only on screen while something
    is being selected, which is why it can afford to be a whole row of its own. */
 export function SelectionBar({
-  mobile, count, total, files, allSelected, busy,
-  onAll, onNone, onDone, onDownload, onMoveTo, onMove, onDelete,
+  mobile, count, total, files, allSelected, busy, vaultAction,
+  onAll, onNone, onDone, onDownload, onMoveTo, onMove, onAssign, onDelete,
 }) {
   const nothing = count === 0
 
@@ -508,6 +521,19 @@ export function SelectionBar({
         disabled={busy || nothing}
         title="Move the shards of everything selected onto other clouds"
       >⇄ Clouds</Button>
+      {/* Only where there is somewhere to send it: a vault with no sub vaults
+          open has nothing this could mean. It is here rather than on the row
+          because the row has space for three controls and already uses them —
+          and because moving a folder of photographs into a sub vault is the
+          shape this is usually wanted in. */}
+      {vaultAction && (
+        <Button
+          size={mobile ? 'md' : 'sm'}
+          onClick={onAssign}
+          disabled={busy || nothing}
+          title={vaultAction.title}
+        >🔒 {vaultAction.label}</Button>
+      )}
       <Button
         size={mobile ? 'md' : 'sm'}
         variant="danger"

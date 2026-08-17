@@ -173,12 +173,173 @@ type Manifest struct {
 	// here: a folder nobody has chosen for picks one of the films inside it and
 	// stores nothing (see folderart.go).
 	FolderArt map[string]string `json:"folder_art,omitempty"`
+	// SubVaults is the main vault's record of the vaults inside it. It is only
+	// ever populated on the main vault's own manifest — a sub vault does not
+	// contain sub vaults — and it holds what the main password is allowed to
+	// learn and no more. See SubVaultMeta.
+	SubVaults []*SubVaultMeta `json:"sub_vaults,omitempty"`
+
+	// AccountRemap is left behind by a recovery for the sub vaults it could not
+	// open, mapping the account IDs of the vault that was lost onto the ones
+	// reconnected here.
+	//
+	// A recovery rewrites every shard record to point at the account that
+	// really holds the part, because reconnecting an account gives it a fresh
+	// ID. It cannot do that inside a sub vault: the section is sealed, and the
+	// password that opens it is not the one doing the recovering. So the
+	// translation is written down instead, and applied the first time each sub
+	// vault is opened — at which point its own index can be rewritten and its
+	// files found. Entries are dropped once no shut sub vault could still need
+	// them.
+	AccountRemap map[string]string `json:"account_remap,omitempty"`
 
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
 func newManifest() *Manifest {
 	return &Manifest{Entries: []*Entry{}, Folders: []string{}}
+}
+
+// normalize fills in the empty slices a decoded manifest may be missing, so
+// that JSON consumers never have to tell "empty" from "null" and neither does
+// any code here.
+func (m *Manifest) normalize() {
+	if m.Entries == nil {
+		m.Entries = []*Entry{}
+	}
+	if m.Folders == nil {
+		m.Folders = []string{}
+	}
+}
+
+// SubVaultMeta is a sub vault as the main vault sees it: a name, when it was
+// made, and an inventory of the objects it owns out on the accounts.
+//
+// Everything here is sealed under the main vault key, which makes it the
+// deliberate boundary of what a main password reveals about a sub vault. It
+// reveals the name, the file count and where the parts sit. It reveals nothing
+// about what any of those files are — no path, no filename, no size of any one
+// file, no type.
+//
+// The inventory is the price of being able to clean up. Without it, deleting a
+// sub vault whose password has been forgotten could only forget the record and
+// leave its parts on the accounts for good, unattributable and undeletable,
+// because the only list of them was inside the section nothing can open. It
+// also lets the per-account usage figures stay honest while a sub vault is
+// locked, rather than under-reporting by however much it holds.
+type SubVaultMeta struct {
+	ID        string    `json:"id"`
+	Label     string    `json:"label"`
+	CreatedAt time.Time `json:"created_at"`
+
+	// Inventory is every object this sub vault owns. It is derived from the
+	// sub vault's own index on each write rather than maintained alongside it,
+	// so it cannot drift: an open sub vault's inventory is rebuilt from what
+	// its manifest actually says, and a locked one's is left exactly as the
+	// last open moment left it.
+	Inventory []InventoryItem `json:"inventory,omitempty"`
+}
+
+// InventoryItem is one stored archive — a file, or a folder's thumbnail pack —
+// reduced to what is needed to erase it and to count it.
+//
+// The object keys are not recorded because they do not need to be: a key is
+// derived from the archive ID, the chunk index and the part number, so those
+// three facts regenerate every name this archive occupies. See ShardKey.
+type InventoryItem struct {
+	ArchiveID  string          `json:"archive_id"`
+	ChunkCount int             `json:"chunk_count,omitempty"`
+	Parts      []InventoryPart `json:"parts"`
+
+	// DataShards and TotalShards are the erasure code this archive was cut
+	// with, carried for the same reason an entry carries it: how many parts
+	// have to survive is a fact about the file, not about the vault. Without it
+	// the guard that refuses to disconnect an account holding the last copy of
+	// something could only guess, and a 4-of-6 file and a 2-of-3 file guess
+	// differently.
+	DataShards  int `json:"data_shards,omitempty"`
+	TotalShards int `json:"total_shards,omitempty"`
+}
+
+// Scheme is the erasure code this archive was cut with, falling back to the
+// fixed one every file used before the code was recorded.
+func (i InventoryItem) Scheme() archive.Scheme {
+	if i.DataShards <= 0 || i.TotalShards <= 0 {
+		return archive.LegacyScheme()
+	}
+	return archive.Scheme{Data: i.DataShards, Total: i.TotalShards}
+}
+
+// InventoryPart is where one part of an archive sits, and how much room it
+// takes there.
+type InventoryPart struct {
+	Part       int    `json:"part"`
+	ProviderID string `json:"provider_id"`
+	Size       int64  `json:"size"`
+}
+
+// inventory reduces a manifest to the objects it owns on the accounts: every
+// file, and every folder's thumbnail pack.
+func (m *Manifest) inventory() []InventoryItem {
+	items := make([]InventoryItem, 0, len(m.Entries)+len(m.Thumbs))
+
+	add := func(archiveID string, chunkCount int, scheme archive.Scheme, shards []Shard) {
+		if archiveID == "" {
+			return
+		}
+		parts := make([]InventoryPart, 0, len(shards))
+		for _, s := range shards {
+			parts = append(parts, InventoryPart{Part: s.Part, ProviderID: s.ProviderID, Size: s.Size})
+		}
+		items = append(items, InventoryItem{
+			ArchiveID:   archiveID,
+			ChunkCount:  chunkCount,
+			Parts:       parts,
+			DataShards:  scheme.Data,
+			TotalShards: scheme.Total,
+		})
+	}
+
+	for _, e := range m.Entries {
+		add(e.ArchiveID, e.ChunkCount, e.Scheme(), e.Shards)
+	}
+	// Sorted by folder, so that two runs over the same index produce the same
+	// inventory and an unchanged sub vault does not churn the vault file.
+	dirs := make([]string, 0, len(m.Thumbs))
+	for dir := range m.Thumbs {
+		dirs = append(dirs, dir)
+	}
+	sort.Strings(dirs)
+	for _, dir := range dirs {
+		if pack := m.Thumbs[dir]; pack != nil {
+			// A pack is always cut with the fixed code, the way gather reads
+			// it back — see loadPack.
+			add(archiveIDOf(pack.Shards), 0, archive.LegacyScheme(), pack.Shards)
+		}
+	}
+	return items
+}
+
+// archiveIDOf recovers the archive ID a set of shards belongs to. A thumbnail
+// pack records its parts but not the archive they came from, and the key each
+// part is stored under begins with it.
+func archiveIDOf(shards []Shard) string {
+	for _, s := range shards {
+		if idx := strings.Index(s.Key, "-p"); idx > 0 {
+			return s.Key[:idx]
+		}
+	}
+	return ""
+}
+
+// SubVaultByID returns the metadata for one sub vault.
+func (m *Manifest) SubVaultByID(id string) *SubVaultMeta {
+	for _, meta := range m.SubVaults {
+		if meta.ID == id {
+			return meta
+		}
+	}
+	return nil
 }
 
 // CleanDir normalizes a folder path to a rooted, slash-separated form with no

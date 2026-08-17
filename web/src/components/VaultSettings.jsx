@@ -5,6 +5,7 @@ import { Modal } from './ui'
 import ChangePassword from './ChangePassword'
 import MountDrive from './MountDrive'
 import { FilmKeySettings } from './FilmDetails'
+import SubVaults from './SubVaults'
 import { DefaultClouds, PARTS_PER_FILE, schemeFor, schemeName } from './CloudSelect'
 
 /* Everything you set on the vault itself, in one place.
@@ -30,7 +31,10 @@ import { DefaultClouds, PARTS_PER_FILE, schemeFor, schemeName } from './CloudSel
    closing one puts you back on the list you chose it from. */
 const CHILD_Z = 110
 
-export default function VaultSettings({ providers, stats, webdav, onClose, onChanged }) {
+export default function VaultSettings({
+  providers, stats, webdav, subVaults = [], showSubVaults, onToggleSubVaults,
+  onOpenSubVault, onClose, onChanged,
+}) {
   const [open, setOpen] = useState(null)
   const [filmKey, setFilmKey] = useState(null)
 
@@ -84,6 +88,20 @@ export default function VaultSettings({ providers, stats, webdav, onClose, onCha
           onClick={() => setOpen('password')}
         />
 
+        {/* A sub vault is a vault inside this one, with a password of its own.
+            The line says how many there are and how many are open, because
+            "open" is the whole state that matters: a locked one is listed and
+            unreadable, which is the point of it. */}
+        <Setting
+          icon="🔒"
+          label="Sub vaults"
+          hint="Sealed under their own passwords, and never on a mounted drive"
+          status={subVaults.length === 0
+            ? 'None'
+            : `${subVaults.length}, ${subVaults.filter((s) => s.unlocked).length} open`}
+          onClick={() => setOpen('subvaults')}
+        />
+
         <Setting
           icon="🎬"
           label="Film key"
@@ -122,6 +140,18 @@ export default function VaultSettings({ providers, stats, webdav, onClose, onCha
           zIndex={CHILD_Z}
           onClose={close}
           onChanged={onChanged}
+        />
+      )}
+
+      {open === 'subvaults' && (
+        <SubVaults
+          subVaults={subVaults}
+          showSubVaults={showSubVaults}
+          onToggleSubVaults={onToggleSubVaults}
+          zIndex={CHILD_Z}
+          onClose={close}
+          onChanged={onChanged}
+          onOpen={(sub) => { onClose(); onOpenSubVault(sub) }}
         />
       )}
 

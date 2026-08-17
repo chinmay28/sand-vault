@@ -212,6 +212,7 @@ func (s *Server) Handler() (http.Handler, error) {
 		"POST /api/vault/migrate":  s.handleVaultMigrate,
 		"POST /api/vault/policy":   s.handleVaultPolicy,
 		"POST /api/vault/defaults": s.handleVaultDefaults,
+		"POST /api/vault/backup":   s.handleVaultBackup,
 
 		// Disaster recovery: what the accounts are still holding after the
 		// machine that held the vault is gone, and rebuilding the index from
@@ -239,6 +240,29 @@ func (s *Server) Handler() (http.Handler, error) {
 		"POST /api/providers/oauth/exchange": s.handleOAuthExchange,
 		"POST /api/providers/oauth/complete": s.handleOAuthComplete,
 		"GET /api/providers/oauth/{id}":      s.handleOAuthStatus,
+
+		// The vaults inside the vault. Creating, opening and closing one all
+		// sit behind the session, so a sub vault's password is always a second
+		// password on top of the first rather than a way around it.
+		"GET /api/subvaults":                s.handleSubVaultsList,
+		"POST /api/subvaults":               s.handleSubVaultCreate,
+		"POST /api/subvaults/{id}/unlock":   s.handleSubVaultUnlock,
+		"POST /api/subvaults/{id}/lock":     s.handleSubVaultLock,
+		"PATCH /api/subvaults/{id}":         s.handleSubVaultRename,
+		"POST /api/subvaults/{id}/password": s.handleSubVaultPassword,
+		"POST /api/subvaults/{id}/migrate":  s.handleSubVaultMigrate,
+		"DELETE /api/subvaults/{id}":        s.handleSubVaultDelete,
+
+		// Moving a file or a folder from one vault inside the file to another.
+		// One endpoint for both directions, because assigning into a sub vault
+		// and taking something back out are the same operation with the two
+		// scopes swapped.
+		"POST /api/assign": s.handleAssign,
+
+		// Bringing a vault found on an account in as a sub vault, rather than
+		// recovering over this one. Which accounts hold one is already the
+		// recovery scan's answer, above.
+		"POST /api/vaults/import": s.handleVaultImport,
 
 		"GET /api/search":            s.handleSearch,
 		"GET /api/files":             s.handleFilesList,
@@ -573,6 +597,13 @@ func vaultErrorResponse(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusUnauthorized, "wrong password", "WRONG_PASSWORD")
 	case errors.Is(err, vault.ErrNotInitialized):
 		writeError(w, http.StatusNotFound, "no vault has been created yet", "NO_VAULT")
+	case errors.Is(err, vault.ErrSubVaultLocked):
+		// Distinct from LOCKED so the browser knows to ask for one more
+		// password rather than throwing the session away and going back to the
+		// lock screen — the vault itself is open.
+		writeError(w, http.StatusUnauthorized, err.Error(), "SUB_VAULT_LOCKED")
+	case errors.Is(err, vault.ErrNoSubVault):
+		writeError(w, http.StatusNotFound, err.Error(), "NOT_FOUND")
 	case errors.Is(err, vault.ErrNeedsConversion):
 		// 409 rather than 400: nothing about the request is wrong, the file is
 		// simply in a state that has to change before it can be answered for.

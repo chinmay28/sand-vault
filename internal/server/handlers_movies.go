@@ -115,7 +115,7 @@ func (s *Server) handleMovieLookup(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"path":   vault.CleanDir(req.Path),
-		"lookup": v.MovieLookupFor(req.Path),
+		"lookup": v.MovieLookupFor(requestScope(r), req.Path),
 	})
 }
 
@@ -138,7 +138,7 @@ func (s *Server) handleMovieScan(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := contextWithTimeout(r, scanTimeout)
 	defer cancel()
 
-	report, err := s.scanFolder(ctx, req.Path, req.Refresh)
+	report, err := s.scanFolder(ctx, requestScope(r), req.Path, req.Refresh)
 	if err != nil {
 		movieErrorResponse(w, err)
 		return
@@ -163,7 +163,7 @@ func (s *Server) handleMovieGet(w http.ResponseWriter, r *http.Request) {
 		// It is what the search box opens on when a match has to be corrected,
 		// and what the view shows against a film to say how it was found.
 		"guess":  movie.ParseIn(entry.Dir, entry.Name),
-		"lookup": v.MovieLookupFor(entry.Dir),
+		"lookup": v.MovieLookupFor(scopeOfEntry(v, entry), entry.Dir),
 	})
 }
 
@@ -197,7 +197,7 @@ func (s *Server) handleMovieMatch(w http.ResponseWriter, r *http.Request) {
 	}
 	// The same consent check the sweep makes, for the same reason: this is a
 	// request that leaves the machine.
-	if !v.MovieLookupFor(entry.Dir).Enabled {
+	if !v.MovieLookupFor(scopeOfEntry(v, entry), entry.Dir).Enabled {
 		writeError(w, http.StatusForbidden,
 			"film lookup is not turned on for "+entry.Dir, "MOVIE_LOOKUP_OFF")
 		return
@@ -232,7 +232,10 @@ func (s *Server) handleMovieMatch(w http.ResponseWriter, r *http.Request) {
 	// the index, and the row falls back to the icon it has always shown.
 	var warnings []string
 	if poster != nil {
-		if err := v.SetThumbs(ctx, entry.Dir, map[string][]byte{entry.ID: poster}); err != nil {
+		// The pack belongs to whichever vault the file is in, which the ID
+		// answers on its own.
+		scope, _ := v.ScopeOf(entry.ID)
+		if err := v.SetThumbs(ctx, scope, entry.Dir, map[string][]byte{entry.ID: poster}); err != nil {
 			warnings = append(warnings, "stored the details but not the artwork: "+err.Error())
 		}
 	}
@@ -255,7 +258,7 @@ func (s *Server) handleMovieCandidates(w http.ResponseWriter, r *http.Request) {
 		vaultErrorResponse(w, err)
 		return
 	}
-	if !v.MovieLookupFor(entry.Dir).Enabled {
+	if !v.MovieLookupFor(scopeOfEntry(v, entry), entry.Dir).Enabled {
 		writeError(w, http.StatusForbidden,
 			"film lookup is not turned on for "+entry.Dir, "MOVIE_LOOKUP_OFF")
 		return
@@ -306,4 +309,12 @@ func (s *Server) handleMovieForget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "forgotten"})
+}
+
+// scopeOfEntry names the vault a file is in, for the folder-addressed calls
+// that only have the file. An ID resolves against every open vault, so this
+// never has to be passed in from the request.
+func scopeOfEntry(v *vault.Vault, entry *vault.Entry) vault.Scope {
+	scope, _ := v.ScopeOf(entry.ID)
+	return scope
 }

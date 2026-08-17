@@ -39,11 +39,17 @@ vault involved.`,
 	}
 
 	root.PersistentFlags().String("vault", "", "path to the vault file (default ~/.sand/vault.sand)")
+	// Named --in rather than --sub-vault because --vault is already taken, by
+	// the file on disk. "sand ls --in Taxes" also happens to read as what it
+	// does: list, in Taxes.
+	root.PersistentFlags().String("in", "",
+		"work inside a sub vault, by name or id (prompts for its password)")
 
 	root.AddCommand(
 		versionCmd(),
 		serveCmd(),
 		vaultCmd(),
+		subVaultCmd(),
 		remoteCmd(),
 		lsCmd(),
 		findCmd(),
