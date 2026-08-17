@@ -102,14 +102,26 @@ export default function FileBrowser({
      the tiles, select-all, a shift-click's range — works off this and so all
      of them agree about what "everything here" is and what order it is in. */
   const entries = useMemo(() => {
+    /* Which file's thumbnail each folder is drawn with, by path. Worked out by
+       the server in one walk of the index — a folder's picture comes from what
+       is inside it, which a listing of the folder above it cannot see. */
+    const art = (searchTerm ? results?.folder_art : listing?.folder_art) || {}
+
     if (searchTerm) {
       return sortHits(results?.hits || [], prefs).map((hit) => (hit.type === 'folder'
-        ? { kind: 'folder', key: `dir:${hit.path}`, name: hit.name, path: hit.path, location: hit.dir }
+        ? {
+          kind: 'folder', key: `dir:${hit.path}`, name: hit.name, path: hit.path,
+          location: hit.dir, art: art[hit.path],
+        }
         : { kind: 'file', key: `file:${hit.file.id}`, name: hit.file.name, file: hit.file, location: hit.dir }))
     }
     return [
       ...sortFolders(listing?.folders, prefs).map((name) => ({
-        kind: 'folder', key: `dir:${joinPath(path, name)}`, name, path: joinPath(path, name),
+        kind: 'folder',
+        key: `dir:${joinPath(path, name)}`,
+        name,
+        path: joinPath(path, name),
+        art: art[joinPath(path, name)],
       })),
       ...sortFiles(listing?.files, prefs).map((file) => ({
         kind: 'file', key: `file:${file.id}`, name: file.name, file,
@@ -680,7 +692,8 @@ function SearchResults({ term, results, searching, error, path, scoped, mobile, 
    for still holds rows with films against them, and those keep their poster and
    their control, so what is drawn follows what is actually there. */
 function showsFilms(films, movies, entries) {
-  return films || entries.some((entry) => entry.file && movies[entry.file.id])
+  return films || entries.some((entry) => (
+    (entry.file && movies[entry.file.id]) || entry.art?.film))
 }
 
 /* Whether a row should offer film details at all, and what happens if it is
@@ -769,6 +782,7 @@ function EntryTable({
           name={entry.name}
           path={entry.path}
           location={entry.location}
+          art={entry.art}
           mobile={mobile}
           providers={providers}
           columns={columns}
@@ -824,6 +838,7 @@ function EntryGrid({
           name={entry.name}
           path={entry.path}
           location={entry.location}
+          art={entry.art}
           mobile={mobile}
           providers={providers}
           aspect={aspect}

@@ -116,6 +116,28 @@ def upload_and_settle(page, source, choose=None):
     page.wait_for_load_state("networkidle")
 
 
+def png_bytes(width, height, rgb):
+    """A real PNG, so the browser has something it can decode into a thumbnail.
+
+    Written by hand rather than with an image library: the suite's only job here
+    is to give the upload a picture, and a dependency for three chunks of zlib
+    is a dependency for three chunks of zlib.
+    """
+    import struct
+    import zlib
+
+    raw = b"".join(b"\x00" + bytes(rgb) * width for _ in range(height))
+
+    def chunk(tag, data):
+        body = tag + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
+
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw))
+            + chunk(b"IEND", b""))
+
+
 def make_folder(page, name):
     """Create a folder in the current one and wait for it to be listed."""
     page.get_by_text("+ Folder").click()
@@ -1027,6 +1049,90 @@ class TestMovingBetweenFolders:
         app.wait_for_selector("text=2 moved to /bulk-into", timeout=60000)
         dialog.get_by_role("button", name="Done").click()
         app.wait_for_selector("text=This folder is empty", timeout=20000)
+
+
+class TestFolderPictures:
+    """A folder is drawn with a picture of something inside it.
+
+    Nothing is stored to do it: the folder points at a file that already has a
+    thumbnail and draws that file's own picture, which is why changing its mind
+    is free and why the picker is a list of what is already in there.
+    """
+
+    def picture(self, page, name):
+        """The address of the picture a folder row is drawn with, or None."""
+        row = page.locator('button[title="Open folder"]', has_text=name).locator("xpath=..")
+        img = row.locator("img")
+        return img.first.get_attribute("src") if img.count() else None
+
+    def test_a_folder_wears_a_picture_of_what_is_inside_it(self, app, tmp_path):
+        make_folder(app, "art-library")
+        app.get_by_text("art-library").first.click()
+        app.wait_for_load_state("networkidle")
+        make_folder(app, "art-trilogy")
+        app.get_by_text("art-trilogy").first.click()
+        app.wait_for_load_state("networkidle")
+
+        for name, rgb in (("art-one.png", (200, 60, 40)),
+                          ("art-two.png", (40, 90, 200)),
+                          ("art-three.png", (230, 170, 30))):
+            source = tmp_path / name
+            source.write_bytes(png_bytes(120, 180, rgb))
+            upload_and_settle(app, source)
+
+        app.locator('button[aria-label="Up"]').click()
+        app.wait_for_selector("text=art-trilogy", timeout=20000)
+
+        # The folder is drawn with one of the pictures from inside it, and with
+        # the same one the next time the listing is drawn — a folder that
+        # changed its face on every refresh would be worse than the icon.
+        drawn = self.picture(app, "art-trilogy")
+        assert drawn is not None, "the folder kept its icon"
+        app.get_by_role("button", name="Refresh").click()
+        app.wait_for_timeout(600)
+        assert self.picture(app, "art-trilogy") == drawn
+
+        # Picking another one sticks, and the row draws it.
+        app.locator('button[aria-label="Choose the picture for art-trilogy"]').click()
+        dialog = app.get_by_role("dialog", name="Folder picture")
+        dialog.wait_for(timeout=20000)
+        expect(dialog.get_by_text("Picked by SAND", exact=False)).to_have_count(1)
+
+        others = dialog.get_by_role("button", name=re.compile("^Draw this folder with"))
+        expect(others).to_have_count(3, timeout=10000)
+        for i in range(3):
+            if "in use" not in (others.nth(i).inner_text() or ""):
+                others.nth(i).click()
+                break
+        app.wait_for_selector("text=art-trilogy", timeout=20000)
+        app.wait_for_timeout(800)
+
+        chosen = self.picture(app, "art-trilogy")
+        assert chosen is not None and chosen != drawn, "the choice did not reach the row"
+
+        # And handing the choice back puts the vault's own pick on screen again.
+        app.locator('button[aria-label="Choose the picture for art-trilogy"]').click()
+        dialog = app.get_by_role("dialog", name="Folder picture")
+        dialog.wait_for(timeout=20000)
+        expect(dialog.get_by_text("Picked by hand")).to_have_count(1)
+        dialog.get_by_role("button", name="Let SAND choose").click()
+        app.wait_for_timeout(800)
+        assert self.picture(app, "art-trilogy") == drawn
+
+    def test_a_folder_with_nothing_picturable_keeps_its_icon(self, app, tmp_path):
+        make_folder(app, "art-plain")
+        app.get_by_text("art-plain").first.click()
+        app.wait_for_load_state("networkidle")
+        source = tmp_path / "notes.txt"
+        source.write_text("no picture here")
+        upload_and_settle(app, source)
+
+        app.locator('button[aria-label="Up"]').click()
+        app.wait_for_selector("text=art-plain", timeout=20000)
+
+        assert self.picture(app, "art-plain") is None
+        # And nothing offers to change a picture that cannot exist.
+        assert app.locator('button[aria-label="Choose the picture for art-plain"]').count() == 0
 
 
 class TestNavigationControls:

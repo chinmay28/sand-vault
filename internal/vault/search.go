@@ -87,6 +87,11 @@ type SearchResults struct {
 	// for the same reason: a poster in a search result should be captioned the
 	// same way it is in the folder it came from.
 	Movies map[string]MovieBrief `json:"movies,omitempty"`
+
+	// FolderArt names the picture each folder hit is drawn with, by path — and
+	// again for the same reason. A folder found by searching is the same folder
+	// row, and it should look like itself.
+	FolderArt map[string]FolderArt `json:"folder_art,omitempty"`
 }
 
 // Search finds files and folders whose name — or whose path, for a query that
@@ -148,6 +153,14 @@ func (v *Vault) Search(opts SearchOptions) (*SearchResults, error) {
 		results.Thumbs = []string{}
 	}
 	results.Movies = v.movieBriefsForLocked(matched)
+
+	folders := make([]string, 0, len(hits))
+	for _, hit := range hits {
+		if hit.Type == "folder" {
+			folders = append(folders, hit.Path)
+		}
+	}
+	results.FolderArt = v.folderArtForLocked(folders)
 	return results, nil
 }
 

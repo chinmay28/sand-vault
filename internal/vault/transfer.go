@@ -448,6 +448,9 @@ func (v *Vault) Delete(ctx context.Context, id string) ([]string, error) {
 	// stored title outliving the file it described would show up as a phantom
 	// in nothing at all, but it would sit in the index forever.
 	v.manifest.forgetMovies(id)
+	// And any folder that was told to wear this file's picture goes back to
+	// choosing one for itself, rather than pointing at a file that is gone.
+	v.manifest.forgetFolderArt(id)
 	err := v.persistLocked()
 	v.mu.Unlock()
 
@@ -502,8 +505,10 @@ func (v *Vault) Rmdir(ctx context.Context, dir string, recursive bool) ([]string
 		v.manifest.remove(id)
 	}
 	v.manifest.forgetMovies(ids...)
+	v.manifest.forgetFolderArt(ids...)
 	v.manifest.removeFolders(dir)
 	v.manifest.dropMovieFolders(dir)
+	v.manifest.dropFolderArt(dir)
 	err := v.persistLocked()
 	v.mu.Unlock()
 

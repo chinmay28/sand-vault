@@ -518,6 +518,73 @@ func (s *Server) handleFolderCreate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]string{"path": vault.CleanDir(req.Path)})
 }
 
+// folderArtRequest fixes the picture a folder is drawn with, or hands the
+// choice back to the vault with an empty ID.
+type folderArtRequest struct {
+	Path string `json:"path"`
+	ID   string `json:"id"`
+}
+
+// handleFolderArt answers what a folder is drawn with and what else it could be
+// drawn with — every file under it that has a thumbnail, films first.
+//
+// The picture itself is not here and never was: the answer is a file ID, and the
+// browser draws it through the thumbnail endpoint that file's own row uses. A
+// folder's picture is borrowed, not stored.
+func (s *Server) handleFolderArt(w http.ResponseWriter, r *http.Request) {
+	dir := r.URL.Query().Get("path")
+	if dir == "" {
+		dir = "/"
+	}
+
+	v, _ := s.Vault()
+	choices, truncated, err := v.FolderArtChoices(dir)
+	if err != nil {
+		vaultErrorResponse(w, err)
+		return
+	}
+	if choices == nil {
+		choices = []vault.ArtChoice{}
+	}
+
+	body := map[string]any{
+		"path":       vault.CleanDir(dir),
+		"candidates": choices,
+		"truncated":  truncated,
+	}
+	if art, ok := v.FolderArtFor(dir); ok {
+		body["art"] = art
+	}
+	writeJSON(w, http.StatusOK, body)
+}
+
+// handleFolderArtSet records the picture somebody picked for a folder, or drops
+// the choice so the vault picks again.
+func (s *Server) handleFolderArtSet(w http.ResponseWriter, r *http.Request) {
+	var req folderArtRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
+		return
+	}
+	if strings.TrimSpace(req.Path) == "" {
+		writeError(w, http.StatusBadRequest, "name the folder", "BAD_REQUEST")
+		return
+	}
+
+	v, _ := s.Vault()
+	art, err := v.SetFolderArt(req.Path, req.ID)
+	if err != nil {
+		vaultErrorResponse(w, err)
+		return
+	}
+
+	body := map[string]any{"path": vault.CleanDir(req.Path)}
+	if art.ID != "" {
+		body["art"] = art
+	}
+	writeJSON(w, http.StatusOK, body)
+}
+
 // folderMoveRequest renames a folder, or moves it under another one — which are
 // the same thing, since a folder is a path in the index and nothing else.
 type folderMoveRequest struct {

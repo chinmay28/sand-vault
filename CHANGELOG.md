@@ -800,6 +800,34 @@ brings them back for one image fetch each and no searching.
 Details and artwork come from The Movie Database. SAND uses the TMDB API but is
 not endorsed or certified by TMDB.
 
+### A folder wears a picture of what is inside it
+
+The films got posters and the folders holding them did not, so a library was a
+row of identical `📁` — exactly the problem the files themselves had before. A
+folder is now drawn with a picture of something inside it: a poster where there
+is one, otherwise the thumbnail of whatever photograph or PDF is in there, and it
+reaches as deep as it needs to, so a library whose films sit one folder each
+still has a face.
+
+**Nothing is stored to do it.** The folder points at a file that already has a
+thumbnail and draws that file's own picture, through the same address its row
+draws through — no cover object on any account, nothing to keep in step, nothing
+to lose. SAND picks one for you, films first, and keeps picking the same one so a
+folder does not change its face every time the listing refreshes.
+
+When it picks the wrong one — which for a trilogy it half the time will, there
+being no right one — `🖼` on the folder's row, or **Folder picture** in its menu,
+shows everything inside it that has a picture and lets you say which. **Let SAND
+choose** hands the choice back. What you pick is remembered by file rather than
+by name or place, so renaming that file, moving it deeper, or moving the whole
+folder somewhere else all leave your choice standing; deleting it hands the
+folder back to choosing for itself.
+
+Thumbnails are stored a pack per folder, so drawing a parent of twenty folders
+can gather twenty packs the first time. Only the tiles on screen fetch anything
+and each pack is gathered once, which makes it the same cost as opening those
+twenty folders — paid where they are listed instead.
+
 ### Quick start
 
 One command installs SAND as a hardened systemd service, building from source

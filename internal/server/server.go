@@ -261,6 +261,11 @@ func (s *Server) Handler() (http.Handler, error) {
 		"GET /api/folders":    s.handleFoldersList,
 		"POST /api/folders":   s.handleFolderCreate,
 		"DELETE /api/folders": s.handleFolderDelete,
+		// The picture a folder is drawn with: which file's thumbnail stands for
+		// it, and which others could. Nothing is stored by choosing — the
+		// answer is a file ID, drawn through that file's own thumbnail.
+		"GET /api/folders/art":  s.handleFolderArt,
+		"POST /api/folders/art": s.handleFolderArtSet,
 		// Moving a folder within the vault, which moves everything under it.
 		// No part leaves the account it is on: a folder is a path in the index,
 		// so this is a rewrite of that index and nothing more — the same as

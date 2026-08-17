@@ -818,6 +818,10 @@ pipe the password on stdin.
   `Ctrl+A`, then download, move into another folder, move to other clouds, or
   delete the lot. A move onto other clouds prices the whole selection as one
   number before it starts
+- **Folder pictures** — a folder is drawn with a picture of something inside it,
+  a film's poster for choice, reaching as deep as it needs to. Nothing is stored
+  for it and `🖼` on the row says which picture — see [A folder wears one
+  too](#a-folder-wears-one-too)
 - **Move between folders** — `→` on any row, or *Move to another folder* in its
   menu, opens the vault's own folder tree; nothing is uploaded or downloaded and
   the parts stay on the clouds they are on — see [Moving something to another
@@ -1009,6 +1013,37 @@ already found exactly where it is.
 Details and artwork come from The Movie Database. SAND uses the TMDB API but is
 not endorsed or certified by TMDB.
 
+### A folder wears one too
+
+A folder of films was a row of identical `📁` — the same problem its files had
+before they had posters. So a folder borrows a picture from what is inside it: a
+poster where there is one, and otherwise the thumbnail of whatever photograph or
+PDF is in there. It reaches as deep as it needs to, so a library whose films sit
+in a folder each still has a face.
+
+**Nothing is stored to do it.** The folder points at a file that already has a
+thumbnail and draws that file's own picture, through the same address its row
+draws through. A folder's picture therefore costs no upload, no extra object on
+any account, and nothing at all to change — and it is not artwork you can lose,
+because it is not a copy of anything.
+
+SAND picks one for you, from the films first, and keeps picking the same one so a
+folder does not change its face every time the listing refreshes. When it picks
+the wrong one — which for a trilogy it half the time will, there being no right
+one — **🖼 on the folder's row**, or *Folder picture* in its menu, shows
+everything inside it that has a picture and lets you say which. **Let SAND
+choose** hands the choice back.
+
+The picture is remembered by file, not by name or place, so renaming that file,
+moving it deeper, or moving the whole folder somewhere else all leave your choice
+standing. Deleting it hands the folder back to choosing for itself.
+
+One cost worth knowing: thumbnails are stored one pack per folder, so drawing a
+parent of twenty folders can gather twenty packs the first time. Only the tiles
+actually on screen fetch anything, and each pack is gathered once and kept until
+the vault locks — it is the same cost as opening those twenty folders, paid where
+they are listed instead.
+
 ---
 
 ## HTTP API
@@ -1049,6 +1084,7 @@ not endorsed or certified by TMDB.
 | POST | `/api/files/{id}/move` | Rename / move into another folder |
 | DELETE | `/api/files/{id}` | Erase every part |
 | GET | `/api/folders` | Every folder in the vault, for a destination picker |
+| GET · POST | `/api/folders/art?path=` | Which file's thumbnail a folder is drawn with, and what else it could be (`id` to pick, `""` to hand it back) |
 | POST · DELETE | `/api/folders` | Create / delete folders |
 | POST | `/api/folders/move` | Move a folder, and everything under it, `from` one path `to` another |
 | POST | `/api/relocate` | Move a file (`id`) or folder (`path`) onto other `accounts`; `preview` prices it without moving anything |
@@ -1446,7 +1482,8 @@ sand/
 │   ├── navigation.js  view.js   # the trail of folders walked; view + sort prefs
 │   └── components/              # LockScreen, AccountsPanel, ConnectCloud,
 │                                #   FileBrowser, Toolbar, FileEntry, BulkActions,
-│                                #   MoveToFolder, PreviewModal, PdfPreview, FilmDetails,
+│                                #   MoveToFolder, FolderArt, PreviewModal, PdfPreview,
+│                                #   FilmDetails,
 │                                #   StreamLink, RecoverVault, ReclaimVault, ui
 │   ├── public/                  # app icon, home-screen icons + manifest,
 │   │                            #   developer badge

@@ -959,6 +959,12 @@ type Listing struct {
 	// which folder carries the setting. Off by default and everywhere: a lookup
 	// is the only thing in SAND that talks to a third party.
 	MovieLookup MovieLookup `json:"movie_lookup"`
+
+	// FolderArt names, per subfolder path, the file whose thumbnail that folder
+	// is drawn with — a poster from the films inside it, or whatever picture
+	// somebody picked. A folder with nothing picturable under it is simply
+	// absent and keeps its icon (see folderart.go).
+	FolderArt map[string]FolderArt `json:"folder_art,omitempty"`
 }
 
 // List returns the contents of a folder.
@@ -992,6 +998,14 @@ func (v *Vault) List(dir string) (*Listing, error) {
 		thumbs = []string{}
 	}
 
+	// The subfolders' pictures, worked out in one walk of the index for all of
+	// them. They are paths rather than names because a search result's folders
+	// come from anywhere, and both draw the same row.
+	paths := make([]string, 0, len(folders))
+	for _, name := range folders {
+		paths = append(paths, JoinPath(dir, name))
+	}
+
 	return &Listing{
 		Path:        dir,
 		Parent:      parent,
@@ -1000,6 +1014,7 @@ func (v *Vault) List(dir string) (*Listing, error) {
 		Thumbs:      thumbs,
 		Movies:      v.movieBriefsForLocked(files),
 		MovieLookup: v.movieLookupLocked(dir),
+		FolderArt:   v.folderArtForLocked(paths),
 	}, nil
 }
 

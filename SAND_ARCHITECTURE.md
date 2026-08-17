@@ -445,6 +445,41 @@ records the query it was matched on, why a match can be corrected against a
 candidate list, and why a corrected match is marked `Manual` and never
 overwritten.
 
+### 3.11 A folder's picture is mostly not state at all
+
+A folder is drawn with a picture of something inside it, and the way that is
+done is by not storing anything: `FolderArt` is the **ID of a file that already
+has a thumbnail**, and the browser draws it through
+`/api/files/{id}/thumb` — the same address that file's own row draws through.
+There is no folder-cover object on any account, nothing to keep in step when the
+picture changes, and nothing to lose.
+
+The pick is computed, in `folderart.go`, in one walk of the index per listing:
+every file that has a thumbnail is offered to each of the folders that contains
+it, walking up from the file rather than down from the folder so that a film
+three levels deep still gives its library a face. A poster beats anything else,
+and between two of a kind the winner is the one with the higher
+`fnv64a(folder ‖ file)` — a hash rather than a counter because the pick has to be
+**stable** (a folder that changed its face on every refresh would be worse than
+the icon it replaced) and **spread** (twenty folders should not all show whatever
+sorts first). Nothing about it is written down.
+
+Only a choice made by hand is state: `Manifest.FolderArt` maps a folder path to a
+file ID, and it is the third map keyed by folder rather than by file — the other
+two are the thumbnail packs (§4.3) and the film-lookup settings (§3.10) — so it
+is rekeyed by `moveFolder` alongside them and dropped when the folder or the file
+it names goes away. A choice that survives its file being deleted would be a
+folder pointing at nothing; instead the vault silently goes back to picking.
+
+The one real cost is on the read side, and it is the packs': a picture lives in
+the pack of the folder that holds it, so a parent of twenty folders can gather
+twenty packs. The browser loads tiles lazily and a gathered pack is held until
+the vault locks, which makes this the same cost as opening those twenty folders,
+paid where they are listed instead. Storing a copy of each cover in the parent's
+own pack would trade that for an extra stored object per folder and a second
+thing to invalidate; pointing at what is already there is the cheaper bargain in
+both directions.
+
 ---
 
 ## 4. The Data Pipeline
@@ -1130,6 +1165,8 @@ reveals only whether a vault exists.
 | POST | `/api/files/{id}/move` | Rename or move into another folder (index only, §5.6) |
 | DELETE | `/api/files/{id}` | Erase every part, drop the entry |
 | GET | `/api/folders` | Every folder in the vault, root first — the whole tree in one answer, for a destination picker |
+| GET | `/api/folders/art?path=` | Which file's thumbnail a folder is drawn with, and every file under it that could be (§3.11) |
+| POST | `/api/folders/art` | Fix the picture (`path`, `id`), or hand the choice back with an empty `id` |
 | POST | `/api/folders` | Create a folder |
 | POST | `/api/folders/move` | Move a folder `from` one path `to` another, with everything under it (§5.6) |
 | DELETE | `/api/folders?path=&recursive=` | Delete a folder |
@@ -1387,8 +1424,8 @@ sand/
 │   ├── view.js                # list or grid, sort key and direction (persisted)
 │   └── components/            # LockScreen, AccountsPanel, FileBrowser, Toolbar,
 │                              #   FileEntry (rows + tiles), BulkActions,
-│                              #   MoveToFolder, PreviewModal, PdfPreview (pdf.js),
-│                              #   FilmDetails, ui
+│                              #   MoveToFolder, FolderArt, PreviewModal,
+│                              #   PdfPreview (pdf.js), FilmDetails, ui
 └── tests/                     # pytest e2e: CLI, API, vault flow, browser
 ```
 

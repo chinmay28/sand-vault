@@ -188,6 +188,16 @@ export const api = {
      never a moment where half of it answers to the old name. */
   moveFolder: (from, to) => request('/api/folders/move', { method: 'POST', body: { from, to } }),
 
+  /* The picture a folder is drawn with, and what else it could be drawn with:
+     every file under it that has a thumbnail, films first. What comes back is a
+     file id — the picture itself is that file's own thumbnail, drawn through
+     thumbURL like every other picture in the app, so a folder's face costs
+     nothing to store and nothing to change. */
+  folderArt: (path) => request(`/api/folders/art?path=${encodeURIComponent(path)}`),
+  /* Pick one, or pass no id to hand the choice back to the vault. */
+  setFolderArt: (path, id = '') =>
+    request('/api/folders/art', { method: 'POST', body: { path, id } }),
+
   /* A link a player outside the browser can follow. VLC has none of what
      authenticates this app — the session cookie is HttpOnly and SameSite=Strict
      — so the server mints a bearer link standing for this one file, which is
