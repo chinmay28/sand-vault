@@ -421,7 +421,12 @@ function DeleteSubVault({ sub, onClose, onDeleted }) {
       confirmLabel="Delete and erase"
       busy={busy}
       onConfirm={confirm}
-      onClose={onClose}
+      /* Above the panel it was opened from, like every other dialog in here. */
+      zIndex={120}
+      /* The erasure runs across every account holding a part, so it can take a
+         while. Dismissing it midway would leave that running with nothing left
+         to report to, so while it runs the backdrop and Escape do not close. */
+      onClose={() => !busy && onClose()}
     >
       {error && <Banner tone="error">{error}</Banner>}
       <p style={note}>

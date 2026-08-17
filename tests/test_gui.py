@@ -155,6 +155,28 @@ def upload_and_settle(page, source, choose=None):
     page.wait_for_load_state("networkidle")
 
 
+def clickable(page, locator):
+    """Whether a click aimed at this element would actually reach it.
+
+    A dialog drawn underneath the panel that opened it is still on the page,
+    still laid out and still "visible" by every measure short of the one that
+    matters: the browser hands the click to whatever is on top, which is the
+    panel's backdrop. Asking the document what is at the point tells the two
+    apart, and says so in the assertion rather than as a click that times out
+    for no stated reason.
+    """
+    box = locator.bounding_box()
+    if box is None:
+        return False
+    return locator.evaluate(
+        """(el, point) => {
+             const top = document.elementFromPoint(point[0], point[1])
+             return !!top && (el === top || el.contains(top))
+           }""",
+        [box["x"] + box["width"] / 2, box["y"] + box["height"] / 2],
+    )
+
+
 def png_bytes(width, height, rgb):
     """A real PNG, so the browser has something it can decode into a thumbnail.
 
@@ -2197,6 +2219,100 @@ class TestDisasterRecovery:
         expect(page.get_by_role("button", name="Re-encrypt under your key")).to_have_count(0, timeout=30000)
         for name in names:
             expect(page.get_by_text(name, exact=True).first).to_be_visible(timeout=30000)
+
+class TestSubVaultDeletion:
+    """Throwing away a vault that is inside the vault.
+
+    Deleting one erases every part it owns from every account, and no backup
+    undoes it — the backups carry the sub vault sealed under the password being
+    thrown away. So it asks first, and the asking is a dialog opened from
+    inside the sub vaults panel, which is itself a dialog. It has to be drawn
+    in front of the panel that opened it: behind, it is still on the page and
+    still visible, and the only thing that notices is the click, which lands on
+    the panel's backdrop instead. From the outside that is a trash button that
+    does nothing at all.
+    """
+
+    def open_panel(self, app):
+        open_vault_setting(app, "Sub vaults")
+        panel = app.get_by_role("dialog", name="Sub vaults")
+        panel.wait_for(timeout=20000)
+        return panel
+
+    def make_sub_vault(self, app, name, password):
+        """Make one through the panel, which walks into it once it exists."""
+        panel = self.open_panel(app)
+        panel.get_by_role("button", name="+ New sub vault").click()
+
+        dialog = app.get_by_role("dialog", name="New sub vault")
+        dialog.wait_for(timeout=20000)
+        boxes = dialog.locator("form").locator("input")
+        boxes.nth(0).fill(name)
+        boxes.nth(1).fill(password)
+        boxes.nth(2).fill(password)
+        dialog.get_by_role("button", name="Create").click()
+
+        # Making one opens it, and the root crumb names which vault you are
+        # standing in — an unqualified "/" would be two different trees.
+        app.wait_for_selector(f"text=🔒 {name} /", timeout=30000)
+        app.wait_for_load_state("networkidle")
+
+    def test_deleting_one_asks_first_and_takes_its_contents_with_it(self, app, tmp_path):
+        self.make_sub_vault(app, "doomed-vault", "doomed-vault-passphrase")
+
+        # A file put inside it, so what is being erased is not an empty record.
+        source = tmp_path / "sealed.txt"
+        source.write_text("erased with the sub vault that held it")
+        upload_and_settle(app, source, choose=["ui-one", "ui-two", "ui-three"])
+
+        # Back out to the vault the sub vault sits in.
+        app.locator('button[aria-label="Back"]').click()
+        app.wait_for_selector("text=▣ /", timeout=20000)
+        # Nothing in a sub vault is listed by the vault holding it, which is
+        # what makes the delete the only way its file can go.
+        expect(app.locator('button[aria-label="Download sealed.txt"]')).to_have_count(
+            0, timeout=20000)
+
+        # Listed, with the count the vault keeps for it while it is shut.
+        panel = self.open_panel(app)
+        expect(panel.get_by_text("doomed-vault", exact=True)).to_be_visible(timeout=20000)
+        expect(panel).to_contain_text("1 file", timeout=20000)
+
+        # The trash button, and the confirmation it is supposed to raise.
+        panel.get_by_title("Delete this sub vault and erase everything in it").click()
+        confirm = app.get_by_role("dialog", name="Delete doomed-vault?")
+        confirm.wait_for(timeout=20000)
+
+        # It says what is about to go, and it is in front of the panel that
+        # asked for it — which is the whole of the bug this guards.
+        expect(confirm).to_contain_text("1 file", timeout=20000)
+        erase = confirm.get_by_role("button", name="Delete and erase")
+        assert clickable(app, erase), (
+            "the confirmation is drawn behind the sub vaults panel — a click "
+            "aimed at it lands on the panel's backdrop, so the trash button "
+            "reads as one that does nothing")
+
+        # Backing out erases nothing.
+        confirm.get_by_role("button", name="Cancel").click()
+        confirm.wait_for(state="detached", timeout=20000)
+        expect(panel.get_by_text("doomed-vault", exact=True)).to_be_visible(timeout=20000)
+
+        # Going through with it takes the sub vault and the file in it.
+        panel.get_by_title("Delete this sub vault and erase everything in it").click()
+        confirm = app.get_by_role("dialog", name="Delete doomed-vault?")
+        confirm.wait_for(timeout=20000)
+        confirm.get_by_role("button", name="Delete and erase").click()
+
+        confirm.wait_for(state="detached", timeout=60000)
+        expect(panel.get_by_text("doomed-vault", exact=True)).to_have_count(0, timeout=30000)
+        expect(panel.get_by_text("No sub vaults yet.")).to_be_visible(timeout=20000)
+
+        # And the vault it was in is left holding none.
+        app.keyboard.press("Escape")
+        panel.wait_for(state="detached", timeout=20000)
+        close_vault_settings(app)
+        expect_vault_setting(app, "Sub vaults", "None")
+
 
 class TestWiderSchemes:
     """Six clouds and nine are the same choice as three, made wider.
