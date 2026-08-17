@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/chinmay28/sand-vault/internal/archive"
 	"github.com/chinmay28/sand-vault/internal/provider"
 )
 
@@ -624,11 +625,11 @@ func TestSanitizeNameRejectsTraversal(t *testing.T) {
 func TestBuildPlanRotatesAcrossAccounts(t *testing.T) {
 	ids := []string{"a", "b", "c", "d"}
 
-	first, err := BuildPlan(ids, PolicyStrict, 0)
+	first, err := BuildPlan(ids, PolicyStrict, archive.SchemeDefault, 0)
 	if err != nil {
 		t.Fatalf("BuildPlan: %v", err)
 	}
-	second, err := BuildPlan(ids, PolicyStrict, 1)
+	second, err := BuildPlan(ids, PolicyStrict, archive.SchemeDefault, 1)
 	if err != nil {
 		t.Fatalf("BuildPlan: %v", err)
 	}

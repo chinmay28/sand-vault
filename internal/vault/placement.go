@@ -11,16 +11,17 @@ import (
 type Policy string
 
 const (
-	// PolicyStrict never lets a single account hold two parts of the same
-	// file. Two parts are enough to reconstruct, so this keeps the promise
-	// that compromising one cloud account reveals nothing. With only two
-	// accounts connected it costs the third, redundant part.
+	// PolicyStrict never lets a single account hold two shards of the same
+	// file, at any width. k shards are enough to reconstruct, so this keeps the
+	// promise that compromising one cloud account reveals nothing — and keeps it
+	// harder as the spread grows, since a wider scheme raises k. With only two
+	// accounts connected it costs the third, redundant shard.
 	PolicyStrict Policy = "strict"
 
-	// PolicyRedundant always writes all three parts, doubling up on an
-	// account when fewer than three are connected. This survives an account
-	// going offline, but an attacker who breaks into the doubled-up account
-	// holds enough to reconstruct.
+	// PolicyRedundant always writes the whole scheme, doubling up on an account
+	// when fewer are connected than it has shards. This survives an account
+	// going offline with one or two connected, but an attacker who breaks into
+	// the doubled-up account holds enough to reconstruct.
 	PolicyRedundant Policy = "redundant"
 )
 
@@ -29,20 +30,96 @@ func (p Policy) Valid() bool {
 	return p == PolicyStrict || p == PolicyRedundant
 }
 
-// AccountsPerFile is how many accounts a file is spread over: one per part, so
-// that no account holds enough of a file to rebuild it. It is also how many
-// accounts an upload picks when nobody has said which ones to use.
-const AccountsPerFile = archive.PartCount
+// AccountsPerFile is how many accounts an upload spreads over when nobody has
+// said which ones to use — the width of the default scheme, one account per
+// shard.
+const AccountsPerFile = 3
 
-// SelectAccounts chooses which of the connected accounts one file's parts go
+// SchemeFor returns the erasure code that spreads a file over exactly n
+// accounts: two thirds of 3m shards, for m groups of three (archive.Scheme).
+//
+// One or two accounts is not a scheme so much as a shortfall, and it is allowed
+// for the same reason it always was: a vault with two clouds connected should
+// store files rather than refuse to. Those get the default code with whatever
+// shards there is room for — see BuildPlan.
+func SchemeFor(accounts int) (archive.Scheme, error) {
+	if accounts > 0 && accounts < archive.AccountsPerGroup {
+		return archive.SchemeDefault, nil
+	}
+	return archive.SchemeFor(accounts)
+}
+
+// ValidSpread reports whether n accounts is a shape a file can be laid out
+// over. It is the same question SchemeFor answers, asked where only yes or no
+// is wanted.
+//
+// None is valid, and means exactly that: no accounts were named, so nothing has
+// been chosen and the caller's own default applies. Only a non-empty selection
+// has to name a scheme.
+func ValidSpread(n int) bool {
+	if n == 0 {
+		return true
+	}
+	_, err := SchemeFor(n)
+	return err == nil
+}
+
+// ErrSpread is what ValidSpread failing has to say to whoever chose the
+// accounts.
+func ErrSpread(n int) error {
+	if ValidSpread(n) {
+		return nil
+	}
+	_, err := SchemeFor(n)
+	return err
+}
+
+// spreadWidth is how many accounts a file wants to be on, given how many it
+// already prefers and how many are connected.
+//
+// Three by default. A file that prefers more than that is one already cut with
+// a wider code, and it wants to stay that way: the preference is rounded up to
+// the next scheme so that a six-account file which lost one account is filled
+// back up to six rather than being narrowed — narrowing would mean re-encoding
+// it, which is not something a top-up is allowed to decide.
+//
+// What is not connected cannot be used, so the answer is capped at the widest
+// scheme that actually fits, and at everything there is when that is fewer than
+// one scheme's worth.
+func spreadWidth(available, preferred int) int {
+	// The narrowest spread wide enough for what the file already prefers:
+	// its count rounded up to whole groups, and never below one group.
+	want := (preferred + archive.AccountsPerGroup - 1) /
+		archive.AccountsPerGroup * archive.AccountsPerGroup
+	if want < AccountsPerFile {
+		want = AccountsPerFile
+	}
+	if want > archive.MaxAccounts {
+		want = archive.MaxAccounts
+	}
+	if want <= available {
+		return want
+	}
+
+	// More than there is to give. The widest spread that fits, or everything
+	// there is when not even one group does — a vault with two clouds stores
+	// files rather than refusing to.
+	if available < archive.AccountsPerGroup {
+		return available
+	}
+	return archive.WidestFor(available)
+}
+
+// SelectAccounts chooses which of the connected accounts one file's shards go
 // to.
 //
 // preferred is a starting point rather than an answer: anything in it that is
-// no longer connected is dropped, and if that leaves fewer accounts than a
-// file has parts the rest are filled in at random from whatever else is
-// connected. That is what a vault with no default at all wants — three
-// accounts of this file's own — and what a file being re-encrypted wants, which
-// is the accounts it is already on, made back up to three if one has gone away.
+// no longer connected is dropped, and if that leaves fewer accounts than the
+// file wants to be on the rest are filled in at random from whatever else is
+// connected. That is what a vault with no default at all wants — three accounts
+// of this file's own — and what a file being re-encrypted wants, which is the
+// accounts it is already on, made back up to its scheme's width if one has gone
+// away.
 //
 // A choice someone actually made, whether for one upload or as the vault's
 // default, does not come through here: it is followed exactly.
@@ -57,20 +134,19 @@ func SelectAccounts(available, preferred []string, seed uint64) []string {
 		connected[id] = true
 	}
 
-	chosen := make([]string, 0, AccountsPerFile)
-	taken := make(map[string]bool, AccountsPerFile)
+	chosen := make([]string, 0, len(preferred))
+	taken := make(map[string]bool, len(preferred))
 	for _, id := range preferred {
-		if len(chosen) == AccountsPerFile {
-			break
-		}
 		if !connected[id] || taken[id] {
 			continue
 		}
 		chosen = append(chosen, id)
 		taken[id] = true
 	}
-	if len(chosen) == AccountsPerFile {
-		return chosen
+
+	want := spreadWidth(len(available), len(chosen))
+	if len(chosen) >= want {
+		return chosen[:want]
 	}
 
 	rest := make([]string, 0, len(available))
@@ -83,7 +159,7 @@ func SelectAccounts(available, preferred []string, seed uint64) []string {
 	rng.Shuffle(len(rest), func(i, j int) { rest[i], rest[j] = rest[j], rest[i] })
 
 	for _, id := range rest {
-		if len(chosen) == AccountsPerFile {
+		if len(chosen) == want {
 			break
 		}
 		chosen = append(chosen, id)
@@ -91,18 +167,24 @@ func SelectAccounts(available, preferred []string, seed uint64) []string {
 	return chosen
 }
 
-// Plan maps a part number (1..3) to the provider ID that should store it.
-// A part missing from the map is deliberately not stored.
+// Plan maps a shard number (1..n) to the provider ID that should store it. A
+// shard missing from the map is deliberately not stored.
 type Plan map[int]string
 
-// BuildPlan decides where each part of a file goes across the accounts chosen
-// for it — the whole connected set, the vault's defaults, or the handful the
-// upload named. Whichever it is, SelectAccounts has already narrowed it.
+// BuildPlan decides which account holds which shard of a file, across the
+// accounts chosen for it — the whole connected set, the vault's defaults, or the
+// handful the upload named. Whichever it is, SelectAccounts has already narrowed
+// it, and the count of them is what settled the scheme.
 //
-// The seed rotates the starting account so that consecutive uploads do not
-// pile every part 1 onto the same provider; passing a per-file value (the
-// archive ID works well) spreads load evenly across accounts.
-func BuildPlan(providerIDs []string, policy Policy, seed uint64) (Plan, error) {
+// Under the strict policy every account holds exactly one shard, at every
+// width. That is the property the whole design rests on and widening does not
+// weaken it: an attacker holding one account of nine has one shard of six
+// needed, which is less of the file than one account of three ever held.
+//
+// The seed rotates the starting account so that consecutive uploads do not pile
+// every shard 1 onto the same provider; passing a per-file value (the archive
+// ID works well) spreads load evenly across accounts.
+func BuildPlan(providerIDs []string, policy Policy, scheme archive.Scheme, seed uint64) (Plan, error) {
 	n := len(providerIDs)
 	if n == 0 {
 		return nil, fmt.Errorf("no cloud accounts to store this file on")
@@ -111,32 +193,28 @@ func BuildPlan(providerIDs []string, policy Policy, seed uint64) (Plan, error) {
 		return nil, fmt.Errorf("unknown placement policy %q", policy)
 	}
 
-	offset := int(seed % uint64(n))
-	plan := Plan{}
-
-	switch policy {
-	case PolicyStrict:
-		if n < archive.MinPartsToRestore {
+	shards := scheme.Total
+	if policy == PolicyStrict {
+		if n < scheme.Data {
 			return nil, fmt.Errorf(
-				"strict placement needs at least %d accounts so that no single "+
-					"account holds enough parts to reconstruct a file (have %d) — connect or "+
-					"choose another account, or switch this vault to the redundant policy",
-				archive.MinPartsToRestore, n)
+				"strict placement gives each account one shard, so %s needs at least %d of them "+
+					"to keep a file rebuildable (have %d) — connect or choose another account, or "+
+					"switch this vault to the redundant policy",
+				scheme, scheme.Data, n)
 		}
-		parts := archive.PartCount
-		if n < parts {
-			parts = n
-		}
-		for i := 0; i < parts; i++ {
-			plan[i+1] = providerIDs[(offset+i)%n]
-		}
-
-	case PolicyRedundant:
-		for i := 0; i < archive.PartCount; i++ {
-			plan[i+1] = providerIDs[(offset+i)%n]
+		// Fewer accounts than shards means the shards there is no room for are
+		// simply not written. The file is still rebuildable — that was checked
+		// above — it just has fewer spares than the scheme allows for.
+		if n < shards {
+			shards = n
 		}
 	}
 
+	offset := int(seed % uint64(n))
+	plan := Plan{}
+	for i := 0; i < shards; i++ {
+		plan[i+1] = providerIDs[(offset+i)%n]
+	}
 	return plan, nil
 }
 

@@ -26,9 +26,12 @@ type UploadOptions struct {
 	// choice to the default, and failing that to a random pick.
 	//
 	// It is honoured exactly, as a stored default is: naming two accounts
-	// stores two parts and warns about the missing spare, because a deliberate
+	// stores two shards and warns about the missing spare, because a deliberate
 	// choice of which clouds may hold a file must not be widened behind the
 	// user's back — that is the whole thing SAND is for.
+	//
+	// How many accounts are named is also what settles the erasure code: three
+	// is 2-of-3, six is 4-of-6, nine is 6-of-9 (archive.Scheme).
 	Accounts []string
 }
 
@@ -79,14 +82,13 @@ func resolveAccounts(selected []string, byID map[string]provider.Config) ([]stri
 			return nil, fmt.Errorf("no connected account with id %s", id)
 		}
 		if seen[id] {
-			return nil, fmt.Errorf("%s is listed twice — each part of a file goes to a different account", cfg.Name)
+			return nil, fmt.Errorf("%s is listed twice — every shard of a file goes to a different account", cfg.Name)
 		}
 		seen[id] = true
 		out = append(out, id)
 	}
-	if len(out) > AccountsPerFile {
-		return nil, fmt.Errorf("a file has only %d parts — choose at most %d accounts (got %d)",
-			archive.PartCount, AccountsPerFile, len(out))
+	if !ValidSpread(len(out)) {
+		return nil, ErrSpread(len(out))
 	}
 	return out, nil
 }
@@ -98,6 +100,7 @@ type placement struct {
 	keyID        string
 	originalHash [32]byte
 	shards       []Shard
+	scheme       archive.Scheme
 	warnings     []string
 
 	// chunkSize and chunkCount describe how the file was cut up, and are set
@@ -180,14 +183,21 @@ func (v *Vault) snapshotTarget(preferred []string, exact bool) (*transferTarget,
 	return t, nil
 }
 
-// planFor decides which account holds which part. The seed rotates the starting
-// account per file; see SelectAccounts and BuildPlan.
-func (t *transferTarget) planFor(seed uint64) (Plan, error) {
+// planFor decides which account holds which shard, and which code the file is
+// cut with — the second follows from how many accounts the first settled on.
+// The seed rotates the starting account per file; see SelectAccounts and
+// BuildPlan.
+func (t *transferTarget) planFor(seed uint64) (Plan, archive.Scheme, error) {
 	chosen := t.chosen
 	if chosen == nil {
 		chosen = SelectAccounts(t.ids, t.preferred, seed)
 	}
-	return BuildPlan(chosen, t.policy, seed)
+	scheme, err := SchemeFor(len(chosen))
+	if err != nil {
+		return nil, scheme, err
+	}
+	plan, err := BuildPlan(chosen, t.policy, scheme, seed)
+	return plan, scheme, err
 }
 
 // scatter encodes data into encrypted parts under the vault's active data key
@@ -232,10 +242,19 @@ func (v *Vault) scatter(ctx context.Context, name string, data []byte, preferred
 	// of them receives part 1, so load spreads evenly instead of every upload
 	// landing the same way on the same accounts.
 	seed := binary.BigEndian.Uint64(encoded.ArchiveID[:8])
-	plan, err := target.planFor(seed)
+	plan, scheme, err := target.planFor(seed)
 	if err != nil {
 		return out, err
 	}
+	// EncodeBytes writes the whole-file format, which predates schemes and can
+	// only ever produce the default code's three parts. The one caller left on
+	// this path narrows its account list to match; anything else is a bug here
+	// rather than something to paper over at scatter time.
+	if scheme != archive.SchemeDefault {
+		return out, fmt.Errorf(
+			"the whole-file format is %s only, cannot scatter as %s", archive.SchemeDefault, scheme)
+	}
+	out.scheme = scheme
 
 	type putResult struct {
 		shard Shard
@@ -284,20 +303,27 @@ func (v *Vault) scatter(ctx context.Context, name string, data []byte, preferred
 		}
 		out.shards = append(out.shards, r.shard)
 	}
-	sort.Slice(out.shards, func(i, j int) bool { return out.shards[i].Part < out.shards[j].Part })
+	sortShards(out.shards)
 
-	if len(out.shards) < archive.MinPartsToRestore {
-		// Not enough parts landed to ever rebuild the file — undo the ones
+	if distinctShards(out.shards) < scheme.Data {
+		// Not enough shards landed to ever rebuild the file — undo the ones
 		// that did rather than leaving orphaned blobs on people's accounts.
 		v.deleteShards(context.WithoutCancel(ctx), out.shards)
-		err := fmt.Errorf("stored only %d of %d parts, need at least %d: %s",
-			len(out.shards), archive.PartCount, archive.MinPartsToRestore,
+		err := fmt.Errorf("stored only %d of %d shards, need at least %d: %s",
+			distinctShards(out.shards), scheme.Total, scheme.Data,
 			strings.Join(out.warnings, "; "))
 		out.shards = nil
 		return out, err
 	}
 
 	return out, nil
+}
+
+// sortShards puts a file's stored objects in shard order, so that two runs of
+// the same scatter record the same index rows whatever order the network
+// answered in.
+func sortShards(shards []Shard) {
+	sort.Slice(shards, func(i, j int) bool { return shards[i].Part < shards[j].Part })
 }
 
 // Fetch gathers enough parts to rebuild a file, decrypts it, and returns the
@@ -327,7 +353,7 @@ func (v *Vault) Fetch(ctx context.Context, id string) ([]byte, *Entry, error) {
 		return data, entry, nil
 	}
 
-	data, err := v.gather(ctx, snapshot.Shards, snapshot.KeyID, snapshot.Path())
+	data, err := v.gather(ctx, snapshot.Shards, snapshot.Scheme(), snapshot.KeyID, snapshot.Path())
 	if err != nil {
 		return nil, nil, err
 	}
@@ -338,9 +364,14 @@ func (v *Vault) Fetch(ctx context.Context, id string) ([]byte, *Entry, error) {
 // decrypts it. It is the read half of scatter, and everything the vault stores
 // goes through it — a file's parts and a folder's thumbnail pack alike.
 //
+// It races the accounts and takes the first Scheme.Data *distinct* shards to
+// answer, which is what makes a wider code faster to read as well as harder to
+// lose: 4-of-6 reads from whichever four of the six clouds are quickest today,
+// and the two slowest never enter into it.
+//
 // label names the thing being read, for error messages: a path for a file, a
 // description for anything else.
-func (v *Vault) gather(ctx context.Context, shards []Shard, keyID, label string) ([]byte, error) {
+func (v *Vault) gather(ctx context.Context, shards []Shard, scheme archive.Scheme, keyID, label string) ([]byte, error) {
 	v.mu.RLock()
 	if v.dataKey == nil {
 		v.mu.RUnlock()
@@ -389,7 +420,7 @@ func (v *Vault) gather(ctx context.Context, shards []Shard, keyID, label string)
 		}(shard, cfg)
 	}
 
-	var blobs [][]byte
+	held := map[int][]byte{}
 	var failures []string
 	for i := 0; i < len(shards); i++ {
 		r := <-results
@@ -397,23 +428,43 @@ func (v *Vault) gather(ctx context.Context, shards []Shard, keyID, label string)
 			failures = append(failures, r.err.Error())
 			continue
 		}
-		blobs = append(blobs, r.blob)
-		if len(blobs) >= archive.MinPartsToRestore {
+		if _, already := held[r.part]; already {
+			continue
+		}
+		held[r.part] = r.blob
+		if len(held) >= scheme.Data {
 			break
 		}
 	}
 
-	if len(blobs) < archive.MinPartsToRestore {
+	if len(held) < scheme.Data {
 		return nil, fmt.Errorf(
-			"could not gather %d parts for %s (got %d): %s",
-			archive.MinPartsToRestore, label, len(blobs), strings.Join(failures, "; "))
+			"could not gather %d shards for %s (got %d): %s",
+			scheme.Data, label, len(held), strings.Join(failures, "; "))
 	}
 
-	decoded, err := archive.DecodeBytes(blobs, shardPassword)
+	decoded, err := archive.DecodeBytes(collectParts(held), shardPassword)
 	if err != nil {
 		return nil, fmt.Errorf("rebuilding %s: %w", label, err)
 	}
 	return decoded.Data, nil
+}
+
+// collectParts hands the gathered blobs to the decoder in part order. The
+// decoder reads each blob's own header to know which part it is, so the order
+// is for reproducibility rather than for correctness.
+func collectParts(held map[int][]byte) [][]byte {
+	parts := make([]int, 0, len(held))
+	for part := range held {
+		parts = append(parts, part)
+	}
+	sort.Ints(parts)
+
+	out := make([][]byte, 0, len(held))
+	for _, part := range parts {
+		out = append(out, held[part])
+	}
+	return out
 }
 
 // Delete removes a file from the index and erases its parts from every
@@ -641,6 +692,14 @@ type FileHealth struct {
 	Recoverable bool          `json:"recoverable"`
 	Shards      []ShardHealth `json:"shards"`
 
+	// Scheme is the code the file was cut with, written as "4-of-6". Needed is
+	// how many shards a rebuild takes, and Spare how many more than that are
+	// currently reachable — the number of further accounts that could go dark
+	// before the file was at risk.
+	Scheme string `json:"scheme"`
+	Needed int    `json:"needed"`
+	Spare  int    `json:"spare"`
+
 	// ChunksSampled is how many of a chunked file's chunks were actually
 	// checked, and ChunkCount how many it has. They are equal for a small file
 	// and for one stored whole; where they differ, the answer is drawn from a
@@ -677,6 +736,7 @@ func (v *Vault) Health(ctx context.Context, id string) (*FileHealth, error) {
 	shards := append([]Shard(nil), entry.Shards...)
 	path, archiveID := entry.Path(), entry.ArchiveID
 	chunked, chunkCount := entry.Chunked(), entry.ChunkCount
+	scheme := entry.Scheme()
 	configs := v.configsForLocked(shards)
 	v.mu.RUnlock()
 
@@ -734,13 +794,19 @@ func (v *Vault) Health(ctx context.Context, id string) (*FileHealth, error) {
 	}
 	wg.Wait()
 
-	present := 0
+	present := map[int]bool{}
 	for _, s := range health.Shards {
 		if s.Present {
-			present++
+			present[s.Part] = true
 		}
 	}
-	health.Recoverable = present >= archive.MinPartsToRestore
+	health.Recoverable = len(present) >= scheme.Data
+	health.Scheme = scheme.String()
+	health.Needed = scheme.Data
+	health.Spare = len(present) - scheme.Data
+	if health.Spare < 0 {
+		health.Spare = 0
+	}
 	return health, nil
 }
 

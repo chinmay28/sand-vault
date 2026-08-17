@@ -13,11 +13,16 @@ a Nextcloud server, a folder on an external disk. From then on SAND behaves
 like an ordinary file manager: folders, uploads, previews, downloads. What
 happens underneath is not ordinary.
 
-Every file you add is compressed, split into three parts, and encrypted. Each
-part is pushed to a **different** account. Any two of the three rebuild the
-original; **any one on its own is indistinguishable from noise**. When you open
-a file, SAND fetches the parts back from wherever they live, reassembles them
-in memory, and hands you the plaintext.
+Every file you add is compressed, cut into shards, and encrypted. Each shard is
+pushed to a **different** account. Any two of the three rebuild the original;
+**any one on its own is indistinguishable from noise**. When you open a file,
+SAND fetches the shards back from wherever they live, reassembles them in
+memory, and hands you the plaintext.
+
+With more accounts connected the file is cut finer instead: six accounts hold
+four-of-six, nine hold six-of-nine. Still one shard per account, so the sentence
+above stays true however wide the spread — and gets stronger, because more
+accounts have to be broken into together before what they hold is enough (§5.3).
 
 The point is that no single storage provider ever holds your data. They hold a
 fragment that means nothing without a fragment held by someone else, plus a key
@@ -600,54 +605,180 @@ So the read path refuses them rather than rebuilding them whole, and `Convert`
 `DecodeBytes` stays for what it is good at — payloads already in hand and small:
 thumbnail packs, and standalone restore.
 
-### 4.4 Reconstruction truth table
+### 4.4 The erasure code
 
-| p1 | p2 | p3 | Method |
+A chunk is cut into **k data shards and n − k parity shards, any k of which
+rebuild it**. Which k and n is per file (§5.3), and the shards say so in their
+own headers.
+
+The code is a systematic Cauchy Reed–Solomon over GF(2⁸)
+(`internal/splitter/erasure.go`), and three properties of that choice are
+load-bearing rather than incidental:
+
+**It is systematic.** The first k shards are the compressed chunk cut into k
+consecutive pieces; only the parity is computed. So a read that collects the
+data shards rebuilds by concatenating them, with no field arithmetic at all —
+the same fast path `concat(p1, p2)` always was. And a shard is a slice of the
+stream rather than a transform of all of it, which bounds what one compromised
+account plus the key yields at 1/k of the file.
+
+**The parity rows are Cauchy.** Every square submatrix of a Cauchy matrix is
+invertible, which is exactly the MDS guarantee — *any* k of the n shards invert
+back to the data — and it holds without the change of basis a Vandermonde
+construction needs. A decode picks the k rows it has, inverts that k×k matrix by
+Gauss–Jordan, and multiplies.
+
+**The field is GF(2⁸) rather than GF(2).** This is the whole reason the code can
+widen at all. Until version 4 a chunk was two halves and their XOR, and XOR is
+addition in GF(2), where two symbols have exactly three non-zero combinations:
+A, B, A⊕B. There is no fourth. Over GF(2⁸) every byte is a usable coefficient
+and there is room for 255 parity shards, so "two of three" becomes "k of n" with
+no change of idea — only of field.
+
+Format versions 1 to 3 are the XOR construction and are still read
+(`splitter.ReconstructXOR`); they are all 2-of-3, which is the only code they
+could express.
+
+#### Reconstruction truth table
+
+For the default 2-of-3 the table is what it always was:
+
+| s1 | s2 | s3 | Method |
 |:--:|:--:|:--:|:---|
-| ✓ | ✓ | — | concat(p1, p2) |
-| ✓ | — | ✓ | p2 = p1 ⊕ p3, then concat |
-| — | ✓ | ✓ | p1 = p2 ⊕ p3, then concat |
-| ✓ | ✓ | ✓ | concat(p1, p2) — p3 unused |
+| ✓ | ✓ | — | concat(s1, s2) — the systematic path, no arithmetic |
+| ✓ | — | ✓ | invert the 2×2 for rows {1,3}, then concat |
+| — | ✓ | ✓ | invert the 2×2 for rows {2,3}, then concat |
+| ✓ | ✓ | ✓ | concat(s1, s2) — s3 unused |
 | at most one | | | unrecoverable |
+
+Generally: **any k present → rebuildable; fewer than k → not**, with no case
+analysis, which is the point of an MDS code. `erasure_test.go` checks it across
+the family — every k-subset where they can be enumerated, and a seeded sample
+plus the two edge subsets (all-data, all-parity-heavy) at widths where C(n, k)
+runs to more digits than the test file has bytes.
 
 ---
 
 ## 5. Placement Policy
 
-Where the parts go is a **security decision**, because any two parts plus the
-key rebuild the file. Two parts on one account means that account could, in
+Where the shards go is a **security decision**, because any k of them plus the
+key rebuild the file. k shards on one account means that account could, in
 principle, rebuild it.
 
 ### 5.1 `strict` (default)
 
-One part per account, never two on the same one.
+One shard per account, never two on the same one — at every width.
 
-- 3+ accounts → all three parts placed, each somewhere different. Full
-  redundancy, and no single provider can reconstruct anything.
-- 2 accounts → only parts 1 and 2 are stored. The file is recoverable and
-  confidential, but there is no spare part.
+- 3, 6 or 9 accounts → the matching scheme (§5.3), every shard somewhere
+  different, and no single provider holding enough to reconstruct anything.
+- 2 accounts → only shards 1 and 2 of the default scheme are stored. The file is
+  recoverable and confidential, but there is no spare.
 - 1 account → **refused**, with an error explaining why.
 
 ### 5.2 `redundant`
 
-Always store all three parts, doubling up when there are fewer than three
-accounts.
+Always store the whole scheme, doubling up on an account when there are fewer
+connected than it has shards.
 
 Survives an account going dark even with one or two connected — at the cost of
 the guarantee above, since a doubled-up account holds enough to rebuild. The
 UI says so plainly when you pick it.
 
-### 5.3 Which accounts, of the ones connected
+### 5.3 The scheme, and how wide a file is spread
 
-Policy decides how many parts may share an account. It does not decide *which*
-accounts a file uses, which matters as soon as more than three are connected —
-three parts cannot go to five places.
+How many accounts are chosen settles the erasure code the file is cut with.
+There is one rule, **2m of 3m**: clouds come in groups of three, and two thirds
+of the shards rebuild the file.
+
+| Accounts | Scheme | Storage | Accounts that can go dark | Accounts needed to rebuild |
+|---|---|---|---|---|
+| 3 | `2-of-3` | 1.5× | 1 | 2 |
+| 6 | `4-of-6` | 1.5× | 2 | 4 |
+| 9 | `6-of-9` | 1.5× | 3 | 6 |
+| 12 | `8-of-12` | 1.5× | 4 | 8 |
+| 3m | `2m-of-3m` | 1.5× | m | 2m |
+
+There is no list of blessed widths; the table stops where patience does. Adding
+a group of three clouds always does the same thing: one more failure survived,
+two more providers needed to collude, no extra bytes.
+
+The constant ratio is the point. Storage is n/k of the file, and holding k/n at
+2/3 makes that 1.5× at every width, so **widening costs accounts rather than
+bytes**. A vault that grows from three clouds to thirty does not store one extra
+byte of anything.
+
+What it buys shows up in both of the last two columns, and the right-hand one is
+the one worth dwelling on. It is how many accounts an attacker must hold
+*together* before the shards they have are enough to reassemble a file. It rises
+linearly with the width, so a wider vault is not merely more durable — it is
+harder to collude against. Shards are also consecutive slices of the compressed
+stream, so one compromised account plus the data key yields 1/k of a file: a
+thirtieth at 20-of-30 where it was a half at 2-of-3.
+
+Every account holds exactly one shard at every width, which is what keeps §5's
+promise intact as the spread grows. `BuildPlan` deals shards one per account,
+and the strict policy's capacity is one whatever n is.
+
+**The ceiling is 255 accounts** (85 groups), because a shard's number is one byte
+in its header. Counts that are not whole groups are **refused** — there is no
+code that uses them without leaving a cloud with no shard of its own to hold.
+The rule is enforced identically for an upload's choice, a stored default and a
+relocation's destination (`vault.SchemeFor`), so no path can produce a placement
+another path would reject.
+
+**Three is what an upload takes when nobody says otherwise**, whatever is
+connected. Widening is a decision about how many providers you want in play, and
+a vault does not drift into it by having accounts available.
+
+A vault holds files of different schemes at once. Widening does not rewrite what
+is already stored, so each file records its own k and n — in the index and, so
+that an offline restore needs no index, in every shard's header (§5.5).
+
+#### What widening actually costs
+
+Not storage, and not memory or per-provider load either — but it is not free.
+
+Concurrency scales the right way by construction. The chunk window bounds how
+many chunks are in flight, so each *provider* sees at most that many requests
+whatever n is, and rate limits are per provider. Bytes in flight are
+`window × n × chunkSize/k`, and n/k is 1.5 at every scheme, so a 30-cloud vault
+holds exactly as much in memory as a 3-cloud one.
+
+What does grow is **object count and request count in total**: a chunk becomes n
+objects, so a 4 GB file at the default chunk size is 256 × n of them. At 2-of-3
+that is 768; at 20-of-30 it is 7,680, spread over ten times as many accounts.
+
+And **padding**, which is charged per chunk: the compressed bytes are padded up
+to a multiple of k, so a wide scheme wastes up to k−1 bytes per chunk. Against a
+16 MiB chunk that is noise at any width the format allows. It only bites on
+inputs small relative to k, which is why the coder's overhead test scales its
+tolerance with k rather than asserting a flat 1.5×.
+
+#### Changing a file's scheme is not a move
+
+A 2-of-3 file's shards are halves of its compressed stream; a 4-of-6 file's are
+quarters. They have nothing in common, so there is no blob to carry across and
+no index rewrite that would do. Changing the width of an existing file means
+gathering it, cutting it again and writing it out — the same operation a
+password change performs, pointed at different accounts (`Vault.recodeFile`).
+
+That is a whole download and a whole upload per file, against 1/k of a file per
+shard for a move at the same width. Both the CLI and the browser price it before
+it runs and label it as a rebuild rather than a move, because the difference is
+two orders of magnitude on a large folder and not something to discover
+afterwards.
+
+### 5.4 Which accounts, of the ones connected
+
+Policy decides how many shards may share an account, and §5.3 decides how many
+shards there are. Neither decides *which* accounts a file uses, which matters as
+soon as more are connected than the scheme has shards to place.
 
 That choice is made in this order:
 
 | The upload says | What happens |
 |---|---|
-| These accounts | Exactly those, and every one must be connected. Naming two stores two parts and warns about the missing spare. |
+| These accounts | Exactly those, and every one must be connected. How many are named settles the scheme; naming two stores two shards and warns about the missing spare. |
 | Nothing, and the vault has default accounts | Exactly the default, on the same terms |
 | Nothing, and there is no default | Three picked at random for this file alone |
 
@@ -662,18 +793,27 @@ exists at all. Deciding which providers may hold a file is the point of SAND;
 quietly adding a fourth because the default named three and one went away would
 put data somewhere its owner deliberately did not choose. What a narrower
 selection costs — one part fewer, no spare — is said in the upload's warnings
-instead. Disconnecting an account prunes it from the default, and clears the
-default outright if that would leave fewer than two.
+instead. Disconnecting an account prunes it from the default, trims what is left
+back to whole groups (a default of six that loses one becomes a default of
+three, not of five), and clears it outright if that would leave fewer than two.
+
+Re-encryption is the one case that refills rather than honours, and it refills
+to a scheme width: a 4-of-6 file that has lost one account goes back onto six,
+not down to three — narrowing it would be a re-encode, which is not something a
+top-up gets to decide.
 
 Within the chosen accounts the starting one rotates per file, seeded the same
 way. Without this every part 1 would pile onto the same account.
 
-### 5.4 Object keys leak nothing
+### 5.5 Object keys leak nothing
 
 ```
 <128-bit random archive id>-p<N>.sand              stored whole
 <128-bit random archive id>-c<index>-p<N>.sand     stored in chunks (§7.1)
 ```
+
+N is the shard number, 1 to n. It runs to 3 for a 2-of-3 file and to 9 for a
+6-of-9 one, which is the only thing about the key that a wider scheme changes.
 
 Derived only from a random ID. Someone with full access to one account learns
 how many objects you store and how big each part is — nothing about names,
@@ -699,7 +839,7 @@ deeper for no gain. Staying flat also makes Google Drive, which has no paths
 and stores each part as a plain file, land on exactly the same part names as
 everywhere else.
 
-### 5.5 Changing which accounts hold something already stored
+### 5.6 Changing which accounts hold something already stored
 
 Placement is decided when a file is uploaded, and it is not the last word: a
 cloud account gets expensive, or fills up, or stops being one you want holding
@@ -722,16 +862,26 @@ being kept claim it, and only then hands out what is left:
 
 | Currently on | Asked for | What happens |
 |---|---|---|
-| A, B, C | A, B, D | Part on C moves to D. The other two are not read, and their index rows are not rewritten. |
+| A, B, C | A, B, D | Shard on C moves to D. The other two are not read, and their index rows are not rewritten. |
 | A, B, C | C, A, B | Nothing. A different order is the same answer. |
-| A, B, C | D, E, F | All three move — the expensive case, and the only one that is. |
-| A, B, C | A, B | Parts on A and B stay; the third is erased, because under `strict` no account may hold two parts of one file. |
+| A, B, C | D, E, F | All three move — the expensive case among the moves. |
+| A…F | A…E, G | One shard moves. Six clouds to six clouds is the same scheme, so it is still a copy. |
+| A, B, C | A…F | **Rebuilt.** 2-of-3 to 4-of-6 shares no shards, so the file is gathered, cut again and written out (§5.3). |
+| A…F | A, B, C | **Rebuilt**, the other way, and the shards on D, E and F are erased. |
+| A, B, C | A, B | Shards on A and B stay; the third is erased, because under `strict` no account may hold two shards of one file. |
 
-That last row is the one worth saying out loud, and both the CLI and the browser
-do before anything happens: narrowing the accounts a file may live on costs it
-its spare part. The redundant policy has room for all three on two accounts and
-doubles up instead, exactly as an upload to those accounts would — a relocation
-is not allowed to produce a placement that could not have been uploaded.
+The two rebuild rows are the ones worth saying out loud, and both the CLI and
+the browser do before anything happens — a rebuild moves the whole file where a
+move at the same width moves 1/k of it per relocated shard. `--dry-run` and the
+browser's estimate both label it as a rebuild and price it separately from the
+moves.
+
+The last row is the other one to say out loud: narrowing below a scheme's width
+costs a file its spare. The redundant policy has room for all three shards on
+two accounts and doubles up instead, exactly as an upload to those accounts
+would — a relocation is not allowed to produce a placement that could not have
+been uploaded, which is also why it refuses a destination count that names no
+scheme (§5.3).
 
 **Copy, commit, erase, one file at a time.** Between the copy and the commit both
 accounts hold the part and the index still names the old one, so a read during
@@ -743,7 +893,7 @@ the bytes. Only then is the original erased. What that ordering buys:
 - A part that will not copy is reported and left exactly where it was. The file
   is still whole, just not yet all in the right place, and running the
   relocation again moves precisely that part.
-- A commit is refused if it would drop a file below the two parts it takes to
+- A commit is refused if it would drop a file below the k shards it takes to
   rebuild it, which the plan cannot ask for on its own but a failed copy can
   bring about.
 - A file rewritten underneath the move — by a password change's re-encryption,
@@ -1136,7 +1286,7 @@ reveals only whether a vault exists.
 | POST | `/api/vault/password` | New password, new data key, everything re-encrypted onto it (`"migrate": false` to defer) |
 | POST | `/api/vault/migrate` | Finish a re-encryption that was deferred or interrupted |
 | POST | `/api/vault/policy` | Change placement policy |
-| POST | `/api/vault/defaults` | Set the accounts uploads use by default (empty list = pick per file) |
+| POST | `/api/vault/defaults` | Set the accounts uploads use by default — any multiple of 3, which chooses the scheme (§5.3); empty list = pick per file |
 | GET | `/api/vault/recovery` | Is a connected account carrying a vault this one could recover? (§3.7) |
 | POST | `/api/vault/recovery` | Adopt that index (`password` — the *lost* vault's, `provider_id`, `dry_run`) |
 | POST | `/api/vault/recovery/resume` | Re-point the index at accounts reconnected since (`dry_run`; no password) |
@@ -1170,7 +1320,7 @@ reveals only whether a vault exists.
 | POST | `/api/folders` | Create a folder |
 | POST | `/api/folders/move` | Move a folder `from` one path `to` another, with everything under it (§5.6) |
 | DELETE | `/api/folders?path=&recursive=` | Delete a folder |
-| POST | `/api/relocate` | Move a file (`id`) or a folder (`path`) onto other `accounts` (§5.5); `"preview": true` prices it out of the index and moves nothing |
+| POST | `/api/relocate` | Move a file (`id`) or a folder (`path`) onto other `accounts` (§5.6); a different *count* of accounts changes the scheme and rebuilds the file; `"preview": true` prices it out of the index and moves nothing |
 | GET | `/api/movies` | Whether a film database key is stored, and which folders are opted in (§3.10) |
 | POST | `/api/movies/key` | Store the key — checked against the database before it is kept; `""` clears it |
 | POST | `/api/movies/lookup` | Turn film lookup on or off for a `path` and everything beneath it |

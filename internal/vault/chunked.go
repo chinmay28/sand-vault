@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	"sort"
 	"strings"
 	"sync"
 
@@ -22,8 +21,15 @@ import (
 // of them at the default chunk size, and waiting out each one in turn would
 // make storing a film slower than the whole-file path it replaces. The window
 // is small because the point is to hide latency, not to open every connection
-// at once: at three parts per chunk this is already a dozen requests in flight,
-// which is as much as a consumer cloud API is happy to take.
+// at once.
+//
+// It counts chunks rather than requests, and that is what makes it scale with
+// the scheme rather than against it. A wider spread puts more requests in the
+// air, but they go to more accounts: each provider still sees at most
+// chunkUploadWindow of them at a time, whatever n is, and rate limits are per
+// provider. Memory is flat too — the bytes in flight are
+// window × n × chunkSize/k, and n/k is 1.5 at every scheme, so widening from
+// three clouds to thirty holds exactly as much as it did.
 const chunkUploadWindow = 4
 
 // uploadChunkSize is the chunk length new uploads are cut into, falling back to
@@ -64,12 +70,13 @@ func (v *Vault) scatterChunked(ctx context.Context, name string, data []byte, pr
 	out.originalHash = sha256.Sum256(data)
 
 	seed := binary.BigEndian.Uint64(archiveID[:8])
-	plan, err := target.planFor(seed)
+	plan, scheme, err := target.planFor(seed)
 	if err != nil {
 		return out, err
 	}
+	out.scheme = scheme
 
-	chunks, err := archive.PlanChunks(archiveID, name, out.originalHash, uint64(len(data)), chunkSize)
+	chunks, err := archive.PlanChunks(archiveID, name, out.originalHash, uint64(len(data)), chunkSize, scheme)
 	if err != nil {
 		return out, err
 	}
@@ -91,24 +98,24 @@ func (v *Vault) scatterChunked(ctx context.Context, name string, data []byte, pr
 		return out, err
 	}
 
-	// A part that failed on any chunk is not a part this file has. Recording it
-	// would claim objects that are not there, which delete, health and recovery
-	// all read as fact; erasing the chunks it did manage keeps the index honest
-	// at the cost of some bytes already uploaded.
-	for part, reason := range failures {
+	// A shard that failed on any chunk is not a shard this file has. Recording
+	// it would claim objects that are not there, which delete, health and
+	// recovery all read as fact; erasing the chunks it did manage keeps the
+	// index honest at the cost of some bytes already uploaded.
+	for shard, reason := range failures {
 		out.warnings = append(out.warnings, reason)
-		v.erasePartChunks(context.WithoutCancel(ctx), target, plan, out.archiveID, part, chunks.ChunkCount)
+		v.eraseShardChunks(context.WithoutCancel(ctx), target, plan, out.archiveID, shard, chunks.ChunkCount)
 	}
 
 	out.shards = written
-	sort.Slice(out.shards, func(i, j int) bool { return out.shards[i].Part < out.shards[j].Part })
+	sortShards(out.shards)
 
-	// Because a part is all-or-nothing across the file, every chunk has the
-	// same number of parts standing — so this one check covers all of them.
-	if len(out.shards) < archive.MinPartsToRestore {
+	// Because a shard is all-or-nothing across the file, every chunk has the
+	// same shards standing — so this one check covers all of them.
+	if distinctShards(out.shards) < scheme.Data {
 		v.eraseChunks(context.WithoutCancel(ctx), target, plan, out.archiveID, chunks.ChunkCount)
-		err := fmt.Errorf("stored only %d of %d parts, need at least %d: %s",
-			len(out.shards), archive.PartCount, archive.MinPartsToRestore,
+		err := fmt.Errorf("stored only %d of %d shards, need at least %d: %s",
+			distinctShards(out.shards), scheme.Total, scheme.Data,
 			strings.Join(out.warnings, "; "))
 		out.shards = nil
 		return out, err
@@ -126,8 +133,8 @@ func (v *Vault) scatterChunked(ctx context.Context, name string, data []byte, pr
 // behind it, which is what keeps a large file from becoming a long sequence of
 // round trips without letting it become an unbounded number of them either.
 //
-// It returns one shard per part that landed on *every* chunk, and a reason per
-// part that did not. An error means the upload cannot be salvaged at all —
+// It returns one record per shard that landed on *every* chunk, and a reason
+// per shard that did not. An error means the upload cannot be salvaged at all —
 // reading or encoding failed, or the vault went away underneath it — and the
 // caller erases what was written.
 func (v *Vault) putChunks(
@@ -196,27 +203,27 @@ func (v *Vault) putChunks(
 
 	archiveID := hex.EncodeToString(chunks.ArchiveID[:])
 	shards := make([]Shard, 0, len(plan))
-	for part, providerID := range plan {
-		if _, bad := failures[part]; bad {
+	for number, providerID := range plan {
+		if _, bad := failures[number]; bad {
 			continue
 		}
 		cfg := target.byID[providerID]
 		shards = append(shards, Shard{
-			Part:         part,
+			Part:         number,
 			ProviderID:   cfg.ID,
 			ProviderName: cfg.Name,
 			ProviderKind: string(cfg.Kind),
 			// Chunk zero's key. The rest follow from ChunkShardKey, which is
-			// why one shard still describes one part of the whole file.
-			Key:  ChunkShardKey(archiveID, 0, part),
-			Size: sizes[part],
+			// why one record still describes one shard of the whole file.
+			Key:  ChunkShardKey(archiveID, 0, number),
+			Size: sizes[number],
 		})
 	}
 	return shards, failures, nil
 }
 
-// putChunkParts pushes one chunk's three parts concurrently, recording the
-// bytes each account took and the first reason each part had for refusing.
+// putChunkParts pushes one chunk's shards concurrently, recording the bytes
+// each account took and the first reason each shard had for refusing.
 func (v *Vault) putChunkParts(
 	ctx context.Context,
 	target *transferTarget,
@@ -231,13 +238,13 @@ func (v *Vault) putChunkParts(
 	idHex := hex.EncodeToString(archiveID[:])
 
 	var wg sync.WaitGroup
-	for part, providerID := range plan {
+	for number, providerID := range plan {
 		cfg := target.byID[providerID]
-		blob := encoded.Parts[part-1]
-		key := ChunkShardKey(idHex, int(index), part)
+		blob := encoded.Parts[number-1]
+		key := ChunkShardKey(idHex, int(index), number)
 
 		wg.Add(1)
-		go func(part int, cfg provider.Config, key string, blob []byte) {
+		go func(number int, cfg provider.Config, key string, blob []byte) {
 			defer wg.Done()
 
 			p, err := v.buildProvider(cfg)
@@ -248,29 +255,29 @@ func (v *Vault) putChunkParts(
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
-				if _, already := failures[part]; !already {
-					failures[part] = fmt.Sprintf("part %d → %s: %v", part, cfg.Name, err)
+				if _, already := failures[number]; !already {
+					failures[number] = fmt.Sprintf("shard %d → %s: %v", number, cfg.Name, err)
 				}
 				return
 			}
-			sizes[part] += int64(len(blob))
-		}(part, cfg, key, blob)
+			sizes[number] += int64(len(blob))
+		}(number, cfg, key, blob)
 	}
 	wg.Wait()
 }
 
 // eraseChunks removes every object an archive's chunks could have written,
-// across every part in the plan. It is the rollback for an upload that cannot
-// be committed, and runs best-effort: an object that was never written answers
-// not-found, which is the outcome wanted anyway.
+// across every copy of every part in the plan. It is the rollback for an upload
+// that cannot be committed, and runs best-effort: an object that was never
+// written answers not-found, which is the outcome wanted anyway.
 func (v *Vault) eraseChunks(ctx context.Context, target *transferTarget, plan Plan, archiveID string, chunkCount uint32) {
-	for part := range plan {
-		v.erasePartChunks(ctx, target, plan, archiveID, part, chunkCount)
+	for number := range plan {
+		v.eraseShardChunks(ctx, target, plan, archiveID, number, chunkCount)
 	}
 }
 
-// erasePartChunks removes one part's object from every chunk of an archive.
-func (v *Vault) erasePartChunks(ctx context.Context, target *transferTarget, plan Plan, archiveID string, part int, chunkCount uint32) {
+// eraseShardChunks removes one shard's object from every chunk of an archive.
+func (v *Vault) eraseShardChunks(ctx context.Context, target *transferTarget, plan Plan, archiveID string, part int, chunkCount uint32) {
 	providerID, ok := plan[part]
 	if !ok {
 		return
@@ -298,14 +305,17 @@ func (v *Vault) erasePartChunks(ctx context.Context, target *transferTarget, pla
 	wg.Wait()
 }
 
-// gatherChunk collects enough of one chunk's parts to rebuild it. It is the
+// gatherChunk collects enough of one chunk's shards to rebuild it. It is the
 // per-chunk twin of gather: the same race across accounts, decided the same way
-// by whichever two answer first.
+// by whichever Scheme.Data distinct shards answer first.
 func (v *Vault) gatherChunk(ctx context.Context, entry *Entry, index int, configs map[string]provider.Config, dataKey []byte) ([]byte, error) {
+	scheme := entry.Scheme()
+
 	fetchCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	type getResult struct {
+		part int
 		blob []byte
 		err  error
 	}
@@ -321,19 +331,19 @@ func (v *Vault) gatherChunk(ctx context.Context, entry *Entry, index int, config
 		go func(shard Shard, cfg provider.Config) {
 			p, err := v.buildProvider(cfg)
 			if err != nil {
-				results <- getResult{err: fmt.Errorf("part %d: %w", shard.Part, err)}
+				results <- getResult{part: shard.Part, err: fmt.Errorf("part %d: %w", shard.Part, err)}
 				return
 			}
 			blob, err := p.Get(fetchCtx, ChunkShardKey(entry.ArchiveID, index, shard.Part))
 			if err != nil {
-				results <- getResult{err: fmt.Errorf("part %d from %s: %w", shard.Part, cfg.Name, err)}
+				results <- getResult{part: shard.Part, err: fmt.Errorf("part %d from %s: %w", shard.Part, cfg.Name, err)}
 				return
 			}
-			results <- getResult{blob: blob}
+			results <- getResult{part: shard.Part, blob: blob}
 		}(shard, cfg)
 	}
 
-	var blobs [][]byte
+	held := map[int][]byte{}
 	var failures []string
 	for i := 0; i < pending; i++ {
 		r := <-results
@@ -341,19 +351,22 @@ func (v *Vault) gatherChunk(ctx context.Context, entry *Entry, index int, config
 			failures = append(failures, r.err.Error())
 			continue
 		}
-		blobs = append(blobs, r.blob)
-		if len(blobs) >= archive.MinPartsToRestore {
+		if _, already := held[r.part]; already {
+			continue
+		}
+		held[r.part] = r.blob
+		if len(held) >= scheme.Data {
 			break
 		}
 	}
 
-	if len(blobs) < archive.MinPartsToRestore {
-		return nil, fmt.Errorf("could not gather %d parts for chunk %d of %s (got %d): %s",
-			archive.MinPartsToRestore, index, entry.Path(), len(blobs),
+	if len(held) < scheme.Data {
+		return nil, fmt.Errorf("could not gather %d shards for chunk %d of %s (got %d): %s",
+			scheme.Data, index, entry.Path(), len(held),
 			strings.Join(failures, "; "))
 	}
 
-	decoded, err := archive.DecodeChunk(blobs, dataKey)
+	decoded, err := archive.DecodeChunk(collectParts(held), dataKey)
 	if err != nil {
 		return nil, fmt.Errorf("rebuilding chunk %d of %s: %w", index, entry.Path(), err)
 	}

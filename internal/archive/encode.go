@@ -11,8 +11,14 @@ import (
 	"github.com/google/uuid"
 )
 
-// PartCount is the number of parts produced for every archived file.
+// PartCount is the number of parts the whole-file format produces, and the
+// number of shards the default scheme has. A file cut with a wider scheme has
+// more; see Scheme.
 const PartCount = 3
+
+// FormatVersionWhole is the whole-file layout this package writes, named here so
+// the decoder can say which versions it is able to open.
+const FormatVersionWhole = sandfile.FormatVersion
 
 // MinPartsToRestore is how many of the PartCount parts are required to
 // reconstruct the original data.
@@ -165,6 +171,17 @@ func DecodeBytes(blobs [][]byte, password string) (*Decoded, error) {
 		}
 	}
 
+	// Only the password-derived formats can be opened here. A chunked part
+	// carries no salt and no Argon2 parameters — its key comes from a vault's
+	// data key — so without this the stretch below would be handed a zero-length
+	// salt and panic rather than say what was wrong.
+	if refHeader.Version != FormatVersionWhole && refHeader.Version != sandfile.LegacyFormatVersion {
+		return nil, fmt.Errorf(
+			"these are format version %d parts, written by a vault — they cannot be opened by a "+
+				"password alone, and need the manifest backup that carries the vault's data key",
+			refHeader.Version)
+	}
+
 	argonParams := crypto.Argon2Params{
 		Time:    refHeader.Argon2Time,
 		Memory:  refHeader.Argon2Memory,
@@ -196,7 +213,7 @@ func DecodeBytes(blobs [][]byte, password string) (*Decoded, error) {
 		used = append(used, pn)
 	}
 
-	compressed, err := splitter.Reconstruct(decryptedParts, refMeta.WasPadded)
+	compressed, err := splitter.ReconstructXOR(decryptedParts, refMeta.WasPadded)
 	if err != nil {
 		return nil, fmt.Errorf("reconstructing data: %w", err)
 	}

@@ -506,7 +506,7 @@ export function SelectionBar({
         size={mobile ? 'md' : 'sm'}
         onClick={onMove}
         disabled={busy || nothing}
-        title="Move the parts of everything selected onto other clouds"
+        title="Move the shards of everything selected onto other clouds"
       >⇄ Clouds</Button>
       <Button
         size={mobile ? 'md' : 'sm'}

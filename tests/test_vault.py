@@ -66,6 +66,23 @@ def find_file(session, server, name, path="/"):
     raise AssertionError(f"{name} not found in {path}")
 
 
+def part_path(clouds, shard):
+    """Where a stored part actually sits on disk, or None if it is gone.
+
+    An account's folder is not derivable from its display name.  The GUI suite
+    shares this vault and connects accounts whose name and directory differ —
+    and it renames some of them — so a part landing on one of those would be
+    looked for in a folder that does not exist.  The object key is the same on
+    whichever account holds it, so the part is found by looking for the key.
+    """
+    root = os.path.dirname(clouds("cloud-one"))
+    target = shard["key"].split("/")[-1]
+    for dirpath, _, filenames in os.walk(root):
+        if target in filenames:
+            return os.path.join(dirpath, target)
+    return None
+
+
 def cli(sand_bin, vault_dir, *args, password="e2e-test-passphrase", check=True):
     """Run a sand subcommand against the CLI's own vault."""
     env = dict(os.environ)
@@ -260,7 +277,9 @@ class TestStoreAndRetrieve:
 
         # Take the account holding part 1 offline by moving its directory away.
         part1 = next(s for s in entry["shards"] if s["part"] == 1)
-        account_root = clouds(part1["provider_name"])
+        stored = part_path(clouds, part1)
+        assert stored, part1["key"]
+        account_root = os.path.dirname(stored)
         stashed = str(tmp_path / "offline-account")
         os.rename(account_root, stashed)
         try:
@@ -294,8 +313,8 @@ class TestStoreAndRetrieve:
 
         # Remove exactly one part and re-check.
         shard = entry["shards"][0]
-        victim = os.path.join(clouds(shard["provider_name"]), *shard["key"].split("/"))
-        assert os.path.exists(victim), victim
+        victim = part_path(clouds, shard)
+        assert victim, shard["key"]
         os.remove(victim)
 
         health = unlocked.get(f"{server}/api/files/{file_id}/health", timeout=60).json()
@@ -332,8 +351,7 @@ class TestStoreAndRetrieve:
         assert d.status_code == 200, d.text
 
         for shard in entry["shards"]:
-            path = os.path.join(clouds(shard["provider_name"]), *shard["key"].split("/"))
-            assert not os.path.exists(path), f"{shard['key']} survived the delete"
+            assert part_path(clouds, shard) is None, f"{shard['key']} survived the delete"
 
     def test_folders_and_navigation(self, server, unlocked):
         r = unlocked.post(f"{server}/api/folders", json={"path": "/reports/2024"},
@@ -567,14 +585,15 @@ class TestCLI:
         cli(sand_bin, vault_dir, "get", "/cli-round-trip.bin", "-o", str(out))
         assert out.read_bytes() == payload
 
-    def test_ls_shows_where_each_part_landed(self, sand_bin, vault_dir, tmp_path):
+    def test_ls_shows_the_scheme_and_where_each_shard_landed(self, sand_bin, vault_dir, tmp_path):
         source = tmp_path / "spread.txt"
         source.write_text("spread me around")
         cli(sand_bin, vault_dir, "put", str(source))
 
         result = cli(sand_bin, vault_dir, "ls")
         assert "spread.txt" in result.stdout
-        assert "p1:" in result.stdout and "p2:" in result.stdout and "p3:" in result.stdout
+        assert "2-of-3" in result.stdout
+        assert "s1:" in result.stdout and "s2:" in result.stdout and "s3:" in result.stdout
 
     def test_mkdir_and_put_into_folder(self, sand_bin, vault_dir, tmp_path):
         source = tmp_path / "nested.txt"
@@ -712,6 +731,70 @@ class TestCLI:
         out = tmp_path / "relocated-back.bin"
         cli(sand_bin, vault_dir, "get", "/relocatable.bin", "-o", str(out))
         assert out.read_bytes() == payload
+
+    def test_six_accounts_store_a_file_as_four_of_six(self, sand_bin, vault_dir, tmp_path):
+        """Naming six clouds cuts the file 4-of-6, one shard per cloud — and it
+        survives any two of them going away."""
+        wide = []
+        for name in ("cli-w1", "cli-w2", "cli-w3"):
+            path = os.path.join(vault_dir, "cli-clouds", name)
+            cli(sand_bin, vault_dir, "remote", "add", "local", "--name", name,
+                "--set", f"path={path}")
+            wide.append(path)
+
+        def parts_on(directory):
+            return {n for n in os.listdir(directory)
+                    if n.endswith(".sand") and n != "manifest.sand"}
+
+        before = {path: parts_on(path) for path in wide}
+
+        source = tmp_path / "doubled.bin"
+        payload = os.urandom(30_000)
+        source.write_bytes(payload)
+        cli(sand_bin, vault_dir, "put", str(source),
+            "--accounts", "cli-a,cli-b,cli-c,cli-w1,cli-w2,cli-w3")
+
+        row = next(line for line in cli(sand_bin, vault_dir, "ls").stdout.splitlines()
+                   if "doubled.bin" in line)
+        assert "4-of-6" in row, row
+        # Six shards, numbered 1 to 6, one per cloud — and no "(degraded)".
+        placements = [token for token in row.split() if token.startswith("s")
+                      and ":" in token]
+        assert len(placements) == 6, row
+        assert sorted(t.split(":", 1)[0] for t in placements) == [
+            "s1", "s2", "s3", "s4", "s5", "s6"], row
+        assert "degraded" not in row, row
+        # One shard per cloud, which is what keeps a single account worthless.
+        assert len({t.split(":", 1)[1] for t in placements}) == 6, row
+
+        for path in wide:
+            assert len(parts_on(path) - before[path]) == 1, f"{path} took no shard"
+
+        # Two of the six go dark — the tolerance of 4-of-6 — and the file still
+        # reads back from the four that remain.
+        for name in ("cli-w1", "cli-w2"):
+            shutil.rmtree(os.path.join(vault_dir, "cli-clouds", name))
+        out = tmp_path / "doubled-back.bin"
+        cli(sand_bin, vault_dir, "get", "/doubled.bin", "-o", str(out))
+        assert out.read_bytes() == payload
+
+        for name in ("cli-w1", "cli-w2", "cli-w3"):
+            cli(sand_bin, vault_dir, "remote", "remove", name, "--force")
+
+    def test_a_count_that_names_no_scheme_is_refused(self, sand_bin, vault_dir, tmp_path):
+        cli(sand_bin, vault_dir, "remote", "add", "local", "--name", "cli-fourth",
+            "--set", f"path={os.path.join(vault_dir, 'cli-clouds', 'cli-fourth')}")
+
+        source = tmp_path / "odd-spread.txt"
+        source.write_text("four clouds is not a spread")
+        result = cli(sand_bin, vault_dir, "put", str(source),
+                     "--accounts", "cli-a,cli-b,cli-c,cli-fourth", check=False)
+        cli(sand_bin, vault_dir, "remote", "remove", "cli-fourth", "--force")
+
+        assert result.returncode != 0
+        # The message names the rule rather than a list, because the list has no
+        # end: any multiple of three is a spread SAND can cut.
+        assert "multiple of 3" in (result.stdout + result.stderr)
 
     def test_rm_removes_the_file(self, sand_bin, vault_dir, tmp_path):
         source = tmp_path / "doomed.txt"

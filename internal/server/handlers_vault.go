@@ -195,9 +195,10 @@ func (s *Server) handleVaultMigrate(w http.ResponseWriter, r *http.Request) {
 }
 
 type defaultAccountsRequest struct {
-	// Accounts is the vault-wide selection new uploads start from. An empty
-	// list clears it, which puts every upload back to picking its own accounts
-	// at random.
+	// Accounts is the vault-wide selection new uploads start from. How many are
+	// named settles the erasure code — 3 is 2-of-3, 6 is 4-of-6, 9 is 6-of-9. An
+	// empty list clears it, which puts every upload back to picking its own
+	// accounts at random.
 	Accounts []string `json:"accounts"`
 }
 

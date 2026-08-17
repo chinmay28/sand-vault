@@ -248,7 +248,7 @@ func TestReconstruct_FromParts12_EvenData(t *testing.T) {
 
 	_ = part3 // not used for 1+2 reconstruction
 
-	result, err := Reconstruct(map[int][]byte{1: part1, 2: part2}, wasPadded)
+	result, err := ReconstructXOR(map[int][]byte{1: part1, 2: part2}, wasPadded)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +263,7 @@ func TestReconstruct_FromParts13_EvenData(t *testing.T) {
 	part1, part2, wasPadded := Split(original)
 	part3, _ := XOR(part1, part2)
 
-	result, err := Reconstruct(map[int][]byte{1: part1, 3: part3}, wasPadded)
+	result, err := ReconstructXOR(map[int][]byte{1: part1, 3: part3}, wasPadded)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +278,7 @@ func TestReconstruct_FromParts23_EvenData(t *testing.T) {
 	part1, part2, wasPadded := Split(original)
 	part3, _ := XOR(part1, part2)
 
-	result, err := Reconstruct(map[int][]byte{2: part2, 3: part3}, wasPadded)
+	result, err := ReconstructXOR(map[int][]byte{2: part2, 3: part3}, wasPadded)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -295,7 +295,7 @@ func TestReconstruct_FromParts12_OddData(t *testing.T) {
 
 	_ = part3
 
-	result, err := Reconstruct(map[int][]byte{1: part1, 2: part2}, wasPadded)
+	result, err := ReconstructXOR(map[int][]byte{1: part1, 2: part2}, wasPadded)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,7 +310,7 @@ func TestReconstruct_FromParts13_OddData(t *testing.T) {
 	part1, part2, wasPadded := Split(original)
 	part3, _ := XOR(part1, part2)
 
-	result, err := Reconstruct(map[int][]byte{1: part1, 3: part3}, wasPadded)
+	result, err := ReconstructXOR(map[int][]byte{1: part1, 3: part3}, wasPadded)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,7 +325,7 @@ func TestReconstruct_FromParts23_OddData(t *testing.T) {
 	part1, part2, wasPadded := Split(original)
 	part3, _ := XOR(part1, part2)
 
-	result, err := Reconstruct(map[int][]byte{2: part2, 3: part3}, wasPadded)
+	result, err := ReconstructXOR(map[int][]byte{2: part2, 3: part3}, wasPadded)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +340,7 @@ func TestReconstruct_FromAll3Parts(t *testing.T) {
 	part1, part2, wasPadded := Split(original)
 	part3, _ := XOR(part1, part2)
 
-	result, err := Reconstruct(map[int][]byte{1: part1, 2: part2, 3: part3}, wasPadded)
+	result, err := ReconstructXOR(map[int][]byte{1: part1, 2: part2, 3: part3}, wasPadded)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,7 +366,7 @@ func TestReconstruct_SingleByte_AllCombinations(t *testing.T) {
 	}
 
 	for i, combo := range combos {
-		result, err := Reconstruct(combo, wasPadded)
+		result, err := ReconstructXOR(combo, wasPadded)
 		if err != nil {
 			t.Fatalf("combo %d failed: %v", i, err)
 		}
@@ -392,7 +392,7 @@ func TestReconstruct_TwoByte_AllCombinations(t *testing.T) {
 	}
 
 	for i, combo := range combos {
-		result, err := Reconstruct(combo, wasPadded)
+		result, err := ReconstructXOR(combo, wasPadded)
 		if err != nil {
 			t.Fatalf("combo %d failed: %v", i, err)
 		}
@@ -426,7 +426,7 @@ func TestReconstruct_LargeOddData_AllCombinations(t *testing.T) {
 	}
 
 	for _, combo := range combos {
-		result, err := Reconstruct(combo.parts, wasPadded)
+		result, err := ReconstructXOR(combo.parts, wasPadded)
 		if err != nil {
 			t.Fatalf("%s failed: %v", combo.name, err)
 		}
@@ -460,7 +460,7 @@ func TestReconstruct_LargeEvenData_AllCombinations(t *testing.T) {
 	}
 
 	for _, combo := range combos {
-		result, err := Reconstruct(combo.parts, wasPadded)
+		result, err := ReconstructXOR(combo.parts, wasPadded)
 		if err != nil {
 			t.Fatalf("%s failed: %v", combo.name, err)
 		}
@@ -473,12 +473,12 @@ func TestReconstruct_LargeEvenData_AllCombinations(t *testing.T) {
 func TestReconstruct_FewerThan2Parts(t *testing.T) {
 	part1 := []byte{0x01, 0x02}
 
-	_, err := Reconstruct(map[int][]byte{1: part1}, false)
+	_, err := ReconstructXOR(map[int][]byte{1: part1}, false)
 	if err == nil {
 		t.Fatal("should fail with fewer than 2 parts")
 	}
 
-	_, err = Reconstruct(map[int][]byte{}, false)
+	_, err = ReconstructXOR(map[int][]byte{}, false)
 	if err == nil {
 		t.Fatal("should fail with empty map")
 	}
@@ -489,7 +489,7 @@ func TestReconstruct_EmptyData(t *testing.T) {
 	part1, part2, wasPadded := Split(original)
 	part3, _ := XOR(part1, part2)
 
-	result, err := Reconstruct(map[int][]byte{1: part1, 2: part2, 3: part3}, wasPadded)
+	result, err := ReconstructXOR(map[int][]byte{1: part1, 2: part2, 3: part3}, wasPadded)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -531,7 +531,7 @@ func TestSplitReconstruct_VaryingSizes(t *testing.T) {
 			{"1+3", map[int][]byte{1: part1, 3: part3}},
 			{"2+3", map[int][]byte{2: part2, 3: part3}},
 		} {
-			result, err := Reconstruct(combo.parts, wasPadded)
+			result, err := ReconstructXOR(combo.parts, wasPadded)
 			if err != nil {
 				t.Fatalf("size %d, %s: reconstruct failed: %v", size, combo.name, err)
 			}

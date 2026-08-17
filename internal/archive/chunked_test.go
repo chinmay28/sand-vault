@@ -9,8 +9,10 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/chinmay28/sand-vault/internal/compress"
 	"github.com/chinmay28/sand-vault/internal/crypto"
 	"github.com/chinmay28/sand-vault/internal/sandfile"
+	"github.com/chinmay28/sand-vault/internal/splitter"
 	"github.com/google/uuid"
 )
 
@@ -28,7 +30,7 @@ func testArchiveID(t *testing.T) [16]byte {
 func encodeAll(t *testing.T, data []byte, chunkSize uint32) (ChunkPlan, []*EncodedChunk) {
 	t.Helper()
 
-	plan, err := PlanChunks(testArchiveID(t), "movie.mkv", sha256.Sum256(data), uint64(len(data)), chunkSize)
+	plan, err := PlanChunks(testArchiveID(t), "movie.mkv", sha256.Sum256(data), uint64(len(data)), chunkSize, SchemeDefault)
 	if err != nil {
 		t.Fatalf("PlanChunks: %v", err)
 	}
@@ -204,9 +206,9 @@ func TestPlanChunksMath(t *testing.T) {
 		{40 << 20, 16 << 20, 3},
 	}
 	for _, tc := range cases {
-		plan, err := PlanChunks(id, "f", hash, tc.size, tc.chunkSize)
+		plan, err := PlanChunks(id, "f", hash, tc.size, tc.chunkSize, SchemeDefault)
 		if err != nil {
-			t.Fatalf("PlanChunks(%d, %d): %v", tc.size, tc.chunkSize, err)
+			t.Fatalf("PlanChunks(%d, %d, SchemeDefault): %v", tc.size, tc.chunkSize, err)
 		}
 		if plan.ChunkCount != tc.want {
 			t.Errorf("%d bytes in %d-byte chunks = %d chunks, want %d",
@@ -214,21 +216,21 @@ func TestPlanChunksMath(t *testing.T) {
 		}
 	}
 
-	if _, err := PlanChunks(id, "f", hash, 100, 0); err == nil {
+	if _, err := PlanChunks(id, "f", hash, 100, 0, SchemeDefault); err == nil {
 		t.Error("planned a zero chunk size, want an error")
 	}
-	if _, err := PlanChunks(id, "", hash, 100, 1024); err == nil {
+	if _, err := PlanChunks(id, "", hash, 100, 1024, SchemeDefault); err == nil {
 		t.Error("planned an empty filename, want an error")
 	}
 	// A chunk size small enough to blow past the object-count ceiling is a
 	// configuration error, not something to discover partway through an upload.
-	if _, err := PlanChunks(id, "f", hash, uint64(MaxChunkCount)+1, 1); err == nil {
+	if _, err := PlanChunks(id, "f", hash, uint64(MaxChunkCount)+1, 1, SchemeDefault); err == nil {
 		t.Error("planned more chunks than the limit allows, want an error")
 	}
 }
 
 func TestEncodeChunkRejectsWrongLength(t *testing.T) {
-	plan, err := PlanChunks(testArchiveID(t), "f", [32]byte{}, 2048, 1024)
+	plan, err := PlanChunks(testArchiveID(t), "f", [32]byte{}, 2048, 1024, SchemeDefault)
 	if err != nil {
 		t.Fatalf("PlanChunks: %v", err)
 	}
@@ -271,21 +273,44 @@ func TestEncodeChunkCarriesArchiveDescription(t *testing.T) {
 	}
 }
 
-func TestChunkedPartsAreVersionThree(t *testing.T) {
-	_, chunks := encodeAll(t, []byte("data"), 1024)
+// A chunk's shards say which code they belong to, in the clear, because a
+// reader has to know k and n before it can invert anything — and because the
+// header is associated data, so a shard cannot be relabelled into another
+// scheme without failing its tag.
+func TestChunkedShardsCarryTheirScheme(t *testing.T) {
+	for _, scheme := range []Scheme{SchemeDefault, SchemeWide, SchemeWider, SchemeForGroups(12)} {
+		t.Run(scheme.String(), func(t *testing.T) {
+			plan, err := PlanChunks(testArchiveID(t), "f.bin", [32]byte{}, 4096, 1024, scheme)
+			if err != nil {
+				t.Fatalf("PlanChunks: %v", err)
+			}
+			encoded, err := EncodeChunk(plan, 0, make([]byte, 1024), testMaster())
+			if err != nil {
+				t.Fatalf("EncodeChunk: %v", err)
+			}
+			if len(encoded.Parts) != scheme.Total {
+				t.Fatalf("encoded %d shards, want %d", len(encoded.Parts), scheme.Total)
+			}
 
-	for i, blob := range chunks[0].Parts {
-		part, err := sandfile.ReadPart(blob)
-		if err != nil {
-			t.Fatalf("ReadPart(%d): %v", i+1, err)
-		}
-		if part.Header.Version != sandfile.ChunkedFormatVersion {
-			t.Errorf("part %d is version %d, want %d",
-				i+1, part.Header.Version, sandfile.ChunkedFormatVersion)
-		}
-		if part.Header.PartNumber != uint8(i+1) {
-			t.Errorf("part at index %d numbers itself %d", i, part.Header.PartNumber)
-		}
+			for i, blob := range encoded.Parts {
+				part, err := sandfile.ReadPart(blob)
+				if err != nil {
+					t.Fatalf("ReadPart(%d): %v", i+1, err)
+				}
+				if part.Header.Version != sandfile.ErasureFormatVersion {
+					t.Errorf("shard %d is version %d, want %d",
+						i+1, part.Header.Version, sandfile.ErasureFormatVersion)
+				}
+				if int(part.Header.DataShards) != scheme.Data ||
+					int(part.Header.TotalShards) != scheme.Total {
+					t.Errorf("shard %d says %d-of-%d, want %s",
+						i+1, part.Header.DataShards, part.Header.TotalShards, scheme)
+				}
+				if part.Header.PartNumber != uint8(i+1) {
+					t.Errorf("shard at index %d numbers itself %d", i, part.Header.PartNumber)
+				}
+			}
+		})
 	}
 }
 
@@ -376,5 +401,144 @@ func TestRestoreChunkedRejectsWholeFileParts(t *testing.T) {
 	}
 	if chunked {
 		t.Error("a whole-file part reports as chunked")
+	}
+}
+
+// encodeChunkV3 writes a chunk the way builds before schemes did: two halves
+// and their XOR, sealed under format version 3.
+//
+// The encoder no longer produces this, which is exactly why the test needs its
+// own copy. Every vault written before this change is full of these, and the
+// promise is that they keep working untouched — so the shape of them has to be
+// pinned somewhere that fails loudly if the reader drifts.
+func encodeChunkV3(t *testing.T, plan ChunkPlan, index uint32, plaintext, master []byte) [][]byte {
+	t.Helper()
+
+	compressed, err := compress.Compress(plaintext)
+	if err != nil {
+		t.Fatalf("compress: %v", err)
+	}
+	part1, part2, wasPadded := splitter.Split(compressed)
+	part3, err := splitter.XOR(part1, part2)
+	if err != nil {
+		t.Fatalf("XOR: %v", err)
+	}
+
+	key, err := crypto.DeriveChunkKey(master, plan.ArchiveID, index)
+	if err != nil {
+		t.Fatalf("DeriveChunkKey: %v", err)
+	}
+	meta := &sandfile.Metadata{
+		Filename:       plan.Filename,
+		OriginalHash:   plan.OriginalHash,
+		OriginalSize:   plan.OriginalSize,
+		CompressedSize: uint64(len(compressed)),
+		WasPadded:      wasPadded,
+		ChunkCount:     plan.ChunkCount,
+		ChunkSize:      plan.ChunkSize,
+	}
+
+	var out [][]byte
+	for i, part := range [][]byte{part1, part2, part3} {
+		nonce, err := crypto.GenerateNonce()
+		if err != nil {
+			t.Fatalf("nonce: %v", err)
+		}
+		blob, err := sandfile.Seal(&sandfile.Header{
+			Version:    sandfile.ChunkedFormatVersion,
+			PartNumber: uint8(i + 1),
+			ArchiveID:  plan.ArchiveID,
+			ChunkIndex: index,
+			Nonce:      nonce,
+		}, meta, part, key)
+		if err != nil {
+			t.Fatalf("Seal: %v", err)
+		}
+		out = append(out, blob)
+	}
+	return out
+}
+
+// A vault written before schemes existed is full of version 3 chunks, and they
+// have to keep opening on any two of their three parts.
+func TestVersionThreeChunksStillDecode(t *testing.T) {
+	plaintext := make([]byte, 3000)
+	if _, err := rand.Read(plaintext); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	plan, err := PlanChunks(testArchiveID(t), "old.bin", sha256.Sum256(plaintext),
+		uint64(len(plaintext)), 4096, SchemeDefault)
+	if err != nil {
+		t.Fatalf("PlanChunks: %v", err)
+	}
+	parts := encodeChunkV3(t, plan, 0, plaintext, testMaster())
+
+	for _, pair := range [][2]int{{0, 1}, {0, 2}, {1, 2}} {
+		decoded, err := DecodeChunk([][]byte{parts[pair[0]], parts[pair[1]]}, testMaster())
+		if err != nil {
+			t.Fatalf("parts %d and %d: DecodeChunk: %v", pair[0]+1, pair[1]+1, err)
+		}
+		if !bytes.Equal(decoded.Data, plaintext) {
+			t.Errorf("parts %d and %d rebuilt the wrong bytes", pair[0]+1, pair[1]+1)
+		}
+	}
+}
+
+// Old and new shards of the same chunk index must never be mixed into one
+// rebuild: they are different codes over different data, and a decoder that
+// tried would produce plausible nonsense.
+func TestChunksOfDifferentSchemesAreNotMixed(t *testing.T) {
+	plaintext := make([]byte, 3000)
+	if _, err := rand.Read(plaintext); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	id := testArchiveID(t)
+	hash := sha256.Sum256(plaintext)
+
+	oldPlan, err := PlanChunks(id, "old.bin", hash, uint64(len(plaintext)), 4096, SchemeDefault)
+	if err != nil {
+		t.Fatalf("PlanChunks: %v", err)
+	}
+	old := encodeChunkV3(t, oldPlan, 0, plaintext, testMaster())
+
+	fresh, err := EncodeChunk(oldPlan, 0, plaintext, testMaster())
+	if err != nil {
+		t.Fatalf("EncodeChunk: %v", err)
+	}
+
+	if _, err := DecodeChunk([][]byte{old[0], fresh.Parts[1]}, testMaster()); err == nil {
+		t.Error("mixed a version 3 part with a version 4 shard, want a refusal")
+	}
+}
+
+// The named schemes are conveniences, not definitions. If one of them ever
+// stopped agreeing with the rule, prose and code would part company silently.
+func TestNamedSchemesFollowTheRule(t *testing.T) {
+	for groups, named := range map[int]Scheme{1: SchemeDefault, 2: SchemeWide, 3: SchemeWider} {
+		if want := SchemeForGroups(groups); named != want {
+			t.Errorf("%s is not %d group(s) of the rule, which is %s", named, groups, want)
+		}
+		if !named.Valid() {
+			t.Errorf("%s does not validate", named)
+		}
+	}
+
+	// And the rule holds across the family, all the way to the ceiling a
+	// one-byte shard number sets.
+	for accounts := AccountsPerGroup; accounts <= MaxAccounts; accounts += AccountsPerGroup {
+		s, err := SchemeFor(accounts)
+		if err != nil {
+			t.Fatalf("SchemeFor(%d): %v", accounts, err)
+		}
+		if s.Total != accounts || s.Data*3 != s.Total*2 {
+			t.Fatalf("SchemeFor(%d) = %s, want 2m-of-3m", accounts, s)
+		}
+		if s.Tolerance() != s.Groups() {
+			t.Errorf("%s survives %d losses, want one per group (%d)",
+				s, s.Tolerance(), s.Groups())
+		}
+	}
+	if _, err := SchemeFor(MaxAccounts + AccountsPerGroup); err == nil {
+		t.Error("a spread past the ceiling was accepted")
 	}
 }

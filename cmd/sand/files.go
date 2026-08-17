@@ -62,20 +62,32 @@ func lsCmd() *cobra.Command {
 	return cmd
 }
 
-// describeSpread summarizes which accounts hold a file's parts.
+// describeSpread summarizes which accounts hold a file's shards, and under
+// which code — a 6-of-9 file lists nine of them.
 func describeSpread(e *vault.Entry) string {
 	if len(e.Shards) == 0 {
 		return "UNRECOVERABLE"
 	}
 	names := make([]string, 0, len(e.Shards))
 	for _, s := range e.Shards {
-		names = append(names, fmt.Sprintf("p%d:%s", s.Part, s.ProviderName))
+		names = append(names, fmt.Sprintf("s%d:%s", s.Part, s.ProviderName))
 	}
-	label := strings.Join(names, " ")
-	if len(e.Shards) < 3 {
+	label := e.Scheme().String() + " " + strings.Join(names, " ")
+	if e.Redundancy() < e.Scheme().Total {
 		label += " (degraded)"
 	}
 	return label
+}
+
+// missingShards counts the shards a health check could not find.
+func missingShards(health *vault.FileHealth) int {
+	missing := 0
+	for _, s := range health.Shards {
+		if !s.Present {
+			missing++
+		}
+	}
+	return missing
 }
 
 func findCmd() *cobra.Command {
@@ -203,7 +215,7 @@ func putCmd() *cobra.Command {
 	cmd.Flags().StringVar(&dest, "path", "/", "destination folder inside the vault")
 	cmd.Flags().BoolVar(&overwrite, "overwrite", false, "replace an existing file with the same name")
 	cmd.Flags().StringSliceVar(&accounts, "accounts", nil,
-		"accounts to scatter these files over, by name or id (default: the vault's, or three at random)")
+		"accounts to scatter these files over, by name or id — any multiple of 3, which chooses 2m-of-3m (default: the vault's, or three at random)")
 	return cmd
 }
 
@@ -448,10 +460,16 @@ than rewriting the file. What does move is carried across as the encrypted blob
 it already is: nothing is decrypted, nothing is re-encrypted, and the file keeps
 its identity, its hash and its chunk layout.
 
+Naming a different *number* of accounts changes the scheme the file is cut with
+— m groups of three give 2m-of-3m — and no shard survives that change, so the
+file is gathered and written out again rather than moved. That costs the whole
+file on the wire, and --dry-run says so before it happens.
+
 Each file is committed on its own, so this is safe to interrupt and safe to
 repeat — run it again and it moves whatever is still in the wrong place.
 
   sand relocate /photos --accounts box,s3,drive
+  sand relocate /taxes --accounts box,s3,drive,dropbox,onedrive,proton
   sand relocate /notes.txt --accounts box,s3 --dry-run`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -508,7 +526,7 @@ repeat — run it again and it moves whatever is still in the wrong place.
 	}
 
 	cmd.Flags().StringSliceVar(&accounts, "accounts", nil,
-		"the accounts to move onto, by name or id (at most one per part)")
+		"the accounts to move onto, by name or id — any multiple of 3; changing the count changes the scheme, which rebuilds the file")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "say what would move, and move nothing")
 	return cmd
 }
@@ -593,20 +611,13 @@ func checkCmd() *cobra.Command {
 				if !health.Recoverable {
 					status = "UNRECOVERABLE"
 					problems++
-				} else {
-					missing := 0
-					for _, s := range health.Shards {
-						if !s.Present {
-							missing++
-						}
-					}
-					if missing > 0 || len(health.Shards) < 3 {
-						status = "degraded"
-						problems++
-					}
+				} else if missing := missingShards(health); missing > 0 {
+					status = "degraded"
+					problems++
 				}
 
-				fmt.Printf("%-40s %s\n", health.Path, status)
+				fmt.Printf("%-40s %s  [%s, %d spare]\n",
+					health.Path, status, health.Scheme, health.Spare)
 				for _, s := range health.Shards {
 					mark := "✓"
 					detail := formatBytes(s.Size)
@@ -614,7 +625,7 @@ func checkCmd() *cobra.Command {
 						mark = "✗"
 						detail = s.Error
 					}
-					fmt.Printf("   %s part %d on %-20s %s\n", mark, s.Part, s.ProviderName, detail)
+					fmt.Printf("   %s shard %d on %-20s %s\n", mark, s.Part, s.ProviderName, detail)
 				}
 			}
 

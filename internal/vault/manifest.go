@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chinmay28/sand-vault/internal/archive"
 	"github.com/chinmay28/sand-vault/internal/movie"
 )
 
@@ -23,7 +24,7 @@ import (
 // question of which accounts may hold a file is still answered once, for the
 // file.
 type Shard struct {
-	Part         int    `json:"part"` // 1, 2 or 3
+	Part         int    `json:"part"` // the shard number, 1..Entry.TotalShards
 	ProviderID   string `json:"provider_id"`
 	ProviderName string `json:"provider_name"` // kept for display if the account is later removed
 	ProviderKind string `json:"provider_kind"`
@@ -62,6 +63,27 @@ type Entry struct {
 	// not have to consult a per-chunk index to find out where to look.
 	ChunkSize  int64 `json:"chunk_size,omitempty"`
 	ChunkCount int   `json:"chunk_count,omitempty"`
+
+	// DataShards and TotalShards are the erasure code this file was cut with —
+	// k and n, where any k of the n shards rebuild it (§4).
+	//
+	// They are per file rather than per vault because widening a vault does not
+	// rewrite what is already in it: a vault that has grown from three clouds to
+	// nine holds 2-of-3 files beside 6-of-9 ones, and each says which it is.
+	// Absent on a file written before schemes existed, which is 2-of-3 — see
+	// Scheme.
+	DataShards  int `json:"data_shards,omitempty"`
+	TotalShards int `json:"total_shards,omitempty"`
+}
+
+// Scheme is the erasure code this file's shards were cut with. A file recorded
+// before the field existed is two of three, which is the only code the formats
+// of the time could express.
+func (e *Entry) Scheme() archive.Scheme {
+	if e.DataShards <= 0 || e.TotalShards <= 0 {
+		return archive.LegacyScheme()
+	}
+	return archive.Scheme{Data: e.DataShards, Total: e.TotalShards}
 }
 
 // Chunked reports whether the file is stored as independently readable chunks.
@@ -81,9 +103,37 @@ func (e *Entry) ChunkIndexAt(offset int64) int {
 // Path is the full browser path of the entry.
 func (e *Entry) Path() string { return JoinPath(e.Dir, e.Name) }
 
-// Redundancy reports how many parts were successfully stored. Two is the
-// minimum needed to reconstruct; three means one account can go dark.
-func (e *Entry) Redundancy() int { return len(e.Shards) }
+// Redundancy reports how many of the file's shards were successfully stored.
+// Scheme().Data of them rebuild it; a full set means the file can lose
+// Scheme().Tolerance() accounts and still be read.
+func (e *Entry) Redundancy() int { return distinctShards(e.Shards) }
+
+// Recoverable reports whether enough shards are recorded to rebuild the file at
+// all. It is a claim about the index rather than about the accounts — Health
+// asks them.
+func (e *Entry) Recoverable() bool { return e.Redundancy() >= e.Scheme().Data }
+
+// Spare is how many shards the file could still lose and be readable.
+func (e *Entry) Spare() int {
+	spare := e.Redundancy() - e.Scheme().Data
+	if spare < 0 {
+		return 0
+	}
+	return spare
+}
+
+// distinctShards counts how many different shard numbers a set covers, which is
+// the number that decides whether the thing they belong to can be rebuilt. A
+// scatter never writes the same shard twice, so this is normally just the
+// length; counting properly is what keeps a duplicated index row from reading
+// as extra durability.
+func distinctShards(shards []Shard) int {
+	seen := map[int]bool{}
+	for _, s := range shards {
+		seen[s.Part] = true
+	}
+	return len(seen)
+}
 
 // Providers returns the distinct provider IDs holding parts of this file.
 func (e *Entry) Providers() []string {

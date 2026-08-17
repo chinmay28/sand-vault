@@ -3,28 +3,116 @@ import { COLORS, FONT, KIND_ICONS, accountColor, formatBytes } from '../theme'
 import { api } from '../api'
 import { Banner, Button, Modal, Spinner } from './ui'
 
-/* Choosing where a file's parts go.
+/* Choosing where a file's shards go.
 
-   A file is split into three parts and each part goes to a different account,
-   so "which clouds" is a choice of three — the vault's default, or something
-   else for one upload. Both are made with the same list of rows, which is what
-   lives here. */
+   A file is cut into shards and each one goes to a different account, so "which
+   clouds" is a choice of three — the vault's default, or something else for one
+   upload. Both are made with the same list of rows, which is what lives here.
 
-export const PARTS_PER_FILE = 3
+   How many clouds are picked settles the code the file is cut with: three is
+   2-of-3, six is 4-of-6, nine is 6-of-9. All three store 1.5× the file, so
+   widening costs accounts rather than bytes, and what it buys is on both axes —
+   more clouds can go dark, and more of them have to be broken into together
+   before what they hold is enough to rebuild anything. */
+
+/* The rule SAND cuts files by, mirroring archive.Scheme on the server: clouds
+   come in groups of three, and two thirds of the shards rebuild the file. Three
+   is 2-of-3, six is 4-of-6, thirty is 20-of-30 — there is no list, only the
+   rule. */
+export const CLOUDS_PER_GROUP = 3
+const DATA_PER_GROUP = 2
+
+/* A shard's number is one byte in its header, so a spread stops at 255 shards,
+   rounded down to whole groups. */
+export const MAX_CLOUDS = Math.floor(255 / CLOUDS_PER_GROUP) * CLOUDS_PER_GROUP
+
+export const PARTS_PER_FILE = CLOUDS_PER_GROUP
 const MIN_ACCOUNTS = 2
+
+/* The scheme a count of clouds names, or null when it names none. Fewer than a
+   full group is the default code with whatever shards there is room for, which
+   is what a vault with two clouds connected gets. */
+export function schemeFor(count) {
+  if (count > 0 && count < CLOUDS_PER_GROUP) return schemeForGroups(1)
+  if (count <= 0 || count > MAX_CLOUDS || count % CLOUDS_PER_GROUP !== 0) return null
+  return schemeForGroups(count / CLOUDS_PER_GROUP)
+}
+
+export function schemeForGroups(groups) {
+  return { data: DATA_PER_GROUP * groups, total: CLOUDS_PER_GROUP * groups }
+}
+
+/* How a scheme is written wherever a person reads it. */
+export function schemeName(scheme) {
+  return scheme ? `${scheme.data}-of-${scheme.total}` : ''
+}
+
+/* How many clouds can go dark with the file still readable: n − k, one per
+   group. */
+export function tolerance(scheme) {
+  return scheme ? scheme.total - scheme.data : 0
+}
+
+/* The widest spread a set of clouds can fill. */
+export function maxSelectable(count) {
+  if (count < CLOUDS_PER_GROUP) return count
+  return Math.min(Math.floor(count / CLOUDS_PER_GROUP) * CLOUDS_PER_GROUP, MAX_CLOUDS)
+}
+
+/* Whether a count of clouds is one the server will take. The counts this rules
+   out are the ones between groups: a fourth cloud has no shard of its own to
+   hold without a fifth and a sixth beside it. */
+export function validSpread(count) {
+  return count === 0 || schemeFor(count) !== null
+}
+
+/* Whether a selection is one that can actually be stored: enough clouds to
+   rebuild from, and a count that names a scheme. */
+export function usableSpread(count) {
+  return count >= MIN_ACCOUNTS && validSpread(count)
+}
+
+/* How many *distinct* shards of a file are stored, which is the number that
+   decides whether it can be rebuilt. */
+export function storedParts(shards) {
+  return new Set((shards || []).map((s) => s.part)).size
+}
+
+/* The scheme a stored file was cut with, from what the index recorded. A file
+   written before schemes existed carries nothing and is 2-of-3. */
+export function fileScheme(file) {
+  if (file?.data_shards > 0 && file?.total_shards > 0) {
+    return { data: file.data_shards, total: file.total_shards }
+  }
+  return schemeForGroups(1)
+}
+
+/* The nearest spreads above and below a count that names none, for saying what
+   the two ways out of it are. */
+export function nextScheme(count) {
+  const up = Math.min((Math.floor(count / CLOUDS_PER_GROUP) + 1) * CLOUDS_PER_GROUP, MAX_CLOUDS)
+  return schemeFor(up) || schemeForGroups(1)
+}
+
+export function previousScheme(count) {
+  const down = Math.max(Math.floor(count / CLOUDS_PER_GROUP) * CLOUDS_PER_GROUP, CLOUDS_PER_GROUP)
+  return schemeFor(down) || schemeForGroups(1)
+}
 
 /* The clouds an upload starts on: the vault's default, and with none set three
    picked at random — which is exactly what the picker then lets the user
    change. A default is taken as it stands rather than made up to three, the
    same way the server takes it, so a default of two clouds does not quietly
-   become three.
+   become three and a default of six does not quietly become three either.
 
    Reachable accounts are drawn first, so a random pick does not send parts at
    an account that is not answering while a working one sits idle. */
 export function initialSelection(providers, defaults = []) {
   const connected = new Set(providers.map((p) => p.id))
   const preferred = (defaults || []).filter((id) => connected.has(id))
-  if (preferred.length > 0) return preferred.slice(0, PARTS_PER_FILE)
+  // Trimmed only if a disconnected cloud has left the default a shape a file
+  // cannot be laid out over — five of a saved six becomes three, not five.
+  if (preferred.length > 0) return preferred.slice(0, maxSelectable(preferred.length))
 
   const pool = [...shuffle(providers.filter((p) => p.online)), ...shuffle(providers.filter((p) => !p.online))]
   return pool.slice(0, PARTS_PER_FILE).map((p) => p.id)
@@ -39,10 +127,12 @@ function shuffle(items) {
   return out
 }
 
-/* The rows themselves. Selection is capped at three because a file has three
-   parts: a fourth account would have nothing to hold. */
+/* The rows themselves. Selection is capped at the widest scheme these clouds
+   can fill — three of four connected, six of seven — because a cloud past that
+   has no shard of its own to hold. */
 export function CloudChoice({ providers, selected, onChange }) {
-  const full = selected.length >= PARTS_PER_FILE
+  const cap = maxSelectable(providers.length)
+  const full = selected.length >= cap
 
   const toggle = (id) => {
     if (selected.includes(id)) onChange(selected.filter((s) => s !== id))
@@ -53,6 +143,9 @@ export function CloudChoice({ providers, selected, onChange }) {
     <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
       {providers.map((provider) => {
         const chosen = selected.includes(provider.id)
+        // One shard per cloud, numbered in the order they were picked — which
+        // is how the server numbers them too. Six clouds read 1 to 6, and the
+        // first four to answer a read are the four the file comes back from.
         const part = chosen ? selected.indexOf(provider.id) + 1 : null
         return (
           <button
@@ -60,6 +153,7 @@ export function CloudChoice({ providers, selected, onChange }) {
             type="button"
             role="checkbox"
             aria-checked={chosen}
+            title={chosen ? `Shard ${part} of ${selected.length}` : undefined}
             onClick={() => toggle(provider.id)}
             disabled={!chosen && full}
             style={{
@@ -78,8 +172,8 @@ export function CloudChoice({ providers, selected, onChange }) {
               opacity: !chosen && full ? 0.45 : 1,
             }}
           >
-            {/* The badge doubles as the part number, so the row says both
-                "chosen" and "this is where part 2 goes". */}
+            {/* The badge doubles as the shard number, so the row says both
+                "chosen" and "this is where shard 2 goes". */}
             <span style={{
               width: '20px',
               height: '20px',
@@ -114,7 +208,7 @@ export function CloudChoice({ providers, selected, onChange }) {
                 color: COLORS.textMuted,
                 marginTop: '2px',
               }}>
-                {provider.kind} · {provider.shards} part{provider.shards === 1 ? '' : 's'} · {formatBytes(provider.stored)}
+                {provider.kind} · {provider.shards} shard{provider.shards === 1 ? '' : 's'} · {formatBytes(provider.stored)}
               </span>
             </span>
 
@@ -133,14 +227,31 @@ export function CloudChoice({ providers, selected, onChange }) {
       })}
 
       {/* A row that cannot be clicked has to say why, or it reads as broken. */}
-      {full && providers.length > PARTS_PER_FILE && (
+      {full && providers.length > cap && (
         <p style={{
           margin: '2px 0 0',
           fontFamily: FONT.mono,
           fontSize: '10px',
           color: COLORS.textMuted,
         }}>
-          {PARTS_PER_FILE} parts, {PARTS_PER_FILE} clouds — unpick one to swap it for another.
+          {schemeName(schemeFor(cap))} is as wide as {providers.length} clouds goes.
+          Unpick one to swap it for another.
+        </p>
+      )}
+
+      {/* Between one scheme and the next there is no code to use, so say what
+          the next step up would be before it is reached. */}
+      {!full && selected.length > PARTS_PER_FILE && !validSpread(selected.length) && (
+        <p style={{
+          margin: '2px 0 0',
+          fontFamily: FONT.mono,
+          fontSize: '10px',
+          color: COLORS.warn,
+        }}>
+          {selected.length} clouds is between schemes — pick{' '}
+          {nextScheme(selected.length).total - selected.length} more for{' '}
+          {schemeName(nextScheme(selected.length))}, or unpick back to{' '}
+          {previousScheme(selected.length).total}.
         </p>
       )}
     </div>
@@ -151,8 +262,8 @@ export function CloudChoice({ providers, selected, onChange }) {
 
    `moving` switches the two sentences that differ between putting a file
    somewhere for the first time and picking it up off one cloud and setting it
-   down on another — the second of which can also erase a spare part, because
-   the file already has three and the chosen clouds may not have room. */
+   down on another — the second of which can also erase a spare shard, because
+   the chosen clouds may not have room for all of them. */
 function SelectionNote({ providers, selected, moving = false }) {
   if (selected.length < MIN_ACCOUNTS) {
     return (
@@ -165,12 +276,23 @@ function SelectionNote({ providers, selected, moving = false }) {
   if (selected.length < PARTS_PER_FILE) {
     return (
       <Banner tone="warn">
-        With {selected.length} clouds only {selected.length} of the {PARTS_PER_FILE} parts are
-        stored{moving ? ', so the spare part is erased' : ''}. The file is recoverable and still
-        unreadable to either cloud alone, but it has no spare part if one of them goes away.
+        With {selected.length} clouds only {selected.length} of the {PARTS_PER_FILE} shards are
+        stored{moving ? ', so the spare is erased' : ''}. The file is recoverable and still
+        unreadable to either cloud alone, but it has no spare if one of them goes away.
       </Banner>
     )
   }
+  if (!validSpread(selected.length)) {
+    return (
+      <Banner tone="error">
+        {selected.length} clouds names no scheme. Clouds come in groups of {CLOUDS_PER_GROUP},
+        two thirds of which rebuild the file — so pick {previousScheme(selected.length).total} or{' '}
+        {nextScheme(selected.length).total}. A count in between would leave a cloud with no shard
+        of its own to hold.
+      </Banner>
+    )
+  }
+  const scheme = schemeFor(selected.length)
   const offline = providers.filter((p) => selected.includes(p.id) && !p.online)
   if (offline.length) {
     return (
@@ -179,6 +301,16 @@ function SelectionNote({ providers, selected, moving = false }) {
         {moving
           ? ' Parts bound for it will stay where they are, and nothing is lost — run the move again once it is back.'
           : ' The upload will go ahead if the others accept their parts, and that part will be missing.'}
+      </Banner>
+    )
+  }
+  if (scheme && scheme.total > PARTS_PER_FILE) {
+    return (
+      <Banner tone="success">
+        {schemeName(scheme)}: one shard on each of {scheme.total} clouds, any {scheme.data} of
+        which rebuild the file. {tolerance(scheme)} of them could go away before it was at risk,
+        and an attacker would need {scheme.data} of them together before what they hold is enough
+        to rebuild anything. It stores the same 1.5× that {schemeName(schemeForGroups(1))} does.
       </Banner>
     )
   }
@@ -222,7 +354,9 @@ export function UploadDestination({ files, path, providers, defaults, onUpload, 
   return (
     <Modal
       title={names.length === 1 ? `Upload ${names[0]}` : `Upload ${names.length} files`}
-      subtitle={`${formatBytes(total)} into ${path} — split into ${PARTS_PER_FILE} encrypted parts, one per cloud`}
+      subtitle={`${formatBytes(total)} into ${path} — cut ${
+        schemeName(schemeFor(selected.length)) || 'across the chosen clouds'
+      }, one encrypted shard per cloud`}
       onClose={busy ? undefined : onClose}
       width={460}
     >
@@ -262,7 +396,7 @@ export function UploadDestination({ files, path, providers, defaults, onUpload, 
           type="checkbox"
           checked={remember}
           onChange={(e) => setRemember(e.target.checked)}
-          disabled={selected.length < MIN_ACCOUNTS}
+          disabled={!usableSpread(selected.length)}
           style={{ accentColor: COLORS.accent, width: '15px', height: '15px', minHeight: 0 }}
         />
         Make this the default for the whole vault
@@ -274,7 +408,7 @@ export function UploadDestination({ files, path, providers, defaults, onUpload, 
           type="button"
           variant="primary"
           onClick={submit}
-          disabled={busy || selected.length < MIN_ACCOUNTS}
+          disabled={busy || !usableSpread(selected.length)}
         >
           {busy ? <Spinner size={10} /> : null}
           ↑ Upload to {selected.length} cloud{selected.length === 1 ? '' : 's'}
@@ -315,10 +449,14 @@ export function DefaultClouds({ providers, defaults, onClose, onChanged }) {
 
       <CloudChoice providers={providers} selected={selected} onChange={setSelected} />
 
-      {selected.length > 0 && selected.length < MIN_ACCOUNTS && (
+      {selected.length > 0 && !usableSpread(selected.length) && (
         <div style={{ marginTop: '14px' }}>
           <Banner tone="error">
-            Choose at least {MIN_ACCOUNTS} clouds, or none at all to let every upload pick its own.
+            {selected.length < MIN_ACCOUNTS
+              ? `Choose at least ${MIN_ACCOUNTS} clouds, or none at all to let every upload pick its own.`
+              : `Choose clouds in groups of ${CLOUDS_PER_GROUP} — ${
+                previousScheme(selected.length).total} or ${nextScheme(selected.length).total}, not ${
+                selected.length}.`}
           </Banner>
         </div>
       )}
@@ -331,7 +469,10 @@ export function DefaultClouds({ providers, defaults, onClose, onChanged }) {
         lineHeight: 1.6,
       }}>
         With no default, each file picks {PARTS_PER_FILE} clouds of its own at random — which is
-        what spreads a vault evenly over more than {PARTS_PER_FILE} accounts.
+        what spreads a vault evenly over more than {PARTS_PER_FILE} accounts. Saving a default of
+        6, 9 or more — any group of {CLOUDS_PER_GROUP} — cuts every upload{' '}
+        {schemeName(schemeForGroups(2))}, {schemeName(schemeForGroups(3))} and so on, for the same
+        storage and a group's worth of extra margin each time.
       </p>
 
       <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
@@ -343,7 +484,7 @@ export function DefaultClouds({ providers, defaults, onClose, onChanged }) {
           type="button"
           variant="primary"
           onClick={() => save(selected)}
-          disabled={busy || selected.length < MIN_ACCOUNTS}
+          disabled={busy || !usableSpread(selected.length)}
         >
           {busy ? <Spinner size={10} /> : null}Save default
         </Button>
@@ -380,7 +521,7 @@ export function RelocateClouds({ target, targets, title, subtitle, current, prov
   const [report, setReport] = useState(null)
 
   const scope = (targets && targets.length ? targets : [target]).filter(Boolean)
-  const enough = selected.length >= MIN_ACCOUNTS
+  const enough = usableSpread(selected.length)
   const key = selected.join(',')
   const scopeKey = scope.map((t) => t.id || t.path).join('\n')
 
@@ -465,8 +606,10 @@ export function RelocateClouds({ target, targets, title, subtitle, current, prov
             color: COLORS.textMuted,
             lineHeight: 1.6,
           }}>
-            Parts already on a cloud you keep stay exactly where they are — only the rest are
-            carried across, still encrypted, without ever being rebuilt.
+            Shards already on a cloud you keep stay exactly where they are — only the rest are
+            carried across, still encrypted, without ever being rebuilt. Changing how many clouds
+            a file is on is different: that changes the code it is cut with, so the file is
+            gathered and written out again. The estimate below says which is happening.
           </p>
 
           <CloudChoice providers={providers} selected={selected} onChange={setSelected} />
@@ -490,7 +633,7 @@ export function RelocateClouds({ target, targets, title, subtitle, current, prov
                   <Spinner size={10} color={COLORS.bg} />
                   {scope.length > 1 ? ` Moving ${moved + 1} of ${scope.length}…` : ' Moving…'}
                 </>
-              ) : '⇄ Move the parts'}
+              ) : '⇄ Move the shards'}
             </Button>
           </div>
         </>
@@ -505,17 +648,20 @@ export function RelocateClouds({ target, targets, title, subtitle, current, prov
 function mergePlans(plans) {
   return plans.reduce((all, plan) => ({
     moves: all.moves + (plan.moves || 0),
+    recoded: all.recoded + (plan.recoded || 0),
+    recode_bytes: all.recode_bytes + (plan.recode_bytes || 0),
     bytes: all.bytes + (plan.bytes || 0),
     total: all.total + (plan.total || 0),
     unchanged: all.unchanged + (plan.unchanged || 0),
     drops: all.drops + (plan.drops || 0),
     warnings: [...all.warnings, ...(plan.warnings || [])],
-  }), { moves: 0, bytes: 0, total: 0, unchanged: 0, drops: 0, warnings: [] })
+  }), { moves: 0, recoded: 0, recode_bytes: 0, bytes: 0, total: 0, unchanged: 0, drops: 0, warnings: [] })
 }
 
 function mergeReports(reports) {
   return reports.reduce((all, report) => ({
     relocated: all.relocated + (report.relocated || 0),
+    recoded: all.recoded + (report.recoded || 0),
     parts_moved: all.parts_moved + (report.parts_moved || 0),
     parts_dropped: all.parts_dropped + (report.parts_dropped || 0),
     bytes: all.bytes + (report.bytes || 0),
@@ -525,7 +671,7 @@ function mergeReports(reports) {
     failed: all.failed + (report.failed || 0),
     warnings: [...all.warnings, ...(report.warnings || [])],
   }), {
-    relocated: 0, parts_moved: 0, parts_dropped: 0, bytes: 0,
+    relocated: 0, recoded: 0, parts_moved: 0, parts_dropped: 0, bytes: 0,
     total: 0, unchanged: 0, partial: 0, failed: 0, warnings: [],
   })
 }
@@ -543,7 +689,7 @@ function RelocationCost({ plan, planning }) {
     )
   }
 
-  if (plan.moves === 0 && plan.drops === 0) {
+  if (plan.moves === 0 && plan.drops === 0 && plan.recoded === 0) {
     return (
       <div style={{ marginTop: '12px' }}>
         <Banner tone="success">
@@ -569,9 +715,25 @@ function RelocationCost({ plan, planning }) {
         {/* With nothing to move but a part to erase — narrowing three clouds to
             two — "0 parts to move" is not what the change is, so it leads with
             what actually happens instead. */}
-        {plan.moves > 0
-          ? <>{plan.moves} part{plan.moves === 1 ? '' : 's'} to move{plan.bytes > 0 && <> · {formatBytes(plan.bytes)}</>}</>
-          : <>Nothing to move</>}
+        {/* A change of scheme is not a move: no shard of the old file is a
+            shard of the new one, so the file is rebuilt rather than carried.
+            Saying "parts to move" would describe the wrong operation and,
+            worse, the wrong bill. */}
+        {plan.recoded > 0
+          ? (
+            <>
+              {plan.recoded} file{plan.recoded === 1 ? '' : 's'} to rebuild
+              {plan.recode_bytes > 0 && <> · {formatBytes(plan.recode_bytes)}</>}
+            </>
+          )
+          : plan.moves > 0
+            ? (
+              <>
+                {plan.moves} shard{plan.moves === 1 ? '' : 's'} to move
+                {plan.bytes > 0 && <> · {formatBytes(plan.bytes)}</>}
+              </>
+            )
+            : <>Nothing to move</>}
         {planning && <> …</>}
       </div>
       <div style={{ color: COLORS.textMuted }}>
@@ -579,7 +741,7 @@ function RelocationCost({ plan, planning }) {
         {plan.unchanged > 0 && <>, {plan.unchanged} already in place</>}
         {plan.drops > 0 && (
           <span style={{ color: COLORS.warn }}>
-            {' '}· {plan.drops} spare part{plan.drops === 1 ? '' : 's'} erased
+            {' '}· {plan.drops} spare shard{plan.drops === 1 ? '' : 's'} erased
           </span>
         )}
       </div>
@@ -602,8 +764,11 @@ function RelocationOutcome({ report, onClose }) {
         {stuck
           ? `${stuck} file(s) did not fully move. Nothing was lost — their parts are still where
              they were. Try again once the accounts are answering.`
-          : `Moved ${report.parts_moved} part(s)${report.bytes ? `, ${formatBytes(report.bytes)}` : ''},
-             across ${report.relocated} file(s).`}
+          : report.recoded > 0
+            ? `Rebuilt ${report.recoded} file(s) under the new scheme${
+              report.bytes ? `, ${formatBytes(report.bytes)}` : ''}.`
+            : `Moved ${report.parts_moved} shard(s)${report.bytes ? `, ${formatBytes(report.bytes)}` : ''},
+               across ${report.relocated} file(s).`}
       </Banner>
 
       <div style={{
@@ -619,7 +784,7 @@ function RelocationOutcome({ report, onClose }) {
         <div>{report.total} file(s) in scope · {report.unchanged} already in place</div>
         {report.parts_dropped > 0 && (
           <div style={{ color: COLORS.warn }}>
-            {report.parts_dropped} spare part(s) erased — the chosen clouds had no room for them.
+            {report.parts_dropped} spare shard(s) erased — the chosen clouds had no room for them.
           </div>
         )}
       </div>

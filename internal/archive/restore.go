@@ -48,7 +48,9 @@ func Restore(partPaths []string, password, outputDir string) (string, error) {
 // itself is gone and all that survives is a manifest backup, a password, and
 // enough part files on disk. Parts may arrive in any order and for any chunks —
 // they are grouped by the chunk index each one carries in the clear, and every
-// chunk needs the usual two of three.
+// chunk needs however many its own scheme calls for — two of three for anything
+// written before schemes existed, four of six or six of nine for a file cut
+// wider.
 func RestoreChunked(partPaths []string, dataKey []byte, outputDir string) (string, error) {
 	if len(partPaths) < MinPartsToRestore {
 		return "", fmt.Errorf("need at least %d part files, got %d",
@@ -57,6 +59,9 @@ func RestoreChunked(partPaths []string, dataKey []byte, outputDir string) (strin
 
 	byChunk := map[uint32][][]byte{}
 	seen := map[uint32]map[uint8]bool{}
+	// How many shards each chunk needs, read off the parts themselves rather
+	// than assumed: an offline restore has no index to consult.
+	needed := map[uint32]int{}
 	for _, path := range partPaths {
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -66,13 +71,15 @@ func RestoreChunked(partPaths []string, dataKey []byte, outputDir string) (strin
 		if err != nil {
 			return "", fmt.Errorf("parsing %s: %w", path, err)
 		}
-		if part.Header.Version != sandfile.ChunkedFormatVersion {
+		switch part.Header.Version {
+		case sandfile.ChunkedFormatVersion, sandfile.ErasureFormatVersion:
+		default:
 			return "", fmt.Errorf("%s is format version %d, not a chunk — restore it with Restore",
 				path, part.Header.Version)
 		}
 
 		index := part.Header.ChunkIndex
-		// More than two parts of a chunk is fine; the same part twice is not,
+		// More shards than a chunk needs is fine; the same shard twice is not,
 		// and would otherwise reach the decoder as a duplicate.
 		if seen[index] == nil {
 			seen[index] = map[uint8]bool{}
@@ -82,15 +89,20 @@ func RestoreChunked(partPaths []string, dataKey []byte, outputDir string) (strin
 		}
 		seen[index][part.Header.PartNumber] = true
 		byChunk[index] = append(byChunk[index], data)
+		needed[index] = schemeOf(part.Header).Data
 	}
 
 	// A chunk missing from the middle would otherwise splice the file back
 	// together shorter than it was, and quietly.
 	count := uint32(len(byChunk))
 	for index := uint32(0); index < count; index++ {
-		if len(byChunk[index]) < MinPartsToRestore {
+		want := needed[index]
+		if want == 0 {
+			want = MinPartsToRestore
+		}
+		if len(byChunk[index]) < want {
 			return "", fmt.Errorf("chunk %d has %d part(s), need %d — the parts given cover chunks %s",
-				index, len(byChunk[index]), MinPartsToRestore, describeChunks(byChunk))
+				index, len(byChunk[index]), want, describeChunks(byChunk))
 		}
 	}
 
@@ -148,5 +160,9 @@ func PartsAreChunked(partPath string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("parsing %s: %w", partPath, err)
 	}
-	return part.Header.Version == sandfile.ChunkedFormatVersion, nil
+	switch part.Header.Version {
+	case sandfile.ChunkedFormatVersion, sandfile.ErasureFormatVersion:
+		return true, nil
+	}
+	return false, nil
 }

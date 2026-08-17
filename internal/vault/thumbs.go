@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/chinmay28/sand-vault/internal/archive"
 	"sort"
 	"time"
 )
@@ -434,7 +435,7 @@ func (v *Vault) loadPack(ctx context.Context, dir string) (map[string][]byte, er
 		return items, nil
 	}
 
-	blob, err := v.gather(ctx, pack.Shards, pack.KeyID, "the thumbnails for "+dir)
+	blob, err := v.gather(ctx, pack.Shards, archive.LegacyScheme(), pack.KeyID, "the thumbnails for "+dir)
 	if err != nil {
 		return nil, err
 	}
@@ -459,11 +460,22 @@ func (v *Vault) savePack(ctx context.Context, dir string, items map[string][]byt
 //
 // Empty accounts is the ordinary case — the vault's default, and failing that a
 // pick of its own, exactly as an upload does.
+//
+// A pack is always two of three, whatever scheme the folder's files use, and is
+// narrowed to three accounts here to keep it that way. It rides the whole-file
+// format, which predates schemes and cannot express a wider code — and there is
+// nothing to gain by teaching it one, because a thumbnail is a picture the
+// browser can draw again from a file that is itself stored properly. What the
+// narrowing does buy is that a folder on nine clouds does not fail to save its
+// pictures.
 func (v *Vault) savePackOn(ctx context.Context, dir string, items map[string][]byte, accounts []string) error {
 	dir = CleanDir(dir)
 	if len(items) == 0 {
 		v.dropPack(ctx, dir)
 		return nil
+	}
+	if len(accounts) > archive.SchemeDefault.Total {
+		accounts = accounts[:archive.SchemeDefault.Total]
 	}
 
 	placed, err := v.scatter(ctx, thumbArchiveName, encodePack(items), accounts, len(accounts) > 0)

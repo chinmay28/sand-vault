@@ -317,12 +317,22 @@ func (v *Vault) MigrateFilesTo(ctx context.Context, accounts []string, progress 
 	return report, nil
 }
 
-// migrateFile rebuilds one file from its parts and scatters it again under the
-// current data key. The index moves to the new parts in a single write, so the
-// file is readable through the whole thing: on the old parts until that write,
+// migrateFile rebuilds one file from its shards and scatters it again under the
+// current data key. The index moves to the new shards in a single write, so the
+// file is readable through the whole thing: on the old shards until that write,
 // on the new ones after it.
 //
-// accounts, when given, is where the new parts go — followed exactly, since it
+// It is the expensive operation in this package — a whole download and a whole
+// upload — and there are three reasons to pay it. A password change has to,
+// because the shards are sealed under a key that is being retired. Reclaiming a
+// recovered vault has to, onto the accounts somebody actually wants to keep. And
+// a change of *scheme* has to, because a 2-of-3 file and a 4-of-6 file share no
+// shards at all: the halves of one are not the quarters of the other, so there
+// is nothing to copy across and the file has to be cut again. Changing which
+// accounts hold a file at the same width is none of these; that is a copy of
+// opaque blobs, and Relocate does it without a key.
+//
+// accounts, when given, is where the new shards go — followed exactly, since it
 // is a choice somebody made rather than a default to top up.
 func (v *Vault) migrateFile(ctx context.Context, id string, accounts []string) (path string, size int64, warnings []string, err error) {
 	v.mu.RLock()
@@ -353,9 +363,9 @@ func (v *Vault) migrateFile(ctx context.Context, id string, accounts []string) (
 	// file goes back to the accounts it was already on, whether they were
 	// chosen for it or picked at random — any that have been disconnected since
 	// are topped up from what is connected now, rather than leaving the file a
-	// part short for good. Given a selection, that selection is followed
-	// exactly, which is what reclaiming a recovered vault onto the accounts
-	// somebody actually wants to keep amounts to.
+	// shard short for good. Given a selection, that selection is followed
+	// exactly, which is what both reclaiming a recovered vault and changing a
+	// file's scheme amount to.
 	current, exact := accounts, len(accounts) > 0
 	if !exact {
 		current = make([]string, 0, len(stale.Shards))
@@ -371,13 +381,15 @@ func (v *Vault) migrateFile(ctx context.Context, id string, accounts []string) (
 	placed, err := v.scatterChunked(ctx, name, data, current, exact, v.uploadChunkSize())
 	warnings = placed.warnings
 	if err != nil {
-		return path, 0, warnings, fmt.Errorf("re-encrypting %s: %w", path, err)
+		return path, 0, warnings, fmt.Errorf("re-encoding %s: %w", path, err)
 	}
 	fresh := &Entry{
-		ArchiveID:  placed.archiveID,
-		Shards:     placed.shards,
-		ChunkSize:  placed.chunkSize,
-		ChunkCount: placed.chunkCount,
+		ArchiveID:   placed.archiveID,
+		Shards:      placed.shards,
+		ChunkSize:   placed.chunkSize,
+		ChunkCount:  placed.chunkCount,
+		DataShards:  placed.scheme.Data,
+		TotalShards: placed.scheme.Total,
 	}
 
 	v.mu.Lock()
@@ -402,6 +414,8 @@ func (v *Vault) migrateFile(ctx context.Context, id string, accounts []string) (
 	e.Shards = placed.shards
 	e.ChunkSize = placed.chunkSize
 	e.ChunkCount = placed.chunkCount
+	e.DataShards = placed.scheme.Data
+	e.TotalShards = placed.scheme.Total
 	// ModifiedAt is left alone: the file did not change, only the key that
 	// hides it did.
 	err = v.persistLocked()
