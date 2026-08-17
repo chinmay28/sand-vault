@@ -453,7 +453,7 @@ function SortSheet({ prefs, view, onClose }) {
    is being selected, which is why it can afford to be a whole row of its own. */
 export function SelectionBar({
   mobile, count, total, files, allSelected, busy,
-  onAll, onNone, onDone, onDownload, onMove, onDelete,
+  onAll, onNone, onDone, onDownload, onMoveTo, onMove, onDelete,
 }) {
   const nothing = count === 0
 
@@ -492,12 +492,22 @@ export function SelectionBar({
         disabled={busy || files === 0}
         title={files === 0 ? 'Downloading is for files; folders are not rebuilt as one' : `Download ${files} file(s)`}
       >↓ Download{files > 1 ? ` ${files}` : ''}</Button>
+      {/* Two moves, named for what they move the selection onto rather than
+          one of them being "Move" and the other something else. The folder one
+          is an index change and instant; the cloud one copies parts between
+          accounts. */}
+      <Button
+        size={mobile ? 'md' : 'sm'}
+        onClick={onMoveTo}
+        disabled={busy || nothing}
+        title="Move everything selected into another folder — nothing is transferred"
+      >→ Folder</Button>
       <Button
         size={mobile ? 'md' : 'sm'}
         onClick={onMove}
         disabled={busy || nothing}
         title="Move the parts of everything selected onto other clouds"
-      >⇄ Move</Button>
+      >⇄ Clouds</Button>
       <Button
         size={mobile ? 'md' : 'sm'}
         variant="danger"

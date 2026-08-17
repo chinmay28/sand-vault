@@ -11,6 +11,7 @@ import {
 } from './FileEntry'
 import { Breadcrumbs, FolderHeader, NavCluster, SearchField, SelectionBar, ViewControls } from './Toolbar'
 import { BulkDelete, BulkDownload } from './BulkActions'
+import MoveToFolder from './MoveToFolder'
 import { FilmButton, FilmLookupSettings } from './FilmDetails'
 
 /* How long to sit on a keystroke before asking the server. Long enough that
@@ -101,14 +102,26 @@ export default function FileBrowser({
      the tiles, select-all, a shift-click's range — works off this and so all
      of them agree about what "everything here" is and what order it is in. */
   const entries = useMemo(() => {
+    /* Which file's thumbnail each folder is drawn with, by path. Worked out by
+       the server in one walk of the index — a folder's picture comes from what
+       is inside it, which a listing of the folder above it cannot see. */
+    const art = (searchTerm ? results?.folder_art : listing?.folder_art) || {}
+
     if (searchTerm) {
       return sortHits(results?.hits || [], prefs).map((hit) => (hit.type === 'folder'
-        ? { kind: 'folder', key: `dir:${hit.path}`, name: hit.name, path: hit.path, location: hit.dir }
+        ? {
+          kind: 'folder', key: `dir:${hit.path}`, name: hit.name, path: hit.path,
+          location: hit.dir, art: art[hit.path],
+        }
         : { kind: 'file', key: `file:${hit.file.id}`, name: hit.file.name, file: hit.file, location: hit.dir }))
     }
     return [
       ...sortFolders(listing?.folders, prefs).map((name) => ({
-        kind: 'folder', key: `dir:${joinPath(path, name)}`, name, path: joinPath(path, name),
+        kind: 'folder',
+        key: `dir:${joinPath(path, name)}`,
+        name,
+        path: joinPath(path, name),
+        art: art[joinPath(path, name)],
       })),
       ...sortFiles(listing?.files, prefs).map((file) => ({
         kind: 'file', key: `file:${file.id}`, name: file.name, file,
@@ -446,7 +459,8 @@ export default function FileBrowser({
           onNone={() => setSelected(new Set())}
           onDone={() => { setSelecting(false); setSelected(new Set()) }}
           onDownload={() => setBulk('download')}
-          onMove={() => setBulk('move')}
+          onMoveTo={() => setBulk('folder')}
+          onMove={() => setBulk('clouds')}
           onDelete={() => setBulk('delete')}
         />
       )}
@@ -586,7 +600,18 @@ export default function FileBrowser({
         <BulkDownload items={chosen} onClose={() => setBulk(null)} />
       )}
 
-      {bulk === 'move' && (
+      {bulk === 'folder' && (
+        <MoveToFolder
+          items={chosen}
+          onClose={() => setBulk(null)}
+          /* What moved is not in this folder any more, so it cannot stay
+             ticked; what a partial run left behind is still here to try
+             again. */
+          onDone={() => { setSelected(new Set()); listProps.onRefresh() }}
+        />
+      )}
+
+      {bulk === 'clouds' && (
         <RelocateClouds
           targets={chosen.map((entry) => (
             entry.kind === 'folder' ? { path: entry.path } : { id: entry.file.id }))}
@@ -667,7 +692,8 @@ function SearchResults({ term, results, searching, error, path, scoped, mobile, 
    for still holds rows with films against them, and those keep their poster and
    their control, so what is drawn follows what is actually there. */
 function showsFilms(films, movies, entries) {
-  return films || entries.some((entry) => entry.file && movies[entry.file.id])
+  return films || entries.some((entry) => (
+    (entry.file && movies[entry.file.id]) || entry.art?.film))
 }
 
 /* Whether a row should offer film details at all, and what happens if it is
@@ -756,6 +782,7 @@ function EntryTable({
           name={entry.name}
           path={entry.path}
           location={entry.location}
+          art={entry.art}
           mobile={mobile}
           providers={providers}
           columns={columns}
@@ -811,6 +838,7 @@ function EntryGrid({
           name={entry.name}
           path={entry.path}
           location={entry.location}
+          art={entry.art}
           mobile={mobile}
           providers={providers}
           aspect={aspect}

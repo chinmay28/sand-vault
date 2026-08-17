@@ -396,6 +396,36 @@ func TestMoveRenamesWithoutTouchingShards(t *testing.T) {
 	}
 }
 
+func TestFoldersListsEveryFolderOnce(t *testing.T) {
+	v, _ := newTestVault(t, 3)
+
+	for _, dir := range []string{"/archive", "/photos/2024"} {
+		if err := v.Mkdir(dir); err != nil {
+			t.Fatalf("Mkdir %s: %v", dir, err)
+		}
+	}
+	// A folder recorded only by the file sitting in it, which is what a vault
+	// rebuilt by a recovery is full of. It is a folder you can walk into, so it
+	// is a folder something can be moved into, and it has to be on the list.
+	v.manifest.Entries = append(v.manifest.Entries, &Entry{
+		ID: "implied", Dir: "/photos/2023/june", Name: "old.jpg",
+	})
+
+	folders, err := v.Folders()
+	if err != nil {
+		t.Fatalf("Folders: %v", err)
+	}
+	want := []string{"/", "/archive", "/photos", "/photos/2023", "/photos/2023/june", "/photos/2024"}
+	if strings.Join(folders, " ") != strings.Join(want, " ") {
+		t.Errorf("Folders() = %v, want %v", folders, want)
+	}
+
+	v.Lock()
+	if _, err := v.Folders(); !errors.Is(err, ErrLocked) {
+		t.Errorf("a locked vault answered %v, want ErrLocked — folder names are index too", err)
+	}
+}
+
 func TestRmdirRecursive(t *testing.T) {
 	v, _ := newTestVault(t, 3)
 	ctx := context.Background()

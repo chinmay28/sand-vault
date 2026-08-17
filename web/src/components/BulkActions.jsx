@@ -25,7 +25,7 @@ import { Banner, Button, Modal, Spinner } from './ui'
    again. A finished run clears the selection it came from, and a dialog still
    reading that selection would answer "0 deleted" the instant it had deleted
    twelve things — the batch is what was picked, not what is picked now. */
-function useRun(chosen, perform, onFinished) {
+export function useRun(chosen, perform, onFinished) {
   const [items] = useState(() => chosen)
   const [at, setAt] = useState(-1)
   const [done, setDone] = useState(null)
@@ -65,7 +65,7 @@ function useRun(chosen, perform, onFinished) {
   return { items, at, running, done, start }
 }
 
-function Progress({ items, at, verb }) {
+export function Progress({ items, at, verb }) {
   const item = items[at]
 
   return (

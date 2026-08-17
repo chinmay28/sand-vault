@@ -367,9 +367,14 @@ func mkdirCmd() *cobra.Command {
 func mvCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "mv <path-or-id> <new-path>",
-		Short: "Rename or move a file",
-		Long: `Rename or move a file within the vault. Only the index changes — the
-encrypted parts stay exactly where they are on your cloud accounts.`,
+		Short: "Rename or move a file or a folder",
+		Long: `Rename or move a file — or a folder and everything under it — within the
+vault. Only the index changes: the encrypted parts stay exactly where they are
+on your cloud accounts, whichever of the two this is.
+
+  sand mv /draft.txt /final/published.txt   rename, and move it
+  sand mv /draft.txt /final                 into a folder, keeping the name
+  sand mv /photos/2024 /archive/2024        a folder, with everything in it`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			v, err := openVault(cmd)
@@ -377,6 +382,12 @@ encrypted parts stay exactly where they are on your cloud accounts.`,
 				return err
 			}
 			defer closeVault(v)
+
+			// A folder first: it is the only reading of the source that cannot
+			// also be a file, since the two namespaces never collide.
+			if from := vault.CleanDir(args[0]); from != "/" && v.FolderExists(from) {
+				return moveFolderTo(v, from, args[1])
+			}
 
 			entry, err := resolveEntry(v, args[0])
 			if err != nil {
@@ -400,6 +411,23 @@ encrypted parts stay exactly where they are on your cloud accounts.`,
 			return nil
 		},
 	}
+}
+
+// moveFolderTo carries out the folder half of "sand mv", where the destination
+// reads the same way it does for a file: a folder that already exists means
+// "inside it, keeping the name", and anything else is the new name in full.
+func moveFolderTo(v *vault.Vault, from, target string) error {
+	to := vault.CleanDir(target)
+	if v.FolderExists(to) {
+		_, name := splitPath(from)
+		to = vault.JoinPath(to, name)
+	}
+
+	if err := v.MoveFolder(context.Background(), from, to); err != nil {
+		return err
+	}
+	fmt.Printf("%s → %s\n", from, to)
+	return nil
 }
 
 func relocateCmd() *cobra.Command {

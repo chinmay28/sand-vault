@@ -507,6 +507,39 @@ encrypted index alone, without contacting a single account.
 A folder's stored thumbnails come along too, so moving a folder off an account
 really does move it off.
 
+### Moving something to another folder
+
+The other move, and until now the missing one: the browser could send a file to
+different clouds but not to a different folder. Tidying a vault meant downloading
+a file, deleting it and uploading it again — a round trip of every byte to change
+one word.
+
+Now every row carries **→** for it, beside Download and Delete on a file and
+beside **⇄** on a folder, with *Move to another folder* in the row's menu on a
+phone or a tile. Tick several rows and **→ Folder** in the selection bar moves
+the lot; **⇄ Clouds** beside it is still the other move, renamed so the two are
+told apart by what they move something onto. The dialog opens on the folder you
+are already in, walks the vault's own tree, and has a **+ New folder here** for
+a destination that does not exist yet. On the command line `sand mv` now takes a
+folder as well as a file, and over HTTP it is `POST /api/files/{id}/move` for a
+file and a new `POST /api/folders/move` for a folder.
+
+**Nothing is transferred.** Which folder something is in is a field in the
+encrypted index, and a part's object name is derived from the file's random
+archive ID rather than from the folder it sits in — so this rewrites that field
+and contacts no account at all. A 4 GB film moves as fast as a note, and its
+parts stay on the same clouds under the same key. A folder is a path in the
+index in exactly the same way, so moving one carries every file beneath it, at
+any depth, in a single index write: there is no moment where half a tree answers
+to its old name. Its thumbnails and its film-details setting travel with it,
+since both are filed under the folder rather than inside it.
+
+What cannot happen is said rather than attempted. A folder cannot be moved
+inside itself and is not offered as a destination; anything already in the folder
+you are looking at says so instead of being moved onto its own path; and a name
+already taken in the destination is refused for that one file, with the rest of
+a selection still moving.
+
 ### Naming an account, and choosing its colour
 
 A connected account is yours to label. **Edit** on its card in the sidebar opens
@@ -766,6 +799,34 @@ brings them back for one image fetch each and no searching.
 
 Details and artwork come from The Movie Database. SAND uses the TMDB API but is
 not endorsed or certified by TMDB.
+
+### A folder wears a picture of what is inside it
+
+The films got posters and the folders holding them did not, so a library was a
+row of identical `📁` — exactly the problem the files themselves had before. A
+folder is now drawn with a picture of something inside it: a poster where there
+is one, otherwise the thumbnail of whatever photograph or PDF is in there, and it
+reaches as deep as it needs to, so a library whose films sit one folder each
+still has a face.
+
+**Nothing is stored to do it.** The folder points at a file that already has a
+thumbnail and draws that file's own picture, through the same address its row
+draws through — no cover object on any account, nothing to keep in step, nothing
+to lose. SAND picks one for you, films first, and keeps picking the same one so a
+folder does not change its face every time the listing refreshes.
+
+When it picks the wrong one — which for a trilogy it half the time will, there
+being no right one — `🖼` on the folder's row, or **Folder picture** in its menu,
+shows everything inside it that has a picture and lets you say which. **Let SAND
+choose** hands the choice back. What you pick is remembered by file rather than
+by name or place, so renaming that file, moving it deeper, or moving the whole
+folder somewhere else all leave your choice standing; deleting it hands the
+folder back to choosing for itself.
+
+Thumbnails are stored a pack per folder, so drawing a parent of twenty folders
+can gather twenty packs the first time. Only the tiles on screen fetch anything
+and each pack is gathered once, which makes it the same cost as opening those
+twenty folders — paid where they are listed instead.
 
 ### Quick start
 

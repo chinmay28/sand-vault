@@ -118,6 +118,12 @@ type Manifest struct {
 	MovieFolders map[string]*MovieFolder `json:"movie_folders,omitempty"`
 	Movies       map[string]*movie.Info  `json:"movies,omitempty"`
 
+	// FolderArt records the picture a folder was told to wear, by folder path
+	// and the ID of a file stored inside it. Only the choices made by hand are
+	// here: a folder nobody has chosen for picks one of the films inside it and
+	// stores nothing (see folderart.go).
+	FolderArt map[string]string `json:"folder_art,omitempty"`
+
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
@@ -286,6 +292,38 @@ func (m *Manifest) Children(dir string) (folders []string, files []*Entry) {
 	return folders, files
 }
 
+// AllFolders lists every folder in the vault as a normalized path, root first.
+//
+// A folder counts whether it was created outright or exists only because a file
+// sits somewhere beneath it — both are folders the browser can walk into, and so
+// both are folders something can be moved into. Which is what this is for: the
+// destination picker draws the whole tree from one answer rather than asking
+// per level, and a tree is only usable if the branch a file made is on it.
+func (m *Manifest) AllFolders() []string {
+	seen := map[string]bool{"/": true}
+	out := []string{"/"}
+
+	add := func(dir string) {
+		// Ancestors first would need a second pass; walking up and stopping at
+		// the first folder already seen is the same set in one, because a
+		// folder is only ever recorded together with everything above it.
+		for d := CleanDir(dir); d != "/" && !seen[d]; d = CleanDir(path.Dir(d)) {
+			seen[d] = true
+			out = append(out, d)
+		}
+	}
+
+	for _, f := range m.Folders {
+		add(f)
+	}
+	for _, e := range m.Entries {
+		add(e.Dir)
+	}
+
+	sort.Strings(out)
+	return out
+}
+
 // Descendants returns every entry stored at or below a directory.
 func (m *Manifest) Descendants(dir string) []*Entry {
 	dir = CleanDir(dir)
@@ -374,6 +412,19 @@ func (m *Manifest) moveFolder(oldDir, newDir string) func() {
 		m.MovieFolders = rekeyed
 	}
 
+	// And so is the picture a folder was told to wear — the third map keyed by
+	// folder rather than by file. Its values are file IDs, which a move never
+	// changes, so only the keys need rewriting.
+	previousFolderArt := m.FolderArt
+	if len(m.FolderArt) > 0 {
+		rekeyed := make(map[string]string, len(m.FolderArt))
+		for dir, id := range m.FolderArt {
+			to, _ := underFolder(dir, oldDir, newDir)
+			rekeyed[to] = id
+		}
+		m.FolderArt = rekeyed
+	}
+
 	return func() {
 		for _, m := range changed {
 			m.entry.Dir = m.from
@@ -381,6 +432,7 @@ func (m *Manifest) moveFolder(oldDir, newDir string) func() {
 		m.Folders = previousFolders
 		m.Thumbs = previousThumbs
 		m.MovieFolders = previousMovieFolders
+		m.FolderArt = previousFolderArt
 	}
 }
 

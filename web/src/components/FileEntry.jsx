@@ -6,6 +6,8 @@ import { ActionSheet, ConfirmDialog, IconButton } from './ui'
 import StreamLink from './StreamLink'
 import ConvertFile from './ConvertFile'
 import { RelocateClouds } from './CloudSelect'
+import MoveToFolder from './MoveToFolder'
+import FolderArtPicker from './FolderArt'
 
 /* One file or one folder, drawn as a row or as a tile.
 
@@ -16,14 +18,14 @@ import { RelocateClouds } from './CloudSelect'
    are two arrangements of what it hands back. */
 
 /* Name, size, modified, parts, actions. The four fixed columns come to nearly
-   500px, which is why the phone layout stacks instead of shrinking them. */
-export const COLUMNS = 'minmax(0,1fr) 92px 150px 132px 108px'
+   550px, which is why the phone layout stacks instead of shrinking them. */
+export const COLUMNS = 'minmax(0,1fr) 92px 150px 132px 144px'
 
 /* The same again in a folder that has asked for film details, where a video
    row carries one control more. The column grows by exactly one button rather
-   than the three already there being crowded together — and it grows for the
+   than the ones already there being crowded together — and it grows for the
    whole table, because a heading has to sit over the column it names. */
-export const FILM_COLUMNS = 'minmax(0,1fr) 92px 150px 132px 144px'
+export const FILM_COLUMNS = 'minmax(0,1fr) 92px 150px 132px 180px'
 
 /* Everything a file row or tile can do, and every dialog it can open.
 
@@ -41,6 +43,7 @@ export function useFileActions({ file, providers, film, onPreview, onInspect, on
   const [streaming, setStreaming] = useState(null)
   const [converting, setConverting] = useState(null)
   const [relocating, setRelocating] = useState(false)
+  const [moving, setMoving] = useState(false)
 
   /* A file stored before chunked storage existed. It cannot be read at an
      offset, so nothing opens or streams it until it has been converted — the
@@ -142,6 +145,16 @@ export function useFileActions({ file, providers, film, onPreview, onInspect, on
               hint: `${file.shards.length} of 3 parts stored`,
               onSelect: onInspect,
             },
+            /* The two moves, next to each other and named for what they move
+               it onto. This one is free and instant whatever the file weighs;
+               the one under it copies bytes between clouds. */
+            {
+              key: 'move',
+              glyph: '→',
+              label: 'Move to another folder',
+              hint: 'Only the index changes — the parts stay on the same clouds',
+              onSelect: () => setMoving(true),
+            },
             {
               key: 'relocate',
               glyph: '⇄',
@@ -201,6 +214,14 @@ export function useFileActions({ file, providers, film, onPreview, onInspect, on
           onDone={onRefresh}
         />
       )}
+
+      {moving && (
+        <MoveToFolder
+          items={[{ kind: 'file', name: file.name, file }]}
+          onClose={() => setMoving(false)}
+          onDone={onRefresh}
+        />
+      )}
     </>
   )
 
@@ -211,6 +232,7 @@ export function useFileActions({ file, providers, film, onPreview, onInspect, on
     stream: (mode) => setStreaming(mode),
     confirmDelete: () => setConfirming(true),
     relocate: () => setRelocating(true),
+    moveTo: () => setMoving(true),
   }
 }
 
@@ -526,10 +548,18 @@ export function FileRow({
         disabled={a.downloading}
         onClick={() => a.download(file)}
       />
-      {/* Moving the parts to other clouds would be a fourth control here, and
-          there is room for three. It lives in the parts inspector instead —
-          one click away through the badges, and beside the read-out of where
-          they are now, which is the question it answers. */}
+      {/* Moving it to another folder, which every row carries for the same
+          reason it carries Delete: it is something you do to a file wherever
+          you happen to be looking at it, and it costs nothing to do.
+          Moving the *parts* to other clouds is the other question and lives in
+          the parts inspector, one click away through the badges — beside the
+          read-out of where they are now, which is what it answers. */}
+      <IconButton
+        glyph="→"
+        label={`Move ${file.name} to another folder`}
+        title="Move it into another folder — the parts stay exactly where they are"
+        onClick={a.moveTo}
+      />
       <IconButton
         glyph={a.busy ? '…' : '✕'}
         label="Delete everywhere"
@@ -617,10 +647,12 @@ export function FileRow({
 /* Everything a folder row or tile can do. Far shorter than a file's, because a
    folder is a name in the index rather than something stored: it can be walked
    into, moved onto other clouds wholesale, or deleted with what is inside it. */
-function useFolderActions({ name, path, providers, onNavigate, onRefresh, onError }) {
+function useFolderActions({ name, path, art, providers, onNavigate, onRefresh, onError }) {
   const [menu, setMenu] = useState(false)
   const [confirming, setConfirming] = useState(false)
   const [relocating, setRelocating] = useState(false)
+  const [moving, setMoving] = useState(false)
+  const [picturing, setPicturing] = useState(false)
   const [busy, setBusy] = useState(false)
 
   const open = () => onNavigate(path)
@@ -649,6 +681,25 @@ function useFolderActions({ name, path, providers, onNavigate, onRefresh, onErro
           onClose={() => setMenu(false)}
           items={[
             { key: 'open', glyph: '▸', label: 'Open folder', onSelect: open },
+            /* Only where there is a picture to change. A folder with nothing
+               picturable inside it has nothing to offer, and the entry would
+               open a dialog whose whole content is an apology. */
+            art && {
+              key: 'art',
+              glyph: '🖼',
+              label: 'Folder picture',
+              hint: art.chosen
+                ? 'Drawn with the one you picked — pick another, or hand it back'
+                : 'Drawn with one of the pictures inside it — pick which',
+              onSelect: () => setPicturing(true),
+            },
+            {
+              key: 'move',
+              glyph: '→',
+              label: 'Move to another folder',
+              hint: 'It takes everything inside it, and nothing is transferred',
+              onSelect: () => setMoving(true),
+            },
             {
               key: 'relocate',
               glyph: '⇄',
@@ -696,6 +747,23 @@ function useFolderActions({ name, path, providers, onNavigate, onRefresh, onErro
           onDone={onRefresh}
         />
       )}
+
+      {moving && (
+        <MoveToFolder
+          items={[{ kind: 'folder', name, path }]}
+          onClose={() => setMoving(false)}
+          onDone={onRefresh}
+        />
+      )}
+
+      {picturing && (
+        <FolderArtPicker
+          path={path}
+          name={name}
+          onClose={() => setPicturing(false)}
+          onDone={onRefresh}
+        />
+      )}
     </>
   )
 
@@ -705,21 +773,34 @@ function useFolderActions({ name, path, providers, onNavigate, onRefresh, onErro
     openMenu: () => setMenu(true),
     confirmDelete: () => setConfirming(true),
     relocate: () => setRelocating(true),
+    moveTo: () => setMoving(true),
+    pickArt: () => setPicturing(true),
   }
 }
 
 export function FolderRow({
-  name, path, location, mobile, providers, columns, selecting, selected,
+  name, path, location, art, mobile, providers, columns, selecting, selected,
   onSelect, onNavigate, onRefresh, onError,
 }) {
-  const a = useFolderActions({ name, path, providers, onNavigate, onRefresh, onError })
+  const a = useFolderActions({ name, path, art, providers, onNavigate, onRefresh, onError })
 
   const check = selecting && (
     <SelectBox mobile={mobile} checked={selected} label={`Select ${name}`} onChange={onSelect} />
   )
 
   const nameButton = (
-    <NameButton mobile={mobile} icon="📁" label={name} location={location} chevron="▸" title="Open folder" onClick={a.open} />
+    <NameButton
+      mobile={mobile}
+      /* The picture of something inside it, where the icon was — the same
+         swap a file's row made when thumbnails arrived, and the same fall
+         back to the icon when there is nothing to draw. */
+      icon={<Thumb id={art?.id} icon="📁" size={mobile ? 34 : 26} expected={!!art} />}
+      label={name}
+      location={location}
+      chevron="▸"
+      title="Open folder"
+      onClick={a.open}
+    />
   )
 
   const actions = mobile ? (
@@ -732,6 +813,23 @@ export function FolderRow({
     />
   ) : (
     <span style={{ display: 'flex', gap: '2px', justifyContent: 'flex-end' }}>
+      {/* Only where there is a picture to change: no picture means nothing
+          inside has one, and so there is nothing to choose between. */}
+      {art && (
+        <IconButton
+          glyph="🖼"
+          label={`Choose the picture for ${name}`}
+          title="Which of the pictures inside it this folder is drawn with"
+          onClick={a.pickArt}
+          style={{ fontSize: '13px' }}
+        />
+      )}
+      <IconButton
+        glyph="→"
+        label={`Move ${name} to another folder`}
+        title="Move the folder, and everything in it, somewhere else in the vault"
+        onClick={a.moveTo}
+      />
       <IconButton
         glyph="⇄"
         label={`Move ${name} to other clouds`}
@@ -924,10 +1022,10 @@ export function FileTile({
 }
 
 export function FolderTile({
-  name, path, location, mobile, providers, aspect = TILE_SQUARE, selecting, selected,
+  name, path, location, art, mobile, providers, aspect = TILE_SQUARE, selecting, selected,
   onSelect, onNavigate, onRefresh, onError,
 }) {
-  const a = useFolderActions({ name, path, providers, onNavigate, onRefresh, onError })
+  const a = useFolderActions({ name, path, art, providers, onNavigate, onRefresh, onError })
 
   return (
     <Tile
@@ -951,11 +1049,15 @@ export function FolderTile({
       )}
     >
       <TileFace onClick={a.open} title="Open folder">
+        {/* The whole point of the tile: a folder of films drawn as one of its
+            posters rather than as the same 📁 as every other folder. */}
         <span style={{
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          width: '100%', aspectRatio: aspect, fontSize: '34px',
+          width: '100%', aspectRatio: aspect, overflow: 'hidden', fontSize: '34px',
           background: COLORS.bg, borderBottom: `1px solid ${COLORS.border}`,
-        }}>📁</span>
+        }}>
+          <Thumb id={art?.id} icon="📁" expected={!!art} fill />
+        </span>
         <TileCaption name={name} location={location} meta={<span>Folder</span>} />
       </TileFace>
       {a.dialogs}
