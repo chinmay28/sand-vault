@@ -88,6 +88,18 @@ export default function PreviewModal({ file, hasThumb, film, onClose, onThumbSto
     return () => { cancelled = true }
   }, [url, kind])
 
+  /* The three under the poster. Narrower than the toolbar's buttons because
+     the column is, and shorter than the 44px floor a lone control gets: three
+     stacked targets with nothing else near them are not the mis-tap that floor
+     exists to prevent. */
+  const action = { width: '100%', justifyContent: 'center', minHeight: '38px', padding: '6px 8px' }
+
+  // Whether the film is what the preview is showing, which decides where the
+  // controls live.
+  const filmShown = kind === 'video' && !!record && !playing
+
+  const accounts = new Set(file.shards.map((s) => s.provider_id)).size
+
   /* A file uploaded before thumbnails existed — or from the command line —
      has no picture in the list. Opening it has just rebuilt and decoded the
      whole thing on screen, so taking one now costs nothing but a canvas: no
@@ -114,9 +126,15 @@ export default function PreviewModal({ file, hasThumb, film, onClose, onThumbSto
   return (
     <Modal
       title={filmLabel(record || film) || file.name}
+      /* Where the film has taken the title, the file name comes here — and the
+         line about the parts gets shorter on a phone, where the two of them
+         together were three lines of header in front of a dialog trying to fit
+         on one screen. It says the same thing either way. */
       subtitle={[
         film ? file.name : null,
-        `${formatBytes(file.size)} · rebuilt from ${file.shards.length} part${file.shards.length === 1 ? '' : 's'} across ${new Set(file.shards.map((s) => s.provider_id)).size} account(s)`,
+        mobile
+          ? `${formatBytes(file.size)} · ${file.shards.length} part${file.shards.length === 1 ? '' : 's'} · ${accounts} cloud${accounts === 1 ? '' : 's'}`
+          : `${formatBytes(file.size)} · rebuilt from ${file.shards.length} part${file.shards.length === 1 ? '' : 's'} across ${accounts} account(s)`,
       ].filter(Boolean).join(' · ')}
       onClose={onClose}
       width={920}
@@ -145,21 +163,41 @@ export default function PreviewModal({ file, hasThumb, film, onClose, onThumbSto
         )}
 
         {!error && kind === 'video' && (record && !playing ? (
-          <div style={{ width: '100%', padding: mobile ? '14px' : '18px', boxSizing: 'border-box' }}>
+          <div style={{ width: '100%', padding: mobile ? '12px' : '18px', boxSizing: 'border-box' }}>
             <FilmSummary
               film={record}
               fileId={file.id}
               mobile={mobile}
-              /* Enough of the summary to know what it is, while leaving the
-                 play button somewhere a thumb can reach without scrolling.
-                 The details view shows all of it. */
+              /* Enough of the summary to know what it is, without pushing the
+                 rest of the dialog off a phone. The details view, which has the
+                 screen to itself, shows all of it. */
               clamp={mobile ? 6 : 0}
+              /* Into the gap under the poster rather than onto rows of their
+                 own. Everything a film is worth doing is here, so the footer
+                 keeps only the one action that is about the file rather than
+                 the film. */
+              actions={(
+                <>
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    onClick={() => setPlaying(true)}
+                    title="Play it in this page"
+                    style={action}
+                  >▶ Play</Button>
+                  {/* Terse on a phone because the column is 112px wide, and
+                      spelled out on a desk because there it is 150px and there
+                      is no reason to abbreviate. */}
+                  <Button
+                    size="sm"
+                    onClick={() => setStreaming('play')}
+                    title="Open it in VLC, or copy the address"
+                    style={action}
+                  >{mobile ? '▶ VLC' : '▶ Stream in VLC'}</Button>
+                  <Button size="sm" variant="ghost" onClick={onClose} style={action}>Close</Button>
+                </>
+              )}
             />
-            <Button
-              variant="primary"
-              onClick={() => setPlaying(true)}
-              style={{ marginTop: '14px', width: '100%', justifyContent: 'center' }}
-            >▶ Play here</Button>
           </div>
         ) : (
           <video
@@ -244,17 +282,23 @@ export default function PreviewModal({ file, hasThumb, film, onClose, onThumbSto
       )}
 
       <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
-        <Button variant="ghost" onClick={onClose}
-          style={mobile ? { flex: 1, justifyContent: 'center' } : null}>Close</Button>
+        {/* Close and the player are under the poster when there is one, so
+            repeating them here would be two rows of the same three buttons. */}
+        {!filmShown && (
+          <Button variant="ghost" onClick={onClose}
+            style={mobile ? { flex: 1, justifyContent: 'center' } : null}>Close</Button>
+        )}
         {/* A player for the files a player is for; for everything else the
             same dialog, opened for the address it is really wanted for. */}
-        <Button
-          onClick={() => setStreaming(playable ? 'play' : 'link')}
-          title={playable
-            ? 'Open this in VLC, or copy the address'
-            : 'A link any player or app can open'}
-          style={mobile ? { flex: 1, justifyContent: 'center' } : null}
-        >{playable ? '▶ Stream in VLC' : '⧉ Copy the address'}</Button>
+        {!filmShown && (
+          <Button
+            onClick={() => setStreaming(playable ? 'play' : 'link')}
+            title={playable
+              ? 'Open this in VLC, or copy the address'
+              : 'A link any player or app can open'}
+            style={mobile ? { flex: 1, justifyContent: 'center' } : null}
+          >{playable ? '▶ Stream in VLC' : '⧉ Copy the address'}</Button>
+        )}
         <Button
           variant="primary"
           onClick={() => download(file)}
