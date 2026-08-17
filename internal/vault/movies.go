@@ -103,18 +103,20 @@ func (l MovieLookup) Inherited(dir string) bool {
 
 // MovieLookupFor reports whether a folder's videos are matched against the film
 // database, and which folder says so. It answers out of the index alone.
-func (v *Vault) MovieLookupFor(dir string) MovieLookup {
+func (v *Vault) MovieLookupFor(scope Scope, dir string) MovieLookup {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
-	if v.dataKey == nil {
+
+	m, err := v.manifestForLocked(scope)
+	if err != nil {
 		return MovieLookup{}
 	}
-	return v.movieLookupLocked(CleanDir(dir))
+	return v.movieLookupLocked(m, CleanDir(dir))
 }
 
 // movieLookupLocked walks from the folder up to the root looking for the
 // nearest setting. The caller must hold at least the read lock.
-func (v *Vault) movieLookupLocked(dir string) MovieLookup {
+func (v *Vault) movieLookupLocked(m *Manifest, dir string) MovieLookup {
 	if len(v.manifest.MovieFolders) == 0 {
 		return MovieLookup{}
 	}
@@ -277,7 +279,7 @@ func (v *Vault) ForgetMovie(id string) error {
 
 // movieBriefsForLocked collects the titles of whichever entries have been
 // matched. The caller must hold at least the read lock.
-func (v *Vault) movieBriefsForLocked(entries []*Entry) map[string]MovieBrief {
+func (v *Vault) movieBriefsForLocked(m *Manifest, entries []*Entry) map[string]MovieBrief {
 	if len(v.manifest.Movies) == 0 {
 		return nil
 	}

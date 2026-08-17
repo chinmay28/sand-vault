@@ -21,6 +21,18 @@ func contextWithTimeout(r *http.Request, d time.Duration) (context.Context, cont
 	return context.WithTimeout(r.Context(), d)
 }
 
+// requestScope reads which of the vaults inside the file a request is aimed at.
+//
+// Only the endpoints that address something by path need it — a listing, a
+// search, an upload, a folder. Everything addressed by file ID does not, and
+// deliberately: an ID is unique across every vault, so the vault resolves it
+// against whatever is open and a file inside a shut sub vault is simply not
+// found. That is what keeps reading, moving, deleting, streaming and
+// thumbnailing a file exactly the requests they were before sub vaults existed.
+func requestScope(r *http.Request) vault.Scope {
+	return vault.Scope(r.URL.Query().Get("vault"))
+}
+
 func (s *Server) handleFilesList(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Query().Get("path")
 	if path == "" {
@@ -28,7 +40,7 @@ func (s *Server) handleFilesList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	v, _ := s.Vault()
-	listing, err := v.List(path)
+	listing, err := v.List(requestScope(r), path)
 	if err != nil {
 		vaultErrorResponse(w, err)
 		return
@@ -54,6 +66,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 	v, _ := s.Vault()
 	results, err := v.Search(vault.SearchOptions{
+		Vault: requestScope(r),
 		Query: query.Get("q"),
 		Dir:   query.Get("path"),
 		Kind:  vault.SearchKind(query.Get("type")),
@@ -107,6 +120,7 @@ func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.MultipartForm.RemoveAll()
 
+	scope := requestScope(r)
 	dir := r.FormValue("path")
 	if dir == "" {
 		dir = "/"
@@ -143,7 +157,7 @@ func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 		// UploadStreamAt rather than UploadStream because the parser has already
 		// spilled anything large to disk, and spooling it again would write the
 		// film twice.
-		entry, warnings, err := v.UploadStreamAt(ctx, dir, fh.Filename, f, fh.Size, vault.UploadOptions{
+		entry, warnings, err := v.UploadStreamAt(ctx, scope, dir, fh.Filename, f, fh.Size, vault.UploadOptions{
 			Overwrite: overwrite,
 			Accounts:  accounts,
 		})
@@ -347,6 +361,11 @@ type relocateRequest struct {
 	// comes out of the index alone, so it costs nothing and no account is
 	// contacted.
 	Preview bool `json:"preview"`
+
+	// Vault names which of the vaults inside the file the target is in. Empty
+	// is the main vault. It is needed because a relocation can be aimed at a
+	// path, and two vaults can each have one of the same name.
+	Vault string `json:"vault,omitempty"`
 }
 
 // relocateTimeout is the ceiling on one relocation request.
@@ -381,7 +400,7 @@ func (s *Server) handleRelocate(w http.ResponseWriter, r *http.Request) {
 	v, _ := s.Vault()
 
 	if req.Preview {
-		plan, err := v.PlanRelocation(target, req.Accounts)
+		plan, err := v.PlanRelocation(vault.Scope(req.Vault), target, req.Accounts)
 		if err != nil {
 			vaultErrorResponse(w, err)
 			return
@@ -393,7 +412,7 @@ func (s *Server) handleRelocate(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := contextWithTimeout(r, relocateTimeout)
 	defer cancel()
 
-	report, err := v.Relocate(ctx, target, req.Accounts, nil)
+	report, err := v.Relocate(ctx, vault.Scope(req.Vault), target, req.Accounts, nil)
 	if err != nil {
 		vaultErrorResponse(w, err)
 		return
@@ -486,6 +505,10 @@ func isRiskyInline(contentType string) bool {
 
 type folderRequest struct {
 	Path string `json:"path"`
+
+	// Vault names which of the vaults inside the file the folder belongs to.
+	// Empty is the main vault.
+	Vault string `json:"vault,omitempty"`
 }
 
 // handleFoldersList hands back every folder in the vault at once.
@@ -497,7 +520,7 @@ type folderRequest struct {
 // no file names and no placements — folder paths and nothing else.
 func (s *Server) handleFoldersList(w http.ResponseWriter, r *http.Request) {
 	v, _ := s.Vault()
-	folders, err := v.Folders()
+	folders, err := v.Folders(requestScope(r))
 	if err != nil {
 		vaultErrorResponse(w, err)
 		return
@@ -513,7 +536,7 @@ func (s *Server) handleFolderCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	v, _ := s.Vault()
-	if err := v.Mkdir(req.Path); err != nil {
+	if err := v.Mkdir(vault.Scope(req.Vault), req.Path); err != nil {
 		vaultErrorResponse(w, err)
 		return
 	}
@@ -525,6 +548,10 @@ func (s *Server) handleFolderCreate(w http.ResponseWriter, r *http.Request) {
 type folderArtRequest struct {
 	Path string `json:"path"`
 	ID   string `json:"id"`
+
+	// Vault names which of the vaults inside the file the folder is in. Empty
+	// is the main vault.
+	Vault string `json:"vault,omitempty"`
 }
 
 // handleFolderArt answers what a folder is drawn with — nothing, until somebody
@@ -541,7 +568,7 @@ func (s *Server) handleFolderArt(w http.ResponseWriter, r *http.Request) {
 	}
 
 	v, _ := s.Vault()
-	choices, truncated, err := v.FolderArtChoices(dir)
+	choices, truncated, err := v.FolderArtChoices(requestScope(r), dir)
 	if err != nil {
 		vaultErrorResponse(w, err)
 		return
@@ -555,7 +582,7 @@ func (s *Server) handleFolderArt(w http.ResponseWriter, r *http.Request) {
 		"candidates": choices,
 		"truncated":  truncated,
 	}
-	if art, ok := v.FolderArtFor(dir); ok {
+	if art, ok := v.FolderArtFor(requestScope(r), dir); ok {
 		body["art"] = art
 	}
 	writeJSON(w, http.StatusOK, body)
@@ -575,7 +602,7 @@ func (s *Server) handleFolderArtSet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	v, _ := s.Vault()
-	art, err := v.SetFolderArt(req.Path, req.ID)
+	art, err := v.SetFolderArt(vault.Scope(req.Vault), req.Path, req.ID)
 	if err != nil {
 		vaultErrorResponse(w, err)
 		return
@@ -593,6 +620,11 @@ func (s *Server) handleFolderArtSet(w http.ResponseWriter, r *http.Request) {
 type folderMoveRequest struct {
 	From string `json:"from"`
 	To   string `json:"to"`
+
+	// Vault names which of the vaults inside the file the folder is in. A move
+	// stays inside one tree — crossing between them is an assignment, which
+	// re-encrypts. Empty is the main vault.
+	Vault string `json:"vault,omitempty"`
 }
 
 // handleFolderMove moves a folder and everything beneath it to another path.
@@ -618,7 +650,7 @@ func (s *Server) handleFolderMove(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	v, _ := s.Vault()
-	if err := v.MoveFolder(ctx, req.From, req.To); err != nil {
+	if err := v.MoveFolder(ctx, vault.Scope(req.Vault), req.From, req.To); err != nil {
 		vaultErrorResponse(w, err)
 		return
 	}
@@ -636,7 +668,7 @@ func (s *Server) handleFolderDelete(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	v, _ := s.Vault()
-	warnings, err := v.Rmdir(ctx, path, recursive)
+	warnings, err := v.Rmdir(ctx, requestScope(r), path, recursive)
 	if err != nil {
 		vaultErrorResponse(w, err)
 		return

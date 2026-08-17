@@ -34,7 +34,7 @@ func holders(e *Entry) map[string]bool {
 func TestUploadUsesThreeOfManyAccounts(t *testing.T) {
 	v, _ := newTestVault(t, 6)
 
-	entry, _, err := v.Upload(context.Background(), "/", "spread.bin", []byte("payload"), UploadOptions{})
+	entry, _, err := v.Upload(context.Background(), MainScope, "/", "spread.bin", []byte("payload"), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestUploadsWithoutADefaultSpreadOverEveryAccount(t *testing.T) {
 
 	used := map[string]bool{}
 	for i := 0; i < 12; i++ {
-		entry, _, err := v.Upload(context.Background(), "/", fmt.Sprintf("f%d.bin", i), []byte("x"), UploadOptions{})
+		entry, _, err := v.Upload(context.Background(), MainScope, "/", fmt.Sprintf("f%d.bin", i), []byte("x"), UploadOptions{})
 		if err != nil {
 			t.Fatalf("Upload %d: %v", i, err)
 		}
@@ -68,7 +68,7 @@ func TestUploadHonoursChosenAccounts(t *testing.T) {
 	ids := accountIDs(t, v)
 	chosen := []string{ids[4], ids[1], ids[3]}
 
-	entry, warnings, err := v.Upload(context.Background(), "/", "picked.txt", []byte("payload"),
+	entry, warnings, err := v.Upload(context.Background(), MainScope, "/", "picked.txt", []byte("payload"),
 		UploadOptions{Accounts: chosen})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
@@ -95,7 +95,7 @@ func TestUploadHonoursTwoChosenAccountsExactly(t *testing.T) {
 	ids := accountIDs(t, v)
 	chosen := []string{ids[0], ids[2]}
 
-	entry, warnings, err := v.Upload(context.Background(), "/", "pair.txt", []byte("payload"),
+	entry, warnings, err := v.Upload(context.Background(), MainScope, "/", "pair.txt", []byte("payload"),
 		UploadOptions{Accounts: chosen})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
@@ -125,7 +125,7 @@ func TestUploadHonoursTwoChosenAccountsExactly(t *testing.T) {
 func TestUploadRejectsAnAccountThatIsNotConnected(t *testing.T) {
 	v, _ := newTestVault(t, 3)
 
-	_, _, err := v.Upload(context.Background(), "/", "nowhere.txt", []byte("x"),
+	_, _, err := v.Upload(context.Background(), MainScope, "/", "nowhere.txt", []byte("x"),
 		UploadOptions{Accounts: []string{"00000000-0000-0000-0000-000000000000"}})
 	if err == nil {
 		t.Fatal("expected an upload naming an unknown account to be refused")
@@ -139,7 +139,7 @@ func TestUploadRejectsMoreAccountsThanParts(t *testing.T) {
 	v, _ := newTestVault(t, 5)
 	ids := accountIDs(t, v)
 
-	_, _, err := v.Upload(context.Background(), "/", "greedy.txt", []byte("x"),
+	_, _, err := v.Upload(context.Background(), MainScope, "/", "greedy.txt", []byte("x"),
 		UploadOptions{Accounts: ids[:4]})
 	if err == nil {
 		t.Fatal("expected choosing four accounts for a three-part file to be refused")
@@ -159,7 +159,7 @@ func TestDefaultAccountsApplyToEveryUpload(t *testing.T) {
 	}
 
 	for i := 0; i < 4; i++ {
-		entry, _, err := v.Upload(context.Background(), "/", fmt.Sprintf("d%d.txt", i), []byte("x"), UploadOptions{})
+		entry, _, err := v.Upload(context.Background(), MainScope, "/", fmt.Sprintf("d%d.txt", i), []byte("x"), UploadOptions{})
 		if err != nil {
 			t.Fatalf("Upload %d: %v", i, err)
 		}
@@ -180,7 +180,7 @@ func TestChosenAccountsOverrideTheDefault(t *testing.T) {
 		t.Fatalf("SetDefaultAccounts: %v", err)
 	}
 
-	entry, _, err := v.Upload(context.Background(), "/", "elsewhere.txt", []byte("x"),
+	entry, _, err := v.Upload(context.Background(), MainScope, "/", "elsewhere.txt", []byte("x"),
 		UploadOptions{Accounts: []string{ids[3], ids[4], ids[5]}})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
@@ -192,7 +192,7 @@ func TestChosenAccountsOverrideTheDefault(t *testing.T) {
 	}
 
 	// The default is untouched, so the next upload goes back to it.
-	next, _, err := v.Upload(context.Background(), "/", "back.txt", []byte("x"), UploadOptions{})
+	next, _, err := v.Upload(context.Background(), MainScope, "/", "back.txt", []byte("x"), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestATwoAccountDefaultIsNotWidened(t *testing.T) {
 		t.Fatalf("SetDefaultAccounts: %v", err)
 	}
 
-	entry, warnings, err := v.Upload(context.Background(), "/", "narrow.txt", []byte("x"), UploadOptions{})
+	entry, warnings, err := v.Upload(context.Background(), MainScope, "/", "narrow.txt", []byte("x"), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -294,7 +294,7 @@ func TestDisconnectingAnAccountDropsItFromTheDefault(t *testing.T) {
 	}
 
 	// And what is left is still a usable default rather than a broken one.
-	entry, _, err := v.Upload(context.Background(), "/", "after.txt", []byte("x"), UploadOptions{})
+	entry, _, err := v.Upload(context.Background(), MainScope, "/", "after.txt", []byte("x"), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -328,7 +328,7 @@ func TestMigrationKeepsAFileOnItsOwnAccounts(t *testing.T) {
 	ctx := context.Background()
 	ids := accountIDs(t, v)
 
-	entry, _, err := v.Upload(ctx, "/", "pinned.txt", []byte("stays put"),
+	entry, _, err := v.Upload(ctx, MainScope, "/", "pinned.txt", []byte("stays put"),
 		UploadOptions{Accounts: []string{ids[1], ids[2], ids[4]}})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)

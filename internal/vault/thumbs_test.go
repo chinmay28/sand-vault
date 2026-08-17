@@ -25,7 +25,7 @@ func TestThumbRoundTrip(t *testing.T) {
 	v, _ := newTestVault(t, 3)
 	ctx := context.Background()
 
-	entry, _, err := v.Upload(ctx, "/", "photo.jpg", []byte("not really a photo"), UploadOptions{})
+	entry, _, err := v.Upload(ctx, MainScope, "/", "photo.jpg", []byte("not really a photo"), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -44,11 +44,11 @@ func TestThumbRoundTrip(t *testing.T) {
 		t.Errorf("Thumb = %q, want %q", got, want)
 	}
 
-	if ids := v.ThumbIDs("/"); len(ids) != 1 || ids[0] != entry.ID {
+	if ids := v.ThumbIDs(MainScope, "/"); len(ids) != 1 || ids[0] != entry.ID {
 		t.Errorf("ThumbIDs = %v, want [%s]", ids, entry.ID)
 	}
 
-	listing, err := v.List("/")
+	listing, err := v.List(MainScope, "/")
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestThumbSurvivesLockAndUnlock(t *testing.T) {
 	v, _ := newTestVault(t, 3)
 	ctx := context.Background()
 
-	entry, _, err := v.Upload(ctx, "/", "photo.jpg", []byte("not really a photo"), UploadOptions{})
+	entry, _, err := v.Upload(ctx, MainScope, "/", "photo.jpg", []byte("not really a photo"), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestThumbPackHoldsTheWholeFolder(t *testing.T) {
 
 	ids := map[string][]byte{}
 	for i := 0; i < 4; i++ {
-		entry, _, err := v.Upload(ctx, "/", fmt.Sprintf("photo-%d.jpg", i), []byte("x"), UploadOptions{})
+		entry, _, err := v.Upload(ctx, MainScope, "/", fmt.Sprintf("photo-%d.jpg", i), []byte("x"), UploadOptions{})
 		if err != nil {
 			t.Fatalf("Upload %d: %v", i, err)
 		}
@@ -125,11 +125,11 @@ func TestDeleteDropsTheThumbnail(t *testing.T) {
 	v, _ := newTestVault(t, 3)
 	ctx := context.Background()
 
-	keep, _, err := v.Upload(ctx, "/", "keep.jpg", []byte("x"), UploadOptions{})
+	keep, _, err := v.Upload(ctx, MainScope, "/", "keep.jpg", []byte("x"), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
-	doomed, _, err := v.Upload(ctx, "/", "doomed.jpg", []byte("y"), UploadOptions{})
+	doomed, _, err := v.Upload(ctx, MainScope, "/", "doomed.jpg", []byte("y"), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestDeleteDropsTheThumbnail(t *testing.T) {
 	if _, err := v.Thumb(ctx, keep.ID); err != nil {
 		t.Errorf("deleting one file cost another its thumbnail: %v", err)
 	}
-	if ids := v.ThumbIDs("/"); len(ids) != 1 || ids[0] != keep.ID {
+	if ids := v.ThumbIDs(MainScope, "/"); len(ids) != 1 || ids[0] != keep.ID {
 		t.Errorf("ThumbIDs = %v, want [%s]", ids, keep.ID)
 	}
 }
@@ -155,13 +155,13 @@ func TestMoveCarriesTheThumbnail(t *testing.T) {
 	v, _ := newTestVault(t, 3)
 	ctx := context.Background()
 
-	entry, _, err := v.Upload(ctx, "/", "photo.jpg", []byte("x"), UploadOptions{})
+	entry, _, err := v.Upload(ctx, MainScope, "/", "photo.jpg", []byte("x"), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 	want := storeThumb(t, v, entry.ID, "thumbnail-bytes")
 
-	if err := v.Mkdir("/album"); err != nil {
+	if err := v.Mkdir(MainScope, "/album"); err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
 	if _, err := v.Move(ctx, entry.ID, "/album", ""); err != nil {
@@ -175,10 +175,10 @@ func TestMoveCarriesTheThumbnail(t *testing.T) {
 	if !bytes.Equal(got, want) {
 		t.Errorf("Thumb = %q, want %q", got, want)
 	}
-	if ids := v.ThumbIDs("/"); len(ids) != 0 {
+	if ids := v.ThumbIDs(MainScope, "/"); len(ids) != 0 {
 		t.Errorf("the old folder still lists %v", ids)
 	}
-	if ids := v.ThumbIDs("/album"); len(ids) != 1 || ids[0] != entry.ID {
+	if ids := v.ThumbIDs(MainScope, "/album"); len(ids) != 1 || ids[0] != entry.ID {
 		t.Errorf("ThumbIDs(/album) = %v, want [%s]", ids, entry.ID)
 	}
 }
@@ -187,16 +187,16 @@ func TestRmdirDropsThePack(t *testing.T) {
 	v, _ := newTestVault(t, 3)
 	ctx := context.Background()
 
-	if err := v.Mkdir("/album/summer"); err != nil {
+	if err := v.Mkdir(MainScope, "/album/summer"); err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
-	entry, _, err := v.Upload(ctx, "/album/summer", "photo.jpg", []byte("x"), UploadOptions{})
+	entry, _, err := v.Upload(ctx, MainScope, "/album/summer", "photo.jpg", []byte("x"), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 	storeThumb(t, v, entry.ID, "thumbnail-bytes")
 
-	if _, err := v.Rmdir(ctx, "/album", true); err != nil {
+	if _, err := v.Rmdir(ctx, MainScope, "/album", true); err != nil {
 		t.Fatalf("Rmdir: %v", err)
 	}
 
@@ -216,7 +216,7 @@ func TestChangePasswordDropsThumbnails(t *testing.T) {
 	v, _ := newTestVault(t, 3)
 	ctx := context.Background()
 
-	entry, _, err := v.Upload(ctx, "/", "photo.jpg", []byte("x"), UploadOptions{})
+	entry, _, err := v.Upload(ctx, MainScope, "/", "photo.jpg", []byte("x"), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestChangePasswordDropsThumbnails(t *testing.T) {
 		t.Fatalf("ChangePassword: %v", err)
 	}
 
-	if ids := v.ThumbIDs("/"); len(ids) != 0 {
+	if ids := v.ThumbIDs(MainScope, "/"); len(ids) != 0 {
 		t.Errorf("ThumbIDs = %v, want none after a password change", ids)
 	}
 	if _, err := v.Thumb(ctx, entry.ID); !errors.Is(err, ErrNoThumb) {
@@ -254,7 +254,7 @@ func TestSetThumbRejectsOversized(t *testing.T) {
 	v, _ := newTestVault(t, 3)
 	ctx := context.Background()
 
-	entry, _, err := v.Upload(ctx, "/", "photo.jpg", []byte("x"), UploadOptions{})
+	entry, _, err := v.Upload(ctx, MainScope, "/", "photo.jpg", []byte("x"), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}

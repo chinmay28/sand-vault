@@ -108,6 +108,10 @@ type FilePlan struct {
 	// underneath the move — by a password change's re-encryption, say.
 	archiveID  string
 	chunkCount int
+
+	// vault is which of the vaults inside the file this row came from, carried
+	// so that committing the move writes back to the index it was read from.
+	vault Scope
 }
 
 // Changed reports whether this file would be touched at all.
@@ -116,6 +120,11 @@ func (p *FilePlan) Changed() bool { return p.Recode || len(p.Moves) > 0 || len(p
 // RelocationPlan is what a relocation would do, worked out from the index alone
 // — no account is contacted to produce it.
 type RelocationPlan struct {
+	// Vault names which of the vaults inside the file this relocation is in.
+	// Moving parts between accounts never crosses that boundary — it is a
+	// question about storage, asked and answered inside one tree.
+	Vault Scope `json:"vault,omitempty"`
+
 	// Path is what the relocation was pointed at, and Folder says whether that
 	// turned out to be a folder rather than a single file.
 	Path   string `json:"path"`
@@ -192,8 +201,8 @@ func (r *RelocationReport) Done() bool {
 // what each one weighs, and which of them the chosen accounts already hold. It
 // is what lets the question "move this folder off Dropbox" be answered with
 // "4 of 37 parts, 1.2 GB" before anything starts moving.
-func (v *Vault) PlanRelocation(target string, accounts []string) (*RelocationPlan, error) {
-	plan, err := v.planRelocation(target, accounts)
+func (v *Vault) PlanRelocation(scope Scope, target string, accounts []string) (*RelocationPlan, error) {
+	plan, err := v.planRelocation(scope, target, accounts)
 	if err != nil {
 		return nil, err
 	}
@@ -206,8 +215,8 @@ func (v *Vault) PlanRelocation(target string, accounts []string) (*RelocationPla
 
 // planRelocation is PlanRelocation with every file's row kept, which is what
 // the relocation itself walks.
-func (v *Vault) planRelocation(target string, accounts []string) (*RelocationPlan, error) {
-	entries, dir, folder, err := v.relocationScope(target)
+func (v *Vault) planRelocation(scope Scope, target string, accounts []string) (*RelocationPlan, error) {
+	entries, dir, folder, err := v.relocationScope(scope, target)
 	if err != nil {
 		return nil, err
 	}
@@ -243,6 +252,7 @@ func (v *Vault) planRelocation(target string, accounts []string) (*RelocationPla
 	}
 
 	plan := &RelocationPlan{
+		Vault:    scope,
 		Path:     dir,
 		Folder:   folder,
 		Accounts: targets,
@@ -253,7 +263,7 @@ func (v *Vault) planRelocation(target string, accounts []string) (*RelocationPla
 	}
 
 	for _, entry := range entries {
-		fp := planFileRelocation(entry, targets, byID, capacity, want)
+		fp := planFileRelocation(scope, entry, targets, byID, capacity, want)
 		if !fp.Changed() {
 			plan.Unchanged++
 		}
@@ -302,8 +312,8 @@ func (v *Vault) planRelocation(target string, accounts []string) (*RelocationPla
 // repeat: running it again moves whatever is still not where it was asked to be.
 // A file whose account is offline is reported and left alone rather than holding
 // up the rest. progress may be nil.
-func (v *Vault) Relocate(ctx context.Context, target string, accounts []string, progress ProgressFunc) (*RelocationReport, error) {
-	plan, err := v.planRelocation(target, accounts)
+func (v *Vault) Relocate(ctx context.Context, scope Scope, target string, accounts []string, progress ProgressFunc) (*RelocationReport, error) {
+	plan, err := v.planRelocation(scope, target, accounts)
 	if err != nil {
 		return nil, err
 	}
@@ -417,8 +427,9 @@ func relocationCapacity(policy Policy, targets int) (int, error) {
 // That is expensive and is reported as its own thing rather than hidden among
 // the moves, because a person deciding whether to widen a vault should see the
 // bill before agreeing to it.
-func planFileRelocation(entry *Entry, targets []string, byID map[string]provider.Config, capacity int, want archive.Scheme) FilePlan {
+func planFileRelocation(scope Scope, entry *Entry, targets []string, byID map[string]provider.Config, capacity int, want archive.Scheme) FilePlan {
 	plan := FilePlan{
+		vault:      scope,
 		ID:         entry.ID,
 		Path:       entry.Path(),
 		Size:       entry.Size,
@@ -504,21 +515,22 @@ func planFileRelocation(entry *Entry, targets []string, byID map[string]provider
 // The entries are copies. Everything after this runs without the lock, and a
 // pointer into the live index would be rewritten underneath it by any other
 // upload.
-func (v *Vault) relocationScope(target string) ([]*Entry, string, bool, error) {
+func (v *Vault) relocationScope(scope Scope, target string) ([]*Entry, string, bool, error) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 
-	if v.dataKey == nil {
-		return nil, "", false, ErrLocked
+	m, err := v.manifestForLocked(scope)
+	if err != nil {
+		return nil, "", false, err
 	}
 
-	if e := v.manifest.ByID(target); e != nil {
+	if e := m.ByID(target); e != nil {
 		return []*Entry{copyEntry(e)}, e.Path(), false, nil
 	}
 
 	dir := CleanDir(target)
-	if v.manifest.FolderExists(dir) {
-		found := v.manifest.Descendants(dir)
+	if m.FolderExists(dir) {
+		found := m.Descendants(dir)
 		out := make([]*Entry, 0, len(found))
 		for _, e := range found {
 			out = append(out, copyEntry(e))
@@ -527,7 +539,7 @@ func (v *Vault) relocationScope(target string) ([]*Entry, string, bool, error) {
 		return out, dir, true, nil
 	}
 
-	if e := v.manifest.ByPath(dir); e != nil {
+	if e := m.ByPath(dir); e != nil {
 		return []*Entry{copyEntry(e)}, e.Path(), false, nil
 	}
 	return nil, "", false, fmt.Errorf("no such file or folder: %s", target)
@@ -566,7 +578,12 @@ func (v *Vault) relocateEntry(ctx context.Context, plan *FilePlan, accounts []st
 		v.mu.RUnlock()
 		return out, ErrLocked
 	}
-	entry := v.manifest.ByID(plan.ID)
+	m, err := v.manifestForLocked(plan.vault)
+	if err != nil {
+		v.mu.RUnlock()
+		return out, err
+	}
+	entry := m.ByID(plan.ID)
 	if entry == nil {
 		// Deleted since the plan was drawn; nothing to move.
 		v.mu.RUnlock()
@@ -629,7 +646,7 @@ func (v *Vault) relocateEntry(ctx context.Context, plan *FilePlan, accounts []st
 func (v *Vault) recodeEntry(ctx context.Context, plan *FilePlan, accounts []string) (relocateOutcome, error) {
 	var out relocateOutcome
 
-	_, _, warnings, err := v.migrateFile(ctx, plan.ID, accounts)
+	_, _, warnings, err := v.migrateFile(ctx, plan.vault, plan.ID, accounts)
 	out.warnings = append(out.warnings, warnings...)
 	if err != nil {
 		return out, err
@@ -807,10 +824,11 @@ func (v *Vault) commitRelocation(ctx context.Context, plan *FilePlan, landed []P
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
-	if v.dataKey == nil {
-		return nil, ErrLocked
+	m, err := v.manifestForLocked(plan.vault)
+	if err != nil {
+		return nil, err
 	}
-	entry := v.manifest.ByID(plan.ID)
+	entry := m.ByID(plan.ID)
 	if entry == nil {
 		out.warnings = append(out.warnings, fmt.Sprintf(
 			"%s was deleted while it was being moved", plan.Path))
@@ -912,9 +930,10 @@ func (v *Vault) erasePartCopy(ctx context.Context, cfg provider.Config, archiveI
 // not move is a picture the browser can draw again, not a file at risk.
 func (v *Vault) relocateThumbPacks(ctx context.Context, plan *RelocationPlan) []string {
 	v.mu.RLock()
-	if v.dataKey == nil {
+	m, err := v.manifestForLocked(plan.Vault)
+	if err != nil {
 		v.mu.RUnlock()
-		return []string{"the vault was locked before the folder's thumbnails could be moved"}
+		return []string{fmt.Sprintf("the folder's thumbnails could not be moved: %v", err)}
 	}
 	wanted := make(map[string]bool, len(plan.Accounts))
 	for _, id := range plan.Accounts {
@@ -926,7 +945,7 @@ func (v *Vault) relocateThumbPacks(ctx context.Context, plan *RelocationPlan) []
 	}
 
 	var dirs []string
-	for dir, pack := range v.manifest.Thumbs {
+	for dir, pack := range m.Thumbs {
 		if dir != plan.Path && !strings.HasPrefix(dir, prefix) {
 			continue
 		}
@@ -951,7 +970,7 @@ func (v *Vault) relocateThumbPacks(ctx context.Context, plan *RelocationPlan) []
 
 	var warnings []string
 	for _, dir := range dirs {
-		items, err := v.loadPack(ctx, dir)
+		items, err := v.loadPack(ctx, plan.Vault, dir)
 		if err != nil {
 			warnings = append(warnings, fmt.Sprintf(
 				"the thumbnails for %s stayed where they were: %v", dir, err))
@@ -960,7 +979,7 @@ func (v *Vault) relocateThumbPacks(ctx context.Context, plan *RelocationPlan) []
 		if len(items) == 0 {
 			continue
 		}
-		if err := v.savePackOn(ctx, dir, items, plan.Accounts); err != nil {
+		if err := v.savePackOn(ctx, plan.Vault, dir, items, plan.Accounts); err != nil {
 			warnings = append(warnings, fmt.Sprintf(
 				"the thumbnails for %s stayed where they were: %v", dir, err))
 		}

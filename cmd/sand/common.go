@@ -63,6 +63,58 @@ func closeVault(v *vault.Vault) {
 	v.Lock()
 }
 
+// openVaultIn opens and unlocks the vault, and if --in named a sub vault,
+// opens that too and returns its scope.
+//
+// Two passwords, asked for one at a time, because they are two different
+// secrets and the second one is the point: a script driving this needs
+// SAND_PASSWORD for the vault and SAND_SUB_PASSWORD for what is inside it.
+func openVaultIn(cmd *cobra.Command) (*vault.Vault, vault.Scope, error) {
+	v, err := openVault(cmd)
+	if err != nil {
+		return nil, vault.MainScope, err
+	}
+
+	name, _ := cmd.Flags().GetString("in")
+	if strings.TrimSpace(name) == "" {
+		return v, vault.MainScope, nil
+	}
+
+	scope, err := unlockSubVault(v, name)
+	if err != nil {
+		return nil, vault.MainScope, err
+	}
+	return v, scope, nil
+}
+
+// unlockSubVault resolves a sub vault by name or ID and opens it.
+func unlockSubVault(v *vault.Vault, name string) (vault.Scope, error) {
+	subs, err := v.SubVaults()
+	if err != nil {
+		return vault.MainScope, err
+	}
+
+	id := ""
+	for _, s := range subs {
+		if s.ID == name || strings.EqualFold(s.Label, name) {
+			id = s.ID
+			break
+		}
+	}
+	if id == "" {
+		return vault.MainScope, fmt.Errorf("no sub vault called %q — 'sand vault sub ls' lists them", name)
+	}
+
+	password, err := readPasswordFrom("SAND_SUB_PASSWORD", fmt.Sprintf("Password for the %q sub vault: ", name))
+	if err != nil {
+		return vault.MainScope, err
+	}
+	if err := v.UnlockSubVault(id, password); err != nil {
+		return vault.MainScope, err
+	}
+	return vault.Scope(id), nil
+}
+
 // readPassword reads a password from SAND_PASSWORD, or prompts without echo.
 func readPassword(prompt string) (string, error) {
 	return readPasswordFrom("SAND_PASSWORD", prompt)
@@ -109,15 +161,23 @@ func pipedInput() *bufio.Reader {
 
 // readNewPassword prompts twice and checks the two entries match.
 func readNewPassword(prompt string) (string, error) {
-	first, err := readPassword(prompt)
+	return readNewPasswordFrom("SAND_PASSWORD", prompt)
+}
+
+// readNewPasswordFrom is readNewPassword against a named environment variable.
+// A sub vault command asks for two or three different passwords in one run —
+// the vault's, the sub vault's, and sometimes a new one — so each needs its own
+// way in for a script.
+func readNewPasswordFrom(env, prompt string) (string, error) {
+	first, err := readPasswordFrom(env, prompt)
 	if err != nil {
 		return "", err
 	}
-	if os.Getenv("SAND_PASSWORD") != "" || !term.IsTerminal(int(os.Stdin.Fd())) {
+	if os.Getenv(env) != "" || !term.IsTerminal(int(os.Stdin.Fd())) {
 		return first, nil
 	}
 
-	second, err := readPassword("Confirm password: ")
+	second, err := readPasswordFrom(env, "Confirm password: ")
 	if err != nil {
 		return "", err
 	}
@@ -155,7 +215,7 @@ func splitPath(full string) (dir, name string) {
 }
 
 // resolveEntry finds a file by browser path or by entry ID.
-func resolveEntry(v *vault.Vault, ref string) (*vault.Entry, error) {
+func resolveEntry(v *vault.Vault, scope vault.Scope, ref string) (*vault.Entry, error) {
 	if entry, err := v.Entry(ref); err == nil {
 		return entry, nil
 	}
@@ -164,7 +224,7 @@ func resolveEntry(v *vault.Vault, ref string) (*vault.Entry, error) {
 	if name == "" {
 		return nil, fmt.Errorf("%s is a folder, not a file", ref)
 	}
-	listing, err := v.List(dir)
+	listing, err := v.List(scope, dir)
 	if err != nil {
 		return nil, err
 	}

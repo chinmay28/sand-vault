@@ -42,7 +42,7 @@ func TestSixAccountsStoreAFileAsFourOfSix(t *testing.T) {
 	v, _ := newTestVault(t, 6)
 	ids := accountIDs(t, v)
 
-	entry, warnings, err := v.Upload(context.Background(), "/", "wide.txt", []byte("payload"),
+	entry, warnings, err := v.Upload(context.Background(), MainScope, "/", "wide.txt", []byte("payload"),
 		UploadOptions{Accounts: ids})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
@@ -82,7 +82,7 @@ func TestNineAccountsStoreAFileAsSixOfNine(t *testing.T) {
 	v, _ := newTestVault(t, 9)
 	ids := accountIDs(t, v)
 
-	entry, _, err := v.Upload(context.Background(), "/", "widest.txt", []byte("payload"),
+	entry, _, err := v.Upload(context.Background(), MainScope, "/", "widest.txt", []byte("payload"),
 		UploadOptions{Accounts: ids})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
@@ -114,7 +114,7 @@ func TestEverySchemeStoresOneAndAHalfTimesTheFile(t *testing.T) {
 			if _, err := rand.Read(payload); err != nil {
 				t.Fatalf("rand: %v", err)
 			}
-			entry, _, err := v.Upload(context.Background(), "/", "sized.bin", payload,
+			entry, _, err := v.Upload(context.Background(), MainScope, "/", "sized.bin", payload,
 				UploadOptions{Accounts: ids})
 			if err != nil {
 				t.Fatalf("Upload: %v", err)
@@ -153,7 +153,7 @@ func TestEverySchemeSurvivesItsToleranceGoingDark(t *testing.T) {
 			if _, err := rand.Read(payload); err != nil {
 				t.Fatalf("rand: %v", err)
 			}
-			entry, _, err := v.Upload(context.Background(), "/", "durable.bin", payload,
+			entry, _, err := v.Upload(context.Background(), MainScope, "/", "durable.bin", payload,
 				UploadOptions{Accounts: ids})
 			if err != nil {
 				t.Fatalf("Upload: %v", err)
@@ -197,7 +197,7 @@ func TestOneAccountPastTheToleranceIsUnreadable(t *testing.T) {
 	v, roots := newTestVault(t, 6)
 	ids := accountIDs(t, v)
 
-	entry, _, err := v.Upload(context.Background(), "/", "fragile.txt", []byte("four of six"),
+	entry, _, err := v.Upload(context.Background(), MainScope, "/", "fragile.txt", []byte("four of six"),
 		UploadOptions{Accounts: ids})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
@@ -228,7 +228,7 @@ func TestSixAccountDefaultAppliesToEveryUpload(t *testing.T) {
 		t.Fatalf("SetDefaultAccounts: %v", err)
 	}
 
-	entry, _, err := v.Upload(context.Background(), "/", "bydefault.txt", []byte("x"), UploadOptions{})
+	entry, _, err := v.Upload(context.Background(), MainScope, "/", "bydefault.txt", []byte("x"), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -243,7 +243,7 @@ func TestSixAccountDefaultAppliesToEveryUpload(t *testing.T) {
 func TestDefaultSpreadIsStillThreeClouds(t *testing.T) {
 	v, _ := newTestVault(t, 9)
 
-	entry, _, err := v.Upload(context.Background(), "/", "ordinary.txt", []byte("x"), UploadOptions{})
+	entry, _, err := v.Upload(context.Background(), MainScope, "/", "ordinary.txt", []byte("x"), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -261,7 +261,7 @@ func TestUploadRejectsACountThatNamesNoScheme(t *testing.T) {
 
 	for _, n := range []int{4, 5, 7, 8} {
 		t.Run(fmt.Sprintf("%d accounts", n), func(t *testing.T) {
-			_, _, err := v.Upload(context.Background(), "/", fmt.Sprintf("odd%d.txt", n), []byte("x"),
+			_, _, err := v.Upload(context.Background(), MainScope, "/", fmt.Sprintf("odd%d.txt", n), []byte("x"),
 				UploadOptions{Accounts: ids[:n]})
 			if err == nil {
 				t.Fatalf("expected %d accounts to be refused — it names no scheme", n)
@@ -316,7 +316,7 @@ func TestMigrationKeepsAWideSchemeWide(t *testing.T) {
 	ctx := context.Background()
 	ids := accountIDs(t, v)
 
-	entry, _, err := v.Upload(ctx, "/", "wide.txt", []byte("payload"), UploadOptions{Accounts: ids})
+	entry, _, err := v.Upload(ctx, MainScope, "/", "wide.txt", []byte("payload"), UploadOptions{Accounts: ids})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -496,7 +496,7 @@ func TestChunkedFileOverSixAccountsRoundTrips(t *testing.T) {
 		t.Fatalf("rand: %v", err)
 	}
 
-	entry, _, err := v.Upload(context.Background(), "/", "film.bin", payload,
+	entry, _, err := v.Upload(context.Background(), MainScope, "/", "film.bin", payload,
 		UploadOptions{Accounts: ids})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
@@ -532,7 +532,7 @@ func TestHealthCountsAgainstTheFilesOwnScheme(t *testing.T) {
 	v, roots := newTestVault(t, 6)
 	ids := accountIDs(t, v)
 
-	entry, _, err := v.Upload(context.Background(), "/", "checked.txt", []byte("x"),
+	entry, _, err := v.Upload(context.Background(), MainScope, "/", "checked.txt", []byte("x"),
 		UploadOptions{Accounts: ids})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
@@ -581,7 +581,7 @@ func TestATwelveCloudVaultCutsFilesEightOfTwelve(t *testing.T) {
 		t.Fatalf("rand: %v", err)
 	}
 
-	entry, warnings, err := v.Upload(ctx, "/", "twelve.bin", payload, UploadOptions{Accounts: ids})
+	entry, warnings, err := v.Upload(ctx, MainScope, "/", "twelve.bin", payload, UploadOptions{Accounts: ids})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -632,12 +632,12 @@ func TestRelocatingToTwelveCloudsRecodes(t *testing.T) {
 	ids := accountIDs(t, v)
 
 	payload := []byte("three clouds now, twelve afterwards\n")
-	entry, _, err := v.Upload(ctx, "/", "grow.txt", payload, UploadOptions{Accounts: ids[:3]})
+	entry, _, err := v.Upload(ctx, MainScope, "/", "grow.txt", payload, UploadOptions{Accounts: ids[:3]})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 
-	plan, err := v.PlanRelocation(entry.ID, ids)
+	plan, err := v.PlanRelocation(MainScope, entry.ID, ids)
 	if err != nil {
 		t.Fatalf("PlanRelocation: %v", err)
 	}
@@ -648,7 +648,7 @@ func TestRelocatingToTwelveCloudsRecodes(t *testing.T) {
 		t.Errorf("plan targets %s, want 8-of-12", plan.Files[0].To)
 	}
 
-	if _, err := v.Relocate(ctx, entry.ID, ids, nil); err != nil {
+	if _, err := v.Relocate(ctx, MainScope, entry.ID, ids, nil); err != nil {
 		t.Fatalf("Relocate: %v", err)
 	}
 	after := v.manifest.ByID(entry.ID)

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/chinmay28/sand-vault/internal/archive"
 	"github.com/chinmay28/sand-vault/internal/provider"
@@ -56,6 +57,12 @@ func (v *Vault) NeedsConversion(id string) (bool, error) {
 
 // PendingConversion lists every file still stored in the old format, so a
 // caller can say how much there is to do and offer to work through it.
+//
+// Every vault currently open, because every one of them may hold files from
+// before chunking existed and the answer to "how much is left" should not
+// change with which sub vault happens to be shut. Files inside a sub vault that
+// is closed are not counted, for the same reason they are not listed: nothing
+// can read that index.
 func (v *Vault) PendingConversion() []*Entry {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
@@ -64,13 +71,16 @@ func (v *Vault) PendingConversion() []*Entry {
 	}
 
 	var out []*Entry
-	for _, entry := range v.manifest.Descendants("/") {
-		if !entry.Chunked() {
-			snapshot := *entry
-			snapshot.Shards = append([]Shard(nil), entry.Shards...)
-			out = append(out, &snapshot)
+	for _, m := range v.manifestsLocked() {
+		for _, entry := range m.Descendants("/") {
+			if !entry.Chunked() {
+				snapshot := *entry
+				snapshot.Shards = append([]Shard(nil), entry.Shards...)
+				out = append(out, &snapshot)
+			}
 		}
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path() < out[j].Path() })
 	return out
 }
 
@@ -86,8 +96,8 @@ func (v *Vault) Convert(ctx context.Context, id string) (*ConversionReport, erro
 		v.mu.RUnlock()
 		return nil, ErrLocked
 	}
-	entry := v.manifest.ByID(id)
-	if entry == nil {
+	scope, entry, ok := v.scopeOfEntryLocked(id)
+	if !ok {
 		v.mu.RUnlock()
 		return nil, fmt.Errorf("no such file: %s", id)
 	}
@@ -119,7 +129,7 @@ func (v *Vault) Convert(ctx context.Context, id string) (*ConversionReport, erro
 		current = append(current, s.ProviderID)
 	}
 
-	placed, err := v.scatterStream(ctx, stale.Name, spool, size, hash, current, false, v.uploadChunkSize())
+	placed, err := v.scatterStream(ctx, scope, stale.Name, spool, size, hash, current, false, v.uploadChunkSize())
 	report := &ConversionReport{Path: stale.Path(), Size: size, Warnings: placed.warnings}
 	if err != nil {
 		return report, fmt.Errorf("storing the converted %s: %w", stale.Path(), err)
@@ -134,12 +144,13 @@ func (v *Vault) Convert(ctx context.Context, id string) (*ConversionReport, erro
 	}
 
 	v.mu.Lock()
-	if v.dataKey == nil {
+	m, err := v.manifestForLocked(scope)
+	if err != nil {
 		v.mu.Unlock()
 		v.deleteEntryShards(context.WithoutCancel(ctx), fresh)
-		return report, ErrLocked
+		return report, err
 	}
-	e := v.manifest.ByID(id)
+	e := m.ByID(id)
 	if e == nil {
 		// Deleted while it was being converted; the new parts are referenced by
 		// nothing and go the way the old ones would have.

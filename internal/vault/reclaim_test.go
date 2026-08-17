@@ -138,7 +138,7 @@ func TestReclaimTakesTheFilesOffTheDeadVaultsKey(t *testing.T) {
 	}
 
 	// And the files still open, which is the part none of this may cost.
-	listing, err := fresh.List("/work")
+	listing, err := fresh.List(MainScope, "/work")
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -249,7 +249,7 @@ func TestReclaimPutsTheFilesOnTheCloudsChosen(t *testing.T) {
 		t.Fatalf("report = %+v, want every file moved", report.MigrationReport)
 	}
 
-	listing, err := fresh.List("/")
+	listing, err := fresh.List(MainScope, "/")
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -371,7 +371,7 @@ func contains(haystack []string, needle string) bool {
 
 func mustList(t *testing.T, v *Vault, dir string) *Listing {
 	t.Helper()
-	listing, err := v.List(dir)
+	listing, err := v.List(MainScope, dir)
 	if err != nil {
 		t.Fatalf("List(%s): %v", dir, err)
 	}

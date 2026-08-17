@@ -100,7 +100,7 @@ func TestPutAndGetRoundTrip(t *testing.T) {
 	}
 
 	// It really went into the vault, chunked, not into some side channel.
-	entry, err := v.EntryByPath("/film.mkv")
+	entry, err := v.EntryByPath(vault.MainScope, "/film.mkv")
 	if err != nil {
 		t.Fatalf("EntryByPath: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestRangeRequestAcrossManyChunks(t *testing.T) {
 	if resp := do(t, srv, "PUT", "/dav/film.mkv", bytes.NewReader(body), nil); resp.StatusCode > 299 {
 		t.Fatalf("PUT = %d", resp.StatusCode)
 	}
-	entry, err := v.EntryByPath("/film.mkv")
+	entry, err := v.EntryByPath(vault.MainScope, "/film.mkv")
 	if err != nil {
 		t.Fatalf("EntryByPath: %v", err)
 	}
@@ -203,7 +203,7 @@ func TestPropfindListsTheTree(t *testing.T) {
 	v := newTestVault(t)
 	srv := newTestServer(t, v)
 
-	if err := v.Mkdir("/films"); err != nil {
+	if err := v.Mkdir(vault.MainScope, "/films"); err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
 	if resp := do(t, srv, "PUT", "/dav/films/one.mkv", bytes.NewReader(payload(2000)), nil); resp.StatusCode > 299 {
@@ -233,7 +233,7 @@ func TestMkcolDeleteAndMove(t *testing.T) {
 	if resp := do(t, srv, "MKCOL", "/dav/shows", nil, nil); resp.StatusCode != http.StatusCreated {
 		t.Fatalf("MKCOL = %d, want 201", resp.StatusCode)
 	}
-	if !v.FolderExists("/shows") {
+	if !v.FolderExists(vault.MainScope, "/shows") {
 		t.Fatal("MKCOL did not create the folder in the vault")
 	}
 
@@ -247,17 +247,17 @@ func TestMkcolDeleteAndMove(t *testing.T) {
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("MOVE = %d", resp.StatusCode)
 	}
-	if _, err := v.EntryByPath("/shows/episode-one.mkv"); err != nil {
+	if _, err := v.EntryByPath(vault.MainScope, "/shows/episode-one.mkv"); err != nil {
 		t.Errorf("the moved file is not at its new path: %v", err)
 	}
-	if _, err := v.EntryByPath("/shows/ep1.mkv"); err == nil {
+	if _, err := v.EntryByPath(vault.MainScope, "/shows/ep1.mkv"); err == nil {
 		t.Error("the file is still at its old path too")
 	}
 
 	if resp := do(t, srv, "DELETE", "/dav/shows/episode-one.mkv", nil, nil); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("DELETE = %d, want 204", resp.StatusCode)
 	}
-	if _, err := v.EntryByPath("/shows/episode-one.mkv"); err == nil {
+	if _, err := v.EntryByPath(vault.MainScope, "/shows/episode-one.mkv"); err == nil {
 		t.Error("the deleted file is still in the index")
 	}
 }
@@ -274,7 +274,7 @@ func TestOverwritingAFileReplacesIt(t *testing.T) {
 		t.Fatalf("second PUT = %d", resp.StatusCode)
 	}
 
-	listing, err := v.List("/")
+	listing, err := v.List(vault.MainScope, "/")
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -482,10 +482,10 @@ func TestStatAndOpenOnFoldersAndFiles(t *testing.T) {
 	fs := New(v)
 	ctx := context.Background()
 
-	if err := v.Mkdir("/films"); err != nil {
+	if err := v.Mkdir(vault.MainScope, "/films"); err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
-	if _, _, err := v.Upload(ctx, "/films", "a.mkv", payload(1000), vault.UploadOptions{}); err != nil {
+	if _, _, err := v.Upload(ctx, vault.MainScope, "/films", "a.mkv", payload(1000), vault.UploadOptions{}); err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 
@@ -566,10 +566,10 @@ func TestMoveOnACollection(t *testing.T) {
 		t.Fatalf("MOVE of a collection = %d", resp.StatusCode)
 	}
 
-	if !v.FolderExists("/library/films") {
+	if !v.FolderExists(vault.MainScope, "/library/films") {
 		t.Error("the subfolder did not move with its parent")
 	}
-	if v.FolderExists("/media") {
+	if v.FolderExists(vault.MainScope, "/media") {
 		t.Error("the old folder is still there")
 	}
 
@@ -596,7 +596,7 @@ func TestOpenFileAppends(t *testing.T) {
 	ctx := context.Background()
 
 	first := payload(3000)
-	if _, _, err := v.Upload(ctx, "/", "log.bin", first, vault.UploadOptions{}); err != nil {
+	if _, _, err := v.Upload(ctx, vault.MainScope, "/", "log.bin", first, vault.UploadOptions{}); err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 
@@ -612,7 +612,7 @@ func TestOpenFileAppends(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	entry, err := v.EntryByPath("/log.bin")
+	entry, err := v.EntryByPath(vault.MainScope, "/log.bin")
 	if err != nil {
 		t.Fatalf("EntryByPath: %v", err)
 	}
@@ -636,7 +636,7 @@ func TestOpenFileTruncateWinsOverAppend(t *testing.T) {
 	fs := New(v)
 	ctx := context.Background()
 
-	if _, _, err := v.Upload(ctx, "/", "notes.bin", payload(5000), vault.UploadOptions{}); err != nil {
+	if _, _, err := v.Upload(ctx, vault.MainScope, "/", "notes.bin", payload(5000), vault.UploadOptions{}); err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 
@@ -652,7 +652,7 @@ func TestOpenFileTruncateWinsOverAppend(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	entry, err := v.EntryByPath("/notes.bin")
+	entry, err := v.EntryByPath(vault.MainScope, "/notes.bin")
 	if err != nil {
 		t.Fatalf("EntryByPath: %v", err)
 	}
@@ -679,11 +679,97 @@ func TestOpenFileAppendsToANewFile(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	entry, err := v.EntryByPath("/fresh.bin")
+	entry, err := v.EntryByPath(vault.MainScope, "/fresh.bin")
 	if err != nil {
 		t.Fatalf("EntryByPath: %v", err)
 	}
 	if entry.Size != int64(len(body)) {
 		t.Errorf("size = %d, want %d", entry.Size, len(body))
+	}
+}
+
+// A sub vault is never on the share. Not while locked, and not while unlocked
+// either — the adapter is pinned to the main vault by a constant, so there is
+// no request that can ask for a different scope and no setting that changes it.
+//
+// This is the guarantee somebody puts a file in a sub vault for. A mounted
+// drive is a folder every process running as that user can read, that a backup
+// agent will copy elsewhere, and that stays mounted long after they have walked
+// away from the machine.
+func TestSubVaultIsNeverVisibleOverWebDAV(t *testing.T) {
+	v := newTestVault(t)
+	ctx := context.Background()
+
+	sub, err := v.CreateSubVault("Taxes", "the sub vault's own password")
+	if err != nil {
+		t.Fatalf("CreateSubVault: %v", err)
+	}
+	scope := vault.Scope(sub.ID)
+
+	if err := v.Mkdir(vault.MainScope, "/Public"); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	if _, _, err := v.Upload(ctx, vault.MainScope, "/Public", "open.txt", []byte("nothing secret"), vault.UploadOptions{}); err != nil {
+		t.Fatalf("Upload to main: %v", err)
+	}
+	if err := v.Mkdir(scope, "/Papers"); err != nil {
+		t.Fatalf("Mkdir in the sub vault: %v", err)
+	}
+	if _, _, err := v.Upload(ctx, scope, "/Papers", "p60.pdf", []byte("a payslip"), vault.UploadOptions{}); err != nil {
+		t.Fatalf("Upload to the sub vault: %v", err)
+	}
+
+	// Unlocked in the app, which is the case that matters: the share still
+	// cannot see it.
+	if !v.SubVaultUnlocked(sub.ID) {
+		t.Fatal("the sub vault should be open at this point")
+	}
+
+	fs := New(v)
+
+	if _, err := fs.Stat(ctx, "/Papers"); err == nil {
+		t.Error("a sub vault's folder is reachable over WebDAV")
+	}
+	if _, err := fs.Stat(ctx, "/Papers/p60.pdf"); err == nil {
+		t.Error("a sub vault's file is reachable over WebDAV")
+	}
+
+	root, err := fs.OpenFile(ctx, "/", 0, 0)
+	if err != nil {
+		t.Fatalf("OpenFile(/): %v", err)
+	}
+	defer root.Close()
+	infos, err := root.Readdir(0)
+	if err != nil {
+		t.Fatalf("Readdir: %v", err)
+	}
+	for _, info := range infos {
+		if info.Name() == "Papers" {
+			t.Error("a sub vault's folder is listed at the root of the share")
+		}
+	}
+	if len(infos) != 1 || infos[0].Name() != "Public" {
+		names := make([]string, 0, len(infos))
+		for _, info := range infos {
+			names = append(names, info.Name())
+		}
+		t.Errorf("the share lists %v, want just the main vault's Public", names)
+	}
+
+	// And writing at a sub vault's path lands in the main vault rather than
+	// reaching into it — the two trees are separate, so this is a new file at
+	// a path that happens to look the same.
+	if err := fs.Mkdir(ctx, "/Papers", 0o755); err != nil {
+		t.Fatalf("Mkdir over WebDAV at a path a sub vault also uses: %v", err)
+	}
+	if !v.FolderExists(vault.MainScope, "/Papers") {
+		t.Error("the folder should have been made in the main vault")
+	}
+	listing, err := v.List(scope, "/Papers")
+	if err != nil {
+		t.Fatalf("List inside the sub vault: %v", err)
+	}
+	if len(listing.Files) != 1 || listing.Files[0].Name != "p60.pdf" {
+		t.Error("the sub vault's own /Papers was disturbed by a write over the share")
 	}
 }

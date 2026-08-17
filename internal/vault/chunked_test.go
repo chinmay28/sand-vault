@@ -146,7 +146,7 @@ func TestUploadStoresChunksAndFetchesThemBack(t *testing.T) {
 	ctx := context.Background()
 
 	payload := bytes.Repeat([]byte("a film is a great many bytes long "), 300) // ~10 KB
-	entry, warnings, err := v.Upload(ctx, "/", "film.mkv", payload, UploadOptions{})
+	entry, warnings, err := v.Upload(ctx, MainScope, "/", "film.mkv", payload, UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v (%v)", err, warnings)
 	}
@@ -181,7 +181,7 @@ func TestChunkedReadSurvivesAnAccountGoingDark(t *testing.T) {
 	ctx := context.Background()
 
 	payload := bytes.Repeat([]byte("still readable with one cloud gone "), 200)
-	entry, _, err := v.Upload(ctx, "/", "resilient.bin", payload, UploadOptions{})
+	entry, _, err := v.Upload(ctx, MainScope, "/", "resilient.bin", payload, UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -213,7 +213,7 @@ func TestDeleteErasesEveryChunk(t *testing.T) {
 	ctx := context.Background()
 
 	payload := bytes.Repeat([]byte("erase all of me "), 400)
-	entry, _, err := v.Upload(ctx, "/", "doomed.bin", payload, UploadOptions{})
+	entry, _, err := v.Upload(ctx, MainScope, "/", "doomed.bin", payload, UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -234,11 +234,11 @@ func TestOverwriteErasesEveryChunkOfTheReplacedFile(t *testing.T) {
 	v, roots := chunkedVault(t, 3, 1024)
 	ctx := context.Background()
 
-	first, _, err := v.Upload(ctx, "/", "notes.bin", bytes.Repeat([]byte("the first draft "), 400), UploadOptions{})
+	first, _, err := v.Upload(ctx, MainScope, "/", "notes.bin", bytes.Repeat([]byte("the first draft "), 400), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
-	second, _, err := v.Upload(ctx, "/", "notes.bin", []byte("a much shorter second draft"),
+	second, _, err := v.Upload(ctx, MainScope, "/", "notes.bin", []byte("a much shorter second draft"),
 		UploadOptions{Overwrite: true})
 	if err != nil {
 		t.Fatalf("Upload overwrite: %v", err)
@@ -259,7 +259,7 @@ func TestWholeFileEntriesAreStillReadable(t *testing.T) {
 	ctx := context.Background()
 
 	payload := []byte("stored the way the old build stored things")
-	placed, err := v.scatter(ctx, "legacy.txt", payload, nil, false)
+	placed, err := v.scatter(ctx, MainScope, "legacy.txt", payload, nil, false)
 	if err != nil {
 		t.Fatalf("scatter: %v", err)
 	}
@@ -295,7 +295,7 @@ func TestHealthReportsChunkSampling(t *testing.T) {
 	v, _ := chunkedVault(t, 3, 1024)
 	ctx := context.Background()
 
-	entry, _, err := v.Upload(ctx, "/", "sampled.bin", bytes.Repeat([]byte("health "), 2000), UploadOptions{})
+	entry, _, err := v.Upload(ctx, MainScope, "/", "sampled.bin", bytes.Repeat([]byte("health "), 2000), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -346,38 +346,38 @@ func TestMoveFolderCarriesEverythingBeneathIt(t *testing.T) {
 	ctx := context.Background()
 
 	for _, dir := range []string{"/media", "/media/films", "/media/films/2024"} {
-		if err := v.Mkdir(dir); err != nil {
+		if err := v.Mkdir(MainScope, dir); err != nil {
 			t.Fatalf("Mkdir %s: %v", dir, err)
 		}
 	}
-	top, _, err := v.Upload(ctx, "/media", "readme.txt", []byte("at the top"), UploadOptions{})
+	top, _, err := v.Upload(ctx, MainScope, "/media", "readme.txt", []byte("at the top"), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
-	deep, _, err := v.Upload(ctx, "/media/films/2024", "film.mkv", bytes.Repeat([]byte("deep "), 500), UploadOptions{})
+	deep, _, err := v.Upload(ctx, MainScope, "/media/films/2024", "film.mkv", bytes.Repeat([]byte("deep "), 500), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 	deepShards := append([]Shard(nil), deep.Shards...)
 
-	if err := v.MoveFolder(ctx, "/media", "/library"); err != nil {
+	if err := v.MoveFolder(ctx, MainScope, "/media", "/library"); err != nil {
 		t.Fatalf("MoveFolder: %v", err)
 	}
 
 	// Everything answers to the new name, at every depth.
 	for _, want := range []string{"/library", "/library/films", "/library/films/2024"} {
-		if !v.FolderExists(want) {
+		if !v.FolderExists(MainScope, want) {
 			t.Errorf("%s does not exist after the move", want)
 		}
 	}
-	if v.FolderExists("/media") {
+	if v.FolderExists(MainScope, "/media") {
 		t.Error("the old folder is still there")
 	}
 	for path, id := range map[string]string{
 		"/library/readme.txt":          top.ID,
 		"/library/films/2024/film.mkv": deep.ID,
 	} {
-		moved, err := v.EntryByPath(path)
+		moved, err := v.EntryByPath(MainScope, path)
 		if err != nil {
 			t.Errorf("%s: %v", path, err)
 			continue
@@ -386,7 +386,7 @@ func TestMoveFolderCarriesEverythingBeneathIt(t *testing.T) {
 			t.Errorf("%s is a different file than the one that moved there", path)
 		}
 	}
-	if _, err := v.EntryByPath("/media/films/2024/film.mkv"); err == nil {
+	if _, err := v.EntryByPath(MainScope, "/media/films/2024/film.mkv"); err == nil {
 		t.Error("the file is still at its old path too")
 	}
 
@@ -420,13 +420,13 @@ func TestMoveFolderRefusesTheImpossible(t *testing.T) {
 	v, _ := chunkedVault(t, 3, 1024)
 	ctx := context.Background()
 
-	if err := v.Mkdir("/films"); err != nil {
+	if err := v.Mkdir(MainScope, "/films"); err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
-	if err := v.Mkdir("/shows"); err != nil {
+	if err := v.Mkdir(MainScope, "/shows"); err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
-	if _, _, err := v.Upload(ctx, "/", "taken.txt", []byte("x"), UploadOptions{}); err != nil {
+	if _, _, err := v.Upload(ctx, MainScope, "/", "taken.txt", []byte("x"), UploadOptions{}); err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 
@@ -440,13 +440,13 @@ func TestMoveFolderRefusesTheImpossible(t *testing.T) {
 		"into a folder that is not there": {"/films", "/missing/films"},
 	}
 	for name, paths := range cases {
-		if err := v.MoveFolder(ctx, paths[0], paths[1]); err == nil {
+		if err := v.MoveFolder(ctx, MainScope, paths[0], paths[1]); err == nil {
 			t.Errorf("moving %s was allowed, want a refusal", name)
 		}
 	}
 
 	// None of that should have disturbed anything.
-	if !v.FolderExists("/films") || !v.FolderExists("/shows") {
+	if !v.FolderExists(MainScope, "/films") || !v.FolderExists(MainScope, "/shows") {
 		t.Error("a refused move changed the tree")
 	}
 }
@@ -457,10 +457,10 @@ func TestMoveFolderCarriesThumbnails(t *testing.T) {
 	v, _ := chunkedVault(t, 3, 1024)
 	ctx := context.Background()
 
-	if err := v.Mkdir("/pics"); err != nil {
+	if err := v.Mkdir(MainScope, "/pics"); err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
-	entry, _, err := v.Upload(ctx, "/pics", "shot.jpg", []byte("not really a jpeg"), UploadOptions{})
+	entry, _, err := v.Upload(ctx, MainScope, "/pics", "shot.jpg", []byte("not really a jpeg"), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -468,11 +468,11 @@ func TestMoveFolderCarriesThumbnails(t *testing.T) {
 		t.Fatalf("SetThumb: %v", err)
 	}
 
-	if err := v.MoveFolder(ctx, "/pics", "/photos"); err != nil {
+	if err := v.MoveFolder(ctx, MainScope, "/pics", "/photos"); err != nil {
 		t.Fatalf("MoveFolder: %v", err)
 	}
 
-	listing, err := v.List("/photos")
+	listing, err := v.List(MainScope, "/photos")
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}

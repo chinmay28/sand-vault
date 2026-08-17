@@ -10,7 +10,7 @@ import {
   FileRow, FileTile, FolderRow, FolderTile, SelectBox,
 } from './FileEntry'
 import { Breadcrumbs, FolderHeader, NavCluster, SearchField, SelectionBar, ViewControls } from './Toolbar'
-import { BulkDelete, BulkDownload } from './BulkActions'
+import { BulkAssign, BulkDelete, BulkDownload } from './BulkActions'
 import MoveToFolder from './MoveToFolder'
 import { FilmButton, FilmLookupSettings } from './FilmDetails'
 
@@ -25,6 +25,7 @@ const TILE_MIN_PX = { mobile: 108, desktop: 132 }
 
 export default function FileBrowser({
   nav, listing, loading, error, providers, defaultAccounts, mobile,
+  subVaults = [], showSubVaults = false, onOpenSubVault,
   onRefresh, onPreview, onInspect, onFilm, onError,
 }) {
   const [dragging, setDragging] = useState(false)
@@ -51,7 +52,20 @@ export default function FileBrowser({
   const anchor = useRef(null)
 
   const path = nav.path
+  // Which of the vaults inside the file we are standing in. Empty is the main
+  // one, and every path-addressed call carries it.
+  const vault = nav.vault
   const canUpload = providers.length > 0
+  // What to call the root crumb. A sub vault's tree is not below the main
+  // vault's, so the trail has to say which one you are walking.
+  const vaultLabel = vault ? (subVaults.find((s) => s.id === vault)?.label || 'Sub vault') : ''
+  /* Where a selection could be sent. Standing in the main vault that is every
+     open sub vault; standing inside one it is the way back out. A locked sub
+     vault is never a target — the move has to write into its index. */
+  const assignTargets = useMemo(() => (vault
+    ? [{ id: '', label: 'the main vault' }]
+    : subVaults.filter((s) => s.unlocked).map((s) => ({ id: s.id, label: s.label }))
+  ), [vault, subVaults])
   const searchTerm = query.trim()
   // Searching from inside a folder looks there first; the results header can
   // widen it to the whole vault.
@@ -60,15 +74,19 @@ export default function FileBrowser({
   // Walking into a folder is a different question from the one being asked, so
   // the search ends when navigation begins — and on a phone the field it was
   // typed into gives the toolbar back.
-  useEffect(() => { setQuery(''); setSearchOpen(false) }, [path])
+  useEffect(() => { setQuery(''); setSearchOpen(false) }, [path, vault])
 
-  const runSearch = useCallback((signal) => api.search(searchTerm, { path: searchScope, signal })
+  /* A search never crosses out of the vault you are standing in. Answering one
+     query from two trees would put a sub vault's filenames in front of someone
+     searching the main vault, which is the disclosure a sub vault exists to
+     prevent. */
+  const runSearch = useCallback((signal) => api.search(searchTerm, { path: searchScope, vault, signal })
     .then((resp) => { setResults(resp); setSearchError(null) })
     .catch((err) => {
       if (err.name === 'AbortError') return
       setResults(null)
       setSearchError(err.message)
-    }), [searchTerm, searchScope])
+    }), [searchTerm, searchScope, vault])
 
   useEffect(() => {
     if (!searchTerm) {
@@ -283,6 +301,7 @@ export default function FileBrowser({
         [...files].map((file) => makeThumbnail(file, file.type, file.name)))
 
       const resp = await api.upload(files, path, {
+        vault,
         accounts,
         thumbs: thumbnails,
         onProgress: (fraction) => setUploads((prev) =>
@@ -301,7 +320,7 @@ export default function FileBrowser({
     } finally {
       setUploads((prev) => prev.filter((u) => u.id !== batch.id))
     }
-  }, [path, onError, onRefresh])
+  }, [path, vault, onError, onRefresh])
 
   /* Drag counting: dragenter/dragleave fire for every child element, so a
      naive boolean flickers as the pointer crosses rows. */
@@ -333,6 +352,9 @@ export default function FileBrowser({
     prefs,
     mobile,
     providers,
+    // Which vault every row belongs to, and where a row could be sent.
+    vault,
+    subVaults,
     selecting,
     selected,
     onToggle: toggle,
@@ -372,6 +394,7 @@ export default function FileBrowser({
           <FolderHeader
             nav={nav}
             path={path}
+            vault={vaultLabel}
             stats={stats}
             prefs={prefs}
             view={view}
@@ -412,7 +435,7 @@ export default function FileBrowser({
           <>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
               <NavCluster nav={nav} mobile={false} />
-              <Breadcrumbs path={path} mobile={false} onNavigate={nav.navigate} />
+              <Breadcrumbs path={path} vault={vaultLabel} mobile={false} onNavigate={nav.navigate} />
               <FilmButton lookup={lookup} mobile={false} onOpen={() => setFilms(true)} />
               <ViewControls
                 mobile={false}
@@ -461,7 +484,14 @@ export default function FileBrowser({
           onDownload={() => setBulk('download')}
           onMoveTo={() => setBulk('folder')}
           onMove={() => setBulk('clouds')}
+          onAssign={() => setBulk('assign')}
           onDelete={() => setBulk('delete')}
+          vaultAction={assignTargets.length === 0 ? null : {
+            label: vault ? 'Take out' : 'Into a sub vault',
+            title: vault
+              ? 'Move everything selected back into the main vault'
+              : 'Move everything selected into a sub vault, at the paths it already has',
+          }}
         />
       )}
 
@@ -502,6 +532,19 @@ export default function FileBrowser({
             </div>
           </div>
         ))}
+
+        {/* At the top of the main vault, and only when asked for: the vaults
+            inside this one, locked ones included. They sit above the folders
+            rather than among them, because they are not folders — a bulk
+            delete must not be able to sweep one up, and a row that behaved
+            like a folder would suggest it could be opened by being clicked. */}
+        {showSubVaults && !searchTerm && vault === '' && path === '/' && subVaults.length > 0 && (
+          <SubVaultStrip
+            subVaults={subVaults}
+            mobile={mobile}
+            onOpen={onOpenSubVault}
+          />
+        )}
 
         {searchTerm ? (
           <SearchResults
@@ -581,6 +624,7 @@ export default function FileBrowser({
       {creatingFolder && (
         <NewFolderModal
           path={path}
+          vault={vault}
           onClose={() => setCreatingFolder(false)}
           onCreated={() => { setCreatingFolder(false); onRefresh() }}
         />
@@ -608,6 +652,17 @@ export default function FileBrowser({
              ticked; what a partial run left behind is still here to try
              again. */
           onDone={() => { setSelected(new Set()); listProps.onRefresh() }}
+        />
+      )}
+
+      {bulk === 'assign' && (
+        <BulkAssign
+          items={chosen}
+          from={vault}
+          targets={assignTargets}
+          onClose={() => setBulk(null)}
+          onDone={() => { setBulk(null); setSelected(new Set()); onRefresh() }}
+          onError={onError}
         />
       )}
 
@@ -720,6 +775,7 @@ function EntryTable({
   entries, thumbs, movies, films, mobile, providers, selecting, selected,
   onToggle, onSelectAll, onSelectNone,
   onNavigate, onPreview, onInspect, onFilm, onRefresh, onError,
+  vault, subVaults,
 }) {
   const all = entries.length > 0 && entries.every((entry) => selected.has(entry.key))
   /* One template for the whole table, headings included: a film folder's rows
@@ -779,6 +835,8 @@ function EntryTable({
       {entries.map((entry) => (entry.kind === 'folder' ? (
         <FolderRow
           key={entry.key}
+          vault={vault}
+          subVaults={subVaults}
           name={entry.name}
           path={entry.path}
           location={entry.location}
@@ -796,6 +854,8 @@ function EntryTable({
       ) : (
         <FileRow
           key={entry.key}
+          vault={vault}
+          subVaults={subVaults}
           file={entry.file}
           location={entry.location}
           mobile={mobile}
@@ -820,6 +880,7 @@ function EntryTable({
 function EntryGrid({
   entries, thumbs, movies, films, mobile, providers, selecting, selected, onToggle,
   onNavigate, onPreview, onInspect, onFilm, onRefresh, onError,
+  vault, subVaults,
 }) {
   /* Posters are two-by-three and photographs are not, so the shape belongs to
      the folder rather than to the tile: one shape per grid keeps the rows level
@@ -835,6 +896,8 @@ function EntryGrid({
       {entries.map((entry) => (entry.kind === 'folder' ? (
         <FolderTile
           key={entry.key}
+          vault={vault}
+          subVaults={subVaults}
           name={entry.name}
           path={entry.path}
           location={entry.location}
@@ -852,6 +915,8 @@ function EntryGrid({
       ) : (
         <FileTile
           key={entry.key}
+          vault={vault}
+          subVaults={subVaults}
           file={entry.file}
           location={entry.location}
           mobile={mobile}
@@ -873,7 +938,7 @@ function EntryGrid({
   )
 }
 
-function NewFolderModal({ path, onClose, onCreated }) {
+function NewFolderModal({ path, vault, onClose, onCreated }) {
   const [name, setName] = useState('')
   const [error, setError] = useState(null)
   const [busy, setBusy] = useState(false)
@@ -884,7 +949,7 @@ function NewFolderModal({ path, onClose, onCreated }) {
     setBusy(true)
     setError(null)
     try {
-      await api.createFolder(joinPath(path, name.trim()))
+      await api.createFolder(joinPath(path, name.trim()), vault)
       onCreated()
     } catch (err) {
       setError(err.message)
@@ -921,5 +986,68 @@ function NewFolderModal({ path, onClose, onCreated }) {
         </div>
       </form>
     </Modal>
+  )
+}
+
+/* The vaults inside this one, drawn at the root of the main vault.
+
+   A locked one is still listed. That is the point of showing them at all: you
+   are meant to see that there is a place called Taxes and be asked for a
+   password, rather than have it be invisible until you remember to go looking
+   in settings. */
+function SubVaultStrip({ subVaults, mobile, onOpen }) {
+  return (
+    <div style={{ marginBottom: '14px' }}>
+      <div style={{
+        fontFamily: FONT.mono,
+        fontSize: '9px',
+        fontWeight: 600,
+        letterSpacing: '1.2px',
+        textTransform: 'uppercase',
+        color: COLORS.textMuted,
+        margin: '0 0 7px 2px',
+      }}>Sub vaults</div>
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+        {subVaults.map((sub) => (
+          <button
+            key={sub.id}
+            type="button"
+            onClick={() => onOpen(sub)}
+            title={sub.unlocked
+              ? `Open ${sub.label}`
+              : `${sub.label} is locked — opening it asks for its own password`}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              padding: '9px 12px',
+              minHeight: mobile ? '46px' : '38px',
+              flex: mobile ? '1 1 calc(50% - 8px)' : '0 0 auto',
+              background: COLORS.surfaceRaised,
+              border: `1px dashed ${sub.unlocked ? COLORS.borderBright : COLORS.border}`,
+              borderRadius: '8px',
+              cursor: 'pointer',
+              textAlign: 'left',
+              color: COLORS.text,
+              fontFamily: FONT.mono,
+              fontSize: '12px',
+            }}
+          >
+            <span aria-hidden="true" style={{ opacity: sub.unlocked ? 1 : 0.6 }}>
+              {sub.unlocked ? '🔓' : '🔒'}
+            </span>
+            <span style={{ minWidth: 0 }}>
+              <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {sub.label}
+              </span>
+              <span style={{ display: 'block', fontSize: '9px', color: COLORS.textMuted, marginTop: '1px' }}>
+                {sub.files} file{sub.files === 1 ? '' : 's'}{sub.unlocked ? '' : ' · locked'}
+              </span>
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
   )
 }

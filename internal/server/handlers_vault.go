@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/chinmay28/sand-vault/internal/vault"
 )
@@ -20,6 +21,18 @@ type vaultStatus struct {
 	// path is not a secret — the share answers 401 there whoever asks — but
 	// there is no reason to help a stranger find a second door.
 	WebDAV *webdavStatus `json:"webdav,omitempty"`
+
+	// SubVaults are the vaults inside this one, each with whether it is
+	// currently open. Told to an authenticated session and no one else: that
+	// there is a sub vault called Taxes is exactly the kind of thing the lock
+	// screen should not be volunteering.
+	SubVaults []vault.SubVaultInfo `json:"sub_vaults,omitempty"`
+
+	// ManifestBackup says whether the index is being replicated to the
+	// connected accounts. It has been settable from the CLI and invisible in
+	// the app, which meant the one setting that decides whether a lost machine
+	// is recoverable could only be seen by someone who went looking.
+	ManifestBackup bool `json:"manifest_backup"`
 }
 
 // webdavStatus is what the browser needs to tell someone how to mount the
@@ -50,6 +63,10 @@ func (s *Server) unlockedStatus(v *vault.Vault) vaultStatus {
 	if stats, err := v.Stats(); err == nil {
 		status.Stats = &stats
 	}
+	if subs, err := v.SubVaults(); err == nil {
+		status.SubVaults = subs
+	}
+	status.ManifestBackup = v.BackupEnabled()
 	if s.WebDAV {
 		status.WebDAV = &webdavStatus{Path: s.webdavPrefix() + "/"}
 	}
@@ -246,4 +263,37 @@ func (s *Server) startSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	setSessionCookie(w, token, isSecureRequest(r), s.sessions.idleTimeout)
+}
+
+type backupRequest struct {
+	Enabled bool `json:"enabled"`
+}
+
+// handleVaultBackup turns replication of the index to the connected accounts on
+// or off.
+//
+// Turning it off erases the copies that are already out there, which is the
+// point of asking for it: the setting exists for someone who does not want a
+// file naming every one of their files sitting on a cloud account, and leaving
+// the old copies behind would make it a setting that changed nothing.
+func (s *Server) handleVaultBackup(w http.ResponseWriter, r *http.Request) {
+	var req backupRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
+		return
+	}
+
+	ctx, cancel := contextWithTimeout(r, 5*time.Minute)
+	defer cancel()
+
+	v, _ := s.Vault()
+	warnings, err := v.SetBackupEnabled(ctx, req.Enabled)
+	if err != nil {
+		vaultErrorResponse(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"manifest_backup": v.BackupEnabled(),
+		"warnings":        warnings,
+	})
 }

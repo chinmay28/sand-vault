@@ -49,6 +49,17 @@ type Vault struct {
 	// anything else that is a secret rather than a knob. nil while locked, like
 	// everything else a password opens.
 	settings *vaultSettings
+	// subs holds the sub vaults that have been opened, by ID. A sub vault
+	// absent from this map is locked: its section stays sealed in the store
+	// file and is carried through every write untouched, so locking one is
+	// simply dropping it from here.
+	//
+	// Each carries its own manifest rather than merging into the one above.
+	// That is what makes "which vault is this file in" a question with a real
+	// answer rather than a tag that has to be kept true — an entry is in the
+	// vault whose index holds it, and it cannot be filed into the wrong section
+	// by a bug because there is no filing step.
+	subs map[string]*subVault
 
 	// chunks caches decrypted chunks for readers, and flight collapses
 	// concurrent misses on the same chunk into one fetch. Both are leaf
@@ -263,6 +274,7 @@ func (v *Vault) Init(password string, policy Policy) error {
 	v.providers = []provider.Config{}
 	v.manifest = newManifest()
 	v.settings = &vaultSettings{}
+	v.subs = map[string]*subVault{}
 	v.resetLiveCache()
 	return nil
 }
@@ -339,6 +351,11 @@ func (v *Vault) Lock() {
 	for _, key := range v.retired {
 		crypto.ZeroBytes(key)
 	}
+	// A sub vault cannot outlive the vault holding it: its keys came out of
+	// this process's memory and go back the same way.
+	for _, sub := range v.subs {
+		sub.zero()
+	}
 	v.vaultKey = nil
 	v.dataKey = nil
 	v.dataKeyID = ""
@@ -346,6 +363,7 @@ func (v *Vault) Lock() {
 	v.providers = nil
 	v.manifest = nil
 	v.settings = nil
+	v.subs = nil
 
 	// Thumbnails are decrypted pictures of the user's files, so they go the
 	// same way the keys do — and so do cached chunks, which are plaintext of
@@ -374,6 +392,9 @@ func (v *Vault) adoptLocked(u *unsealed) {
 	if v.settings == nil {
 		v.settings = &vaultSettings{}
 	}
+	// Sub vaults are not opened by the main password, so an unlock starts with
+	// every one of them shut.
+	v.subs = map[string]*subVault{}
 }
 
 // shardPasswordLocked is the secret used to encrypt the parts of new uploads.
@@ -388,13 +409,12 @@ func (v *Vault) shardPasswordLocked() string {
 // password change is still on an older one, and asking for a generation the
 // vault no longer holds is a corrupt index rather than a wrong password.
 func (v *Vault) shardPasswordForLocked(keyID string) (string, error) {
-	if keyID == v.dataKeyID {
-		return shardPasswordFor(v.dataKey), nil
+	key, err := v.dataKeyForLocked(keyID)
+	if err != nil {
+		return "", err
 	}
-	if key, ok := v.retired[keyID]; ok {
-		return shardPasswordFor(key), nil
-	}
-	return "", fmt.Errorf("this file is recorded under a data key the vault no longer holds")
+	defer crypto.ZeroBytes(key)
+	return shardPasswordFor(key), nil
 }
 
 // shardPasswordFor derives the part secret from a data key. Recovery needs the
@@ -409,12 +429,28 @@ func shardPasswordFor(dataKey []byte) string {
 // than from a password spelled out in hex — see crypto.DeriveChunkKey.
 //
 // The copy is the caller's to zero.
+//
+// Every open vault is searched, the main one and each unlocked sub vault, so a
+// caller holding an entry never has to say which vault it came from. A key ID
+// that belongs to a sub vault nobody has opened is the one case worth telling
+// apart from a key that is simply gone, and it is: see subVaultForKeyLocked.
 func (v *Vault) dataKeyForLocked(keyID string) ([]byte, error) {
 	if keyID == v.dataKeyID {
 		return append([]byte(nil), v.dataKey...), nil
 	}
 	if key, ok := v.retired[keyID]; ok {
 		return append([]byte(nil), key...), nil
+	}
+	for _, sub := range v.subs {
+		if keyID == sub.dataKeyID {
+			return append([]byte(nil), sub.dataKey...), nil
+		}
+		if key, ok := sub.retired[keyID]; ok {
+			return append([]byte(nil), key...), nil
+		}
+	}
+	if id, ok := v.subVaultForKeyLocked(keyID); ok {
+		return nil, fmt.Errorf("%w: %s", ErrSubVaultLocked, v.subVaultLabelLocked(id))
 	}
 	return nil, fmt.Errorf("this file is recorded under a data key the vault no longer holds")
 }
@@ -426,11 +462,20 @@ func (v *Vault) persistLocked() error {
 		return ErrLocked
 	}
 
-	v.manifest.UpdatedAt = time.Now().UTC()
+	now := time.Now().UTC()
+	v.manifest.UpdatedAt = now
 
 	// Every index change is a chance for the last file on a retired key to
 	// have moved off it, and a key nothing needs must not linger in the file.
 	v.pruneRetiredKeysLocked()
+
+	// Re-seal every open sub vault's section, each under its own key, and
+	// refresh what the main vault is allowed to know about it. A locked sub
+	// vault's record is left exactly as it is — this is the write that carries
+	// it through untouched.
+	if err := v.resealSubVaultsLocked(now); err != nil {
+		return err
+	}
 
 	providers, err := sealJSON(v.vaultKey, v.providers)
 	if err != nil {
@@ -749,11 +794,19 @@ func (v *Vault) UpdateProvider(id string, edit ProviderEdit) (provider.Config, e
 
 // renameShardsLocked writes a new account name onto every shard held by that
 // account. The caller must hold the write lock.
+//
+// Across every vault that is open. A sub vault that is shut keeps the old name
+// on its shards until something rewrites them, which is a cosmetic staleness
+// and nothing more: the name is what the file list and the health read-out
+// print, and what a recovery matches accounts on by preference — the ID is what
+// actually finds the parts.
 func (v *Vault) renameShardsLocked(id, name string) {
-	for _, e := range v.manifest.Entries {
-		for i := range e.Shards {
-			if e.Shards[i].ProviderID == id {
-				e.Shards[i].ProviderName = name
+	for _, m := range v.manifestsLocked() {
+		for _, e := range m.Entries {
+			for i := range e.Shards {
+				if e.Shards[i].ProviderID == id {
+					e.Shards[i].ProviderName = name
+				}
 			}
 		}
 	}
@@ -792,24 +845,59 @@ func (v *Vault) RemoveProvider(id string, force bool) error {
 
 	if !force {
 		var stranded []string
-		for _, e := range v.manifest.Entries {
-			// Counted against the file's own code: a 4-of-6 file loses nothing
-			// it needs when one of its six accounts goes, where a 2-of-3 one on
-			// the same account might.
-			reachable := map[int]bool{}
-			for _, s := range e.Shards {
-				if surviving[s.ProviderID] {
-					reachable[s.Part] = true
+		for _, m := range v.manifestsLocked() {
+			for _, e := range m.Entries {
+				// Counted against the file's own code: a 4-of-6 file loses nothing
+				// it needs when one of its six accounts goes, where a 2-of-3 one on
+				// the same account might.
+				reachable := map[int]bool{}
+				for _, s := range e.Shards {
+					if surviving[s.ProviderID] {
+						reachable[s.Part] = true
+					}
+				}
+				if len(reachable) < e.Scheme().Data {
+					stranded = append(stranded, e.Path())
 				}
 			}
-			if len(reachable) < e.Scheme().Data {
-				stranded = append(stranded, e.Path())
+		}
+
+		// A shut sub vault cannot be asked what it holds, so the inventory
+		// answers for it. This is the guarantee the inventory was kept for:
+		// without it, disconnecting an account would quietly strand files that
+		// nothing in the process could see, and the refusal that exists to stop
+		// exactly that would pass because it had nothing to count. The
+		// inventory records each item's own code for the same reason the entry
+		// carries it — the threshold is per file, not per vault.
+		sealed := 0
+		for _, meta := range v.manifest.SubVaults {
+			if _, open := v.subs[meta.ID]; open {
+				continue
+			}
+			for _, item := range meta.Inventory {
+				reachable := map[int]bool{}
+				for _, part := range item.Parts {
+					if surviving[part.ProviderID] {
+						reachable[part.Part] = true
+					}
+				}
+				if len(reachable) < item.Scheme().Data {
+					sealed++
+				}
 			}
 		}
-		if len(stranded) > 0 {
+
+		switch {
+		case len(stranded) > 0:
 			return fmt.Errorf(
 				"%d file(s) would become unrecoverable, starting with %s — download them first, or force the disconnect",
-				len(stranded), stranded[0])
+				len(stranded)+sealed, stranded[0])
+		case sealed > 0:
+			// Named by count alone, because naming them would mean reading an
+			// index this vault cannot open.
+			return fmt.Errorf(
+				"%d file(s) inside a locked sub vault would become unrecoverable — open it to see which, "+
+					"or force the disconnect", sealed)
 		}
 	}
 
@@ -839,15 +927,20 @@ func (v *Vault) RemoveProvider(id string, force bool) error {
 	}
 
 	// Drop shard records pointing at the disconnected account so the index
-	// keeps telling the truth about what is actually retrievable.
-	for _, e := range v.manifest.Entries {
-		kept := e.Shards[:0]
-		for _, s := range e.Shards {
-			if surviving[s.ProviderID] {
-				kept = append(kept, s)
+	// keeps telling the truth about what is actually retrievable. A shut sub
+	// vault keeps its records until it is opened, where the part is skipped for
+	// naming an account that is no longer connected — the same way a file
+	// behaves between a forced disconnect and the next time it is read.
+	for _, m := range v.manifestsLocked() {
+		for _, e := range m.Entries {
+			kept := e.Shards[:0]
+			for _, s := range e.Shards {
+				if surviving[s.ProviderID] {
+					kept = append(kept, s)
+				}
 			}
+			e.Shards = kept
 		}
-		e.Shards = kept
 	}
 
 	v.forgetProvider(id)
@@ -904,12 +997,33 @@ func (v *Vault) ProviderStatuses(ctx context.Context) ([]ProviderStatus, error) 
 		}
 		live[i] = p
 	}
-	for _, e := range v.manifest.Entries {
-		for _, s := range e.Shards {
-			for i := range statuses {
-				if statuses[i].ID == s.ProviderID {
-					statuses[i].Shards++
-					statuses[i].Stored += s.Size
+	byID := make(map[string]*ProviderStatus, len(statuses))
+	for i := range statuses {
+		byID[statuses[i].ID] = &statuses[i]
+	}
+	for _, m := range v.manifestsLocked() {
+		for _, e := range m.Entries {
+			for _, s := range e.Shards {
+				if st, ok := byID[s.ProviderID]; ok {
+					st.Shards++
+					st.Stored += s.Size
+				}
+			}
+		}
+	}
+	// What a shut sub vault put on each account counts too. Leaving it out
+	// would draw an account as emptier than it is, and the amount missing would
+	// change with which sub vault happened to be open — a usage bar that moves
+	// when you type a password is worse than no usage bar.
+	for _, meta := range v.manifest.SubVaults {
+		if _, open := v.subs[meta.ID]; open {
+			continue
+		}
+		for _, item := range meta.Inventory {
+			for _, part := range item.Parts {
+				if st, ok := byID[part.ProviderID]; ok {
+					st.Shards++
+					st.Stored += part.Size
 				}
 			}
 		}
@@ -978,20 +1092,27 @@ type Listing struct {
 	FolderArt map[string]FolderArt `json:"folder_art,omitempty"`
 }
 
-// List returns the contents of a folder.
-func (v *Vault) List(dir string) (*Listing, error) {
+// List returns the contents of a folder in one of the vaults inside the file.
+//
+// The scope is the whole of what separates a sub vault from the main one at
+// this level: each has its own root and its own tree beneath it, so there is no
+// filtering to get wrong and no path in one that can shadow a path in the
+// other.
+func (v *Vault) List(scope Scope, dir string) (*Listing, error) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
-	if v.dataKey == nil {
-		return nil, ErrLocked
+
+	m, err := v.manifestForLocked(scope)
+	if err != nil {
+		return nil, err
 	}
 
 	dir = CleanDir(dir)
-	if !v.manifest.FolderExists(dir) {
+	if !m.FolderExists(dir) {
 		return nil, fmt.Errorf("no such folder: %s", dir)
 	}
 
-	folders, files := v.manifest.Children(dir)
+	folders, files := m.Children(dir)
 	// Always hand back arrays rather than nil, so JSON consumers never have to
 	// distinguish "empty folder" from "null".
 	if folders == nil {
@@ -1004,7 +1125,7 @@ func (v *Vault) List(dir string) (*Listing, error) {
 		}
 	}
 
-	thumbs := v.thumbIDsForLocked(files)
+	thumbs := v.thumbIDsForLocked(m, files)
 	if thumbs == nil {
 		thumbs = []string{}
 	}
@@ -1023,13 +1144,18 @@ func (v *Vault) List(dir string) (*Listing, error) {
 		Folders:     folders,
 		Files:       append([]*Entry{}, files...),
 		Thumbs:      thumbs,
-		Movies:      v.movieBriefsForLocked(files),
-		MovieLookup: v.movieLookupLocked(dir),
-		FolderArt:   v.folderArtForLocked(paths),
+		Movies:      v.movieBriefsForLocked(m, files),
+		MovieLookup: v.movieLookupLocked(m, dir),
+		FolderArt:   v.folderArtForLocked(m, paths),
 	}, nil
 }
 
 // Entry returns a single file's metadata by ID.
+//
+// No scope is asked for and none is needed. An ID is unique across every vault
+// in the file, so the search is over whatever is open — which means a caller
+// holding an ID never has to remember where it came from, and a file inside a
+// sub vault that has since been shut is simply not found.
 func (v *Vault) Entry(id string) (*Entry, error) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
@@ -1037,8 +1163,8 @@ func (v *Vault) Entry(id string) (*Entry, error) {
 		return nil, ErrLocked
 	}
 
-	e := v.manifest.ByID(id)
-	if e == nil {
+	_, e, ok := v.scopeOfEntryLocked(id)
+	if !ok {
 		return nil, fmt.Errorf("no such file: %s", id)
 	}
 	return e, nil
@@ -1063,14 +1189,15 @@ func (v *Vault) Descendants(dir string) ([]*Entry, error) {
 
 // EntryByPath looks a file up by its full browser path rather than its ID,
 // which is what a caller working in paths — a filesystem view — has to hand.
-func (v *Vault) EntryByPath(path string) (*Entry, error) {
+func (v *Vault) EntryByPath(scope Scope, path string) (*Entry, error) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
-	if v.dataKey == nil {
-		return nil, ErrLocked
-	}
 
-	e := v.manifest.ByPath(path)
+	m, err := v.manifestForLocked(scope)
+	if err != nil {
+		return nil, err
+	}
+	e := m.ByPath(path)
 	if e == nil {
 		return nil, fmt.Errorf("no such file: %s", path)
 	}
@@ -1084,24 +1211,47 @@ func (v *Vault) EntryByPath(path string) (*Entry, error) {
 // is being moved into is rarely the one already open. It costs a walk of the
 // index and contacts no account — the folder structure is in the manifest, and
 // the manifest is already decrypted in memory.
-func (v *Vault) Folders() ([]string, error) {
+func (v *Vault) Folders(scope Scope) ([]string, error) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
-	if v.dataKey == nil {
-		return nil, ErrLocked
+
+	m, err := v.manifestForLocked(scope)
+	if err != nil {
+		return nil, err
 	}
-	return v.manifest.AllFolders(), nil
+	return m.AllFolders(), nil
 }
 
 // FolderExists reports whether a folder is in the index. A locked vault knows
-// nothing, so it answers false rather than guessing.
-func (v *Vault) FolderExists(dir string) bool {
+// nothing, so it answers false rather than guessing — and so does a scope
+// naming a sub vault that has not been opened.
+func (v *Vault) FolderExists(scope Scope, dir string) bool {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
-	if v.dataKey == nil {
+
+	m, err := v.manifestForLocked(scope)
+	if err != nil {
 		return false
 	}
-	return v.manifest.FolderExists(CleanDir(dir))
+	return m.FolderExists(CleanDir(dir))
+}
+
+// destinationLocked resolves a folder a write is aimed at, checking that the
+// scope is open and the folder is really in it. It is the preamble every
+// upload shares.
+func (v *Vault) destinationLocked(scope Scope, dir string) (string, error) {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+
+	m, err := v.manifestForLocked(scope)
+	if err != nil {
+		return "", err
+	}
+	dir = CleanDir(dir)
+	if !m.FolderExists(dir) {
+		return "", fmt.Errorf("no such folder: %s", dir)
+	}
+	return dir, nil
 }
 
 // MoveFolder renames a folder, carrying everything beneath it along.
@@ -1112,7 +1262,7 @@ func (v *Vault) FolderExists(dir string) bool {
 // the same write, so there is no moment where half a tree answers to its old
 // name and half to its new one. Thumbnails come too, since a pack is filed
 // under its folder rather than carrying the folder's name inside it.
-func (v *Vault) MoveFolder(ctx context.Context, oldDir, newDir string) error {
+func (v *Vault) MoveFolder(ctx context.Context, scope Scope, oldDir, newDir string) error {
 	oldDir, newDir = CleanDir(oldDir), CleanDir(newDir)
 
 	if oldDir == "/" || newDir == "/" {
@@ -1131,29 +1281,30 @@ func (v *Vault) MoveFolder(ctx context.Context, oldDir, newDir string) error {
 	}
 
 	v.mu.Lock()
-	if v.dataKey == nil {
+	m, err := v.manifestForLocked(scope)
+	if err != nil {
 		v.mu.Unlock()
-		return ErrLocked
+		return err
 	}
-	if !v.manifest.FolderExists(oldDir) {
+	if !m.FolderExists(oldDir) {
 		v.mu.Unlock()
 		return fmt.Errorf("no such folder: %s", oldDir)
 	}
-	if v.manifest.FolderExists(newDir) {
+	if m.FolderExists(newDir) {
 		v.mu.Unlock()
 		return fmt.Errorf("%s already exists", newDir)
 	}
-	if v.manifest.ByPath(newDir) != nil {
+	if m.ByPath(newDir) != nil {
 		v.mu.Unlock()
 		return fmt.Errorf("a file already exists at %s", newDir)
 	}
-	if parent := CleanDir(path.Dir(newDir)); !v.manifest.FolderExists(parent) {
+	if parent := CleanDir(path.Dir(newDir)); !m.FolderExists(parent) {
 		v.mu.Unlock()
 		return fmt.Errorf("no such folder: %s", parent)
 	}
 
-	undo := v.manifest.moveFolder(oldDir, newDir)
-	err := v.persistLocked()
+	undo := m.moveFolder(oldDir, newDir)
+	err = v.persistLocked()
 	if err != nil {
 		undo()
 	}
@@ -1171,13 +1322,15 @@ func (v *Vault) MoveFolder(ctx context.Context, oldDir, newDir string) error {
 }
 
 // Mkdir creates a folder.
-func (v *Vault) Mkdir(dir string) error {
+func (v *Vault) Mkdir(scope Scope, dir string) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if v.dataKey == nil {
-		return ErrLocked
+
+	m, err := v.manifestForLocked(scope)
+	if err != nil {
+		return err
 	}
-	if err := v.manifest.Mkdir(dir); err != nil {
+	if err := m.Mkdir(dir); err != nil {
 		return err
 	}
 	return v.persistLocked()
@@ -1197,17 +1350,24 @@ func (v *Vault) Move(ctx context.Context, id, newDir, newName string) (*Entry, e
 		return nil, ErrLocked
 	}
 
-	e := v.manifest.ByID(id)
-	if e == nil {
+	scope, e, ok := v.scopeOfEntryLocked(id)
+	if !ok {
 		v.mu.Unlock()
 		return nil, fmt.Errorf("no such file: %s", id)
+	}
+	// A move stays inside the vault the file is already in. Crossing from one
+	// to the other is Assign, which is a different act: it re-encrypts.
+	m, err := v.manifestForLocked(scope)
+	if err != nil {
+		v.mu.Unlock()
+		return nil, err
 	}
 	from := e.Dir
 
 	dir := e.Dir
 	if newDir != "" {
 		dir = CleanDir(newDir)
-		if !v.manifest.FolderExists(dir) {
+		if !m.FolderExists(dir) {
 			v.mu.Unlock()
 			return nil, fmt.Errorf("no such folder: %s", dir)
 		}
@@ -1225,7 +1385,7 @@ func (v *Vault) Move(ctx context.Context, id, newDir, newName string) (*Entry, e
 		v.mu.Unlock()
 		return e, nil
 	}
-	if existing := v.manifest.ByPath(JoinPath(dir, name)); existing != nil {
+	if existing := m.ByPath(JoinPath(dir, name)); existing != nil {
 		v.mu.Unlock()
 		return nil, fmt.Errorf("%s already exists", JoinPath(dir, name))
 	}
@@ -1234,14 +1394,14 @@ func (v *Vault) Move(ctx context.Context, id, newDir, newName string) (*Entry, e
 	e.Name = name
 	e.ModifiedAt = time.Now().UTC()
 
-	err := v.persistLocked()
+	err = v.persistLocked()
 	v.mu.Unlock()
 
 	if err != nil {
 		return nil, err
 	}
 
-	v.moveThumb(ctx, id, from, dir)
+	v.moveThumb(ctx, scope, id, from, dir)
 	return e, nil
 }
 
@@ -1279,7 +1439,15 @@ type Stats struct {
 	InheritedKey bool `json:"inherited_key"`
 }
 
-// Stats returns aggregate counters for the whole vault.
+// Stats returns aggregate counters for the main vault.
+//
+// Deliberately the main vault alone, not a total across everything open. These
+// figures are drawn in the app beside the accounts and the placement policy,
+// and a number that grew when a sub vault was opened and shrank when it was
+// shut would be reporting the state of the session rather than the state of the
+// vault. What each sub vault holds is asked for by name — see SubVaults, which
+// answers from the inventory while one is shut so the storage figures stay
+// whole even when the index behind them cannot be read.
 func (v *Vault) Stats() (Stats, error) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()

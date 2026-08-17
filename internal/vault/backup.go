@@ -101,6 +101,18 @@ type Snapshot struct {
 	// different keys and has to hand over both.
 	KeyID string        `json:"key_id,omitempty"`
 	Keys  []SnapshotKey `json:"keys,omitempty"`
+
+	// SubVaults are the sealed records, carried exactly as they sit in the
+	// vault file and openable by nothing this snapshot hands over.
+	//
+	// Carrying them is what makes a recovery whole. A backup that dropped them
+	// would restore a vault missing everything its owner had most deliberately
+	// protected, and would do it silently — the sub vaults would simply not be
+	// there. Carrying them costs nothing in secrecy, because the password that
+	// opens this snapshot does not open them: the recovered vault comes back
+	// with its sub vaults present and shut, and each one's own password opens
+	// it afterwards exactly as before.
+	SubVaults []subVaultRecord `json:"sub_vaults,omitempty"`
 }
 
 // SnapshotKey is one data key generation carried by a backup.
@@ -318,6 +330,7 @@ func (v *Vault) snapshotLocked() *Snapshot {
 		Keys:      keys,
 		Accounts:  accounts,
 		Manifest:  v.manifest,
+		SubVaults: append([]subVaultRecord(nil), v.store.SubVaults...),
 	}
 }
 

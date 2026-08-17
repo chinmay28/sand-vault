@@ -11,6 +11,7 @@ import RecoverVault from './components/RecoverVault'
 import FilmDetails from './components/FilmDetails'
 import { Brand, DevMark } from './components/Brand'
 import { Banner, Button } from './components/ui'
+import { UnlockSubVault } from './components/SubVaults'
 
 /* SAND — a file browser over storage you do not fully trust.
    Files are compressed, split into three encrypted parts and scattered across
@@ -32,9 +33,18 @@ export default function App() {
   const [accountsOpen, setAccountsOpen] = useState(false)
   const [recovery, setRecovery] = useState(null)
   const [recovering, setRecovering] = useState(false)
+  const [unlockingSub, setUnlockingSub] = useState(null)
+  /* Whether the sub vaults show up in the file list. A view preference, kept
+     in this browser: it decides what is drawn and nothing else. A locked sub
+     vault stays locked with it on, and no setting puts one on a mounted
+     drive. */
+  const [showSubVaults, setShowSubVaults] = useState(() => {
+    try { return localStorage.getItem('sand.showSubVaults') === '1' } catch { return false }
+  })
 
   const mobile = useIsMobile()
   const unlocked = !!status?.unlocked
+  const subVaults = status?.sub_vaults || []
 
   // A prompt that reappears every time the accounts are refreshed stops being a
   // prompt and starts being an obstacle. Held in a ref rather than in state so
@@ -77,15 +87,33 @@ export default function App() {
     }
   }, [])
 
-  const refreshListing = useCallback(async (target = path) => {
+  /* Which listing the browser is actually showing. A folder listing is a
+     round-trip, and walking into a sub vault changes where you are while one
+     for somewhere else is still in flight — so an answer that arrives for
+     somewhere you have left is dropped rather than drawn. Without this,
+     opening a sub vault could paint the main vault's files under its name,
+     which is worse than a slow listing by some distance. */
+  const showing = useRef({ vault: '', path: '/' })
+  useEffect(() => { showing.current = { vault: nav.vault, path } }, [nav.vault, path])
+
+  const refreshListing = useCallback(async (target = path, inVault = nav.vault) => {
     setLoadingList(true)
     try {
-      const resp = await api.list(target)
+      const resp = await api.list(target, inVault)
+      if (showing.current.vault !== inVault || showing.current.path !== target) return
       setListing(resp)
       setError(null)
     } catch (err) {
+      if (showing.current.vault !== inVault || showing.current.path !== target) return
       if (err.code === 'LOCKED') {
         setStatus((s) => ({ ...s, unlocked: false }))
+      } else if (err.code === 'SUB_VAULT_LOCKED') {
+        /* It was locked from another tab, or the session outlived it. Step
+           back to the main vault rather than leaving the browser pointed at a
+           tree it can no longer read — and drop the trail through it, since
+           those folder names are that sub vault's index. */
+        nav.leaveVault(inVault)
+        setListing(null)
       } else if (err.code === 'NOT_FOUND' && target !== '/') {
         // The folder went away underneath us — fall back to the root. It
         // replaces the step rather than adding one, because a folder that is
@@ -107,8 +135,8 @@ export default function App() {
 
   useEffect(() => {
     if (!unlocked) return
-    refreshListing(path)
-  }, [unlocked, path, refreshListing])
+    refreshListing(path, nav.vault)
+  }, [unlocked, path, nav.vault, refreshListing])
 
   useEffect(() => {
     if (!unlocked) return
@@ -168,6 +196,26 @@ export default function App() {
     // the vault has to put that away with everything else.
     nav.reset()
   }
+
+  /* Walking into a sub vault, from the strip at the root or from settings.
+
+     A locked one asks for its password on the way in rather than refusing.
+     Navigating first and letting the listing fail would bounce straight back
+     to the main root, which from the outside is a click that did nothing. */
+  const openSubVault = useCallback((sub) => {
+    if (!sub?.id) return
+    const known = subVaults.find((s) => s.id === sub.id) || sub
+    if (known.unlocked === false) {
+      setUnlockingSub(known)
+      return
+    }
+    nav.navigate({ vault: sub.id, path: '/' })
+  }, [nav, subVaults])
+
+  const toggleSubVaults = useCallback((next) => {
+    setShowSubVaults(next)
+    try { localStorage.setItem('sand.showSubVaults', next ? '1' : '0') } catch { /* private mode */ }
+  }, [])
 
   if (!status) {
     return <Shell><div style={{ padding: '80px 24px', textAlign: 'center', color: COLORS.textMuted }}>Loading…</div></Shell>
@@ -273,10 +321,15 @@ export default function App() {
           <AccountsPanel
             providers={providers}
             loading={loadingProviders}
+            status={status}
             stats={status.stats}
             webdav={status.webdav}
             mobile={mobile}
             open={accountsOpen}
+            subVaults={subVaults}
+            showSubVaults={showSubVaults}
+            onToggleSubVaults={toggleSubVaults}
+            onOpenSubVault={openSubVault}
             onClose={() => setAccountsOpen(false)}
             onRefresh={refreshProviders}
             onChanged={refreshAll}
@@ -290,6 +343,9 @@ export default function App() {
             providers={providers}
             defaultAccounts={status.stats?.default_accounts || []}
             mobile={mobile}
+            subVaults={subVaults}
+            showSubVaults={showSubVaults}
+            onOpenSubVault={openSubVault}
             onRefresh={refreshAll}
             onPreview={(file, hasThumb, film) => setPreview({ file, hasThumb, film })}
             onInspect={setInspecting}
@@ -335,6 +391,19 @@ export default function App() {
           onAccountsChanged={refreshProviders}
         />
       )}
+      {unlockingSub && (
+        <UnlockSubVault
+          sub={unlockingSub}
+          onClose={() => setUnlockingSub(null)}
+          onUnlocked={() => {
+            const sub = unlockingSub
+            setUnlockingSub(null)
+            refreshAll()
+            nav.navigate({ vault: sub.id, path: '/' })
+          }}
+        />
+      )}
+
       {inspecting && (
         <ShardInspector
           file={inspecting}

@@ -22,6 +22,22 @@ import (
 	"golang.org/x/net/webdav"
 )
 
+// mainVault is the only scope this adapter ever addresses.
+//
+// A sub vault is deliberately unreachable over WebDAV — not merely hidden while
+// it is locked, but absent even while it is open in the app. A mounted drive is
+// the broadest possible exposure of a vault: it is a folder on the desktop that
+// every process running as that user can read, that a backup agent will happily
+// copy to somewhere else, and that stays mounted long after the person who
+// mounted it has walked away. What goes in a sub vault is what should not be
+// reachable that way.
+//
+// Expressing it as a constant rather than a flag is the point. There is no
+// configuration that turns this on, and no request that can ask for a different
+// scope, so the guarantee holds by construction rather than by every call site
+// remembering it.
+const mainVault = vault.MainScope
+
 // FileSystem adapts a vault to webdav.FileSystem.
 type FileSystem struct {
 	Vault *vault.Vault
@@ -112,10 +128,10 @@ func (fs *FileSystem) Stat(ctx context.Context, name string) (os.FileInfo, error
 		return nil, err
 	}
 
-	if fs.Vault.FolderExists(clean) {
+	if fs.Vault.FolderExists(mainVault, clean) {
 		return dirInfo(clean), nil
 	}
-	entry, err := fs.Vault.EntryByPath(clean)
+	entry, err := fs.Vault.EntryByPath(mainVault, clean)
 	if err != nil {
 		return nil, vaultError(err)
 	}
@@ -131,16 +147,16 @@ func (fs *FileSystem) Mkdir(ctx context.Context, name string, perm os.FileMode) 
 	if clean == "/" {
 		return os.ErrExist
 	}
-	if fs.Vault.FolderExists(clean) {
+	if fs.Vault.FolderExists(mainVault, clean) {
 		return os.ErrExist
 	}
 	// The parent has to be there already: MKCOL creates one collection, and a
 	// client relying on it to build a whole path would otherwise get a tree it
 	// never asked for.
-	if parent, _ := split(clean); !fs.Vault.FolderExists(parent) {
+	if parent, _ := split(clean); !fs.Vault.FolderExists(mainVault, parent) {
 		return os.ErrNotExist
 	}
-	return vaultError(fs.Vault.Mkdir(clean))
+	return vaultError(fs.Vault.Mkdir(mainVault, clean))
 }
 
 // RemoveAll deletes a file, or a folder and everything under it.
@@ -153,12 +169,12 @@ func (fs *FileSystem) RemoveAll(ctx context.Context, name string) error {
 		return os.ErrPermission
 	}
 
-	if fs.Vault.FolderExists(clean) {
-		_, err := fs.Vault.Rmdir(ctx, clean, true)
+	if fs.Vault.FolderExists(mainVault, clean) {
+		_, err := fs.Vault.Rmdir(ctx, mainVault, clean, true)
 		return vaultError(err)
 	}
 
-	entry, err := fs.Vault.EntryByPath(clean)
+	entry, err := fs.Vault.EntryByPath(mainVault, clean)
 	if err != nil {
 		return vaultError(err)
 	}
@@ -182,16 +198,16 @@ func (fs *FileSystem) Rename(ctx context.Context, oldName, newName string) error
 		return os.ErrPermission
 	}
 
-	if fs.Vault.FolderExists(oldClean) {
-		return vaultError(fs.Vault.MoveFolder(ctx, oldClean, newClean))
+	if fs.Vault.FolderExists(mainVault, oldClean) {
+		return vaultError(fs.Vault.MoveFolder(ctx, mainVault, oldClean, newClean))
 	}
 
-	entry, err := fs.Vault.EntryByPath(oldClean)
+	entry, err := fs.Vault.EntryByPath(mainVault, oldClean)
 	if err != nil {
 		return vaultError(err)
 	}
 	dir, base := split(newClean)
-	if !fs.Vault.FolderExists(dir) {
+	if !fs.Vault.FolderExists(mainVault, dir) {
 		return os.ErrNotExist
 	}
 	_, err = fs.Vault.Move(ctx, entry.ID, dir, base)
@@ -214,12 +230,12 @@ func (fs *FileSystem) OpenFile(ctx context.Context, name string, flag int, perm 
 	if !writing {
 		return fs.openRead(ctx, clean)
 	}
-	if clean == "/" || fs.Vault.FolderExists(clean) {
+	if clean == "/" || fs.Vault.FolderExists(mainVault, clean) {
 		return nil, os.ErrPermission
 	}
 
 	dir, base := split(clean)
-	if !fs.Vault.FolderExists(dir) {
+	if !fs.Vault.FolderExists(mainVault, dir) {
 		return nil, os.ErrNotExist
 	}
 	if base == "" {
@@ -233,7 +249,7 @@ func (fs *FileSystem) OpenFile(ctx context.Context, name string, flag int, perm 
 	// than RAM. O_TRUNC wins if both are set, which is what os.OpenFile does.
 	var prefix io.Reader
 	if flag&os.O_APPEND != 0 && flag&os.O_TRUNC == 0 {
-		if existing, err := fs.Vault.EntryByPath(clean); err == nil {
+		if existing, err := fs.Vault.EntryByPath(mainVault, clean); err == nil {
 			body, _, err := fs.Vault.OpenReadSeeker(ctx, existing.ID)
 			if err != nil {
 				return nil, vaultError(err)
@@ -247,15 +263,15 @@ func (fs *FileSystem) OpenFile(ctx context.Context, name string, flag int, perm 
 
 // openRead opens a folder for listing or a file for reading.
 func (fs *FileSystem) openRead(ctx context.Context, clean string) (webdav.File, error) {
-	if fs.Vault.FolderExists(clean) {
-		listing, err := fs.Vault.List(clean)
+	if fs.Vault.FolderExists(mainVault, clean) {
+		listing, err := fs.Vault.List(mainVault, clean)
 		if err != nil {
 			return nil, vaultError(err)
 		}
 		return newDirFile(clean, listing), nil
 	}
 
-	entry, err := fs.Vault.EntryByPath(clean)
+	entry, err := fs.Vault.EntryByPath(mainVault, clean)
 	if err != nil {
 		return nil, vaultError(err)
 	}

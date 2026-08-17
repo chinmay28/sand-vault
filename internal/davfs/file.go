@@ -85,7 +85,7 @@ func newWriteFile(ctx context.Context, v *vault.Vault, dir, base string, prefix 
 	go func() {
 		// PUT to a path that already holds a file replaces it, which is what
 		// WebDAV means by it.
-		entry, warnings, err := v.UploadStream(ctx, dir, base, source, vault.UploadOptions{Overwrite: true})
+		entry, warnings, err := v.UploadStream(ctx, mainVault, dir, base, source, vault.UploadOptions{Overwrite: true})
 		// Draining matters when the upload gives up early: without it the
 		// handler's io.Copy would block forever on a pipe nobody reads.
 		if err != nil {

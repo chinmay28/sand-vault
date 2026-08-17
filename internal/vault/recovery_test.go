@@ -50,13 +50,13 @@ func storedVault(t *testing.T) []string {
 	ctx := context.Background()
 
 	original, roots := newTestVault(t, 3)
-	if err := original.Mkdir("/work"); err != nil {
+	if err := original.Mkdir(MainScope, "/work"); err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
-	if _, _, err := original.Upload(ctx, "/work", "q4.txt", []byte("the quarterly numbers"), UploadOptions{}); err != nil {
+	if _, _, err := original.Upload(ctx, MainScope, "/work", "q4.txt", []byte("the quarterly numbers"), UploadOptions{}); err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
-	if _, _, err := original.Upload(ctx, "/", "readme.md", []byte("top level"), UploadOptions{}); err != nil {
+	if _, _, err := original.Upload(ctx, MainScope, "/", "readme.md", []byte("top level"), UploadOptions{}); err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 	if warnings, err := original.SyncManifestBackup(ctx, false); err != nil {
@@ -302,7 +302,7 @@ func TestRecoveryReportsDegradedFilesAsRecovered(t *testing.T) {
 	}
 
 	// And the vault really did take the files on.
-	listing, err := fresh.List("/work")
+	listing, err := fresh.List(MainScope, "/work")
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -404,7 +404,7 @@ func TestResumingARecoveryOnceTheRestOfTheCloudsAreBack(t *testing.T) {
 	}
 
 	// The proof: a file that could not be opened before this now opens.
-	listing, err := fresh.List("/work")
+	listing, err := fresh.List(MainScope, "/work")
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -433,7 +433,7 @@ func TestResumingARecoveryOnceTheRestOfTheCloudsAreBack(t *testing.T) {
 func TestResumeIsOfferedOnlyWhileSomethingIsOutOfReach(t *testing.T) {
 	ctx := context.Background()
 	v, _ := newTestVault(t, 3)
-	if _, _, err := v.Upload(ctx, "/", "notes.txt", []byte("hello"), UploadOptions{}); err != nil {
+	if _, _, err := v.Upload(ctx, MainScope, "/", "notes.txt", []byte("hello"), UploadOptions{}); err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 

@@ -137,11 +137,18 @@ export const api = {
   removeProvider: (id, force) =>
     request(`/api/providers/${encodeURIComponent(id)}${force ? '?force=1' : ''}`, { method: 'DELETE' }),
 
-  list: (path) => request(`/api/files?path=${encodeURIComponent(path)}`),
+  /* Every call that names a path also names which vault the path is in. The
+     empty string is the main vault, which is what every one of these meant
+     before sub vaults existed and still means. Calls that name a file by its
+     id take no vault at all — an id is unique across all of them, so the
+     server resolves it against whatever is open. */
+  list: (path, vault = '') =>
+    request(`/api/files?path=${encodeURIComponent(path)}${vaultParam(vault)}`),
   /* Only the server can answer this: the file index is encrypted everywhere
      else, so there is nothing on any cloud account to ask. */
-  search: (query, { path = '/', type, limit, signal } = {}) => {
+  search: (query, { path = '/', type, limit, vault = '', signal } = {}) => {
     const params = new URLSearchParams({ q: query })
+    if (vault) params.set('vault', vault)
     if (path && path !== '/') params.set('path', path)
     if (type) params.set('type', type)
     if (limit) params.set('limit', String(limit))
@@ -170,33 +177,100 @@ export const api = {
      copied — swapping one cloud out of three moves one part, not the file — so
      `preview` is worth asking first: it answers out of the index alone, without
      contacting a single account, and says exactly how much would travel. */
-  relocate: ({ id, path, accounts, preview = false, signal } = {}) =>
-    request('/api/relocate', { method: 'POST', body: { id, path, accounts, preview }, signal }),
+  relocate: ({ id, path, accounts, preview = false, vault = '', signal } = {}) =>
+    request('/api/relocate', { method: 'POST', body: { id, path, accounts, preview, vault }, signal }),
 
-  createFolder: (path) => request('/api/folders', { method: 'POST', body: { path } }),
-  deleteFolder: (path, recursive) =>
-    request(`/api/folders?path=${encodeURIComponent(path)}${recursive ? '&recursive=1' : ''}`,
+  createFolder: (path, vault = '') =>
+    request('/api/folders', { method: 'POST', body: { path, vault } }),
+  deleteFolder: (path, recursive, vault = '') =>
+    request(`/api/folders?path=${encodeURIComponent(path)}${recursive ? '&recursive=1' : ''}${vaultParam(vault)}`,
       { method: 'DELETE' }),
 
   /* Every folder in the vault, root first — the whole tree in one answer,
      which is what picking a destination needs. Folder paths and nothing else:
      no file names, no sizes, no placements. */
-  folders: () => request('/api/folders'),
+  folders: (vault = '') => request(`/api/folders${vault ? `?vault=${encodeURIComponent(vault)}` : ''}`),
   /* Move a folder, and everything under it, somewhere else in the vault. Like
      moving a file this is an index change and nothing more — no part leaves the
      account it is on — and the whole subtree changes in one write, so there is
      never a moment where half of it answers to the old name. */
-  moveFolder: (from, to) => request('/api/folders/move', { method: 'POST', body: { from, to } }),
+  moveFolder: (from, to, vault = '') =>
+    request('/api/folders/move', { method: 'POST', body: { from, to, vault } }),
 
   /* The picture a folder is drawn with, and what else it could be drawn with:
      every file under it that has a thumbnail, films first. What comes back is a
      file id — the picture itself is that file's own thumbnail, drawn through
      thumbURL like every other picture in the app, so a folder's face costs
      nothing to store and nothing to change. */
-  folderArt: (path) => request(`/api/folders/art?path=${encodeURIComponent(path)}`),
+  folderArt: (path, vault = '') =>
+    request(`/api/folders/art?path=${encodeURIComponent(path)}${vaultParam(vault)}`),
   /* Pick one, or pass no id to hand the choice back to the vault. */
   setFolderArt: (path, id = '') =>
     request('/api/folders/art', { method: 'POST', body: { path, id } }),
+  /* --- The vaults inside the vault ------------------------------------ */
+
+  subVaults: () => request('/api/subvaults'),
+  createSubVault: (label, password) =>
+    request('/api/subvaults', { method: 'POST', body: { label, password } }),
+  /* Opening one is a second password on top of the session, never a way
+     around it — every one of these is behind the same session cookie as the
+     rest of the app. */
+  unlockSubVault: (id, password) =>
+    request(`/api/subvaults/${encodeURIComponent(id)}/unlock`, { method: 'POST', body: { password } }),
+  lockSubVault: (id) =>
+    request(`/api/subvaults/${encodeURIComponent(id)}/lock`, { method: 'POST' }),
+  renameSubVault: (id, label) =>
+    request(`/api/subvaults/${encodeURIComponent(id)}`, { method: 'PATCH', body: { label } }),
+  /* Rotates the key the sub vault's files are stored under, so like the
+     vault's own password change this can run for a long time on a full one. */
+  changeSubVaultPassword: (id, password, newPassword, { migrate = true } = {}) =>
+    request(`/api/subvaults/${encodeURIComponent(id)}/password`, {
+      method: 'POST',
+      body: { password, new_password: newPassword, migrate },
+    }),
+  migrateSubVault: (id) =>
+    request(`/api/subvaults/${encodeURIComponent(id)}/migrate`, { method: 'POST' }),
+  /* force is for a locked one, where what is about to be erased cannot be
+     listed first. */
+  deleteSubVault: (id, force = false) =>
+    request(`/api/subvaults/${encodeURIComponent(id)}${force ? '?force=1' : ''}`, { method: 'DELETE' }),
+
+  /* Moving a file or a folder from one vault into another. One call for both
+     directions: assigning into a sub vault and taking something back out are
+     the same operation with the two swapped.
+
+     migrate defaults off here, so the move lands at once and the re-encryption
+     runs behind it — assigning a folder of films should not be a progress bar. */
+  assign: ({ target, from = '', to = '', migrate = false } = {}) =>
+    request('/api/assign', { method: 'POST', body: { target, from, to, migrate } }),
+
+  /* Re-encrypt whatever in a vault is still on an older key. Assignment leaves
+     the moved files on the key of the vault they came from, and until this has
+     run they can only be read while that vault is open — so whoever assigns is
+     the one who has to start it. */
+  migrateVault: (vault = '') => (vault
+    ? request(`/api/subvaults/${encodeURIComponent(vault)}/migrate`, { method: 'POST' })
+    : request('/api/vault/migrate', { method: 'POST' })),
+
+  /* --- Another vault found on an account ------------------------------- */
+
+  importVault: ({ provider, backupPassword, password, label = '', adoptBackup = true } = {}) =>
+    request('/api/vaults/import', {
+      method: 'POST',
+      body: {
+        provider,
+        backup_password: backupPassword,
+        password,
+        label,
+        adopt_backup: adoptBackup,
+      },
+    }),
+
+  /* Replicating the index to the connected accounts. Turning it off erases the
+     copies already out there, which is the point: leaving them would make it a
+     setting that changed nothing. */
+  setManifestBackup: (enabled) =>
+    request('/api/vault/backup', { method: 'POST', body: { enabled } }),
 
   /* A link a player outside the browser can follow. VLC has none of what
      authenticates this app — the session cookie is HttpOnly and SameSite=Strict
@@ -277,7 +351,7 @@ export const api = {
 
   /* Uploads go through XMLHttpRequest rather than fetch so the UI can show
      real progress while a large file is being split and scattered. */
-  upload(files, path, { overwrite = false, accounts = [], thumbs = [], onProgress } = {}) {
+  upload(files, path, { overwrite = false, accounts = [], thumbs = [], vault = '', onProgress } = {}) {
     return new Promise((resolve, reject) => {
       const form = new FormData()
       Array.from(files).forEach((file, i) => {
@@ -295,7 +369,7 @@ export const api = {
       for (const id of accounts) form.append('accounts', id)
 
       const xhr = new XMLHttpRequest()
-      xhr.open('POST', '/api/files')
+      xhr.open('POST', vault ? `/api/files?vault=${encodeURIComponent(vault)}` : '/api/files')
       xhr.withCredentials = true
 
       if (onProgress) {
@@ -321,6 +395,13 @@ export const api = {
       xhr.send(form)
     })
   },
+}
+
+/* The vault as an extra query parameter, for URLs that already carry one.
+   Anything building a URL from scratch has to write `?vault=` itself — see
+   upload(), which does. */
+function vaultParam(vault) {
+  return vault ? `&vault=${encodeURIComponent(vault)}` : ''
 }
 
 export function joinPath(dir, name) {

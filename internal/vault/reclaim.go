@@ -173,8 +173,10 @@ func (v *Vault) Reclaim(ctx context.Context, accounts []string, progress Progres
 	}
 
 	// Sealed under the key being retired, and cheaper to draw again than to
-	// gather and scatter. Dropped while that key is still the vault's own.
-	v.dropAllThumbs(ctx)
+	// gather and scatter. Dropped while that key is still the vault's own —
+	// the main vault's alone, since a sub vault's packs are on a key this is
+	// not rotating.
+	v.dropAllThumbs(ctx, MainScope)
 
 	keyID, err := v.RotateDataKey()
 	if err != nil {

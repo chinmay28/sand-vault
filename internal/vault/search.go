@@ -37,6 +37,15 @@ func (k SearchKind) Valid() bool {
 
 // SearchOptions describes one search over the browser namespace.
 type SearchOptions struct {
+	// Vault names which of the vaults inside the file to search. The zero
+	// value is the main vault.
+	//
+	// A search never crosses the boundary. Answering one query out of two trees
+	// would put a sub vault's filenames in front of someone who was searching
+	// the main vault — the exact disclosure the sub vault exists to prevent —
+	// so the tree you are standing in is the tree that is searched.
+	Vault Scope
+
 	// Query is what to look for. A query containing "/" is matched against the
 	// full path; anything else against the name alone. A query containing "*"
 	// or "?" is a wildcard pattern; anything else is a case-insensitive
@@ -103,8 +112,10 @@ type SearchResults struct {
 func (v *Vault) Search(opts SearchOptions) (*SearchResults, error) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
-	if v.dataKey == nil {
-		return nil, ErrLocked
+
+	m, err := v.manifestForLocked(opts.Vault)
+	if err != nil {
+		return nil, err
 	}
 
 	query := strings.TrimSpace(opts.Query)
@@ -120,7 +131,7 @@ func (v *Vault) Search(opts SearchOptions) (*SearchResults, error) {
 	}
 
 	scope := CleanDir(opts.Dir)
-	if !v.manifest.FolderExists(scope) {
+	if !m.FolderExists(scope) {
 		return nil, fmt.Errorf("no such folder: %s", scope)
 	}
 
@@ -134,7 +145,7 @@ func (v *Vault) Search(opts SearchOptions) (*SearchResults, error) {
 		limit = DefaultSearchLimit
 	}
 
-	hits := v.manifest.search(match, scope, kind)
+	hits := m.search(match, scope, kind)
 	results := &SearchResults{Query: query, Scope: scope, Matched: len(hits)}
 	if len(hits) > limit {
 		hits = hits[:limit]
@@ -148,11 +159,11 @@ func (v *Vault) Search(opts SearchOptions) (*SearchResults, error) {
 			matched = append(matched, hit.File)
 		}
 	}
-	results.Thumbs = v.thumbIDsForLocked(matched)
+	results.Thumbs = v.thumbIDsForLocked(m, matched)
 	if results.Thumbs == nil {
 		results.Thumbs = []string{}
 	}
-	results.Movies = v.movieBriefsForLocked(matched)
+	results.Movies = v.movieBriefsForLocked(m, matched)
 
 	folders := make([]string, 0, len(hits))
 	for _, hit := range hits {
@@ -160,7 +171,7 @@ func (v *Vault) Search(opts SearchOptions) (*SearchResults, error) {
 			folders = append(folders, hit.Path)
 		}
 	}
-	results.FolderArt = v.folderArtForLocked(folders)
+	results.FolderArt = v.folderArtForLocked(m, folders)
 	return results, nil
 }
 

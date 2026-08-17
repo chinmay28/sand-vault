@@ -46,7 +46,7 @@ func TestRelocateMovesOnlyThePartThatHasTo(t *testing.T) {
 	ids := accountIDs(t, v)
 
 	payload := []byte("three clouds now, two of them the same afterwards\n")
-	entry, _, err := v.Upload(ctx, "/", "notes.txt", payload, UploadOptions{
+	entry, _, err := v.Upload(ctx, MainScope, "/", "notes.txt", payload, UploadOptions{
 		Accounts: ids[:3],
 	})
 	if err != nil {
@@ -59,7 +59,7 @@ func TestRelocateMovesOnlyThePartThatHasTo(t *testing.T) {
 	stays, leaving := []string{before[1], before[2]}, before[3]
 	targets := append(append([]string{}, stays...), ids[3])
 
-	plan, err := v.PlanRelocation("/notes.txt", targets)
+	plan, err := v.PlanRelocation(MainScope, "/notes.txt", targets)
 	if err != nil {
 		t.Fatalf("PlanRelocation: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestRelocateMovesOnlyThePartThatHasTo(t *testing.T) {
 		t.Errorf("expected 2 parts to stay put, got %v", plan.Files[0].Stay)
 	}
 
-	report, err := v.Relocate(ctx, "/notes.txt", targets, nil)
+	report, err := v.Relocate(ctx, MainScope, "/notes.txt", targets, nil)
 	if err != nil {
 		t.Fatalf("Relocate: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestRelocateToTheSameAccountsDoesNothing(t *testing.T) {
 	ctx := context.Background()
 	ids := accountIDs(t, v)
 
-	entry, _, err := v.Upload(ctx, "/", "still.txt", []byte("no work to do"), UploadOptions{Accounts: ids})
+	entry, _, err := v.Upload(ctx, MainScope, "/", "still.txt", []byte("no work to do"), UploadOptions{Accounts: ids})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestRelocateToTheSameAccountsDoesNothing(t *testing.T) {
 	// answer: placement is a set of accounts, not a sequence.
 	shuffled := []string{ids[2], ids[0], ids[1]}
 
-	plan, err := v.PlanRelocation(entry.ID, shuffled)
+	plan, err := v.PlanRelocation(MainScope, entry.ID, shuffled)
 	if err != nil {
 		t.Fatalf("PlanRelocation: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestRelocateToTheSameAccountsDoesNothing(t *testing.T) {
 			plan.Moves, plan.Drops, plan.Unchanged)
 	}
 
-	report, err := v.Relocate(ctx, entry.ID, shuffled, nil)
+	report, err := v.Relocate(ctx, MainScope, entry.ID, shuffled, nil)
 	if err != nil {
 		t.Fatalf("Relocate: %v", err)
 	}
@@ -177,25 +177,25 @@ func TestRelocateFolderRecursively(t *testing.T) {
 	ctx := context.Background()
 	ids := accountIDs(t, v)
 
-	if err := v.Mkdir("/photos/2024"); err != nil {
+	if err := v.Mkdir(MainScope, "/photos/2024"); err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
-	first, _, err := v.Upload(ctx, "/photos", "a.txt", []byte("alpha"), UploadOptions{Accounts: ids[:3]})
+	first, _, err := v.Upload(ctx, MainScope, "/photos", "a.txt", []byte("alpha"), UploadOptions{Accounts: ids[:3]})
 	if err != nil {
 		t.Fatalf("Upload a: %v", err)
 	}
-	nested, _, err := v.Upload(ctx, "/photos/2024", "b.txt", []byte("bravo"), UploadOptions{Accounts: ids[:3]})
+	nested, _, err := v.Upload(ctx, MainScope, "/photos/2024", "b.txt", []byte("bravo"), UploadOptions{Accounts: ids[:3]})
 	if err != nil {
 		t.Fatalf("Upload b: %v", err)
 	}
 	// Outside the folder, and so out of scope.
-	outside, _, err := v.Upload(ctx, "/", "c.txt", []byte("charlie"), UploadOptions{Accounts: ids[:3]})
+	outside, _, err := v.Upload(ctx, MainScope, "/", "c.txt", []byte("charlie"), UploadOptions{Accounts: ids[:3]})
 	if err != nil {
 		t.Fatalf("Upload c: %v", err)
 	}
 
 	targets := ids[3:]
-	report, err := v.Relocate(ctx, "/photos", targets, nil)
+	report, err := v.Relocate(ctx, MainScope, "/photos", targets, nil)
 	if err != nil {
 		t.Fatalf("Relocate: %v", err)
 	}
@@ -241,7 +241,7 @@ func TestRelocateChunkedFileCarriesEveryChunk(t *testing.T) {
 	ids := accountIDs(t, v)
 
 	payload := bytes.Repeat([]byte("a film is a great many bytes long "), 300) // ~10 KB
-	entry, _, err := v.Upload(ctx, "/", "film.mkv", payload, UploadOptions{Accounts: ids[:3]})
+	entry, _, err := v.Upload(ctx, MainScope, "/", "film.mkv", payload, UploadOptions{Accounts: ids[:3]})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -253,7 +253,7 @@ func TestRelocateChunkedFileCarriesEveryChunk(t *testing.T) {
 	before := placementOf(entry)
 	targets := []string{before[1], before[2], ids[3]}
 
-	plan, err := v.PlanRelocation(entry.ID, targets)
+	plan, err := v.PlanRelocation(MainScope, entry.ID, targets)
 	if err != nil {
 		t.Fatalf("PlanRelocation: %v", err)
 	}
@@ -261,7 +261,7 @@ func TestRelocateChunkedFileCarriesEveryChunk(t *testing.T) {
 		t.Errorf("plan says %d objects for the moving part, want %d", got, chunks)
 	}
 
-	report, err := v.Relocate(ctx, entry.ID, targets, nil)
+	report, err := v.Relocate(ctx, MainScope, entry.ID, targets, nil)
 	if err != nil {
 		t.Fatalf("Relocate: %v", err)
 	}
@@ -302,7 +302,7 @@ func TestRelocateOntoTwoAccountsDropsTheSpare(t *testing.T) {
 	ctx := context.Background()
 	ids := accountIDs(t, v)
 
-	entry, _, err := v.Upload(ctx, "/", "squeeze.txt", []byte("three into two"), UploadOptions{
+	entry, _, err := v.Upload(ctx, MainScope, "/", "squeeze.txt", []byte("three into two"), UploadOptions{
 		Accounts: ids[:3],
 	})
 	if err != nil {
@@ -314,7 +314,7 @@ func TestRelocateOntoTwoAccountsDropsTheSpare(t *testing.T) {
 	// part has nowhere to live under the strict policy.
 	targets := []string{before[1], before[2]}
 
-	plan, err := v.PlanRelocation(entry.ID, targets)
+	plan, err := v.PlanRelocation(MainScope, entry.ID, targets)
 	if err != nil {
 		t.Fatalf("PlanRelocation: %v", err)
 	}
@@ -325,7 +325,7 @@ func TestRelocateOntoTwoAccountsDropsTheSpare(t *testing.T) {
 		t.Error("dropping a part should be said out loud")
 	}
 
-	report, err := v.Relocate(ctx, entry.ID, targets, nil)
+	report, err := v.Relocate(ctx, MainScope, entry.ID, targets, nil)
 	if err != nil {
 		t.Fatalf("Relocate: %v", err)
 	}
@@ -360,7 +360,7 @@ func TestRelocateRedundantPolicyDoublesUp(t *testing.T) {
 	if err := v.SetPolicy(PolicyRedundant); err != nil {
 		t.Fatalf("SetPolicy: %v", err)
 	}
-	entry, _, err := v.Upload(ctx, "/", "double.txt", []byte("all three, two homes"), UploadOptions{
+	entry, _, err := v.Upload(ctx, MainScope, "/", "double.txt", []byte("all three, two homes"), UploadOptions{
 		Accounts: ids,
 	})
 	if err != nil {
@@ -368,7 +368,7 @@ func TestRelocateRedundantPolicyDoublesUp(t *testing.T) {
 	}
 
 	targets := ids[:2]
-	report, err := v.Relocate(ctx, entry.ID, targets, nil)
+	report, err := v.Relocate(ctx, MainScope, entry.ID, targets, nil)
 	if err != nil {
 		t.Fatalf("Relocate: %v", err)
 	}
@@ -398,11 +398,11 @@ func TestRelocateRefusesOneAccountUnderStrict(t *testing.T) {
 	v, _ := newTestVault(t, 3)
 	ids := accountIDs(t, v)
 
-	if _, _, err := v.Upload(context.Background(), "/", "one.txt", []byte("x"), UploadOptions{}); err != nil {
+	if _, _, err := v.Upload(context.Background(), MainScope, "/", "one.txt", []byte("x"), UploadOptions{}); err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 
-	_, err := v.Relocate(context.Background(), "/one.txt", ids[:1], nil)
+	_, err := v.Relocate(context.Background(), MainScope, "/one.txt", ids[:1], nil)
 	if err == nil {
 		t.Fatal("expected strict placement to refuse a single account")
 	}
@@ -415,7 +415,7 @@ func TestRelocateRejectsUnknownAndRepeatedAccounts(t *testing.T) {
 	v, _ := newTestVault(t, 3)
 	ids := accountIDs(t, v)
 
-	if _, _, err := v.Upload(context.Background(), "/", "x.txt", []byte("x"), UploadOptions{}); err != nil {
+	if _, _, err := v.Upload(context.Background(), MainScope, "/", "x.txt", []byte("x"), UploadOptions{}); err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 
@@ -426,7 +426,7 @@ func TestRelocateRejectsUnknownAndRepeatedAccounts(t *testing.T) {
 		"none at all":     {},
 	}
 	for name, accounts := range cases {
-		if _, err := v.PlanRelocation("/x.txt", accounts); err == nil {
+		if _, err := v.PlanRelocation(MainScope, "/x.txt", accounts); err == nil {
 			t.Errorf("%s: expected an error", name)
 		}
 	}
@@ -436,12 +436,12 @@ func TestRelocateUnknownTargetAndLockedVault(t *testing.T) {
 	v, _ := newTestVault(t, 3)
 	ids := accountIDs(t, v)
 
-	if _, err := v.PlanRelocation("/nowhere.txt", ids); err == nil {
+	if _, err := v.PlanRelocation(MainScope, "/nowhere.txt", ids); err == nil {
 		t.Error("expected an error for a path that names nothing")
 	}
 
 	v.Lock()
-	if _, err := v.Relocate(context.Background(), "/nowhere.txt", ids, nil); !errors.Is(err, ErrLocked) {
+	if _, err := v.Relocate(context.Background(), MainScope, "/nowhere.txt", ids, nil); !errors.Is(err, ErrLocked) {
 		t.Errorf("locked vault returned %v, want ErrLocked", err)
 	}
 }
@@ -451,7 +451,7 @@ func TestRelocateReportsAnUnreachableAccountAndResumes(t *testing.T) {
 	ctx := context.Background()
 	ids := accountIDs(t, v)
 
-	entry, _, err := v.Upload(ctx, "/", "flaky.txt", []byte("one account is asleep"), UploadOptions{
+	entry, _, err := v.Upload(ctx, MainScope, "/", "flaky.txt", []byte("one account is asleep"), UploadOptions{
 		Accounts: ids[:3],
 	})
 	if err != nil {
@@ -478,7 +478,7 @@ func TestRelocateReportsAnUnreachableAccountAndResumes(t *testing.T) {
 	// Everything moves to the fourth account and the two it is already on stay,
 	// except part 1, which cannot be read.
 	targets := []string{before[2], before[3], ids[3]}
-	report, err := v.Relocate(ctx, entry.ID, targets, nil)
+	report, err := v.Relocate(ctx, MainScope, entry.ID, targets, nil)
 	if err != nil {
 		t.Fatalf("Relocate: %v", err)
 	}
@@ -513,7 +513,7 @@ func TestRelocateReportsAnUnreachableAccountAndResumes(t *testing.T) {
 		t.Fatalf("restoring the account's folder: %v", err)
 	}
 
-	again, err := v.Relocate(ctx, entry.ID, targets, nil)
+	again, err := v.Relocate(ctx, MainScope, entry.ID, targets, nil)
 	if err != nil {
 		t.Fatalf("Relocate again: %v", err)
 	}
@@ -540,7 +540,7 @@ func TestRelocateLeavesADisconnectedAccountsPartAlone(t *testing.T) {
 	ctx := context.Background()
 	ids := accountIDs(t, v)
 
-	entry, _, err := v.Upload(ctx, "/", "orphan.txt", []byte("one part is out of reach"), UploadOptions{
+	entry, _, err := v.Upload(ctx, MainScope, "/", "orphan.txt", []byte("one part is out of reach"), UploadOptions{
 		Accounts: ids[:3],
 	})
 	if err != nil {
@@ -557,7 +557,7 @@ func TestRelocateLeavesADisconnectedAccountsPartAlone(t *testing.T) {
 		t.Fatalf("persist: %v", err)
 	}
 
-	plan, err := v.PlanRelocation(entry.ID, ids[1:])
+	plan, err := v.PlanRelocation(MainScope, entry.ID, ids[1:])
 	if err != nil {
 		t.Fatalf("PlanRelocation: %v", err)
 	}
@@ -568,7 +568,7 @@ func TestRelocateLeavesADisconnectedAccountsPartAlone(t *testing.T) {
 		t.Error("a stranded part should be said out loud")
 	}
 
-	if _, err := v.Relocate(ctx, entry.ID, ids[1:], nil); err != nil {
+	if _, err := v.Relocate(ctx, MainScope, entry.ID, ids[1:], nil); err != nil {
 		t.Fatalf("Relocate: %v", err)
 	}
 	after, err := v.Entry(entry.ID)
@@ -594,10 +594,10 @@ func TestRelocateCarriesFolderThumbnails(t *testing.T) {
 	ctx := context.Background()
 	ids := accountIDs(t, v)
 
-	if err := v.Mkdir("/album"); err != nil {
+	if err := v.Mkdir(MainScope, "/album"); err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
-	entry, _, err := v.Upload(ctx, "/album", "shot.jpg", []byte("pretend jpeg"), UploadOptions{
+	entry, _, err := v.Upload(ctx, MainScope, "/album", "shot.jpg", []byte("pretend jpeg"), UploadOptions{
 		Accounts: ids[:3],
 	})
 	if err != nil {
@@ -608,7 +608,7 @@ func TestRelocateCarriesFolderThumbnails(t *testing.T) {
 	}
 
 	targets := ids[3:]
-	if _, err := v.Relocate(ctx, "/album", targets, nil); err != nil {
+	if _, err := v.Relocate(ctx, MainScope, "/album", targets, nil); err != nil {
 		t.Fatalf("Relocate: %v", err)
 	}
 
@@ -641,7 +641,7 @@ func TestPlanRelocationSummarizesWithoutTouchingAnything(t *testing.T) {
 	ids := accountIDs(t, v)
 
 	for _, name := range []string{"a.bin", "b.bin", "c.bin"} {
-		if _, _, err := v.Upload(ctx, "/", name, bytes.Repeat([]byte("z"), 4096), UploadOptions{
+		if _, _, err := v.Upload(ctx, MainScope, "/", name, bytes.Repeat([]byte("z"), 4096), UploadOptions{
 			Accounts: ids[:3],
 		}); err != nil {
 			t.Fatalf("Upload %s: %v", name, err)
@@ -649,7 +649,7 @@ func TestPlanRelocationSummarizesWithoutTouchingAnything(t *testing.T) {
 	}
 	before := objectsUnder(t, roots)
 
-	plan, err := v.PlanRelocation("/", ids[3:])
+	plan, err := v.PlanRelocation(MainScope, "/", ids[3:])
 	if err != nil {
 		t.Fatalf("PlanRelocation: %v", err)
 	}
@@ -697,12 +697,12 @@ func TestPlanRelocationTruncatesItsDetail(t *testing.T) {
 	total := relocationPreviewLimit + 1
 	for i := 0; i < total; i++ {
 		name := "f" + string(rune('a'+i%26)) + string(rune('a'+i/26)) + ".txt"
-		if _, _, err := v.Upload(ctx, "/", name, []byte("x"), UploadOptions{Accounts: ids[:3]}); err != nil {
+		if _, _, err := v.Upload(ctx, MainScope, "/", name, []byte("x"), UploadOptions{Accounts: ids[:3]}); err != nil {
 			t.Fatalf("Upload %s: %v", name, err)
 		}
 	}
 
-	plan, err := v.PlanRelocation("/", ids[:3])
+	plan, err := v.PlanRelocation(MainScope, "/", ids[:3])
 	if err != nil {
 		t.Fatalf("PlanRelocation: %v", err)
 	}
@@ -724,14 +724,14 @@ func TestRelocateReportsProgress(t *testing.T) {
 	ids := accountIDs(t, v)
 
 	for _, name := range []string{"one.txt", "two.txt"} {
-		if _, _, err := v.Upload(ctx, "/", name, []byte(name), UploadOptions{Accounts: ids[:3]}); err != nil {
+		if _, _, err := v.Upload(ctx, MainScope, "/", name, []byte(name), UploadOptions{Accounts: ids[:3]}); err != nil {
 			t.Fatalf("Upload: %v", err)
 		}
 	}
 
 	var seen []string
 	var lastTotal int
-	if _, err := v.Relocate(ctx, "/", ids[3:], func(path string, done, total int) {
+	if _, err := v.Relocate(ctx, MainScope, "/", ids[3:], func(path string, done, total int) {
 		seen = append(seen, path)
 		lastTotal = total
 		if done != len(seen) {
@@ -762,7 +762,7 @@ func TestRelocatePlanIsIndependentOfShardOrder(t *testing.T) {
 	}
 	entry := &Entry{ID: "x", Name: "x.txt", Dir: "/", ArchiveID: "ff", Shards: shards}
 
-	plan := planFileRelocation(entry, []string{"a", "b", "d"}, byID, 1, archive.SchemeDefault)
+	plan := planFileRelocation(MainScope, entry, []string{"a", "b", "d"}, byID, 1, archive.SchemeDefault)
 	if len(plan.Moves) != 1 || plan.Moves[0].Part != 3 || plan.Moves[0].To != "d" {
 		t.Fatalf("plan = %+v, want part 3 to d", plan.Moves)
 	}
@@ -787,7 +787,7 @@ func TestRelocateToSixCloudsRecodesTheFile(t *testing.T) {
 	ids := accountIDs(t, v)
 
 	payload := []byte("three clouds now, four of six afterwards\n")
-	entry, _, err := v.Upload(ctx, "/", "widen.txt", payload, UploadOptions{Accounts: ids[:3]})
+	entry, _, err := v.Upload(ctx, MainScope, "/", "widen.txt", payload, UploadOptions{Accounts: ids[:3]})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -795,7 +795,7 @@ func TestRelocateToSixCloudsRecodesTheFile(t *testing.T) {
 		t.Fatalf("uploaded as %s, want %s", got, archive.SchemeDefault)
 	}
 
-	plan, err := v.PlanRelocation(entry.ID, ids)
+	plan, err := v.PlanRelocation(MainScope, entry.ID, ids)
 	if err != nil {
 		t.Fatalf("PlanRelocation: %v", err)
 	}
@@ -817,7 +817,7 @@ func TestRelocateToSixCloudsRecodesTheFile(t *testing.T) {
 		t.Error("re-encoding a file should warn that the whole of it moves")
 	}
 
-	report, err := v.Relocate(ctx, entry.ID, ids, nil)
+	report, err := v.Relocate(ctx, MainScope, entry.ID, ids, nil)
 	if err != nil {
 		t.Fatalf("Relocate: %v", err)
 	}
@@ -865,7 +865,7 @@ func TestAWideFileSurvivesTwoAccountsGoingDark(t *testing.T) {
 	ids := accountIDs(t, v)
 
 	payload := bytes.Repeat([]byte("durable across six clouds\n"), 5000)
-	entry, _, err := v.Upload(ctx, "/", "durable.bin", payload, UploadOptions{Accounts: ids})
+	entry, _, err := v.Upload(ctx, MainScope, "/", "durable.bin", payload, UploadOptions{Accounts: ids})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -896,12 +896,12 @@ func TestRelocateBackToThreeCloudsRecodesAndCleansUp(t *testing.T) {
 	ids := accountIDs(t, v)
 
 	payload := []byte("six clouds now, three afterwards\n")
-	entry, _, err := v.Upload(ctx, "/", "narrow.txt", payload, UploadOptions{Accounts: ids})
+	entry, _, err := v.Upload(ctx, MainScope, "/", "narrow.txt", payload, UploadOptions{Accounts: ids})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 
-	report, err := v.Relocate(ctx, entry.ID, ids[:3], nil)
+	report, err := v.Relocate(ctx, MainScope, entry.ID, ids[:3], nil)
 	if err != nil {
 		t.Fatalf("Relocate: %v", err)
 	}
@@ -943,14 +943,14 @@ func TestRelocateBetweenSixCloudsMovesShardsRatherThanRecoding(t *testing.T) {
 	ids := accountIDs(t, v)
 
 	payload := []byte("sideways, not rebuilt\n")
-	entry, _, err := v.Upload(ctx, "/", "sideways.txt", payload, UploadOptions{Accounts: ids[:6]})
+	entry, _, err := v.Upload(ctx, MainScope, "/", "sideways.txt", payload, UploadOptions{Accounts: ids[:6]})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 
 	// Swap one of the six for the seventh account.
 	targets := append(append([]string{}, ids[:5]...), ids[6])
-	plan, err := v.PlanRelocation(entry.ID, targets)
+	plan, err := v.PlanRelocation(MainScope, entry.ID, targets)
 	if err != nil {
 		t.Fatalf("PlanRelocation: %v", err)
 	}
@@ -961,7 +961,7 @@ func TestRelocateBetweenSixCloudsMovesShardsRatherThanRecoding(t *testing.T) {
 		t.Fatalf("plan moves %d shards, want 1", plan.Moves)
 	}
 
-	if _, err := v.Relocate(ctx, entry.ID, targets, nil); err != nil {
+	if _, err := v.Relocate(ctx, MainScope, entry.ID, targets, nil); err != nil {
 		t.Fatalf("Relocate: %v", err)
 	}
 	after := v.manifest.ByID(entry.ID)
@@ -984,11 +984,11 @@ func TestRelocateRejectsACountThatNamesNoScheme(t *testing.T) {
 	ctx := context.Background()
 	ids := accountIDs(t, v)
 
-	entry, _, err := v.Upload(ctx, "/", "odd.txt", []byte("x"), UploadOptions{Accounts: ids[:3]})
+	entry, _, err := v.Upload(ctx, MainScope, "/", "odd.txt", []byte("x"), UploadOptions{Accounts: ids[:3]})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
-	if _, err := v.PlanRelocation(entry.ID, ids[:4]); err == nil {
+	if _, err := v.PlanRelocation(MainScope, entry.ID, ids[:4]); err == nil {
 		t.Fatal("expected a relocation onto four accounts to be refused")
 	}
 }

@@ -267,10 +267,10 @@ func TestSearchNeedsAnUnlockedVault(t *testing.T) {
 func TestSearchFindsWhatWasActuallyUploaded(t *testing.T) {
 	v, _ := newTestVault(t, 3)
 
-	if err := v.Mkdir("/receipts"); err != nil {
+	if err := v.Mkdir(MainScope, "/receipts"); err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
-	entry, _, err := v.Upload(context.Background(), "/receipts", "coffee.txt", []byte("2.80"), UploadOptions{})
+	entry, _, err := v.Upload(context.Background(), MainScope, "/receipts", "coffee.txt", []byte("2.80"), UploadOptions{})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}

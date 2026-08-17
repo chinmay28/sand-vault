@@ -32,23 +32,16 @@ import (
 // The spool holds plaintext, briefly. It lives in the vault's own directory
 // rather than the system temp dir, so it inherits whatever protects the vault
 // file, and it is removed on every path out including failure.
-func (v *Vault) UploadStream(ctx context.Context, dir, name string, r io.Reader, opts UploadOptions) (*Entry, []string, error) {
+func (v *Vault) UploadStream(ctx context.Context, scope Scope, dir, name string, r io.Reader, opts UploadOptions) (*Entry, []string, error) {
 	name, err := SanitizeName(name)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	v.mu.RLock()
-	if v.dataKey == nil {
-		v.mu.RUnlock()
-		return nil, nil, ErrLocked
+	dir, err = v.destinationLocked(scope, dir)
+	if err != nil {
+		return nil, nil, err
 	}
-	dir = CleanDir(dir)
-	if !v.manifest.FolderExists(dir) {
-		v.mu.RUnlock()
-		return nil, nil, fmt.Errorf("no such folder: %s", dir)
-	}
-	v.mu.RUnlock()
 
 	spool, size, hash, err := v.spool(r)
 	if err != nil {
@@ -59,7 +52,7 @@ func (v *Vault) UploadStream(ctx context.Context, dir, name string, r io.Reader,
 		os.Remove(spool.Name())
 	}()
 
-	placed, err := v.scatterStream(ctx, name, spool, size, hash, opts.Accounts, true, v.uploadChunkSize())
+	placed, err := v.scatterStream(ctx, scope, name, spool, size, hash, opts.Accounts, true, v.uploadChunkSize())
 	if err != nil {
 		return nil, placed.warnings, err
 	}
@@ -69,7 +62,7 @@ func (v *Vault) UploadStream(ctx context.Context, dir, name string, r io.Reader,
 	head := make([]byte, 512)
 	n, _ := spool.ReadAt(head, 0)
 
-	return v.commitUpload(ctx, dir, name, size, DetectMIME(name, head[:n]), placed, opts)
+	return v.commitUpload(ctx, scope, dir, name, size, DetectMIME(name, head[:n]), placed, opts)
 }
 
 // UploadStreamAt stores a file the caller can already read at an offset,
@@ -81,23 +74,16 @@ func (v *Vault) UploadStream(ctx context.Context, dir, name string, r io.Reader,
 // both slow and the difference between fitting and not. Everything else is
 // identical: the whole-file hash still has to be known before the first chunk
 // is sealed, so src is read once to compute it and then rewound.
-func (v *Vault) UploadStreamAt(ctx context.Context, dir, name string, src io.ReadSeeker, size int64, opts UploadOptions) (*Entry, []string, error) {
+func (v *Vault) UploadStreamAt(ctx context.Context, scope Scope, dir, name string, src io.ReadSeeker, size int64, opts UploadOptions) (*Entry, []string, error) {
 	name, err := SanitizeName(name)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	v.mu.RLock()
-	if v.dataKey == nil {
-		v.mu.RUnlock()
-		return nil, nil, ErrLocked
+	dir, err = v.destinationLocked(scope, dir)
+	if err != nil {
+		return nil, nil, err
 	}
-	dir = CleanDir(dir)
-	if !v.manifest.FolderExists(dir) {
-		v.mu.RUnlock()
-		return nil, nil, fmt.Errorf("no such folder: %s", dir)
-	}
-	v.mu.RUnlock()
 
 	readerAt, ok := src.(io.ReaderAt)
 	if !ok {
@@ -106,7 +92,7 @@ func (v *Vault) UploadStreamAt(ctx context.Context, dir, name string, src io.Rea
 		if _, err := src.Seek(0, io.SeekStart); err != nil {
 			return nil, nil, fmt.Errorf("rewinding the upload: %w", err)
 		}
-		return v.UploadStream(ctx, dir, name, src, opts)
+		return v.UploadStream(ctx, scope, dir, name, src, opts)
 	}
 
 	digest := sha256.New()
@@ -120,7 +106,7 @@ func (v *Vault) UploadStreamAt(ctx context.Context, dir, name string, src io.Rea
 		return nil, nil, fmt.Errorf("rewinding the upload: %w", err)
 	}
 
-	placed, err := v.scatterStream(ctx, name, readerAt, size, hash, opts.Accounts, true, v.uploadChunkSize())
+	placed, err := v.scatterStream(ctx, scope, name, readerAt, size, hash, opts.Accounts, true, v.uploadChunkSize())
 	if err != nil {
 		return nil, placed.warnings, err
 	}
@@ -128,7 +114,7 @@ func (v *Vault) UploadStreamAt(ctx context.Context, dir, name string, src io.Rea
 	head := make([]byte, 512)
 	n, _ := readerAt.ReadAt(head, 0)
 
-	return v.commitUpload(ctx, dir, name, size, DetectMIME(name, head[:n]), placed, opts)
+	return v.commitUpload(ctx, scope, dir, name, size, DetectMIME(name, head[:n]), placed, opts)
 }
 
 // spool copies a stream to a temporary file, returning it rewound along with
@@ -166,8 +152,8 @@ func (v *Vault) spool(r io.Reader) (*os.File, int64, [32]byte, error) {
 // scatterStream is scatterChunked reading from a file rather than a slice. The
 // two differ only in where a chunk's plaintext comes from; everything about
 // placement, per-part all-or-nothing and rollback is the same.
-func (v *Vault) scatterStream(ctx context.Context, name string, src io.ReaderAt, size int64, hash [32]byte, preferred []string, exact bool, chunkSize uint32) (placement, error) {
-	target, err := v.snapshotTarget(preferred, exact)
+func (v *Vault) scatterStream(ctx context.Context, scope Scope, name string, src io.ReaderAt, size int64, hash [32]byte, preferred []string, exact bool, chunkSize uint32) (placement, error) {
+	target, err := v.snapshotTarget(scope, preferred, exact)
 	if err != nil {
 		return placement{}, err
 	}
@@ -237,7 +223,7 @@ func (v *Vault) scatterStream(ctx context.Context, name string, src io.ReaderAt,
 // commitUpload records a scattered file in the index, which is the half of an
 // upload that both Upload and UploadStream do identically once the bytes are on
 // the accounts.
-func (v *Vault) commitUpload(ctx context.Context, dir, name string, size int64, mime string, placed placement, opts UploadOptions) (*Entry, []string, error) {
+func (v *Vault) commitUpload(ctx context.Context, scope Scope, dir, name string, size int64, mime string, placed placement, opts UploadOptions) (*Entry, []string, error) {
 	shards, warnings := placed.shards, placed.warnings
 
 	now := time.Now().UTC()
@@ -260,28 +246,29 @@ func (v *Vault) commitUpload(ctx context.Context, dir, name string, size int64, 
 	}
 
 	v.mu.Lock()
-	if v.dataKey == nil {
+	m, err := v.manifestForLocked(scope)
+	if err != nil {
 		v.mu.Unlock()
 		v.deleteEntryShards(context.WithoutCancel(ctx), entry)
-		return nil, warnings, ErrLocked
+		return nil, warnings, err
 	}
 
 	var replaced *Entry
-	if existing := v.manifest.ByPath(JoinPath(dir, name)); existing != nil {
+	if existing := m.ByPath(JoinPath(dir, name)); existing != nil {
 		if opts.Overwrite {
 			replaced = existing
-			v.manifest.remove(existing.ID)
+			m.remove(existing.ID)
 		} else {
-			entry.Name = v.manifest.uniqueName(dir, name)
+			entry.Name = m.uniqueName(dir, name)
 		}
 	}
 
-	v.manifest.add(entry)
-	err := v.persistLocked()
+	m.add(entry)
+	err = v.persistLocked()
 	if err != nil {
-		v.manifest.remove(entry.ID)
+		m.remove(entry.ID)
 		if replaced != nil {
-			v.manifest.add(replaced)
+			m.add(replaced)
 		}
 	}
 	v.mu.Unlock()
@@ -297,7 +284,7 @@ func (v *Vault) commitUpload(ctx context.Context, dir, name string, size int64, 
 		v.deleteEntryShards(context.WithoutCancel(ctx), replaced)
 		// Its thumbnail showed the old contents and is keyed by an ID nothing
 		// points at any more.
-		v.removeThumbs(context.WithoutCancel(ctx), dir, replaced.ID)
+		v.removeThumbs(context.WithoutCancel(ctx), scope, dir, replaced.ID)
 	}
 
 	if stored := distinctShards(shards); stored < placed.scheme.Total {

@@ -109,14 +109,14 @@ const maxUnmatchedReported = 40
 //
 // It refuses unless the folder has been opted in, which is the whole consent
 // model: nothing here reaches the network for a folder nobody asked about.
-func (s *Server) scanFolder(ctx context.Context, dir string, refresh bool) (*ScanReport, error) {
+func (s *Server) scanFolder(ctx context.Context, scope vault.Scope, dir string, refresh bool) (*ScanReport, error) {
 	v, err := s.Vault()
 	if err != nil {
 		return nil, err
 	}
 	dir = vault.CleanDir(dir)
 
-	if !v.MovieLookupFor(dir).Enabled {
+	if !v.MovieLookupFor(scope, dir).Enabled {
 		return nil, fmt.Errorf("film lookup is not turned on for %s", dir)
 	}
 	client, err := s.movieClient()
@@ -263,7 +263,8 @@ func thumbedIDs(v *vault.Vault, entries []*vault.Entry) map[string]bool {
 			continue
 		}
 		seen[entry.Dir] = true
-		for _, id := range v.ThumbIDs(entry.Dir) {
+		scope, _ := v.ScopeOf(entry.ID)
+		for _, id := range v.ThumbIDs(scope, entry.Dir) {
 			out[id] = true
 		}
 	}
@@ -278,7 +279,16 @@ func thumbedIDs(v *vault.Vault, entries []*vault.Entry) map[string]bool {
 // shown.
 func storePosters(ctx context.Context, v *vault.Vault, posters map[string]map[string][]byte, report *ScanReport) {
 	for folder, batch := range posters {
-		if err := v.SetThumbs(ctx, folder, batch); err != nil {
+		// Every picture in a batch belongs to one folder, so any of its files
+		// names the vault the pack goes in.
+		scope := vault.MainScope
+		for id := range batch {
+			if found, ok := v.ScopeOf(id); ok {
+				scope = found
+				break
+			}
+		}
+		if err := v.SetThumbs(ctx, scope, folder, batch); err != nil {
 			report.Warnings = append(report.Warnings,
 				fmt.Sprintf("stored the details but not the artwork for %s: %v", folder, err))
 		}
