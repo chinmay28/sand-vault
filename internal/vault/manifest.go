@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/chinmay28/sand-vault/internal/movie"
 )
 
 // Shard records where one encrypted part of a file was placed.
@@ -107,6 +109,14 @@ type Manifest struct {
 	// here because it is exactly as sensitive as the rest of the index: which
 	// files have a picture, and which folder they are in.
 	Thumbs map[string]*ThumbPack `json:"thumbs,omitempty"`
+
+	// MovieFolders names the folders whose videos are looked up against the
+	// film database, and Movies is what those lookups found, by file ID. Both
+	// are here for the same reason as Thumbs — which folder holds somebody's
+	// films, and what those films are, is index rather than content. See
+	// movies.go.
+	MovieFolders map[string]*MovieFolder `json:"movie_folders,omitempty"`
+	Movies       map[string]*movie.Info  `json:"movies,omitempty"`
 
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -350,12 +360,27 @@ func (m *Manifest) moveFolder(oldDir, newDir string) func() {
 		m.Thumbs = rekeyed
 	}
 
+	// The film-lookup setting is filed by folder in exactly the same way, and
+	// moving a films folder must not quietly turn the lookup off for it. What
+	// each film *is* needs no rewriting at all: those are filed by file ID,
+	// which a move never changes.
+	previousMovieFolders := m.MovieFolders
+	if len(m.MovieFolders) > 0 {
+		rekeyed := make(map[string]*MovieFolder, len(m.MovieFolders))
+		for dir, folder := range m.MovieFolders {
+			to, _ := underFolder(dir, oldDir, newDir)
+			rekeyed[to] = folder
+		}
+		m.MovieFolders = rekeyed
+	}
+
 	return func() {
 		for _, m := range changed {
 			m.entry.Dir = m.from
 		}
 		m.Folders = previousFolders
 		m.Thumbs = previousThumbs
+		m.MovieFolders = previousMovieFolders
 	}
 }
 

@@ -186,8 +186,15 @@ export const api = {
   /* The stored preview image. The first row of a folder to ask for one makes
      the server gather that folder's whole pack; the rest are answered from
      memory, so a listing costs one round-trip to the accounts rather than one
-     per picture. */
-  thumbURL: (id) => `/api/files/${encodeURIComponent(id)}/thumb`,
+     per picture.
+
+     `version` only exists to change the address when the picture behind it
+     changes — correcting a film's match replaces its poster, and an <img> whose
+     src did not move keeps drawing the one it already decoded. */
+  thumbURL: (id, version) => {
+    const path = `/api/files/${encodeURIComponent(id)}/thumb`
+    return version ? `${path}?v=${encodeURIComponent(version)}` : path
+  },
 
   /* Stores a picture for a file that has none — one uploaded before
      thumbnails existed, or from the command line. */
@@ -200,6 +207,49 @@ export const api = {
     if (!resp.ok) throw new ApiError(`could not store the preview (${resp.status})`, 'HTTP_ERROR', resp.status)
     return true
   }),
+
+  /* Film details, for the folders that ask for them.
+     ---------------------------------------------------------------------
+     Every call here goes to the local server exactly like the rest of this
+     file. The server is what talks to the film database, and it stores what
+     comes back — the details in the encrypted index, the poster as the file's
+     thumbnail — so this page still fetches from nowhere but this machine, and
+     a film matched once is never looked up again. */
+
+  /* Whether a database key has been stored, and which folders are opted in.
+     Never the key itself. */
+  movieSettings: () => request('/api/movies'),
+  /* Checked against the database before it is stored, so a bad key is refused
+     here rather than halfway through a folder. '' clears it. */
+  setMovieKey: (key) => request('/api/movies/key', { method: 'POST', body: { key } }),
+  /* Turn matching on or off for a folder and everything under it. It stores
+     the setting and nothing else: sweeping is a separate, explicit request. */
+  setMovieLookup: (path, enabled) =>
+    request('/api/movies/lookup', { method: 'POST', body: { path, enabled } }),
+  /* Look up every unmatched video under a folder. Long — one search, one
+     record and one poster per film — and the connection is held for the
+     duration, the way converting a file is. `refresh` asks for the ones that
+     already have details to be looked up again; matches corrected by hand are
+     left alone either way. */
+  scanMovies: (path, { refresh = false, signal } = {}) =>
+    request('/api/movies/scan', { method: 'POST', body: { path, refresh }, signal }),
+
+  movie: (id) => request(`/api/files/${encodeURIComponent(id)}/movie`),
+  /* Look one file up now. With nothing passed it searches for whatever the
+     filename suggests; `tmdbId` names a film outright, which is what choosing
+     one from the candidate list does. */
+  matchMovie: (id, { query = '', year = 0, tmdbId = 0 } = {}) =>
+    request(`/api/files/${encodeURIComponent(id)}/movie`, {
+      method: 'POST',
+      body: { query, year, tmdb_id: tmdbId },
+    }),
+  /* Search without storing anything, so a wrong match is corrected against a
+     list of real films rather than by retyping a query and hoping. */
+  movieCandidates: (id, query, { signal } = {}) =>
+    request(`/api/files/${encodeURIComponent(id)}/movie/candidates?q=${encodeURIComponent(query || '')}`,
+      { signal }),
+  forgetMovie: (id) =>
+    request(`/api/files/${encodeURIComponent(id)}/movie`, { method: 'DELETE' }),
 
   /* Uploads go through XMLHttpRequest rather than fetch so the UI can show
      real progress while a large file is being split and scattered. */

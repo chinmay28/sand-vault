@@ -164,6 +164,18 @@ func (v *Vault) rotate(oldPassword, newPassword string) error {
 		crypto.ZeroBytes(newVaultKey)
 		return err
 	}
+	// The settings section survives the change like the accounts do: a film
+	// database key is a credential the user set, not something derived from the
+	// old password.
+	if !current.settings.empty() {
+		settings, err := sealJSON(newVaultKey, current.settings)
+		if err != nil {
+			current.zero()
+			crypto.ZeroBytes(newVaultKey)
+			return err
+		}
+		sf.Settings = &settings
+	}
 	if err := writeStore(v.path, sf); err != nil {
 		current.zero()
 		crypto.ZeroBytes(newVaultKey)
@@ -186,6 +198,7 @@ func (v *Vault) rotate(oldPassword, newPassword string) error {
 	v.retired = retained
 	v.providers = current.providers
 	v.manifest = current.manifest
+	v.settings = current.settings
 
 	// The copies on the accounts are sealed under the password, so they still
 	// answer to the old one until they are replaced. Forced, because the guard

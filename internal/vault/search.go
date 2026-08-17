@@ -82,6 +82,11 @@ type SearchResults struct {
 	// Thumbs names the hits that have a stored thumbnail, exactly as a listing
 	// does — a result row is the same row, and draws the same picture.
 	Thumbs []string `json:"thumbs"`
+
+	// Movies titles the hits that have been matched against the film database,
+	// for the same reason: a poster in a search result should be captioned the
+	// same way it is in the folder it came from.
+	Movies map[string]MovieBrief `json:"movies,omitempty"`
 }
 
 // Search finds files and folders whose name — or whose path, for a query that
@@ -142,6 +147,7 @@ func (v *Vault) Search(opts SearchOptions) (*SearchResults, error) {
 	if results.Thumbs == nil {
 		results.Thumbs = []string{}
 	}
+	results.Movies = v.movieBriefsForLocked(matched)
 	return results, nil
 }
 

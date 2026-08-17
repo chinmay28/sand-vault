@@ -19,13 +19,19 @@ import { RelocateClouds } from './CloudSelect'
    500px, which is why the phone layout stacks instead of shrinking them. */
 export const COLUMNS = 'minmax(0,1fr) 92px 150px 132px 108px'
 
+/* The same again in a folder that has asked for film details, where a video
+   row carries one control more. The column grows by exactly one button rather
+   than the three already there being crowded together — and it grows for the
+   whole table, because a heading has to sit over the column it names. */
+export const FILM_COLUMNS = 'minmax(0,1fr) 92px 150px 132px 144px'
+
 /* Everything a file row or tile can do, and every dialog it can open.
 
    Held in one place because a file's state decides most of it: a file stored
    before chunking cannot be opened or streamed until it is converted, and one
    down to a single part cannot be rebuilt at all. Working that out twice —
    once for rows and once for tiles — is how the two views drift apart. */
-export function useFileActions({ file, providers, onPreview, onInspect, onRefresh, onError }) {
+export function useFileActions({ file, providers, film, onPreview, onInspect, onFilm, onRefresh, onError }) {
   const [busy, setBusy] = useState(false)
   const [download, downloading] = useDownload(onError)
   const [menu, setMenu] = useState(false)
@@ -116,6 +122,18 @@ export function useFileActions({ file, providers, onPreview, onInspect, onRefres
               hint: 'Save the rebuilt, decrypted file',
               disabled: downloading,
               onSelect: () => download(file),
+            },
+            // Only where it could mean something: a folder that has asked for
+            // film details, and a file a player would take. Everywhere else it
+            // would be a row in every menu in the vault that answers "no".
+            onFilm && {
+              key: 'film',
+              glyph: '🎬',
+              label: film ? 'Film details' : 'Look up the film',
+              hint: film
+                ? [film.title, film.year].filter(Boolean).join(' · ')
+                : 'Match it against the film database and keep the poster',
+              onSelect: onFilm,
             },
             {
               key: 'parts',
@@ -232,14 +250,14 @@ export function SelectBox({ checked, label, mobile, onChange }) {
 
 /* One line of the table. The tick, where there is one, sits outside the grid
    so that turning selection on does not move the columns underneath it. */
-export function Row({ children, mobile, check, selected }) {
+export function Row({ children, mobile, columns = COLUMNS, check, selected }) {
   const [hover, setHover] = useState(false)
 
   const inner = mobile
     // Too narrow for columns, so the row becomes a stack: the name and its
     // menu on the first line, the details underneath.
     ? { display: 'flex', flexDirection: 'column', rowGap: '2px' }
-    : { display: 'grid', gridTemplateColumns: COLUMNS, gap: '12px', alignItems: 'center' }
+    : { display: 'grid', gridTemplateColumns: columns, gap: '12px', alignItems: 'center' }
 
   return (
     <div
@@ -407,10 +425,10 @@ function PartBadges({ file, mobile }) {
 }
 
 export function FileRow({
-  file, location, mobile, providers, hasThumb, selecting, selected,
-  onSelect, onPreview, onInspect, onRefresh, onError,
+  file, location, mobile, providers, hasThumb, film, columns, selecting, selected,
+  onSelect, onPreview, onInspect, onFilm, onRefresh, onError,
 }) {
-  const a = useFileActions({ file, providers, onPreview, onInspect, onRefresh, onError })
+  const a = useFileActions({ file, providers, film, onPreview, onInspect, onFilm, onRefresh, onError })
   const icon = fileIcon(file.mime, file.name)
 
   const check = selecting && (
@@ -467,6 +485,20 @@ export function FileRow({
     />
   ) : (
     <span style={{ display: 'flex', gap: '2px', justifyContent: 'flex-end', flexShrink: 0 }}>
+      {/* Only in a folder that asked for film details, which is also the only
+          folder whose rows have room for it — see FILM_COLUMNS. */}
+      {onFilm && (
+        <IconButton
+          glyph="🎬"
+          label={film ? `Film details for ${file.name}` : `Look up the film in ${file.name}`}
+          title={film
+            ? [film.title, film.year].filter(Boolean).join(' · ')
+            : 'Match it against the film database'}
+          tone={film ? 'dim' : 'muted'}
+          onClick={onFilm}
+          style={{ fontSize: '13px' }}
+        />
+      )}
       {/* Three controls is what the column has room for, so this one is on the
           rows it means something on: a player is no use on a PDF. */}
       {a.legacy ? (
@@ -571,7 +603,7 @@ export function FileRow({
   }
 
   return (
-    <Row check={check} selected={selected}>
+    <Row check={check} columns={columns} selected={selected}>
       {name}
       <span>{formatBytes(file.size)}</span>
       <span>{formatDate(file.modified_at)}</span>
@@ -677,7 +709,7 @@ function useFolderActions({ name, path, providers, onNavigate, onRefresh, onErro
 }
 
 export function FolderRow({
-  name, path, location, mobile, providers, selecting, selected,
+  name, path, location, mobile, providers, columns, selecting, selected,
   onSelect, onNavigate, onRefresh, onError,
 }) {
   const a = useFolderActions({ name, path, providers, onNavigate, onRefresh, onError })
@@ -723,7 +755,7 @@ export function FolderRow({
   }
 
   return (
-    <Row check={check} selected={selected}>
+    <Row check={check} columns={columns} selected={selected}>
       {nameButton}
       {/* The three empty middle cells only exist to fill the grid. */}
       <span /><span /><span />
@@ -733,10 +765,22 @@ export function FolderRow({
   )
 }
 
-/* The tile the two views really differ over: a square of picture with the name
-   under it. Worth having because a folder of photographs or films is a folder
-   whose file names say nothing at all — the thumbnail is the only part of the
-   row anybody was reading. */
+/* The shape of a tile's picture. A square suits a folder of photographs, which
+   arrive in both orientations and crop to one about equally badly.
+
+   A folder that has asked for film details gets two-by-three instead, because
+   that is the shape every poster ever printed is, and a square crop of one eats
+   the title band at the foot. It is the whole grid rather than the matched rows
+   alone: one shape per view keeps the rows aligned, and a folder somebody has
+   declared to be films is a folder whose stray photograph can afford the crop.
+   Plex and Jellyfin land in the same place for the same reason. */
+export const TILE_SQUARE = '1 / 1'
+export const TILE_POSTER = '2 / 3'
+
+/* The tile the two views really differ over: a picture with the name under it.
+   Worth having because a folder of photographs or films is a folder whose file
+   names say nothing at all — the thumbnail is the only part of the row anybody
+   was reading. */
 function Tile({ children, selected, check, menu }) {
   const [hover, setHover] = useState(false)
 
@@ -787,10 +831,10 @@ function TileFace({ children, ...props }) {
    So `location` — which only a search result has — takes a line of its own
    rather than fighting the size and the badges for that one, where all three
    would be reduced to an ellipsis apiece. */
-function TileCaption({ name, meta, location, dead }) {
+function TileCaption({ name, title, meta, location, dead }) {
   return (
     <span style={{ display: 'block', padding: '7px 8px 8px' }}>
-      <span style={{
+      <span title={title} style={{
         display: 'block',
         fontFamily: FONT.mono, fontSize: '11.5px',
         color: dead ? COLORS.error : COLORS.text,
@@ -815,10 +859,11 @@ function TileCaption({ name, meta, location, dead }) {
 }
 
 export function FileTile({
-  file, location, mobile, providers, hasThumb, selecting, selected,
-  onSelect, onPreview, onInspect, onRefresh, onError,
+  file, location, mobile, providers, hasThumb, film, aspect = TILE_SQUARE,
+  selecting, selected,
+  onSelect, onPreview, onInspect, onFilm, onRefresh, onError,
 }) {
-  const a = useFileActions({ file, providers, onPreview, onInspect, onRefresh, onError })
+  const a = useFileActions({ file, providers, film, onPreview, onInspect, onFilm, onRefresh, onError })
   const icon = fileIcon(file.mime, file.name)
 
   return (
@@ -845,18 +890,26 @@ export function FileTile({
       <TileFace onClick={a.open} disabled={a.dead} title={a.openTitle}>
         <span style={{
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          width: '100%', aspectRatio: '1 / 1', overflow: 'hidden',
+          width: '100%', aspectRatio: aspect, overflow: 'hidden',
           background: COLORS.bg, borderBottom: `1px solid ${COLORS.border}`,
         }}>
           <Thumb id={file.id} icon={icon} expected={hasThumb} fill />
         </span>
+        {/* A matched film is captioned with the film's name rather than the
+            file's. That is the whole point of a wall of posters: "Alien" over
+            the poster, not "Alien.1979.2160p.UHD.BluRay.x265-GROUP.mkv". The
+            file name is a breath away — the hover text here, and the subtitle
+            of everything the tile opens. */}
         <TileCaption
-          name={file.name}
+          name={film?.title || file.name}
+          title={film ? file.name : undefined}
           dead={a.dead}
           location={location}
           meta={(
             <>
-              <span style={{ whiteSpace: 'nowrap' }}>{formatBytes(file.size)}</span>
+              <span style={{ whiteSpace: 'nowrap' }}>
+                {film?.year ? film.year : formatBytes(file.size)}
+              </span>
               <span
                 title={`${file.shards.length} of 3 parts stored`}
                 style={{ marginLeft: 'auto', display: 'flex', gap: '3px', flexShrink: 0 }}
@@ -871,7 +924,7 @@ export function FileTile({
 }
 
 export function FolderTile({
-  name, path, location, mobile, providers, selecting, selected,
+  name, path, location, mobile, providers, aspect = TILE_SQUARE, selecting, selected,
   onSelect, onNavigate, onRefresh, onError,
 }) {
   const a = useFolderActions({ name, path, providers, onNavigate, onRefresh, onError })
@@ -900,7 +953,7 @@ export function FolderTile({
       <TileFace onClick={a.open} title="Open folder">
         <span style={{
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          width: '100%', aspectRatio: '1 / 1', fontSize: '34px',
+          width: '100%', aspectRatio: aspect, fontSize: '34px',
           background: COLORS.bg, borderBottom: `1px solid ${COLORS.border}`,
         }}>📁</span>
         <TileCaption name={name} location={location} meta={<span>Folder</span>} />

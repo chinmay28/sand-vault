@@ -709,6 +709,11 @@ still encrypted rather than rebuilt. A folder takes everything under it. See
 `sand check --all` exits non-zero when anything is degraded or unrecoverable,
 which makes it a reasonable cron job.
 
+Film details have no CLI of their own. Matching a folder is a thing you look at
+while it happens — the posters, the misses, the match you have to correct by
+hand — so it lives in the browser, and the CLI stays the tool for moving files
+about. See [Film details](#film-details).
+
 `sand find` searches the file index by name: a bare word matches any name
 containing it, ignoring case; `*` and `?` are wildcards (`sand find '*.jpg'`);
 and a query with a `/` in it is matched against the whole path
@@ -767,7 +772,9 @@ pipe the password on stdin.
   trail of folders you have walked through, as does `Alt+←` / `Alt+→` / `Alt+↑`.
   The trail is held in memory only and goes when the vault locks
 - **List or grid** — rows with columns, or tiles built round the stored
-  thumbnail, for the folder of photographs whose file names say nothing
+  thumbnail, for the folder of photographs whose file names say nothing. Tiles
+  are square, or a poster's two-by-three in a folder that has asked for film
+  details
 - **Sorting** — by name, size, date or kind, each opening the way round it is
   normally wanted and reversing when chosen again; folders always lead. The view
   and the sort are remembered between visits
@@ -784,9 +791,17 @@ pipe the password on stdin.
 - **Thumbnails** — images and PDFs show a picture rather than an icon, the PDF's
   being its first page. Made in the browser when the file is uploaded, then
   stored the way everything else is: split into three encrypted parts across
-  your accounts, one small pack per folder. Anything without one keeps its icon
+  your accounts, one small pack per folder. A video gets one too, taken from a
+  frame while you watch it — nothing can make a picture of a film at upload time
+  without decoding the film. Anything without one keeps its icon
+- **Film details** — a folder can be told its videos are films, and then they
+  get the poster, the summary, the cast and the score, the way Plex or Jellyfin
+  would show them. Off everywhere until a folder asks for it, because it is the
+  one thing in SAND that talks to anyone but your own accounts — see
+  [Film details](#film-details)
 - **Preview** — images, video, audio, PDF and text render inline, rebuilt on
-  demand; anything else downloads
+  demand; anything else downloads. A matched film opens on its poster and
+  summary rather than an unplayed black rectangle
 - **PDF viewer** — pages are drawn by the app itself rather than handed to the
   browser's viewer, so a phone shows the document instead of the blank frame
   iOS Safari makes of one. Page at a time, arrow keys or `‹ ›`, and a zoom for
@@ -800,7 +815,10 @@ pipe the password on stdin.
 - **Auto-lock** — the vault re-locks after the idle timeout
 
 The UI loads no external fonts, scripts or styles. Opening your vault makes zero
-third-party requests.
+third-party requests — including in a folder with film details on, since the
+poster and the summary are stored in the vault and served by your own server
+like everything else. The one request that does leave is the lookup itself, made
+by the server, only for a folder you turned on, and only when you ask for it.
 
 The wordmark is the one piece of typography that is not the system's own:
 *Vault* is written in a monoline hand that ships in the repository at **3.4
@@ -860,6 +878,98 @@ its home screen gets the password prompt like any other browser would.
 
 ---
 
+## Film details
+
+A folder of films is a folder whose file names say nothing.
+`The.Thing.1982.REMASTERED.1080p.BluRay.x265-RARBG.mkv` is a perfectly good
+thing to store and a terrible thing to read. Plex and Jellyfin solve that by
+looking each file up and showing you the poster, and SAND can now do the same —
+for the folders you say so.
+
+Turn it on with the `🎬` button in the toolbar, which acts on the folder you are
+standing in and everything underneath it. Then **Look up new films** sweeps it:
+each video's name is read for a title and a year, that is searched for, and what
+comes back is stored — the summary, the score, the runtime, the genres, the
+director and the top of the cast in the vault's encrypted index, and the poster
+as the file's thumbnail.
+
+From then on the grid is a wall of posters captioned with the films' names
+rather than the files', a row shows the poster where its icon was, and `🎬` on
+the row — or **Film details** in the phone's row menu, or the strip above a
+video you are watching — opens everything that was found.
+
+Opening one shows the film rather than a player. A video element that has not
+been played is a black rectangle with a triangle on it — on a phone that is half
+the screen saying nothing, in front of a film whose poster, summary and cast the
+vault is already holding. So the preview opens on those, and the player takes
+over when you press **Play here**. Everything else about the dialog is where it
+was: stream it to VLC, or download the rebuilt file.
+
+The tiles take a poster's shape rather than a photograph's in a folder that has
+asked for films, since a square crop of a two-by-three poster eats the title
+band at its foot. It is the whole grid that changes rather than the matched
+tiles alone: one shape per view keeps the rows level and the folders in step
+with the films beside them. Everywhere else the tiles stay square.
+
+### It is off until you turn it on, and here is why
+
+Everything else in SAND stays between this machine and the accounts you
+connected. This does not. Looking a film up sends a title guessed from a file
+name, plus this machine's address and your own API key, to
+[The Movie Database](https://www.themoviedb.org) — the same service Plex and
+Jellyfin use.
+
+So it is a per-folder switch rather than a setting, it names the folder it was
+made on, and turning it on **sends nothing**: the sweep is a second button you
+have to press. Nothing about the file itself ever goes — not its contents, not
+its size, not its hash, not which clouds its parts are on. And a film is looked
+up once: after that the answer is in your vault, and opening the folder again
+contacts nobody.
+
+You need a free key of your own, from **themoviedb.org → Settings → API**.
+Either the v3 key or the v4 read access token works. It is stored in the vault
+file, sealed under your password like your cloud credentials — and deliberately
+*not* in the manifest, which is replicated to every connected account, because a
+credential for someone else's service has no business being copied onto three
+clouds.
+
+### When it guesses wrong
+
+It will, sometimes. Names are read the way every media server reads them: cut at
+the year if there is one, cut at the first `1080p`/`BluRay`/`x265` if there is
+not, and fall back to the folder's name when the file's says nothing —
+`Blade Runner (1982)/title00.mkv` is matched from the folder. Where two films
+share a name, the year in the file name decides.
+
+Open the file's details and **Fix the match**: search by title, and pick the
+right film from the list. A film chosen by hand is marked as such, and a later
+sweep — even **Look up everything again** — leaves it alone. **Forget** drops the
+details for a file entirely.
+
+### What it costs, and what it survives
+
+A sweep is one search, one record and one poster per film, so a large folder
+takes a while — but it is safe to stop and run again, since every film is stored
+the moment it is matched and nothing already matched is looked up twice. Posters
+are written one pack per folder rather than one per film, which is the
+difference between a folder of two hundred films costing two hundred uploads and
+costing one.
+
+Changing your vault password drops every stored thumbnail — they are sealed
+under the key being retired, and regenerating derived data beats re-encrypting
+it. A photograph's thumbnail comes back the next time you open it; a poster has
+no such source, so the film's record keeps the artwork's address. Sweep the
+folder again afterwards and the posters come back for one image fetch each, with
+no searching at all.
+
+Turning the switch back off stops any further lookups and leaves what was
+already found exactly where it is.
+
+Details and artwork come from The Movie Database. SAND uses the TMDB API but is
+not endorsed or certified by TMDB.
+
+---
+
 ## HTTP API
 
 | Method | Path | Purpose |
@@ -888,6 +998,12 @@ its home screen gets the password prompt like any other browser would.
 | POST | `/api/files/{id}/stream` | Mint a link a media player can open — see below |
 | GET | `/stream/{token}/{name}` | Play that link (no session; the token is the credential) |
 | GET · PUT | `/api/files/{id}/thumb` | The stored thumbnail; PUT stores one for a file that has none |
+| GET | `/api/movies` | Whether a film database key is stored, and which folders are opted in |
+| POST | `/api/movies/key` | Store the key (checked against the database first); `""` clears it |
+| POST | `/api/movies/lookup` | Turn film details on or off for a `path` and everything under it |
+| POST | `/api/movies/scan` | Look up every unmatched video under a `path` (`refresh` to redo the matched ones) |
+| GET · POST · DELETE | `/api/files/{id}/movie` | What film this is / look it up (`query`, `year`, `tmdb_id`) / forget it |
+| GET | `/api/files/{id}/movie/candidates?q=` | Search the database without storing anything, to correct a match |
 | GET | `/api/files/{id}/health` | Per-part reachability |
 | POST | `/api/files/{id}/move` | Rename / move |
 | DELETE | `/api/files/{id}` | Erase every part |
@@ -1040,6 +1156,7 @@ mount — not built yet.
 | Plaintext cached by a proxy | `Cache-Control: private, no-store` |
 | Walking away from the machine | Idle timeout re-locks the vault |
 | Metadata leaking to a provider | Object keys derived only from a random ID |
+| The film database learning what you have | Off until a folder is opted in by name; sends a title guessed from a file name and nothing else, once per film, and never the file, its size or where its parts live |
 
 **Two keys, not one.** File parts are encrypted under a random 256-bit data key,
 which is itself wrapped by your password — so part encryption doesn't inherit a
@@ -1060,7 +1177,13 @@ copy of the vault file.
 - **The manifest backup itself.** Replicating the index is what makes a lost
   vault survivable, and it is also a new thing to steal. `sand vault backup
   --disable` erases every copy — and puts you back to losing everything if you
-  lose the vault file.
+  lose the vault file. Note what it carries once you turn film details on: the
+  backup *is* the index, so the titles are in it. They add nothing an attacker
+  who could already read `The.Thing.1982…mkv` from the same blob did not have.
+- **The film database knowing what you asked it.** Storing the answer in the
+  vault is not the same as the question never having been asked. TMDB sees a
+  title and your address, once per film, for the folders you turned on. That is
+  the whole reason it is a switch — see [Film details](#film-details).
 
 ⚠️ **`--bind` off loopback** sends your password and rebuilt plaintext over the
 network in the clear. The server warns you. Put TLS in front of it
@@ -1270,6 +1393,8 @@ sand/
 │   ├── sandfile/                # binary .sand part format
 │   ├── provider/                # local, s3 (SigV4), webdav, gdrive, dropbox,
 │   │                            #   onedrive, box, proton + the OAuth sign-in flow
+│   ├── movie/                   # file name → film, and the film database client —
+│   │                            #   the only package that talks to a third party
 │   ├── vault/                   # encrypted store, manifest, placement, scatter/gather,
 │   │                            #   the replicated manifest backup and recovery
 │   └── server/                  # sessions, OAuth flows, handlers, embedded SPA
@@ -1278,8 +1403,8 @@ sand/
 │   ├── navigation.js  view.js   # the trail of folders walked; view + sort prefs
 │   └── components/              # LockScreen, AccountsPanel, ConnectCloud,
 │                                #   FileBrowser, Toolbar, FileEntry, BulkActions,
-│                                #   PreviewModal, PdfPreview, StreamLink,
-│                                #   RecoverVault, ReclaimVault, ui
+│                                #   PreviewModal, PdfPreview, FilmDetails,
+│                                #   StreamLink, RecoverVault, ReclaimVault, ui
 │   ├── public/                  # app icon, home-screen icons + manifest,
 │   │                            #   developer badge
 │   └── build-version.js         # feeds the version into the bundle
@@ -1322,9 +1447,9 @@ touch your real vault.
 
 | Path | What |
 |---|---|
-| `~/.sand/vault.sand` | Encrypted index + cloud credentials. Back this up — though since every account also carries a `manifest.sand`, losing it is recoverable with your password. |
+| `~/.sand/vault.sand` | Encrypted index + cloud credentials, and the film database key if you set one. Back this up — though since every account also carries a `manifest.sand`, losing it is recoverable with your password. |
 | `<archive-id>-pN.sand` | How parts appear on each account, inside whatever folder or prefix that account is configured with. The ID is random and reveals nothing. |
-| `manifest.sand` | An encrypted copy of the index, on every account. Opens with your vault password alone. |
+| `manifest.sand` | An encrypted copy of the index, on every account. Opens with your vault password alone. It carries the film details, since those are part of the index — but never the film database key, which stays in the vault file alone. So recovering from a backup restores your films and asks for the key again. |
 
 Override the vault location with `--vault` or `SAND_VAULT`.
 

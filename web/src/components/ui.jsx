@@ -253,6 +253,9 @@ export function Modal({ title, subtitle, onClose, children, width = 520, zIndex 
                 fontSize: '12px',
                 color: COLORS.textMuted,
                 lineHeight: 1.5,
+                // A file name has no spaces to break at, so without this it
+                // runs straight under the close button.
+                overflowWrap: 'anywhere',
               }}>{subtitle}</p>
             )}
           </div>

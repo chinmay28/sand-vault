@@ -1,13 +1,17 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { COLORS, FONT, formatBytes } from '../theme'
+import { COLORS, FONT, formatBytes, isPlayable } from '../theme'
 import { api, joinPath } from '../api'
 import { sortFiles, sortFolders, sortHits, useViewPrefs } from '../view'
 import { Banner, Button, Empty, Modal, Spinner } from './ui'
 import { UploadDestination, RelocateClouds } from './CloudSelect'
 import { makeThumbnail } from '../thumbs'
-import { COLUMNS, FileRow, FileTile, FolderRow, FolderTile, SelectBox } from './FileEntry'
+import {
+  COLUMNS, FILM_COLUMNS, TILE_POSTER, TILE_SQUARE,
+  FileRow, FileTile, FolderRow, FolderTile, SelectBox,
+} from './FileEntry'
 import { Breadcrumbs, FolderHeader, NavCluster, SearchField, SelectionBar, ViewControls } from './Toolbar'
 import { BulkDelete, BulkDownload } from './BulkActions'
+import { FilmButton, FilmLookupSettings } from './FilmDetails'
 
 /* How long to sit on a keystroke before asking the server. Long enough that
    typing a word is one query rather than six, short enough to feel live. */
@@ -20,7 +24,7 @@ const TILE_MIN_PX = { mobile: 108, desktop: 132 }
 
 export default function FileBrowser({
   nav, listing, loading, error, providers, defaultAccounts, mobile,
-  onRefresh, onPreview, onInspect, onError,
+  onRefresh, onPreview, onInspect, onFilm, onError,
 }) {
   const [dragging, setDragging] = useState(false)
   const [pending, setPending] = useState(null)
@@ -39,6 +43,7 @@ export default function FileBrowser({
   const [selecting, setSelecting] = useState(false)
   const [selected, setSelected] = useState(() => new Set())
   const [bulk, setBulk] = useState(null)
+  const [films, setFilms] = useState(false)
   const fileInput = useRef(null)
   const dragDepth = useRef(0)
   // Where the last tick was put, so a shift-click has a range to reach back to.
@@ -155,6 +160,18 @@ export default function FileBrowser({
   const thumbs = useMemo(
     () => new Set((searchTerm ? results?.thumbs : listing?.thumbs) || []),
     [searchTerm, results, listing])
+
+  /* The films that have been matched, by file id — a title and a year each,
+     which is what a tile is captioned with. The full record is a request per
+     film, made when one is opened. */
+  const movies = useMemo(
+    () => (searchTerm ? results?.movies : listing?.movies) || {},
+    [searchTerm, results, listing])
+
+  /* Whether this folder's videos are matched at all. A search reaches across
+     the whole vault, so it answers for the folder it was started from — which
+     is the folder whose switch the toolbar button changes. */
+  const lookup = listing?.movie_lookup
 
   /* A selection is about the things in front of you, so walking somewhere else
      — or asking a different question of the index — ends it rather than
@@ -295,6 +312,11 @@ export default function FileBrowser({
   const listProps = {
     entries,
     thumbs,
+    movies,
+    /* A row only offers a film lookup where one could happen: in a folder that
+       has asked for it, and on a file a player would take. Everything else
+       keeps the menu it has always had. */
+    films: !!lookup?.enabled,
     prefs,
     mobile,
     providers,
@@ -304,6 +326,7 @@ export default function FileBrowser({
     onNavigate: nav.navigate,
     onPreview,
     onInspect,
+    onFilm,
     onRefresh: searchTerm ? refreshSearch : onRefresh,
     onError,
   }
@@ -345,6 +368,11 @@ export default function FileBrowser({
             onSearch={() => setSearchOpen(true)}
             onNewFolder={() => setCreatingFolder(true)}
             onUpload={() => fileInput.current?.click()}
+            /* Onto the strip under the heading, with the other controls that
+               say how this folder is read rather than what is in it. Lit when
+               the folder is opted in, since a folder that talks to a third
+               party should never do so quietly. */
+            film={<FilmButton lookup={lookup} mobile onOpen={() => setFilms(true)} />}
             /* Handed to the heading rather than put in its place: the field
                takes over the strip of icons underneath and the folder stays
                named above it, so a screen of results still says what was being
@@ -372,6 +400,7 @@ export default function FileBrowser({
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
               <NavCluster nav={nav} mobile={false} />
               <Breadcrumbs path={path} mobile={false} onNavigate={nav.navigate} />
+              <FilmButton lookup={lookup} mobile={false} onOpen={() => setFilms(true)} />
               <ViewControls
                 mobile={false}
                 prefs={prefs}
@@ -524,6 +553,17 @@ export default function FileBrowser({
         />
       )}
 
+      {films && (
+        <FilmLookupSettings
+          path={path}
+          lookup={lookup}
+          onClose={() => setFilms(false)}
+          /* Turning it on changes what the rows offer; a sweep changes their
+             pictures and their captions. Both are the listing. */
+          onChanged={onRefresh}
+        />
+      )}
+
       {creatingFolder && (
         <NewFolderModal
           path={path}
@@ -620,6 +660,29 @@ function SearchResults({ term, results, searching, error, path, scoped, mobile, 
   )
 }
 
+/* Whether this listing is being read as films — which decides the shape of a
+   tile and the width of a row's controls.
+
+   The switch is not the whole answer. A folder somebody has since turned it off
+   for still holds rows with films against them, and those keep their poster and
+   their control, so what is drawn follows what is actually there. */
+function showsFilms(films, movies, entries) {
+  return films || entries.some((entry) => entry.file && movies[entry.file.id])
+}
+
+/* Whether a row should offer film details at all, and what happens if it is
+   asked for.
+
+   Two things earn it: the folder is opted in and the file is something a player
+   would take, or the file already has a film against it — which it can, in a
+   folder somebody has since turned the switch back off. Anything else gets no
+   control and no menu entry rather than one that answers "not here". */
+function filmAction(films, movies, file, onFilm) {
+  if (!onFilm) return undefined
+  if (!movies[file.id] && !(films && isPlayable(file.mime, file.name))) return undefined
+  return () => onFilm(file)
+}
+
 /* The listing, as rows or as tiles. Which one is a preference and nothing
    more: both are drawn from the same ordered entries and offer the same things
    to do with each of them. */
@@ -628,10 +691,14 @@ function EntryList(props) {
 }
 
 function EntryTable({
-  entries, thumbs, mobile, providers, selecting, selected, onToggle, onSelectAll, onSelectNone,
-  onNavigate, onPreview, onInspect, onRefresh, onError,
+  entries, thumbs, movies, films, mobile, providers, selecting, selected,
+  onToggle, onSelectAll, onSelectNone,
+  onNavigate, onPreview, onInspect, onFilm, onRefresh, onError,
 }) {
   const all = entries.length > 0 && entries.every((entry) => selected.has(entry.key))
+  /* One template for the whole table, headings included: a film folder's rows
+     carry an extra control and the column has to be the same width everywhere. */
+  const columns = showsFilms(films, movies, entries) ? FILM_COLUMNS : COLUMNS
 
   return (
     <div style={{
@@ -670,7 +737,7 @@ function EntryTable({
             <span>{all ? 'Everything here is selected' : 'Select everything here'}</span>
           ) : (
             <div style={{
-              display: 'grid', gridTemplateColumns: COLUMNS, gap: '12px',
+              display: 'grid', gridTemplateColumns: columns, gap: '12px',
               flex: 1, minWidth: 0,
             }}>
               <span>Name</span>
@@ -691,6 +758,7 @@ function EntryTable({
           location={entry.location}
           mobile={mobile}
           providers={providers}
+          columns={columns}
           selecting={selecting}
           selected={selected.has(entry.key)}
           onSelect={(checked, event) => onToggle(entry, checked, event)}
@@ -706,11 +774,14 @@ function EntryTable({
           mobile={mobile}
           providers={providers}
           hasThumb={thumbs.has(entry.file.id)}
+          film={movies[entry.file.id]}
+          columns={columns}
           selecting={selecting}
           selected={selected.has(entry.key)}
           onSelect={(checked, event) => onToggle(entry, checked, event)}
-          onPreview={() => onPreview(entry.file, thumbs.has(entry.file.id))}
+          onPreview={() => onPreview(entry.file, thumbs.has(entry.file.id), movies[entry.file.id])}
           onInspect={() => onInspect(entry.file)}
+          onFilm={filmAction(films, movies, entry.file, onFilm)}
           onRefresh={onRefresh}
           onError={onError}
         />
@@ -720,9 +791,14 @@ function EntryTable({
 }
 
 function EntryGrid({
-  entries, thumbs, mobile, providers, selecting, selected, onToggle,
-  onNavigate, onPreview, onInspect, onRefresh, onError,
+  entries, thumbs, movies, films, mobile, providers, selecting, selected, onToggle,
+  onNavigate, onPreview, onInspect, onFilm, onRefresh, onError,
 }) {
+  /* Posters are two-by-three and photographs are not, so the shape belongs to
+     the folder rather than to the tile: one shape per grid keeps the rows level
+     and the folders in step with the films beside them. */
+  const aspect = showsFilms(films, movies, entries) ? TILE_POSTER : TILE_SQUARE
+
   return (
     <div style={{
       display: 'grid',
@@ -737,6 +813,7 @@ function EntryGrid({
           location={entry.location}
           mobile={mobile}
           providers={providers}
+          aspect={aspect}
           selecting={selecting}
           selected={selected.has(entry.key)}
           onSelect={(checked, event) => onToggle(entry, checked, event)}
@@ -752,11 +829,14 @@ function EntryGrid({
           mobile={mobile}
           providers={providers}
           hasThumb={thumbs.has(entry.file.id)}
+          film={movies[entry.file.id]}
+          aspect={aspect}
           selecting={selecting}
           selected={selected.has(entry.key)}
           onSelect={(checked, event) => onToggle(entry, checked, event)}
-          onPreview={() => onPreview(entry.file, thumbs.has(entry.file.id))}
+          onPreview={() => onPreview(entry.file, thumbs.has(entry.file.id), movies[entry.file.id])}
           onInspect={() => onInspect(entry.file)}
+          onFilm={filmAction(films, movies, entry.file, onFilm)}
           onRefresh={onRefresh}
           onError={onError}
         />

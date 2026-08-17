@@ -90,6 +90,7 @@ everything meaningful is encrypted. It is the only persistent state SAND has.
   "data_key_id": "…",
   "providers":   { "nonce": "…", "ciphertext": "…" },
   "manifest":    { "nonce": "…", "ciphertext": "…" },
+  "settings":    { "nonce": "…", "ciphertext": "…" },
   "policy":      "strict",
   "default_accounts": ["…", "…", "…"]
 }
@@ -107,7 +108,8 @@ under the **vault key**, derived from your password with Argon2id.
 | `data_key` | 32 random bytes | The key files are actually encrypted with |
 | `retired_keys` | Earlier data keys, while a password change is still re-encrypting (§3.3) | They open parts that have not moved yet |
 | `providers` | Account configs **including credentials** | A stolen vault file must not yield cloud access |
-| `manifest` | Filenames, folders, sizes, part placement | Filenames and folder structure are themselves sensitive |
+| `manifest` | Filenames, folders, sizes, part placement, film details (§3.10) | Filenames and folder structure are themselves sensitive |
+| `settings` | The preferences that are secrets — today the film database key | It is a credential for a third-party service; absent entirely until one is set, and never copied into a manifest backup |
 
 ### 3.2 Two keys, not one
 
@@ -217,7 +219,10 @@ derives the key and opens the payload:
 
 Credentials are excluded deliberately. A copy of this file sits in every
 account, so including them would make one compromised account a master key to
-all the others.
+all the others. The film database key is excluded for the same reason and is
+not part of the manifest at all — it lives in the vault file's own `settings`
+section (§3.10). Film *details* do travel, because they are index: recovering
+from a backup gives back every title and asks for the key again.
 
 **What it costs.** Every copy is a password away from the data key, so a single
 compromised account plus a cracked password yields the tree, the placement map,
@@ -380,6 +385,65 @@ file all move together or none of them do.
 Names stay unique, case-insensitively, whether they are set by `AddProvider` or
 changed here — two accounts answering to one name would make `--accounts a,b,c`
 and every CLI lookup ambiguous.
+
+### 3.10 Film details are index state too, and the one request that leaves
+
+A video file's name is a poor description of the film in it, so a folder can be
+told that its videos are films and matched against The Movie Database — the
+service Plex and Jellyfin use. Three decisions define the shape of it.
+
+**It is off until a folder asks, by name.** Every other request SAND makes goes
+to an account the user connected. A lookup does not: it sends a title guessed
+from a file name, this machine's address and the user's own API key to a third
+party. So the switch is per folder, kept in `Manifest.MovieFolders` and
+inherited downwards — a films folder is a library and libraries have folders
+inside them — and `movieLookupLocked` walks up from a folder to find the
+nearest setting. The server checks it against the index on every lookup path
+rather than trusting the request, and turning it on performs no lookup at all:
+the sweep is a separate call.
+
+**What comes back is stored where its sensitivity says it belongs.** The text —
+title, year, summary, runtime, genres, score, director, cast — is a few hundred
+bytes per film and goes into `Manifest.Movies`, keyed by file ID, so it is
+sealed with the rest of the index and travels in a manifest backup. Keying by
+ID rather than path means a rename or a folder move carries it for free.
+
+The poster is not text, and it is not kept there. It becomes the file's
+**thumbnail**, which means it is compressed, split into three encrypted parts
+and scattered by the same placement rules as every other picture in the vault
+(§4.3's pack). Two things fall out of that: the browser still fetches every
+pixel it draws from the local server, and a poster costs nothing new to store,
+serve, move between clouds or delete.
+
+The API key is the exception in the other direction. It is a credential for
+somebody else's service, so it lives in a `settings` section of the vault file
+sealed under the vault key — and deliberately *not* in the manifest, which is
+replicated to every connected account (§3.6). A password change re-seals it
+under the new key alongside the providers, because it is something the user set
+rather than something derived.
+
+**A sweep is resumable and idempotent.** Every film is committed the moment it
+is matched, so a timeout, a rate limit or a lock costs the film in flight and
+nothing else; a film that already has details is skipped without a request, and
+one corrected by hand is skipped even by a full refresh. Posters are collected
+per folder and written through `Vault.SetThumbs` once per folder rather than
+once per film — a pack is a single stored object, so the naive loop would be
+quadratic in the size of the folder.
+
+That last point covers the one case where derived data cannot be re-derived. A
+password change drops every thumbnail (§3.3), because they are sealed under the
+retiring key and regenerating them is cheaper than re-encrypting them. A
+photograph's thumbnail comes back the next time it is opened; a poster has no
+local source, so `movie.Info` keeps the artwork's path at the database and a
+re-sweep restores it for one image fetch each, with no search.
+
+Name parsing lives in `internal/movie/name.go` and is the same guess every
+media server makes: cut at the year if there is one, cut at the first encoding
+tag if there is not, and fall back to the folder's name when the file's is a
+disc track. It is wrong sometimes by construction, which is why `movie.Info`
+records the query it was matched on, why a match can be corrected against a
+candidate list, and why a corrected match is marked `Manual` and never
+overwritten.
 
 ---
 
@@ -1031,6 +1095,14 @@ reveals only whether a vault exists.
 | POST | `/api/folders` | Create a folder |
 | DELETE | `/api/folders?path=&recursive=` | Delete a folder |
 | POST | `/api/relocate` | Move a file (`id`) or a folder (`path`) onto other `accounts` (§5.5); `"preview": true` prices it out of the index and moves nothing |
+| GET | `/api/movies` | Whether a film database key is stored, and which folders are opted in (§3.10) |
+| POST | `/api/movies/key` | Store the key — checked against the database before it is kept; `""` clears it |
+| POST | `/api/movies/lookup` | Turn film lookup on or off for a `path` and everything beneath it |
+| POST | `/api/movies/scan` | Match every unmatched video under a `path` (`"refresh": true` redoes the matched ones) |
+| GET | `/api/files/{id}/movie` | The stored film, plus what the file name reads as |
+| POST | `/api/files/{id}/movie` | Look one up: on the name, on a `query`, or on a `tmdb_id` chosen by hand |
+| DELETE | `/api/files/{id}/movie` | Forget the film; the poster stays as the file's thumbnail |
+| GET | `/api/files/{id}/movie/candidates?q=` | Search the database, storing nothing, to correct a match |
 | GET | `/api/system/folders?path=` | Folders on the machine SAND runs on, for the folder picker (§8.5) |
 | POST | `/api/archive` | Standalone mode (§10) |
 | POST | `/api/restore` | Standalone mode (§10) |
@@ -1063,7 +1135,8 @@ browser forever.
 ```
 
 `LOCKED · WRONG_PASSWORD · NO_VAULT · NOT_FOUND · CROSS_ORIGIN · VAULT_ERROR ·
-PARSE_ERROR · MISSING_FILE`
+PARSE_ERROR · MISSING_FILE · NEEDS_CONVERSION · NO_MOVIE_KEY · BAD_MOVIE_KEY ·
+MOVIE_LOOKUP_OFF`
 
 ### 9.4 The WebDAV share
 
@@ -1209,6 +1282,7 @@ The same endpoints back the API (`POST /api/archive`, `POST /api/restore`).
 | **Stored HTML/SVG executing in the app** | Risky types forced to `attachment`, `X-Content-Type-Options: nosniff`, restrictive CSP |
 | **Plaintext cached by a proxy** | `Cache-Control: private, no-store` on rebuilt content |
 | **Walking away from the machine** | Idle timeout re-locks the vault |
+| **A film database learning your library** | Off until a folder is opted in by name; one lookup per film, carrying a title guessed from the file name and nothing else about the file; the answer is stored so it is never asked twice (§3.10) |
 | **Metadata leaking to a provider** | Object keys derived only from a random ID; filenames, hashes and sizes sealed inside the part since format v2 |
 | **Third-party tracking** | The UI loads no external fonts, scripts or styles — opening the vault makes zero third-party requests |
 
@@ -1230,6 +1304,12 @@ The same endpoints back the API (`POST /api/archive`, `POST /api/restore`).
   implies if you lose it.
 - **Traffic analysis.** A provider sees when you upload and how large each part
   is.
+- **A film database knowing what it was asked.** Sealing the answer into the
+  index is not the same as the question never having been asked: TMDB sees a
+  title guessed from a file name, and the machine's address, once per film, for
+  the folders that were opted in (§3.10). Nothing about the file goes with it,
+  and nothing goes at all for a folder that never asked — but the request is a
+  real disclosure and no amount of encryption at rest changes that.
 
 ### 11.3 Binding
 
@@ -1258,6 +1338,8 @@ sand/
 │   ├── splitter/              # split, XOR, reconstruct
 │   ├── sandfile/              # binary .sand part format
 │   ├── provider/              # provider.go, local, s3, webdav, gdrive, dropbox
+│   ├── movie/                 # file name → film, and the film database client;
+│   │                          #   the only package that speaks to a third party (§3.10)
 │   ├── vault/                 # store (encrypted file), manifest, placement, transfer,
 │   │                          #   relocate (moving parts between accounts), rekey,
 │   │                          #   backup (writing the index out), recovery (reading it
@@ -1269,7 +1351,7 @@ sand/
 │   ├── view.js                # list or grid, sort key and direction (persisted)
 │   └── components/            # LockScreen, AccountsPanel, FileBrowser, Toolbar,
 │                              #   FileEntry (rows + tiles), BulkActions,
-│                              #   PreviewModal, PdfPreview (pdf.js), ui
+│                              #   PreviewModal, PdfPreview (pdf.js), FilmDetails, ui
 └── tests/                     # pytest e2e: CLI, API, vault flow, browser
 ```
 

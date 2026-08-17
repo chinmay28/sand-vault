@@ -88,6 +88,14 @@ type storeFile struct {
 	Manifest  sealed    `json:"manifest"`
 	Policy    Policy    `json:"policy"`
 
+	// Settings holds the preferences that are themselves secrets — today that
+	// is one, the film database key. Sealed like every other section, and
+	// pointedly *not* kept in the manifest: the manifest is replicated to every
+	// connected account as a recovery backup, and a credential for somebody's
+	// account with a third party has no business being copied onto three cloud
+	// providers. A vault that has never set one has no section at all.
+	Settings *sealed `json:"settings,omitempty"`
+
 	// DefaultAccounts names the accounts an upload spreads over when it does
 	// not choose its own. Empty means "no preference", and every upload picks
 	// its own three at random instead.
@@ -138,6 +146,19 @@ type storeFile struct {
 	// read them before the machine died, and the vault has to keep saying so
 	// until they have been re-encrypted. Cleared by RotateDataKey.
 	InheritedKeyID string `json:"inherited_key_id,omitempty"`
+}
+
+// vaultSettings is the plaintext of the settings section.
+type vaultSettings struct {
+	// MovieAPIKey is the user's own key for the film database. Empty — which is
+	// how every vault starts — means no film lookup can happen at all.
+	MovieAPIKey string `json:"movie_api_key,omitempty"`
+}
+
+// empty reports whether anything is set, so that a vault which has never
+// touched these writes no section rather than an encrypted empty object.
+func (s *vaultSettings) empty() bool {
+	return s == nil || *s == vaultSettings{}
 }
 
 // seal encrypts plaintext under key with a fresh random nonce.
@@ -321,6 +342,7 @@ type unsealed struct {
 	retired   map[string][]byte // older generations, by ID, still in use
 	providers []provider.Config
 	manifest  *Manifest
+	settings  *vaultSettings
 }
 
 // zero wipes every key this holds. Callers that adopt the keys into a vault
@@ -382,6 +404,14 @@ func unsealStore(sf *storeFile, password string) (*unsealed, error) {
 	}
 	if u.manifest.Folders == nil {
 		u.manifest.Folders = []string{}
+	}
+
+	u.settings = &vaultSettings{}
+	if sf.Settings != nil {
+		if err := openJSON(u.vaultKey, *sf.Settings, u.settings); err != nil {
+			u.zero()
+			return nil, fmt.Errorf("decrypting settings: %w", err)
+		}
 	}
 
 	return u, nil
