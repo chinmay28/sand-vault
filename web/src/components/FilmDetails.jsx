@@ -385,7 +385,7 @@ export function FilmButton({ lookup, mobile, onOpen }) {
    vault's own settings are — beside the password and the default clouds — and
    not in the dialog of whichever folder happened to want it first. A folder's
    dialog says only whether a key exists, and points here when it does not. */
-export function FilmKeySettings({ onClose, onChanged }) {
+export function FilmKeySettings({ onClose, onChanged, zIndex }) {
   const [settings, setSettings] = useState(null)
   const [key, setKey] = useState('')
   const [editing, setEditing] = useState(false)
@@ -425,6 +425,7 @@ export function FilmKeySettings({ onClose, onChanged }) {
       subtitle="One key for the whole vault — every folder that looks films up uses it"
       onClose={() => !busy && onClose()}
       width={560}
+      zIndex={zIndex}
     >
       {error && <Banner tone="error" onDismiss={() => setError(null)}>{error}</Banner>}
 
@@ -575,9 +576,10 @@ export function FilmLookupSettings({ path, lookup, onClose, onChanged }) {
           {!hasKey && (
             <Banner tone="warn">
               No film database key has been stored yet. It is one key for the
-              whole vault, kept with the password and the default clouds —
-              set it {mobile ? 'in the ☰ panel' : 'in the panel on the left'},
-              under “🎬 Film key”, and this folder can be turned on.
+              whole vault, so it lives with the password and the default clouds:
+              {mobile ? ' ☰ → ' : ' '}<b>Vault settings → Film key</b>
+              {mobile ? '' : ', at the foot of the panel on the left'}. Set it
+              there and this folder can be turned on.
             </Banner>
           )}
 

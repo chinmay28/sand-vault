@@ -77,6 +77,45 @@ def connect_cloud(page, name, clouds):
     page.wait_for_selector(f"text={name}", timeout=30000)
 
 
+def open_vault_setting(page, label):
+    """Open one of the vault's settings, which all live behind one menu.
+
+    The accounts panel carries a single **Vault settings** button; the password,
+    the default clouds, the film database key and the drive share the list it
+    opens. Each still opens the dialog it always did, over the list rather than
+    instead of it, so `close_vault_settings` is what puts the app back.
+    """
+    page.get_by_role("button", name=re.compile(r"^Vault settings")).click()
+    menu = page.get_by_role("dialog", name="Vault settings")
+    menu.wait_for(timeout=20000)
+    menu.get_by_role("button", name=re.compile(rf"^{label}")).click()
+
+
+def expect_vault_setting(page, label, pattern):
+    """Assert what the settings list says a setting is currently set to.
+
+    The standing of each setting — which clouds are the default, whether a film
+    key is stored — lives on its line in that list rather than in the panel
+    behind it, so reading one means opening the menu.
+    """
+    page.get_by_role("button", name=re.compile(r"^Vault settings")).click()
+    menu = page.get_by_role("dialog", name="Vault settings")
+    menu.wait_for(timeout=20000)
+    expect(menu.get_by_role("button", name=re.compile(rf"^{label}"))).to_contain_text(
+        pattern, timeout=20000)
+    close_vault_settings(page)
+
+
+def close_vault_settings(page):
+    """Dismiss the settings list, which is still open under whatever it
+    opened."""
+    menu = page.get_by_role("dialog", name="Vault settings")
+    if menu.count() == 0:
+        return
+    page.keyboard.press("Escape")
+    menu.wait_for(state="detached", timeout=20000)
+
+
 def select_clouds(page, names):
     """Leave exactly `names` selected in whichever cloud picker is open.
 
@@ -873,12 +912,13 @@ class TestChoosingClouds:
 
     def _set_default_clouds(self, app, accounts):
         """Make `accounts` — and only those — the vault's default clouds."""
-        app.get_by_role("button", name=re.compile(r"^Defaults")).click()
+        open_vault_setting(app, "Default clouds")
         dialog = app.get_by_role("heading", name="Default clouds")
         dialog.wait_for(timeout=20000)
         select_clouds(app, accounts)
         app.get_by_role("button", name="Save default").click()
         dialog.wait_for(state="detached", timeout=20000)
+        close_vault_settings(app)
 
     def test_the_picker_offers_every_connected_cloud(self, app, tmp_path):
         self._open_picker(app, tmp_path, "offered.txt")
@@ -912,7 +952,7 @@ class TestChoosingClouds:
     def test_a_default_is_marked_and_preselected(self, app, tmp_path):
         self._set_default_clouds(app, ["ui-one", "ui-two"])
         try:
-            app.wait_for_selector("text=/2 of \\d+ clouds/", timeout=20000)
+            expect_vault_setting(app, "Default clouds", re.compile(r"2 of \d+"))
             # The accounts carrying the default say so on their own card.
             assert app.get_by_text("default", exact=True).count() == 2
 
@@ -923,13 +963,14 @@ class TestChoosingClouds:
             app.wait_for_selector("text=/Upload to \\d+ cloud/", state="detached", timeout=20000)
         finally:
             # Back to picking per upload, so the rest of the suite is unaffected.
-            app.get_by_role("button", name=re.compile(r"^Defaults")).click()
+            open_vault_setting(app, "Default clouds")
             dialog = app.get_by_role("heading", name="Default clouds")
             dialog.wait_for(timeout=20000)
             app.get_by_role("button", name="Pick per upload").click()
             dialog.wait_for(state="detached", timeout=20000)
+            close_vault_settings(app)
 
-        app.wait_for_selector("text=3 per upload", timeout=20000)
+        expect_vault_setting(app, "Default clouds", "3 per upload")
         assert app.get_by_text("default", exact=True).count() == 0
 
 
@@ -1544,7 +1585,7 @@ class TestChangePassword:
     """
 
     def _change(self, app, current, new, migrate=True):
-        app.get_by_role("button", name=re.compile(r"^Password")).first.click()
+        open_vault_setting(app, "Password")
         app.wait_for_selector("text=Re-encrypt my files now", timeout=15000)
 
         app.get_by_label("Current password").fill(current)
@@ -1560,6 +1601,7 @@ class TestChangePassword:
     def _dismiss(self, app):
         app.get_by_role("button", name="Done").click()
         app.wait_for_selector("text=Password changed", state="detached", timeout=15000)
+        close_vault_settings(app)
 
     def test_changing_the_password_re_encrypts_the_stored_files(self, app, vault_password, tmp_path):
         source = tmp_path / "rekeyed.txt"
@@ -1591,7 +1633,7 @@ class TestChangePassword:
                 self._dismiss(app)
 
     def test_a_wrong_current_password_is_reported(self, app, vault_password):
-        app.get_by_role("button", name=re.compile(r"^Password")).first.click()
+        open_vault_setting(app, "Password")
         app.wait_for_selector("text=Re-encrypt my files now", timeout=15000)
 
         app.get_by_label("Current password").fill("not-the-password")
@@ -1601,9 +1643,10 @@ class TestChangePassword:
 
         app.wait_for_selector("text=That is not your current password", timeout=30000)
         app.get_by_role("button", name="Cancel").click()
+        close_vault_settings(app)
 
     def test_mismatched_new_passwords_never_reach_the_server(self, app, vault_password):
-        app.get_by_role("button", name=re.compile(r"^Password")).first.click()
+        open_vault_setting(app, "Password")
         app.wait_for_selector("text=Re-encrypt my files now", timeout=15000)
 
         app.get_by_label("Current password").fill(vault_password)
@@ -1615,6 +1658,7 @@ class TestChangePassword:
         # The vault is untouched: the dialog is still a form, not a report.
         assert app.get_by_text("Password changed").count() == 0
         app.get_by_role("button", name="Cancel").click()
+        close_vault_settings(app)
 
     def test_deferring_the_migration_offers_to_finish_it(self, app, vault_password):
         changed = False
@@ -1631,6 +1675,50 @@ class TestChangePassword:
             if changed:
                 self._change(app, "deferred-for-now", vault_password)
                 self._dismiss(app)
+
+
+class TestVaultSettings:
+    """Everything set on the vault itself is behind one button.
+
+    The panel used to carry a tile per setting, which meant every new setting
+    took another bite out of the drawer and settings that did not fit simply
+    were not offered. One list holds them all, each line saying where that
+    setting stands, and each still opening the dialog it always did.
+    """
+
+    def test_one_button_opens_the_lot(self, app):
+        app.get_by_role("button", name=re.compile(r"^Vault settings")).click()
+        menu = app.get_by_role("dialog", name="Vault settings")
+        menu.wait_for(timeout=20000)
+
+        for label in ("Default clouds", "Password", "Film key"):
+            assert menu.get_by_role("button", name=re.compile(rf"^{label}")).count() == 1
+
+        close_vault_settings(app)
+
+    def test_a_setting_opens_over_the_list_and_closes_back_onto_it(self, app):
+        open_vault_setting(app, "Film key")
+        app.wait_for_selector("text=Film database key", timeout=20000)
+
+        # Escape closes the dialog on top and only that one, so cancelling out
+        # of a setting puts you back on the list you chose it from.
+        app.keyboard.press("Escape")
+        app.wait_for_selector("text=Film database key", state="detached", timeout=20000)
+        assert app.get_by_role("dialog", name="Vault settings").count() == 1
+
+        close_vault_settings(app)
+
+    def test_a_folder_points_at_the_key_rather_than_asking_for_it(self, app):
+        """The key belongs to the vault, so a folder's film dialog only says
+        whether there is one."""
+        app.get_by_role("button", name="Film details for this folder").click()
+        app.wait_for_selector("text=Film details", timeout=20000)
+
+        assert app.locator(
+            'input[placeholder="Paste your TMDB key or read token"]').count() == 0
+        assert app.get_by_text("Vault settings → Film key").count() == 1
+
+        app.keyboard.press("Escape")
 
 
 class TestMobileLayout:

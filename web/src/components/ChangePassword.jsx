@@ -10,7 +10,7 @@ import { Banner, Button, Modal, PasswordInput, Spinner } from './ui'
    generated and every stored file is rebuilt onto it — which is a download and
    an upload per file, and why this dialog talks about time rather than just
    asking for two strings. */
-export default function ChangePassword({ stats, onClose, onChanged }) {
+export default function ChangePassword({ stats, onClose, onChanged, zIndex }) {
   const [current, setCurrent] = useState('')
   const [next, setNext] = useState('')
   const [confirm, setConfirm] = useState('')
@@ -53,7 +53,7 @@ export default function ChangePassword({ stats, onClose, onChanged }) {
 
   if (report) {
     return (
-      <Modal title="Password changed" onClose={onClose}>
+      <Modal title="Password changed" onClose={onClose} zIndex={zIndex}>
         <Banner tone="success">
           Your vault now opens with the new password, and the old one opens nothing.
         </Banner>
@@ -93,6 +93,7 @@ export default function ChangePassword({ stats, onClose, onChanged }) {
       title="Change vault password"
       subtitle="Your files are encrypted under a key inside the vault, not under your password — so changing it means re-encrypting them."
       onClose={busy ? undefined : onClose}
+      zIndex={zIndex}
     >
       <form onSubmit={submit}>
         {error && <Banner tone="error" onDismiss={() => setError(null)}>{error}</Banner>}

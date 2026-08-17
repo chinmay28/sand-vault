@@ -4,11 +4,8 @@ import { api } from '../api'
 import { Banner, Button, IconButton, Spinner } from './ui'
 import ConnectCloud, { pendingOAuthFlow } from './ConnectCloud'
 import EditAccount from './EditAccount'
-import ChangePassword from './ChangePassword'
 import ReclaimVault from './ReclaimVault'
-import MountDrive from './MountDrive'
-import { FilmKeySettings } from './FilmDetails'
-import { DefaultClouds, PARTS_PER_FILE, schemeFor, schemeName } from './CloudSelect'
+import VaultSettings from './VaultSettings'
 import { DevMark } from './Brand'
 
 /* One number and the word for what it counts. The figure carries the weight —
@@ -117,27 +114,11 @@ export default function AccountsPanel({
   // A sign-in that took over the tab is still in flight when the app reloads:
   // reopen the dialog on it rather than making the user start again.
   const [connecting, setConnecting] = useState(() => Boolean(pendingOAuthFlow()))
-  const [changingPassword, setChangingPassword] = useState(false)
-  const [mounting, setMounting] = useState(false)
-  const [choosingDefaults, setChoosingDefaults] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [reclaiming, setReclaiming] = useState(false)
-  const [filmKey, setFilmKey] = useState(null)
-  const [settingFilmKey, setSettingFilmKey] = useState(false)
   const [error, setError] = useState(null)
 
   const defaults = stats?.default_accounts || []
-
-  /* Only so its tile can say whether there is one — the key itself never
-     leaves the server. Asked once, when the vault is open and this panel first
-     draws; if the question fails the tile simply keeps saying nothing, which
-     is all a label is owed. */
-  useEffect(() => {
-    let cancelled = false
-    api.movieSettings()
-      .then((resp) => { if (!cancelled) setFilmKey(!!resp.has_key) })
-      .catch(() => {})
-    return () => { cancelled = true }
-  }, [])
 
   useEffect(() => {
     if (!mobile || !open) return
@@ -329,54 +310,23 @@ export default function AccountsPanel({
           </Banner>
         )}
 
-        {/* The things you do to the vault itself rather than to an account.
-            They were ghost buttons in a column, which read as more lines of the
-            grey text above them — nothing said they could be pressed. As tiles
-            they group, they say what they are for on a second line, and they
-            are a fingertip tall.
+        {/* One door to everything the vault itself is set to.
 
-            The film database key is here for the same reason the password is:
-            it is one credential the whole vault shares, not a property of
-            whichever folder of films happened to ask for it first. */}
-        <div style={{
-          marginTop: '16px',
-          display: 'flex',
-          flexWrap: 'wrap',
-          gap: '8px',
-        }}>
-          {/* Absent unless the server was started with --webdav: telling
-              someone to mount a share that is not being served is worse than
-              not mentioning it. */}
-          {webdav?.path && (
-            <ActionTile
-              icon="💾"
-              label="Mount"
-              hint="as a drive"
-              onClick={() => setMounting(true)}
-            />
-          )}
-          {providers.length > 0 && (
-            <ActionTile
-              icon="☁️"
-              label="Defaults"
-              hint={defaults.length > 0
-                ? `${defaults.length} of ${providers.length} clouds${
-                  defaults.length > PARTS_PER_FILE ? ` · ${schemeName(schemeFor(defaults.length))}` : ''}`
-                : `${PARTS_PER_FILE} per upload`}
-              onClick={() => setChoosingDefaults(true)}
-            />
-          )}
+            This was a row of tiles, one per setting, which worked at two and
+            stopped working at four: the drawer is where your accounts live, and
+            a grid of little boxes for the password, the default clouds, the
+            film key and the drive was eating the bottom half of it — while
+            still only offering whichever settings happened to fit. A list
+            behind one button holds as many as the vault grows, and gives each
+            of them room to say what it is currently set to. */}
+        {/* A flex row of one, so the tile grows to the panel's width the way
+            it did when it had three siblings to share it with. */}
+        <div style={{ marginTop: '16px', display: 'flex' }}>
           <ActionTile
-            icon="🔑"
-            label="Password"
-            hint="change it"
-            onClick={() => setChangingPassword(true)}
-          />
-          <ActionTile
-            icon="🎬"
-            label="Film key"
-            hint={filmKey === null ? '…' : filmKey ? 'stored' : 'not set'}
-            onClick={() => setSettingFilmKey(true)}
+            icon="⚙️"
+            label="Vault settings"
+            hint="password · clouds · film key"
+            onClick={() => setSettingsOpen(true)}
           />
         </div>
 
@@ -395,31 +345,12 @@ export default function AccountsPanel({
         />
       )}
 
-      {choosingDefaults && (
-        <DefaultClouds
+      {settingsOpen && (
+        <VaultSettings
           providers={providers}
-          defaults={defaults}
-          onClose={() => setChoosingDefaults(false)}
-          onChanged={onChanged}
-        />
-      )}
-
-      {mounting && (
-        <MountDrive path={webdav?.path} onClose={() => setMounting(false)} />
-      )}
-
-      {settingFilmKey && (
-        <FilmKeySettings
-          onClose={() => setSettingFilmKey(false)}
-          /* The tile's own line, kept honest without another round trip. */
-          onChanged={setFilmKey}
-        />
-      )}
-
-      {changingPassword && (
-        <ChangePassword
           stats={stats}
-          onClose={() => setChangingPassword(false)}
+          webdav={webdav}
+          onClose={() => setSettingsOpen(false)}
           onChanged={onChanged}
         />
       )}
