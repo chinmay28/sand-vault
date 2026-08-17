@@ -7,6 +7,7 @@ import EditAccount from './EditAccount'
 import ChangePassword from './ChangePassword'
 import ReclaimVault from './ReclaimVault'
 import MountDrive from './MountDrive'
+import { FilmKeySettings } from './FilmDetails'
 import { DefaultClouds, PARTS_PER_FILE, schemeFor, schemeName } from './CloudSelect'
 import { DevMark } from './Brand'
 
@@ -120,9 +121,23 @@ export default function AccountsPanel({
   const [mounting, setMounting] = useState(false)
   const [choosingDefaults, setChoosingDefaults] = useState(false)
   const [reclaiming, setReclaiming] = useState(false)
+  const [filmKey, setFilmKey] = useState(null)
+  const [settingFilmKey, setSettingFilmKey] = useState(false)
   const [error, setError] = useState(null)
 
   const defaults = stats?.default_accounts || []
+
+  /* Only so its tile can say whether there is one — the key itself never
+     leaves the server. Asked once, when the vault is open and this panel first
+     draws; if the question fails the tile simply keeps saying nothing, which
+     is all a label is owed. */
+  useEffect(() => {
+    let cancelled = false
+    api.movieSettings()
+      .then((resp) => { if (!cancelled) setFilmKey(!!resp.has_key) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [])
 
   useEffect(() => {
     if (!mobile || !open) return
@@ -314,11 +329,15 @@ export default function AccountsPanel({
           </Banner>
         )}
 
-        {/* The three things you do to the vault itself rather than to an
-            account. They were ghost buttons in a column, which read as three
-            more lines of the grey text above them — nothing said they could be
-            pressed. As tiles they group, they say what they are for on a second
-            line, and they are a fingertip tall. */}
+        {/* The things you do to the vault itself rather than to an account.
+            They were ghost buttons in a column, which read as more lines of the
+            grey text above them — nothing said they could be pressed. As tiles
+            they group, they say what they are for on a second line, and they
+            are a fingertip tall.
+
+            The film database key is here for the same reason the password is:
+            it is one credential the whole vault shares, not a property of
+            whichever folder of films happened to ask for it first. */}
         <div style={{
           marginTop: '16px',
           display: 'flex',
@@ -353,6 +372,12 @@ export default function AccountsPanel({
             hint="change it"
             onClick={() => setChangingPassword(true)}
           />
+          <ActionTile
+            icon="🎬"
+            label="Film key"
+            hint={filmKey === null ? '…' : filmKey ? 'stored' : 'not set'}
+            onClick={() => setSettingFilmKey(true)}
+          />
         </div>
 
         {/* Turned out of the header on a phone, it lands here. */}
@@ -381,6 +406,14 @@ export default function AccountsPanel({
 
       {mounting && (
         <MountDrive path={webdav?.path} onClose={() => setMounting(false)} />
+      )}
+
+      {settingFilmKey && (
+        <FilmKeySettings
+          onClose={() => setSettingFilmKey(false)}
+          /* The tile's own line, kept honest without another round trip. */
+          onChanged={setFilmKey}
+        />
       )}
 
       {changingPassword && (

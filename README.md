@@ -995,7 +995,11 @@ up once: after that the answer is in your vault, and opening the folder again
 contacts nobody.
 
 You need a free key of your own, from **themoviedb.org → Settings → API**.
-Either the v3 key or the v4 read access token works. It is stored in the vault
+Either the v3 key or the v4 read access token works. Paste it into **🎬 Film
+key** in the accounts panel — beside **Password** and **Defaults**, since it is
+one key the whole vault shares rather than a property of any one folder; on a
+phone that panel is behind `☰`. Until there is one, a folder's `🎬` dialog says
+so and cannot be turned on. It is stored in the vault
 file, sealed under your password like your cloud credentials — and deliberately
 *not* in the manifest, which is replicated to every connected account, because a
 credential for someone else's service has no business being copied onto three

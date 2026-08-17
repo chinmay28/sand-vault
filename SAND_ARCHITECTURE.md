@@ -425,7 +425,10 @@ somebody else's service, so it lives in a `settings` section of the vault file
 sealed under the vault key — and deliberately *not* in the manifest, which is
 replicated to every connected account (§3.6). A password change re-seals it
 under the new key alongside the providers, because it is something the user set
-rather than something derived.
+rather than something derived. The browser puts it where that says it belongs:
+with the vault's own settings, beside the password and the default clouds. A
+folder's film dialog only reports whether a key exists, because one key serves
+every folder and the folder switch is the only thing a folder owns.
 
 **A sweep is resumable and idempotent.** Every film is committed the moment it
 is matched, so a timeout, a rate limit or a lock costs the film in flight and

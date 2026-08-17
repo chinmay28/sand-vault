@@ -22,6 +22,15 @@ const ATTRIBUTION = 'Details and artwork come from The Movie Database (TMDB). ' 
 const KEY_HELP = 'A free personal key from themoviedb.org — Settings → API. ' +
   'Either the v3 key or the v4 read access token works.'
 
+/* What a lookup sends, said wherever film matching is being set up — turning a
+   folder on, and storing the key that lets any folder do it at all. */
+const PRIVACY = 'Everything else in SAND stays on this machine and your own ' +
+  'accounts. This does not: looking a film up sends the title read off its ' +
+  'file name, and this machine’s address, to The Movie Database. Nothing ' +
+  'else about the file goes — not its contents, not its size, not where its ' +
+  'parts live — and what comes back is stored in the vault, so a film is ' +
+  'looked up once and never again.'
+
 function runtimeLabel(minutes) {
   if (!minutes) return null
   const hours = Math.floor(minutes / 60)
@@ -369,6 +378,130 @@ export function FilmButton({ lookup, mobile, onOpen }) {
   )
 }
 
+/* The film database key, which is the vault's rather than any one folder's.
+
+   It is a credential: one key, sealed in the index with everything else, used
+   by whichever folder asks for a lookup. So it is kept where the rest of the
+   vault's own settings are — beside the password and the default clouds — and
+   not in the dialog of whichever folder happened to want it first. A folder's
+   dialog says only whether a key exists, and points here when it does not. */
+export function FilmKeySettings({ onClose, onChanged }) {
+  const [settings, setSettings] = useState(null)
+  const [key, setKey] = useState('')
+  const [editing, setEditing] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+
+  useEffect(() => {
+    api.movieSettings()
+      .then((resp) => { setSettings(resp); setEditing(!resp.has_key) })
+      .catch((err) => setError(err.message))
+  }, [])
+
+  const hasKey = !!settings?.has_key
+
+  /* Storing a key and clearing one are the same call — the server checks
+     whatever is not empty against the database before it keeps it, so a key
+     that would fail on the first film fails here instead. */
+  const store = async (value) => {
+    setBusy(true)
+    setError(null)
+    try {
+      const resp = await api.setMovieKey(value)
+      setSettings((current) => ({ ...current, has_key: resp.has_key }))
+      setEditing(!resp.has_key)
+      setKey('')
+      onChanged?.(resp.has_key)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal
+      title="Film database key"
+      subtitle="One key for the whole vault — every folder that looks films up uses it"
+      onClose={() => !busy && onClose()}
+      width={560}
+    >
+      {error && <Banner tone="error" onDismiss={() => setError(null)}>{error}</Banner>}
+
+      <Banner tone="info">{PRIVACY}</Banner>
+
+      {!settings && !error && <Spinner />}
+
+      {settings && (editing ? (
+        <form onSubmit={(e) => { e.preventDefault(); store(key.trim()) }}>
+          <Input
+            label={hasKey ? 'Replace the film database key' : 'Film database key'}
+            value={key}
+            autoFocus
+            autoComplete="off"
+            spellCheck="false"
+            placeholder="Paste your TMDB key or read token"
+            onChange={(e) => setKey(e.target.value)}
+            help={KEY_HELP}
+          />
+          <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+            {hasKey && (
+              <Button type="button" variant="ghost" onClick={() => { setEditing(false); setKey('') }}>
+                Cancel
+              </Button>
+            )}
+            <Button type="submit" variant="primary" disabled={busy || !key.trim()}>
+              {busy ? <><Spinner size={12} color={COLORS.bg} /> Checking…</> : 'Save the key'}
+            </Button>
+          </div>
+        </form>
+      ) : (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap',
+          padding: '10px 12px',
+          background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: '6px',
+          fontFamily: FONT.mono, fontSize: '11.5px', color: COLORS.textDim,
+        }}>
+          <span style={{ color: COLORS.success }}>✓</span>
+          <span style={{ flex: 1, minWidth: 0 }}>
+            A key is stored, sealed in the vault with everything else.
+          </span>
+          <Button size="sm" variant="ghost" onClick={() => setEditing(true)}>Change</Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={busy}
+            title="Forget the key. Films already matched keep their details; nothing new can be looked up."
+            onClick={() => store('')}
+          >Remove</Button>
+        </div>
+      ))}
+
+      {/* Where the key is used, since this dialog is nowhere near a folder.
+          Turning it on stays a per-folder decision: a key that exists is not a
+          folder that has asked for anything. */}
+      {settings && hasKey && (
+        <div style={{
+          marginTop: '12px',
+          fontFamily: FONT.sans, fontSize: '11.5px', lineHeight: 1.55, color: COLORS.textMuted,
+        }}>
+          Nothing is looked up until a folder asks. Open the folder whose videos
+          you want matched and use its 🎬 button to turn it on.
+        </div>
+      )}
+
+      <div style={{
+        marginTop: '16px',
+        fontFamily: FONT.sans, fontSize: '10.5px', lineHeight: 1.5, color: COLORS.textMuted,
+      }}>{ATTRIBUTION}</div>
+
+      <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', marginTop: '14px' }}>
+        <Button variant="ghost" disabled={busy} onClick={onClose}>Close</Button>
+      </div>
+    </Modal>
+  )
+}
+
 /* Turning film lookup on for a folder, and sweeping it.
 
    The two are deliberately separate buttons. Turning the switch on stores a
@@ -378,39 +511,19 @@ export function FilmButton({ lookup, mobile, onOpen }) {
 export function FilmLookupSettings({ path, lookup, onClose, onChanged }) {
   const mobile = useIsMobile()
   const [settings, setSettings] = useState(null)
-  const [key, setKey] = useState('')
-  const [editingKey, setEditingKey] = useState(false)
   const [busy, setBusy] = useState(null)
   const [error, setError] = useState(null)
   const [report, setReport] = useState(null)
 
   useEffect(() => {
     api.movieSettings()
-      .then((resp) => { setSettings(resp); setEditingKey(!resp.has_key) })
+      .then(setSettings)
       .catch((err) => setError(err.message))
   }, [])
 
   const on = !!lookup?.enabled
   const inherited = on && lookup.source && lookup.source !== path
   const hasKey = !!settings?.has_key
-
-  /* Storing a key and clearing one are the same call — the server checks
-     whatever is not empty against the database before it keeps it, so a key
-     that would fail on the first film fails here instead. */
-  const storeKey = async (value) => {
-    setBusy('key')
-    setError(null)
-    try {
-      const resp = await api.setMovieKey(value)
-      setSettings((current) => ({ ...current, has_key: resp.has_key }))
-      setEditingKey(!resp.has_key)
-      setKey('')
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setBusy(null)
-    }
-  }
 
   const toggle = async (enabled) => {
     setBusy('toggle')
@@ -450,63 +563,22 @@ export function FilmLookupSettings({ path, lookup, onClose, onChanged }) {
 
       {/* Said before anything can be turned on, because it is the whole reason
           this is a switch rather than a feature. */}
-      <Banner tone={on ? 'warn' : 'info'}>
-        Everything else in SAND stays on this machine and your own accounts.
-        This does not: looking a film up sends the title read off its file name,
-        and this machine's address, to The Movie Database. Nothing else about
-        the file goes — not its contents, not its size, not where its parts
-        live — and what comes back is stored in the vault, so a film is looked
-        up once and never again.
-      </Banner>
+      <Banner tone={on ? 'warn' : 'info'}>{PRIVACY}</Banner>
 
       {!settings && !error && <Spinner />}
 
       {settings && (
         <>
-          {/* The key first: nothing below it can do anything without one. */}
-          {editingKey ? (
-            <form onSubmit={(e) => { e.preventDefault(); storeKey(key.trim()) }}>
-              <Input
-                label={hasKey ? 'Replace the film database key' : 'Film database key'}
-                value={key}
-                autoFocus
-                autoComplete="off"
-                spellCheck="false"
-                placeholder="Paste your TMDB key or read token"
-                onChange={(e) => setKey(e.target.value)}
-                help={KEY_HELP}
-              />
-              <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', marginBottom: '16px' }}>
-                {hasKey && (
-                  <Button type="button" variant="ghost" onClick={() => { setEditingKey(false); setKey('') }}>
-                    Cancel
-                  </Button>
-                )}
-                <Button type="submit" variant="primary" disabled={busy === 'key' || !key.trim()}>
-                  {busy === 'key' ? <><Spinner size={12} color={COLORS.bg} /> Checking…</> : 'Save the key'}
-                </Button>
-              </div>
-            </form>
-          ) : (
-            <div style={{
-              display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap',
-              padding: '10px 12px', marginBottom: '16px',
-              background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: '6px',
-              fontFamily: FONT.mono, fontSize: '11.5px', color: COLORS.textDim,
-            }}>
-              <span style={{ color: COLORS.success }}>✓</span>
-              <span style={{ flex: 1, minWidth: 0 }}>
-                A key is stored, sealed in the vault with everything else.
-              </span>
-              <Button size="sm" variant="ghost" onClick={() => setEditingKey(true)}>Change</Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                disabled={busy === 'key'}
-                title="Forget the key. Films already matched keep their details; nothing new can be looked up."
-                onClick={() => storeKey('')}
-              >Remove</Button>
-            </div>
+          {/* The key is the vault's, not this folder's, so this dialog only
+              reports whether there is one and says where it is set. Without it
+              nothing below can do anything, which is why it is said first. */}
+          {!hasKey && (
+            <Banner tone="warn">
+              No film database key has been stored yet. It is one key for the
+              whole vault, kept with the password and the default clouds —
+              set it {mobile ? 'in the ☰ panel' : 'in the panel on the left'},
+              under “🎬 Film key”, and this folder can be turned on.
+            </Banner>
           )}
 
           <div style={{
