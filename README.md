@@ -791,14 +791,17 @@ pipe the password on stdin.
 - **Thumbnails** — images and PDFs show a picture rather than an icon, the PDF's
   being its first page. Made in the browser when the file is uploaded, then
   stored the way everything else is: split into three encrypted parts across
-  your accounts, one small pack per folder. Anything without one keeps its icon
+  your accounts, one small pack per folder. A video gets one too, taken from a
+  frame while you watch it — nothing can make a picture of a film at upload time
+  without decoding the film. Anything without one keeps its icon
 - **Film details** — a folder can be told its videos are films, and then they
   get the poster, the summary, the cast and the score, the way Plex or Jellyfin
   would show them. Off everywhere until a folder asks for it, because it is the
   one thing in SAND that talks to anyone but your own accounts — see
   [Film details](#film-details)
 - **Preview** — images, video, audio, PDF and text render inline, rebuilt on
-  demand; anything else downloads
+  demand; anything else downloads. A matched film opens on its poster and
+  summary rather than an unplayed black rectangle
 - **PDF viewer** — pages are drawn by the app itself rather than handed to the
   browser's viewer, so a phone shows the document instead of the blank frame
   iOS Safari makes of one. Page at a time, arrow keys or `‹ ›`, and a zoom for
@@ -894,6 +897,13 @@ From then on the grid is a wall of posters captioned with the films' names
 rather than the files', a row shows the poster where its icon was, and `🎬` on
 the row — or **Film details** in the phone's row menu, or the strip above a
 video you are watching — opens everything that was found.
+
+Opening one shows the film rather than a player. A video element that has not
+been played is a black rectangle with a triangle on it — on a phone that is half
+the screen saying nothing, in front of a film whose poster, summary and cast the
+vault is already holding. So the preview opens on those, and the player takes
+over when you press **Play here**. Everything else about the dialog is where it
+was: stream it to VLC, or download the rebuilt file.
 
 The tiles take a poster's shape rather than a photograph's in a folder that has
 asked for films, since a square crop of a two-by-three poster eats the title

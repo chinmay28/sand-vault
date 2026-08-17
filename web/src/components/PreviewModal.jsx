@@ -7,7 +7,7 @@ import { thumbnailFromElement } from '../thumbs'
 import PdfPreview from './PdfPreview'
 import StreamLink from './StreamLink'
 import { RelocateClouds } from './CloudSelect'
-import FilmDetails, { filmLabel } from './FilmDetails'
+import FilmDetails, { FilmSummary, filmLabel } from './FilmDetails'
 import { Banner, Button, Modal, Spinner } from './ui'
 
 /* How much of the visible viewport a preview may take before the modal's own
@@ -40,9 +40,36 @@ export default function PreviewModal({ file, hasThumb, film, onClose, onThumbSto
   const playable = isPlayable(file.mime, file.name)
 
   /* A film this file has already been matched to. Watching something is when
-     "what is this, again?" gets asked, so the answer is offered here rather
-     than only back in the list. */
+     "what is this, again?" gets asked, so the answer is here rather than only
+     back in the list.
+
+     `film` is the listing's own two fields — a title and a year — so the full
+     record is fetched once the dialog is open. It arrives in well under the
+     time anyone takes to decide whether to press play, and the title is on
+     screen from the first frame either way. */
   const [details, setDetails] = useState(false)
+  const [record, setRecord] = useState(null)
+
+  useEffect(() => {
+    if (!film) return undefined
+    let cancelled = false
+    api.movie(file.id)
+      .then((resp) => { if (!cancelled) setRecord(resp.movie) })
+      // The preview is what was asked for. Failing to decorate it is not worth
+      // an error message over — the player and the buttons are all still here.
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [film, file.id])
+
+  /* Whether the player has been asked for.
+
+     A video element that has not been played is a black rectangle with a
+     triangle on it — iOS draws nothing else without a `poster`, and nothing
+     makes a poster of a video at upload time. On a phone that is half the
+     screen spent saying nothing, in front of a film whose summary, cast and
+     artwork the vault is already holding. So a matched film opens on the film,
+     and the player takes over when somebody presses play. */
+  const [playing, setPlaying] = useState(false)
 
   useEffect(() => {
     if (kind !== 'text') return
@@ -67,6 +94,10 @@ export default function PreviewModal({ file, hasThumb, film, onClose, onThumbSto
      second download, no second gather from the accounts. */
   const captureThumb = async (el) => {
     if (hasThumb || captured.current) return
+    /* A video is asked repeatedly as it plays rather than once when it loads,
+       and the first second of a film is a fade from black. Waiting a beat costs
+       nothing and is the difference between a picture and a black square. */
+    if (el.currentTime !== undefined && el.duration && el.currentTime < Math.min(1.5, el.duration / 4)) return
     captured.current = true
 
     const blob = await thumbnailFromElement(el)
@@ -82,8 +113,11 @@ export default function PreviewModal({ file, hasThumb, film, onClose, onThumbSto
 
   return (
     <Modal
-      title={file.name}
-      subtitle={`${formatBytes(file.size)} · rebuilt from ${file.shards.length} part${file.shards.length === 1 ? '' : 's'} across ${new Set(file.shards.map((s) => s.provider_id)).size} account(s)`}
+      title={filmLabel(record || film) || file.name}
+      subtitle={[
+        film ? file.name : null,
+        `${formatBytes(file.size)} · rebuilt from ${file.shards.length} part${file.shards.length === 1 ? '' : 's'} across ${new Set(file.shards.map((s) => s.provider_id)).size} account(s)`,
+      ].filter(Boolean).join(' · ')}
       onClose={onClose}
       width={920}
     >
@@ -110,9 +144,38 @@ export default function PreviewModal({ file, hasThumb, film, onClose, onThumbSto
           />
         )}
 
-        {!error && kind === 'video' && (
-          <video src={url} controls playsInline style={{ maxWidth: '100%', maxHeight: PREVIEW_MAX }} />
-        )}
+        {!error && kind === 'video' && (record && !playing ? (
+          <div style={{ width: '100%', padding: mobile ? '14px' : '18px', boxSizing: 'border-box' }}>
+            <FilmSummary
+              film={record}
+              fileId={file.id}
+              mobile={mobile}
+              /* Enough of the summary to know what it is, while leaving the
+                 play button somewhere a thumb can reach without scrolling.
+                 The details view shows all of it. */
+              clamp={mobile ? 6 : 0}
+            />
+            <Button
+              variant="primary"
+              onClick={() => setPlaying(true)}
+              style={{ marginTop: '14px', width: '100%', justifyContent: 'center' }}
+            >▶ Play here</Button>
+          </div>
+        ) : (
+          <video
+            src={url}
+            controls
+            playsInline
+            autoPlay={playing}
+            /* The stored picture, which for a matched film is its poster and
+               for anything else is a frame off the film itself. Without it iOS
+               draws a black rectangle until the first frame decodes. */
+            poster={hasThumb ? api.thumbURL(file.id) : undefined}
+            preload="metadata"
+            onTimeUpdate={(e) => captureThumb(e.currentTarget)}
+            style={{ maxWidth: '100%', maxHeight: PREVIEW_MAX }}
+          />
+        ))}
 
         {!error && kind === 'audio' && (
           <audio src={url} controls style={{ width: '90%', margin: '32px 0' }} />
@@ -164,24 +227,16 @@ export default function PreviewModal({ file, hasThumb, film, onClose, onThumbSto
       {film && (
         <button
           onClick={() => setDetails(true)}
-          title="Cast, summary, and how this file was matched"
+          title="The full summary and cast, how this file was matched, and how to correct it"
           style={{
-            display: 'flex', alignItems: 'center', gap: '10px', width: '100%',
-            padding: '9px 12px', marginBottom: '14px',
-            background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: '6px',
-            cursor: 'pointer', textAlign: 'left',
+            display: 'block', width: '100%',
+            padding: '8px 2px', marginBottom: '10px',
+            background: 'none', border: 'none', textAlign: mobile ? 'center' : 'right',
+            minHeight: mobile ? '44px' : 0,
+            cursor: 'pointer',
+            fontFamily: FONT.mono, fontSize: '11px', color: COLORS.accent,
           }}
-        >
-          <span style={{ fontSize: '15px' }}>🎬</span>
-          <span style={{
-            flex: 1, minWidth: 0,
-            fontFamily: FONT.mono, fontSize: '12px', color: COLORS.text,
-            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-          }}>{filmLabel(film)}</span>
-          <span style={{ fontFamily: FONT.mono, fontSize: '10.5px', color: COLORS.accent }}>
-            Film details →
-          </span>
-        </button>
+        >🎬 Film details, or fix the match →</button>
       )}
 
       {downloadError && (

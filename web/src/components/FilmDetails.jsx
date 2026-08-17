@@ -109,6 +109,63 @@ function Poster({ id, version, width = 150 }) {
   )
 }
 
+/* The film itself: poster on one side, what is known about it on the other.
+
+   Lives apart from the dialog around it because two screens want it. The
+   details view is one. The other is the preview — opening a film puts a
+   video element on screen, and a video element that has not been played is a
+   black rectangle with a triangle on it, which on a phone is half the screen
+   saying nothing. This goes there instead, and the player takes over when
+   somebody actually presses play. */
+export function FilmSummary({ film, fileId, mobile, posterWidth, clamp }) {
+  return (
+    <div style={{
+      display: 'flex',
+      alignItems: 'flex-start',
+      gap: mobile ? '12px' : '16px',
+    }}>
+      <Poster id={fileId} version={film.matched_at} width={posterWidth || (mobile ? 104 : 150)} />
+
+      <div style={{ flex: 1, minWidth: 0 }}>
+        {film.original && (
+          <div style={{ fontFamily: FONT.mono, fontSize: '11px', color: COLORS.textMuted }}>
+            {film.original}
+          </div>
+        )}
+        {film.tagline && (
+          <div style={{
+            fontFamily: FONT.sans, fontSize: mobile ? '12px' : '12.5px', fontStyle: 'italic',
+            color: COLORS.accent, marginTop: '2px',
+          }}>{film.tagline}</div>
+        )}
+
+        <MetaLine film={film} />
+
+        {film.overview && (
+          <p style={{
+            margin: '10px 0 0',
+            fontFamily: FONT.sans, fontSize: '12.5px', lineHeight: 1.6, color: COLORS.text,
+            /* On a phone the summary sits beside a poster in a dialog that
+               still has to show the player and its buttons, so it is trimmed
+               to what fits rather than pushing them off. The details view
+               passes no clamp and shows the lot. */
+            ...(clamp ? {
+              display: '-webkit-box', overflow: 'hidden',
+              WebkitLineClamp: clamp, WebkitBoxOrient: 'vertical',
+            } : null),
+          }}>{film.overview}</p>
+        )}
+
+        <Credits label="Directed by" names={film.directors} />
+        <Credits
+          label="Starring"
+          names={film.cast?.map((c) => (c.role ? `${c.name} as ${c.role}` : c.name))}
+        />
+      </div>
+    </div>
+  )
+}
+
 /* Everything known about one file's film, and every way to change it.
    `file` is the listing's own record; nothing here needs the file's content. */
 export default function FilmDetails({ file, zIndex, onClose, onChanged }) {
@@ -187,43 +244,7 @@ export default function FilmDetails({ file, zIndex, onClose, onChanged }) {
 
       {state && film && !fixing && (
         <>
-          <div style={{
-            display: 'flex',
-            flexDirection: mobile ? 'column' : 'row',
-            alignItems: mobile ? 'center' : 'flex-start',
-            gap: '16px',
-          }}>
-            <Poster id={file.id} version={film.matched_at} width={mobile ? 130 : 150} />
-
-            <div style={{ flex: 1, minWidth: 0, width: '100%' }}>
-              {film.original && (
-                <div style={{ fontFamily: FONT.mono, fontSize: '11px', color: COLORS.textMuted }}>
-                  {film.original}
-                </div>
-              )}
-              {film.tagline && (
-                <div style={{
-                  fontFamily: FONT.sans, fontSize: '12.5px', fontStyle: 'italic',
-                  color: COLORS.accent, marginTop: '2px',
-                }}>{film.tagline}</div>
-              )}
-
-              <MetaLine film={film} />
-
-              {film.overview && (
-                <p style={{
-                  margin: '12px 0 0',
-                  fontFamily: FONT.sans, fontSize: '12.5px', lineHeight: 1.6, color: COLORS.text,
-                }}>{film.overview}</p>
-              )}
-
-              <Credits label="Directed by" names={film.directors} />
-              <Credits
-                label="Starring"
-                names={film.cast?.map((c) => (c.role ? `${c.name} as ${c.role}` : c.name))}
-              />
-            </div>
-          </div>
+          <FilmSummary film={film} fileId={file.id} mobile={mobile} />
 
           {/* How this file came to be called this. It is the one thing that
               makes a wrong match obvious rather than puzzling — the name was

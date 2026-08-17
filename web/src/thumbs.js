@@ -45,12 +45,17 @@ export async function makeThumbnail(blob, mime, name) {
   }
 }
 
-/* The backfill path: an <img> that is already on screen has been decoded and
-   is same-origin, so a thumbnail can be taken from it without fetching the
-   file a second time. */
+/* The backfill path: an element that is already on screen has been decoded and
+   is same-origin, so a thumbnail can be taken from it without fetching the file
+   a second time.
+
+   An <img> reports its size as naturalWidth and a <video> as videoWidth, and a
+   video is worth taking one from: nothing makes a picture of a video at upload
+   time — the browser would have to decode a film to do it — so the frame
+   somebody is already watching is the only cheap one there is. */
 export async function thumbnailFromElement(el) {
-  const w = el.naturalWidth || el.width
-  const h = el.naturalHeight || el.height
+  const w = el.naturalWidth || el.videoWidth || el.width
+  const h = el.naturalHeight || el.videoHeight || el.height
   if (!w || !h) return null
   try {
     return await draw(el, w, h)

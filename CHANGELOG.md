@@ -704,6 +704,20 @@ wall of posters captioned with the films' names rather than the files', a row
 draws the poster where its icon was, and `🎬` on the row — or the strip above a
 video you are watching — opens the rest.
 
+Opening a film shows the film. A video element that has not been played is a
+black rectangle with a triangle on it — iOS draws nothing else without a
+`poster`, and nothing can make a poster of a video at upload time without
+decoding it. On a phone that was half the screen saying nothing, in front of a
+film whose artwork, summary and cast were already in the vault. The preview now
+opens on those and hands over to the player when you press **Play here**.
+
+Videos get a thumbnail of their own out of the same problem. There is no cheap
+frame to grab at upload time, but there is one on screen the moment you watch
+something — so the picture is taken from the frame you are already looking at,
+the way the app has always backfilled a photograph's thumbnail when you open
+one. A film's poster is never overwritten by it; only a video with no picture
+at all gets one.
+
 The grid changes shape for it. Tiles are square everywhere else, because a
 folder of photographs holds both orientations and crops to a square about
 equally badly; a poster is two-by-three, and squaring one cuts the title off
