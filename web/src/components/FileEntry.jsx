@@ -765,10 +765,22 @@ export function FolderRow({
   )
 }
 
-/* The tile the two views really differ over: a square of picture with the name
-   under it. Worth having because a folder of photographs or films is a folder
-   whose file names say nothing at all — the thumbnail is the only part of the
-   row anybody was reading. */
+/* The shape of a tile's picture. A square suits a folder of photographs, which
+   arrive in both orientations and crop to one about equally badly.
+
+   A folder that has asked for film details gets two-by-three instead, because
+   that is the shape every poster ever printed is, and a square crop of one eats
+   the title band at the foot. It is the whole grid rather than the matched rows
+   alone: one shape per view keeps the rows aligned, and a folder somebody has
+   declared to be films is a folder whose stray photograph can afford the crop.
+   Plex and Jellyfin land in the same place for the same reason. */
+export const TILE_SQUARE = '1 / 1'
+export const TILE_POSTER = '2 / 3'
+
+/* The tile the two views really differ over: a picture with the name under it.
+   Worth having because a folder of photographs or films is a folder whose file
+   names say nothing at all — the thumbnail is the only part of the row anybody
+   was reading. */
 function Tile({ children, selected, check, menu }) {
   const [hover, setHover] = useState(false)
 
@@ -847,7 +859,8 @@ function TileCaption({ name, title, meta, location, dead }) {
 }
 
 export function FileTile({
-  file, location, mobile, providers, hasThumb, film, selecting, selected,
+  file, location, mobile, providers, hasThumb, film, aspect = TILE_SQUARE,
+  selecting, selected,
   onSelect, onPreview, onInspect, onFilm, onRefresh, onError,
 }) {
   const a = useFileActions({ file, providers, film, onPreview, onInspect, onFilm, onRefresh, onError })
@@ -877,7 +890,7 @@ export function FileTile({
       <TileFace onClick={a.open} disabled={a.dead} title={a.openTitle}>
         <span style={{
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          width: '100%', aspectRatio: '1 / 1', overflow: 'hidden',
+          width: '100%', aspectRatio: aspect, overflow: 'hidden',
           background: COLORS.bg, borderBottom: `1px solid ${COLORS.border}`,
         }}>
           <Thumb id={file.id} icon={icon} expected={hasThumb} fill />
@@ -911,7 +924,7 @@ export function FileTile({
 }
 
 export function FolderTile({
-  name, path, location, mobile, providers, selecting, selected,
+  name, path, location, mobile, providers, aspect = TILE_SQUARE, selecting, selected,
   onSelect, onNavigate, onRefresh, onError,
 }) {
   const a = useFolderActions({ name, path, providers, onNavigate, onRefresh, onError })
@@ -940,7 +953,7 @@ export function FolderTile({
       <TileFace onClick={a.open} title="Open folder">
         <span style={{
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          width: '100%', aspectRatio: '1 / 1', fontSize: '34px',
+          width: '100%', aspectRatio: aspect, fontSize: '34px',
           background: COLORS.bg, borderBottom: `1px solid ${COLORS.border}`,
         }}>📁</span>
         <TileCaption name={name} location={location} meta={<span>Folder</span>} />

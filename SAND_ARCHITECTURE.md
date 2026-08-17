@@ -219,7 +219,10 @@ derives the key and opens the payload:
 
 Credentials are excluded deliberately. A copy of this file sits in every
 account, so including them would make one compromised account a master key to
-all the others.
+all the others. The film database key is excluded for the same reason and is
+not part of the manifest at all — it lives in the vault file's own `settings`
+section (§3.10). Film *details* do travel, because they are index: recovering
+from a backup gives back every title and asks for the key again.
 
 **What it costs.** Every copy is a password away from the data key, so a single
 compromised account plus a cracked password yields the tree, the placement map,
@@ -1301,6 +1304,12 @@ The same endpoints back the API (`POST /api/archive`, `POST /api/restore`).
   implies if you lose it.
 - **Traffic analysis.** A provider sees when you upload and how large each part
   is.
+- **A film database knowing what it was asked.** Sealing the answer into the
+  index is not the same as the question never having been asked: TMDB sees a
+  title guessed from a file name, and the machine's address, once per film, for
+  the folders that were opted in (§3.10). Nothing about the file goes with it,
+  and nothing goes at all for a folder that never asked — but the request is a
+  real disclosure and no amount of encryption at rest changes that.
 
 ### 11.3 Binding
 

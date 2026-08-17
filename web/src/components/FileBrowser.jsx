@@ -5,7 +5,10 @@ import { sortFiles, sortFolders, sortHits, useViewPrefs } from '../view'
 import { Banner, Button, Empty, Modal, Spinner } from './ui'
 import { UploadDestination, RelocateClouds } from './CloudSelect'
 import { makeThumbnail } from '../thumbs'
-import { COLUMNS, FILM_COLUMNS, FileRow, FileTile, FolderRow, FolderTile, SelectBox } from './FileEntry'
+import {
+  COLUMNS, FILM_COLUMNS, TILE_POSTER, TILE_SQUARE,
+  FileRow, FileTile, FolderRow, FolderTile, SelectBox,
+} from './FileEntry'
 import { Breadcrumbs, FolderHeader, NavCluster, SearchField, SelectionBar, ViewControls } from './Toolbar'
 import { BulkDelete, BulkDownload } from './BulkActions'
 import { FilmButton, FilmLookupSettings } from './FilmDetails'
@@ -657,6 +660,16 @@ function SearchResults({ term, results, searching, error, path, scoped, mobile, 
   )
 }
 
+/* Whether this listing is being read as films — which decides the shape of a
+   tile and the width of a row's controls.
+
+   The switch is not the whole answer. A folder somebody has since turned it off
+   for still holds rows with films against them, and those keep their poster and
+   their control, so what is drawn follows what is actually there. */
+function showsFilms(films, movies, entries) {
+  return films || entries.some((entry) => entry.file && movies[entry.file.id])
+}
+
 /* Whether a row should offer film details at all, and what happens if it is
    asked for.
 
@@ -684,13 +697,8 @@ function EntryTable({
 }) {
   const all = entries.length > 0 && entries.every((entry) => selected.has(entry.key))
   /* One template for the whole table, headings included: a film folder's rows
-     carry an extra control and the column has to be the same width everywhere.
-     A folder whose switch has since been turned off still has rows with films
-     against them, and those keep the control — so the width follows what is
-     actually drawn rather than the setting alone. */
-  const columns = films || entries.some((entry) => entry.file && movies[entry.file.id])
-    ? FILM_COLUMNS
-    : COLUMNS
+     carry an extra control and the column has to be the same width everywhere. */
+  const columns = showsFilms(films, movies, entries) ? FILM_COLUMNS : COLUMNS
 
   return (
     <div style={{
@@ -786,6 +794,11 @@ function EntryGrid({
   entries, thumbs, movies, films, mobile, providers, selecting, selected, onToggle,
   onNavigate, onPreview, onInspect, onFilm, onRefresh, onError,
 }) {
+  /* Posters are two-by-three and photographs are not, so the shape belongs to
+     the folder rather than to the tile: one shape per grid keeps the rows level
+     and the folders in step with the films beside them. */
+  const aspect = showsFilms(films, movies, entries) ? TILE_POSTER : TILE_SQUARE
+
   return (
     <div style={{
       display: 'grid',
@@ -800,6 +813,7 @@ function EntryGrid({
           location={entry.location}
           mobile={mobile}
           providers={providers}
+          aspect={aspect}
           selecting={selecting}
           selected={selected.has(entry.key)}
           onSelect={(checked, event) => onToggle(entry, checked, event)}
@@ -816,6 +830,7 @@ function EntryGrid({
           providers={providers}
           hasThumb={thumbs.has(entry.file.id)}
           film={movies[entry.file.id]}
+          aspect={aspect}
           selecting={selecting}
           selected={selected.has(entry.key)}
           onSelect={(checked, event) => onToggle(entry, checked, event)}

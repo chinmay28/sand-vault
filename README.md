@@ -709,6 +709,11 @@ still encrypted rather than rebuilt. A folder takes everything under it. See
 `sand check --all` exits non-zero when anything is degraded or unrecoverable,
 which makes it a reasonable cron job.
 
+Film details have no CLI of their own. Matching a folder is a thing you look at
+while it happens — the posters, the misses, the match you have to correct by
+hand — so it lives in the browser, and the CLI stays the tool for moving files
+about. See [Film details](#film-details).
+
 `sand find` searches the file index by name: a bare word matches any name
 containing it, ignoring case; `*` and `?` are wildcards (`sand find '*.jpg'`);
 and a query with a `/` in it is matched against the whole path
@@ -767,7 +772,9 @@ pipe the password on stdin.
   trail of folders you have walked through, as does `Alt+←` / `Alt+→` / `Alt+↑`.
   The trail is held in memory only and goes when the vault locks
 - **List or grid** — rows with columns, or tiles built round the stored
-  thumbnail, for the folder of photographs whose file names say nothing
+  thumbnail, for the folder of photographs whose file names say nothing. Tiles
+  are square, or a poster's two-by-three in a folder that has asked for film
+  details
 - **Sorting** — by name, size, date or kind, each opening the way round it is
   normally wanted and reversing when chosen again; folders always lead. The view
   and the sort are remembered between visits
@@ -887,6 +894,12 @@ From then on the grid is a wall of posters captioned with the films' names
 rather than the files', a row shows the poster where its icon was, and `🎬` on
 the row — or **Film details** in the phone's row menu, or the strip above a
 video you are watching — opens everything that was found.
+
+The tiles take a poster's shape rather than a photograph's in a folder that has
+asked for films, since a square crop of a two-by-three poster eats the title
+band at its foot. It is the whole grid that changes rather than the matched
+tiles alone: one shape per view keeps the rows level and the folders in step
+with the films beside them. Everywhere else the tiles stay square.
 
 ### It is off until you turn it on, and here is why
 
@@ -1154,7 +1167,13 @@ copy of the vault file.
 - **The manifest backup itself.** Replicating the index is what makes a lost
   vault survivable, and it is also a new thing to steal. `sand vault backup
   --disable` erases every copy — and puts you back to losing everything if you
-  lose the vault file.
+  lose the vault file. Note what it carries once you turn film details on: the
+  backup *is* the index, so the titles are in it. They add nothing an attacker
+  who could already read `The.Thing.1982…mkv` from the same blob did not have.
+- **The film database knowing what you asked it.** Storing the answer in the
+  vault is not the same as the question never having been asked. TMDB sees a
+  title and your address, once per film, for the folders you turned on. That is
+  the whole reason it is a switch — see [Film details](#film-details).
 
 ⚠️ **`--bind` off loopback** sends your password and rebuilt plaintext over the
 network in the clear. The server warns you. Put TLS in front of it
@@ -1418,9 +1437,9 @@ touch your real vault.
 
 | Path | What |
 |---|---|
-| `~/.sand/vault.sand` | Encrypted index + cloud credentials. Back this up — though since every account also carries a `manifest.sand`, losing it is recoverable with your password. |
+| `~/.sand/vault.sand` | Encrypted index + cloud credentials, and the film database key if you set one. Back this up — though since every account also carries a `manifest.sand`, losing it is recoverable with your password. |
 | `<archive-id>-pN.sand` | How parts appear on each account, inside whatever folder or prefix that account is configured with. The ID is random and reveals nothing. |
-| `manifest.sand` | An encrypted copy of the index, on every account. Opens with your vault password alone. |
+| `manifest.sand` | An encrypted copy of the index, on every account. Opens with your vault password alone. It carries the film details, since those are part of the index — but never the film database key, which stays in the vault file alone. So recovering from a backup restores your films and asks for the key again. |
 
 Override the vault location with `--vault` or `SAND_VAULT`.
 

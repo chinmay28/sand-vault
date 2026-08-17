@@ -704,6 +704,13 @@ wall of posters captioned with the films' names rather than the files', a row
 draws the poster where its icon was, and `🎬` on the row — or the strip above a
 video you are watching — opens the rest.
 
+The grid changes shape for it. Tiles are square everywhere else, because a
+folder of photographs holds both orientations and crops to a square about
+equally badly; a poster is two-by-three, and squaring one cuts the title off
+its foot. So a folder that has asked for films gets poster-shaped tiles — the
+whole grid rather than the matched tiles alone, since one shape per view is
+what keeps the rows level and the folders in step with the films beside them.
+
 **It is off until a folder asks for it, and that is the whole design.**
 Everything else in SAND stays between your machine and the accounts you
 connected. A lookup does not: it sends a title guessed from a file name, this
