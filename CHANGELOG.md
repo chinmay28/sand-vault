@@ -871,6 +871,30 @@ brings them back for one image fetch each and no searching.
 Details and artwork come from The Movie Database. SAND uses the TMDB API but is
 not endorsed or certified by TMDB.
 
+### Renaming, and a menu on every row
+
+A file or a folder can be renamed from the browser. It was on the command line
+all along (`sand mv`) and reachable over WebDAV, and nowhere in the app.
+
+*Rename* sits in any row's menu. The dialog opens with the name selected up to
+the extension, the way every file manager does, so typing replaces the words and
+keeps the `.mkv`; a `/` in the name is a move rather than a name and the field
+says so instead of quietly making folders; and a name already taken in that
+folder is refused. Renaming a folder carries everything inside it in one index
+write, so there is never a moment where half a tree answers to its old name.
+
+Nothing is transferred, for the same reason moving between folders transfers
+nothing: a name is a field in the encrypted index, and a file's parts are named
+after its random archive ID rather than after its name.
+
+Getting there is the other half of this. A desktop row's controls were the three
+or four things worth a click, and renaming would have been the fifth — so every
+row now ends in `⋯`, opening the same sheet a phone has always had. That is
+where Rename lives, and with it the things a desk could only reach sideways
+before: the parts inspector, moving to other clouds, copying a file's address,
+looking up a film. The row grows by one button once, rather than by one button
+per feature.
+
 ### A folder can wear a picture of what is inside it
 
 The films got posters and the folders holding them did not, so a library was a

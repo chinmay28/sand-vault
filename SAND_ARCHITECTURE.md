@@ -920,13 +920,21 @@ The other move, and the one to reach for first. §5.5 changes which accounts hol
 a file's parts and copies bytes to do it. Changing where a file *appears* copies
 nothing at all: a file's folder is a field on its index entry, and by §5.4 the
 objects its parts live in are named after its random archive ID and the part
-number — never after the folder. So `Vault.Move` rewrites one field and returns.
-A 4 GB film moves as fast as a note, and its parts stay exactly where they are,
-on the same accounts, under the same key generation.
+number — never after the folder, and never after the file's name either. So
+`Vault.Move` rewrites one field and returns. A 4 GB film moves as fast as a note,
+and its parts stay exactly where they are, on the same accounts, under the same
+key generation.
 
-`Vault.MoveFolder` is the same fact one level up: a folder is a path in the
-index, so moving one rewrites every entry beneath it — at any depth — in a single
-index write, with an in-memory rollback if that write fails. A loop over `Move`
+**Renaming is the same call with the other argument.** `Move(id, dir, name)`
+takes both and treats an empty one as "leave this half alone", so a rename is a
+move that keeps the folder and a move is a rename that keeps the name — which is
+why there is one entry point, one set of collision rules and one place where
+`SanitizeName` runs. `sand mv` reads its destination the same way.
+
+`Vault.MoveFolder` is the same fact one level up, and covers renaming a folder
+for the same reason: a rename is a move to a new name beside itself. A folder is
+a path in the index, so either one rewrites every entry beneath it — at any
+depth — in a single index write, with an in-memory rollback if that write fails. A loop over `Move`
 would have left a window where half a tree answered to its old name and half to
 its new one. Two maps keyed by folder come along in the same write: the
 thumbnail packs (§4.3) and the film-lookup settings (§3.10). Neither carries its
@@ -1581,7 +1589,7 @@ sand/
 │   ├── view.js                # list or grid, sort key and direction (persisted)
 │   └── components/            # LockScreen, AccountsPanel, FileBrowser, Toolbar,
 │                              #   FileEntry (rows + tiles), BulkActions,
-│                              #   MoveToFolder, FolderArt, PreviewModal,
+│                              #   MoveToFolder, Rename, FolderArt, PreviewModal,
 │                              #   PdfPreview (pdf.js), FilmDetails, ui
 └── tests/                     # pytest e2e: CLI, API, vault flow, browser
 ```

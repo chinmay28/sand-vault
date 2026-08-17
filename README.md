@@ -426,10 +426,10 @@ inside it.
 ```
 
 In the browser every row carries **→** for this, beside Download and Delete on a
-file and beside **⇄** on a folder; on a phone, and on any tile, it is *Move to
-another folder* in the row's menu. Tick several rows and **→ Folder** in the
-selection bar moves the lot — the button next to it, **⇄ Clouds**, is the other
-move, the one that copies parts between accounts.
+file and beside **⇄** on a folder; it is also *Move to another folder* in the
+row's menu, which every row now carries under **⋯**. Tick several rows and
+**→ Folder** in the selection bar moves the lot — the button next to it,
+**⇄ Clouds**, is the other move, the one that copies parts between accounts.
 
 Either way it opens on the folder the thing is already in and walks the vault's
 own tree from there, with a **+ New folder here** for a destination that does not
@@ -437,6 +437,27 @@ exist yet. Nothing that cannot happen is offered: a folder cannot be moved insid
 itself, and anything already in the folder you are looking at says so rather than
 being moved onto its own path. A name already taken in the destination is
 refused, one item at a time, and the rest of a selection still moves.
+
+### Renaming
+
+The same operation with the folder left alone, and just as free: a name is a
+field in the encrypted index, and a file's parts are named after the file's
+random archive ID rather than after its name, so renaming rewrites that field and
+touches no account. Renaming a folder carries everything beneath it in one write,
+exactly as moving one does.
+
+*Rename* sits in every row's **⋯** menu, and on the command line it is the same
+`sand mv`:
+
+```bash
+./sand mv /draft.txt /published.txt      # a file
+./sand mv /photos/2024 /photos/holiday   # a folder, with everything in it
+```
+
+The dialog opens with the name selected up to the extension, so typing replaces
+the words and keeps the `.mkv`. A name is one segment — a `/` in it is a move,
+and the field says so rather than quietly making folders — and a name already
+taken in that folder is refused.
 
 ---
 
@@ -824,6 +845,10 @@ pipe the password on stdin.
   menu, opens the vault's own folder tree; nothing is uploaded or downloaded and
   the parts stay on the clouds they are on — see [Moving something to another
   folder](#moving-something-to-another-folder)
+- **Rename** — *Rename* in any row's menu, for a file or a folder; the name is
+  index, so nothing is transferred — see [Renaming](#renaming)
+- **Row menu** — `⋯` on every row opens the same sheet a phone gets, so a desk
+  reaches everything a file can do without the row growing a control per feature
 - **Search** — a box in the toolbar finds a file or folder anywhere in the
   vault, each hit shown with the folder it lives in; searching inside a folder
   looks there first and offers to widen to the whole vault
@@ -1480,8 +1505,8 @@ sand/
 │   ├── navigation.js  view.js   # the trail of folders walked; view + sort prefs
 │   └── components/              # LockScreen, AccountsPanel, ConnectCloud,
 │                                #   FileBrowser, Toolbar, FileEntry, BulkActions,
-│                                #   MoveToFolder, FolderArt, PreviewModal, PdfPreview,
-│                                #   FilmDetails,
+│                                #   MoveToFolder, Rename, FolderArt, PreviewModal,
+│                                #   PdfPreview, FilmDetails,
 │                                #   StreamLink, RecoverVault, ReclaimVault, ui
 │   ├── public/                  # app icon, home-screen icons + manifest,
 │   │                            #   developer badge
