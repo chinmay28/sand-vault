@@ -65,16 +65,22 @@ function MetaLine({ film }) {
   )
 }
 
-function Credits({ label, names }) {
+function Credits({ label, names, clamp }) {
   if (!names?.length) return null
 
   return (
-    <div style={{ marginTop: '10px', fontFamily: FONT.sans, fontSize: '12px', lineHeight: 1.55 }}>
+    <div style={{ marginTop: '9px', fontFamily: FONT.sans, fontSize: '12px', lineHeight: 1.55 }}>
       <span style={{
         fontFamily: FONT.mono, fontSize: '9.5px', letterSpacing: '1.2px',
         textTransform: 'uppercase', color: COLORS.textMuted,
       }}>{label}</span>
-      <div style={{ color: COLORS.textDim, marginTop: '3px' }}>{names.join(' · ')}</div>
+      <div style={{
+        color: COLORS.textDim, marginTop: '3px',
+        ...(clamp ? {
+          display: '-webkit-box', overflow: 'hidden',
+          WebkitLineClamp: clamp, WebkitBoxOrient: 'vertical',
+        } : null),
+      }}>{names.join(' · ')}</div>
     </div>
   )
 }
@@ -126,14 +132,27 @@ function Poster({ id, version, width = 150 }) {
    black rectangle with a triangle on it, which on a phone is half the screen
    saying nothing. This goes there instead, and the player takes over when
    somebody actually presses play. */
-export function FilmSummary({ film, fileId, mobile, posterWidth, clamp }) {
+export function FilmSummary({ film, fileId, mobile, posterWidth, clamp, actions }) {
+  const width = posterWidth || (mobile ? 112 : 150)
+
   return (
     <div style={{
       display: 'flex',
       alignItems: 'flex-start',
       gap: mobile ? '12px' : '16px',
     }}>
-      <Poster id={fileId} version={film.matched_at} width={posterWidth || (mobile ? 104 : 150)} />
+      {/* A poster is two-by-three and a summary is a paragraph, so the column
+          under the picture runs out long before the column beside it does.
+          Whatever the screen wants to do with the film goes in that gap rather
+          than on rows of its own underneath — which is the difference, on a
+          phone, between a dialog that fits and one that scrolls. */}
+      <div style={{
+        width: `${width}px`, flexShrink: 0,
+        display: 'flex', flexDirection: 'column', gap: '6px',
+      }}>
+        <Poster id={fileId} version={film.matched_at} width={width} />
+        {actions}
+      </div>
 
       <div style={{ flex: 1, minWidth: 0 }}>
         {film.original && (
@@ -169,6 +188,10 @@ export function FilmSummary({ film, fileId, mobile, posterWidth, clamp }) {
         <Credits
           label="Starring"
           names={film.cast?.map((c) => (c.role ? `${c.name} as ${c.role}` : c.name))}
+          /* Eight names is four lines of a phone. Trimmed to the top of the
+             billing where the space is shared, spelled out in full where it is
+             not — the same rule the summary above follows. */
+          clamp={clamp ? 3 : 0}
         />
       </div>
     </div>
