@@ -877,7 +877,8 @@ pipe the password on stdin.
   fetched
 - **Stream in VLC** — `▶` on a video or audio row opens it in VLC and starts
   playing, and shows the address with a copy button either way
-- **Change password** — at the foot of the sidebar; re-encrypts every stored
+- **Change password** — under **Vault settings** at the foot of the sidebar,
+  with the rest of what the vault itself is set to; re-encrypts every stored
   file onto the new key, and offers to finish the job later if you defer it or
   an account was unreachable
 - **Auto-lock** — the vault re-locks after the idle timeout
@@ -995,7 +996,11 @@ up once: after that the answer is in your vault, and opening the folder again
 contacts nobody.
 
 You need a free key of your own, from **themoviedb.org → Settings → API**.
-Either the v3 key or the v4 read access token works. It is stored in the vault
+Either the v3 key or the v4 read access token works. Paste it into **Vault
+settings → Film key**, at the foot of the accounts panel (behind `☰` on a
+phone) — it sits with the password and the default clouds because it is one key
+the whole vault shares, not a property of any one folder. Until there is one, a
+folder's `🎬` dialog says so and cannot be turned on. It is stored in the vault
 file, sealed under your password like your cloud credentials — and deliberately
 *not* in the manifest, which is replicated to every connected account, because a
 credential for someone else's service has no business being copied onto three
@@ -1193,8 +1198,8 @@ was:
 curl -fsSL .../quickstart.sh | sudo SAND_WEBDAV=1 bash
 ```
 
-Once it is on, the web UI's sidebar grows a **Mount as a drive** button with the
-address, a copy button, and where to paste it. The address it shows is the one
+Once it is on, **Vault settings** in the web UI's sidebar grows a **Mount as a
+drive** line with the address, a copy button, and where to paste it. The address it shows is the one
 you reached the app on, so behind Tailscale Serve or a reverse proxy it offers
 the `https://` address without being told about it.
 

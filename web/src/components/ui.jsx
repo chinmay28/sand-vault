@@ -3,8 +3,64 @@ import { createPortal } from 'react-dom'
 import { COLORS, FONT } from '../theme'
 import { useIsMobile } from '../hooks'
 
+/* Whether a control should be lit, and the handlers that decide it.
+
+   Only two things light a button: a pointer that can actually hover resting on
+   it, and the keyboard landing on it. A finger is neither. A touch screen
+   reports a tap as an enter — and Safari goes on reporting it until something
+   else is tapped — so a button lit on `pointerenter` alone stays lit long after
+   the finger has gone. On a strip of icons that is not a smudge you can ignore:
+   it reads as a switch left on, which is exactly what one of those buttons
+   means when it really is lit.
+
+   Focus is held to `:focus-visible` for the same reason. A tap that focuses a
+   button, which some browsers do and some do not, is a press and not a place
+   the keyboard is sitting. */
+function useHighlight() {
+  const [lit, setLit] = useState(false)
+
+  const handlers = {
+    onPointerEnter: (e) => { if (e.pointerType === 'mouse') setLit(true) },
+    onPointerLeave: () => setLit(false),
+    // Anything that is not a mouse puts the light out on its way past, so a
+    // browser that insists a tap is a hover is corrected rather than believed.
+    onPointerDown: (e) => { if (e.pointerType !== 'mouse') setLit(false) },
+    onPointerUp: (e) => { if (e.pointerType !== 'mouse') setLit(false) },
+    onPointerCancel: () => setLit(false),
+    onFocus: (e) => { if (keyboardFocused(e.currentTarget)) setLit(true) },
+    onBlur: () => setLit(false),
+  }
+
+  return [lit, handlers]
+}
+
+/* A caller's own styles, minus the properties it had nothing to say about.
+
+   `{ background: on ? tint : undefined }` reads as "tinted when it is on, and
+   otherwise leave it alone" — but spread raw it does not leave it alone. The
+   key is present, so it overwrites the value underneath, and React answers an
+   undefined value by removing the property outright. The button loses the
+   transparent background this file gave it and the browser paints its own
+   default button chrome instead: a filled grey box with a border, which on a
+   strip of flat glyphs is the one thing that looks switched on. Dropping the
+   undefined entries makes the shorthand mean what it reads as. */
+function opinions(style) {
+  if (!style) return null
+  return Object.fromEntries(Object.entries(style).filter(([, value]) => value !== undefined))
+}
+
+/* Browsers that never learned the selector throw on it rather than answering
+   false, and a button that cannot be sure is better left unlit. */
+function keyboardFocused(node) {
+  try {
+    return node.matches(':focus-visible')
+  } catch {
+    return false
+  }
+}
+
 export function Button({ variant = 'default', size = 'md', style, disabled, ...props }) {
-  const [hover, setHover] = useState(false)
+  const [hover, hoverHandlers] = useHighlight()
   // Every button gets a fingertip-sized height on a phone, from the toolbar
   // down to a "Disconnect" at the foot of the accounts drawer. Set here rather
   // than in the coarse-pointer rule so a narrow window is laid out the way a
@@ -24,8 +80,7 @@ export function Button({ variant = 'default', size = 'md', style, disabled, ...p
     <button
       {...props}
       disabled={disabled}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
+      {...hoverHandlers}
       style={{
         display: 'inline-flex',
         alignItems: 'center',
@@ -45,7 +100,7 @@ export function Button({ variant = 'default', size = 'md', style, disabled, ...p
         filter: hover && !disabled ? 'brightness(1.25)' : 'none',
         transition: 'filter 0.15s ease, border-color 0.15s ease',
         whiteSpace: 'nowrap',
-        ...style,
+        ...opinions(style),
       }}
     />
   )
@@ -299,7 +354,7 @@ export function Modal({ title, subtitle, onClose, children, width = 520, zIndex 
    has to name its own row ("Download hike.jpg", said once per row) can pass a
    `title` of its own to keep the hover text a sentence. */
 export function IconButton({ glyph, label, title, tone = 'dim', size = 34, style, ...props }) {
-  const [active, setActive] = useState(false)
+  const [active, activeHandlers] = useHighlight()
   const color = { dim: COLORS.textDim, muted: COLORS.textMuted, danger: COLORS.error }[tone]
 
   return (
@@ -308,10 +363,7 @@ export function IconButton({ glyph, label, title, tone = 'dim', size = 34, style
       data-icon-button="true"
       title={title || label}
       aria-label={label}
-      onPointerEnter={() => setActive(true)}
-      onPointerLeave={() => setActive(false)}
-      onBlur={() => setActive(false)}
-      onFocus={() => setActive(true)}
+      {...activeHandlers}
       style={{
         display: 'inline-flex',
         alignItems: 'center',
@@ -330,7 +382,7 @@ export function IconButton({ glyph, label, title, tone = 'dim', size = 34, style
         lineHeight: 1,
         cursor: 'pointer',
         transition: 'background 0.12s ease, border-color 0.12s ease',
-        ...style,
+        ...opinions(style),
       }}
     >{glyph}</button>
   )

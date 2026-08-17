@@ -50,7 +50,7 @@ const STEPS = [
   },
 ]
 
-export default function MountDrive({ path, onClose }) {
+export default function MountDrive({ path, onClose, zIndex }) {
   const url = mountURL(path)
   const plaintext = isPlaintext(window.location.origin)
 
@@ -60,6 +60,7 @@ export default function MountDrive({ path, onClose }) {
       subtitle="Open the vault in a file manager or a player instead of the browser"
       onClose={onClose}
       width={560}
+      zIndex={zIndex}
     >
       <CopyField
         label="Address"

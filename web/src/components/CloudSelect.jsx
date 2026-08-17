@@ -419,7 +419,7 @@ export function UploadDestination({ files, path, providers, defaults, onUpload, 
 }
 
 /* The same choice, made once for the whole vault. */
-export function DefaultClouds({ providers, defaults, onClose, onChanged }) {
+export function DefaultClouds({ providers, defaults, onClose, onChanged, zIndex }) {
   const [selected, setSelected] = useState(() => (defaults || []).filter(
     (id) => providers.some((p) => p.id === id)))
   const [busy, setBusy] = useState(false)
@@ -444,6 +444,7 @@ export function DefaultClouds({ providers, defaults, onClose, onChanged }) {
       subtitle="Where uploads go unless they choose otherwise. Every upload can still pick its own."
       onClose={busy ? undefined : onClose}
       width={460}
+      zIndex={zIndex}
     >
       {error && <Banner tone="error">{error}</Banner>}
 
