@@ -179,6 +179,7 @@ export const KIND_ICONS = {
   dropbox: '◈',
   onedrive: '⬡',
   box: '▣',
+  icloud: '◇',
   proton: '◉',
 }
 

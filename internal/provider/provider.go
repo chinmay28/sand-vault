@@ -29,6 +29,7 @@ const (
 	KindOneDrive Kind = "onedrive"
 	KindBox      Kind = "box"
 	KindProton   Kind = "proton"
+	KindICloud   Kind = "icloud"
 )
 
 // ErrNotFound is returned by Get and Delete when an object does not exist.
