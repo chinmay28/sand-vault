@@ -627,7 +627,7 @@ export function RelocateClouds({ target, targets, title, subtitle, current, prov
               type="button"
               variant="primary"
               onClick={submit}
-              disabled={busy || !enough || (plan !== null && plan.moves === 0 && plan.drops === 0)}
+              disabled={busy || !enough || (plan !== null && !worthDoing(plan))}
             >
               {busy ? (
                 <>
@@ -641,6 +641,14 @@ export function RelocateClouds({ target, targets, title, subtitle, current, prov
       )}
     </Modal>
   )
+}
+
+/* Whether a plan has anything in it worth pressing the button for. A change of
+   scheme is work — the file comes down and goes back up — even though it moves
+   no single shard, so counting only shards moved and erased would grey out the
+   one plan that costs the most. */
+function worthDoing(plan) {
+  return plan.moves > 0 || plan.drops > 0 || plan.recoded > 0
 }
 
 /* Several estimates read as one. Every field is a count of files, of parts or
@@ -690,7 +698,7 @@ function RelocationCost({ plan, planning }) {
     )
   }
 
-  if (plan.moves === 0 && plan.drops === 0 && plan.recoded === 0) {
+  if (!worthDoing(plan)) {
     return (
       <div style={{ marginTop: '12px' }}>
         <Banner tone="success">
