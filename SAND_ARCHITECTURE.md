@@ -679,6 +679,25 @@ Reads are a **race, not a sequence**. All parts are requested simultaneously and
 the fetch completes as soon as two have arrived, so a slow or unreachable
 account costs nothing on the read path — it simply loses the race.
 
+**The race is also a measurement, and it is kept.** Every read times every
+account holding a shard against every other one, and until the result was
+recorded it was thrown away — which is why a cloud could stop pulling its weight
+without anything in the app looking wrong. Nothing gets slower; the others
+simply carry it, until the day two of them are offline and the passenger turns
+out to be load-bearing. `internal/vault/readstats.go` keeps the score per
+account: races entered, races won — a win being an answer that arrived in time
+to be part of the rebuild — answers that came too late to be used, downloads
+cancelled once enough had arrived, and outright failures, with how long an
+answer takes. The winners are recorded by the reader itself as it picks them;
+the losers are drained and recorded on a goroutine of their own, so a read never
+waits on the accounts it has already stopped needing. The counters are the
+server process's, deliberately: counting reads into the vault file would mean a
+write on every chunk of every stream, to the one file everything else depends
+on. `GET /api/reads` serves them and **Read speed**, beside Vault settings in
+the accounts drawer, draws them as three charts — share of the shards used, how
+long each account takes to answer with its fastest-to-slowest spread behind it,
+and what became of every fetch — each with its figures written out beside it.
+
 ### 4.3 Reading at an offset
 
 A chunked file (§7.1) can be read where it is wanted instead of from the start.

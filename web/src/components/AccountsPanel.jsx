@@ -6,6 +6,7 @@ import CloudStats, { UsageBar, UsageLine, usageBreakdown } from './CloudStats'
 import ConnectCloud, { pendingOAuthFlow } from './ConnectCloud'
 import EditAccount from './EditAccount'
 import { DisconnectIcon, EditIcon, StatsIcon, TestIcon } from './Icons'
+import ReadStats from './ReadStats'
 import ReclaimVault from './ReclaimVault'
 import VaultSettings from './VaultSettings'
 import { DevMark } from './Brand'
@@ -119,6 +120,7 @@ export default function AccountsPanel({
   // reopen the dialog on it rather than making the user start again.
   const [connecting, setConnecting] = useState(() => Boolean(pendingOAuthFlow()))
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [readsOpen, setReadsOpen] = useState(false)
   const [reclaiming, setReclaiming] = useState(false)
   const [error, setError] = useState(null)
 
@@ -323,14 +325,23 @@ export default function AccountsPanel({
             still only offering whichever settings happened to fit. A list
             behind one button holds as many as the vault grows, and gives each
             of them room to say what it is currently set to. */}
-        {/* A flex row of one, so the tile grows to the panel's width the way
-            it did when it had three siblings to share it with. */}
-        <div style={{ marginTop: '16px', display: 'flex' }}>
+        {/* Two tiles, half the row each: what the vault is set to, and what the
+            clouds have been doing with it. The second is not a setting — it
+            changes nothing — but it is the other question somebody standing in
+            front of their accounts asks, and it is about all of them at once
+            rather than about the one card they happen to be looking at. */}
+        <div style={{ marginTop: '16px', display: 'flex', gap: '8px' }}>
           <ActionTile
             icon="⚙️"
             label="Vault settings"
             hint="password · clouds · film key"
             onClick={() => setSettingsOpen(true)}
+          />
+          <ActionTile
+            icon="⏱️"
+            label="Read speed"
+            hint="who answers when a file is rebuilt"
+            onClick={() => setReadsOpen(true)}
           />
         </div>
 
@@ -348,6 +359,8 @@ export default function AccountsPanel({
           onConnected={() => { setConnecting(false); onChanged() }}
         />
       )}
+
+      {readsOpen && <ReadStats onClose={() => setReadsOpen(false)} />}
 
       {settingsOpen && (
         <VaultSettings

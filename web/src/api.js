@@ -110,6 +110,12 @@ export const api = {
      The id trails the word rather than leading it because the router will not
      take `{id}/stats` — it collides with the sign-in status route above. */
   providerStats: (id) => request(`/api/providers/stats/${encodeURIComponent(id)}`),
+  /* Which account has been winning the race every read runs, since the server
+     came up. Counters the read path already keeps, so this is a loopback
+     request against numbers in memory — nothing is asked of any cloud, which
+     is what makes it safe for the panel to poll while it is open. */
+  readStats: () => request('/api/reads'),
+  resetReadStats: () => request('/api/reads/reset', { method: 'POST' }),
   /* What is actually in a bucket, counted by listing it end to end.
 
      The one figure in the panel that costs a walk of somebody else's storage —

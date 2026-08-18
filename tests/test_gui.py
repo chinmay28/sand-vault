@@ -1919,6 +1919,74 @@ class TestVaultSettings:
         app.keyboard.press("Escape")
 
 
+class TestReadSpeed:
+    """Reading a file is a race, and the panel next to the settings is where it
+    is scored.
+
+    Every account holding a shard is asked at once and the first to answer
+    rebuild the file; the rest are cut off mid-download. Nothing else in the app
+    says a word about who keeps winning, which is why a cloud can stop pulling
+    its weight without anything looking wrong.
+    """
+
+    def _open(self, app):
+        app.get_by_role("button", name=re.compile(r"^Read speed")).click()
+        panel = app.get_by_role("dialog", name="Read speed")
+        panel.wait_for(timeout=20000)
+        return panel
+
+    def test_the_board_names_the_clouds_that_answered(self, app, tmp_path):
+        body = "the clouds race each other for this one\n"
+        source = tmp_path / "raced.txt"
+        source.write_text(body)
+
+        upload_and_settle(app, source, choose=["ui-one", "ui-two", "ui-three"])
+
+        # Opening it is the race: three accounts asked, the quickest answers
+        # used, and the rest cancelled. By name rather than by position — the
+        # vault is shared across the session, so the first row is whatever
+        # sorts first rather than the file this test just stored.
+        app.locator('button[title="Open"]', has_text="raced.txt").click()
+        app.wait_for_selector(f"text={body.strip()}", timeout=60000)
+        app.keyboard.press("Escape")
+
+        panel = self._open(app)
+        # One race or many: the label under the figure is written for what it
+        # counts, so the assertion has to be too.
+        expect(panel.get_by_text(re.compile(r"^races?$"))).to_be_visible(timeout=20000)
+
+        # The three charts, each answering a different question about the same
+        # race: who carried it, how long each account took, and what became of
+        # every shard it was asked for.
+        for heading in ("Share of the reads", "How long an answer takes", "Who answers"):
+            expect(panel.get_by_role("heading", name=heading)).to_be_visible()
+        # The outcome bars are read through their key, so identity never rests
+        # on the colour of a 8px bar alone.
+        for entry in ("won", "too late", "cut off", "failed"):
+            expect(panel.get_by_text(entry, exact=True).first).to_be_visible()
+
+        # Every connected account is on the board, including any that won
+        # nothing — an account winning none of its races is the finding this
+        # panel exists for, and leaving it out would hide exactly that.
+        for name in ("ui-one", "ui-two", "ui-three"):
+            expect(panel.get_by_text(name, exact=True).first).to_be_visible()
+        expect(panel.get_by_text(re.compile(r"\d+ won")).first).to_be_visible()
+
+        app.keyboard.press("Escape")
+        panel.wait_for(state="detached", timeout=20000)
+
+    def test_starting_again_empties_the_board(self, app):
+        panel = self._open(app)
+        panel.get_by_role("button", name="Start again").click()
+
+        # Nothing is stored, so a cleared board is a board with no races on it
+        # rather than one showing zeroes against the old figures.
+        expect(panel.get_by_text("No reads yet")).to_be_visible(timeout=20000)
+
+        app.keyboard.press("Escape")
+        panel.wait_for(state="detached", timeout=20000)
+
+
 class TestMobileLayout:
     """The app has to be usable on a phone, not just narrower.
 
