@@ -99,6 +99,13 @@ export const api = {
   addProvider: (kind, name, options) =>
     request('/api/providers', { method: 'POST', body: { kind, name, options } }),
   testProvider: (id) => request(`/api/providers/${encodeURIComponent(id)}/test`, { method: 'POST' }),
+  /* One account taken apart: its quota against what SAND actually put there,
+     what the parts belong to, and how many files could not be rebuilt without
+     it. Re-pings the account on the way, so it takes as long as a Test does.
+
+     The id trails the word rather than leading it because the router will not
+     take `{id}/stats` — it collides with the sign-in status route above. */
+  providerStats: (id) => request(`/api/providers/stats/${encodeURIComponent(id)}`),
   /* What an account is called and what colour it wears. Only the fields passed
      change — an absent one is left alone — and neither touches the credentials
      or the parts sitting on the account: nothing is uploaded, downloaded or

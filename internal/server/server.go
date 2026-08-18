@@ -227,6 +227,16 @@ func (s *Server) Handler() (http.Handler, error) {
 		"GET /api/providers":            s.handleProvidersList,
 		"POST /api/providers":           s.handleProviderAdd,
 		"POST /api/providers/{id}/test": s.handleProviderTest,
+		// One account taken apart: its quota against what SAND actually put
+		// there, and what the rest of its load is made of.
+		//
+		// The id trails the verb rather than leading it, which is the wrong way
+		// round for a REST path and the only way round the router will take:
+		// "GET /api/providers/{id}/stats" and the sign-in status route below
+		// both match "/api/providers/oauth/stats", neither is more specific
+		// than the other, and ServeMux refuses the pair outright. Moving the
+		// older route would be a break for the sake of a nicer new path.
+		"GET /api/providers/stats/{id}": s.handleProviderStats,
 		// What an account is called and what colour it wears. Neither is a
 		// credential and neither moves a byte, so this is the one write against
 		// an account that never touches the backend holding it.

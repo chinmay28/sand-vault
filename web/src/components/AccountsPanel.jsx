@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { COLORS, FONT, KIND_ICONS, accountColor, formatBytes } from '../theme'
 import { api } from '../api'
 import { Banner, Button, IconButton, Spinner } from './ui'
+import CloudStats, { UsageBar, UsageLine, usageBreakdown } from './CloudStats'
 import ConnectCloud, { pendingOAuthFlow } from './ConnectCloud'
 import EditAccount from './EditAccount'
 import ReclaimVault from './ReclaimVault'
@@ -437,6 +438,7 @@ function AccountCard({ provider, providers, isDefault, onRemove, onChanged }) {
   const [testing, setTesting] = useState(false)
   const [result, setResult] = useState(null)
   const [editing, setEditing] = useState(false)
+  const [showing, setShowing] = useState(false)
   const color = accountColor(provider.id)
 
   const test = async () => {
@@ -454,9 +456,7 @@ function AccountCard({ provider, providers, isDefault, onRemove, onChanged }) {
 
   const online = result ? result.ok : provider.online
   const errorText = result && !result.ok ? result.error : provider.error
-  const quota = provider.usage && provider.usage.total > 0
-    ? `${formatBytes(provider.usage.used)} / ${formatBytes(provider.usage.total)} used`
-    : null
+  const space = usageBreakdown(provider)
 
   return (
     <div style={{
@@ -529,13 +529,23 @@ function AccountCard({ provider, providers, isDefault, onRemove, onChanged }) {
         lineHeight: 1.7,
       }}>
         <div>{provider.kind} · {provider.shards} part{provider.shards === 1 ? '' : 's'} · {formatBytes(provider.stored)}</div>
-        {quota && <div>{quota}</div>}
+        {/* How full the account is, and how much of that is ours. A local drive
+            answers this as well as a cloud does now — the disk it sits on is
+            shared with everything else on the machine, and a folder holding
+            34 GB of parts says nothing about whether there is room for more. */}
+        {space.known && (
+          <div style={{ margin: '5px 0 4px' }}>
+            <UsageBar provider={provider} />
+          </div>
+        )}
+        <UsageLine provider={provider} />
         {!online && errorText && (
           <div style={{ color: COLORS.error, wordBreak: 'break-word' }}>{errorText}</div>
         )}
       </div>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '8px' }}>
+        <Button size="sm" variant="ghost" onClick={() => setShowing(true)}>Stats</Button>
         <Button size="sm" variant="ghost" onClick={() => setEditing(true)}>Edit</Button>
         <Button size="sm" variant="ghost" onClick={test} disabled={testing}>
           {testing ? <Spinner size={10} /> : null}{testing ? 'Testing' : 'Test'}
@@ -543,6 +553,10 @@ function AccountCard({ provider, providers, isDefault, onRemove, onChanged }) {
         <Button size="sm" variant="ghost" onClick={onRemove}
           style={{ color: COLORS.error }}>Disconnect</Button>
       </div>
+
+      {showing && (
+        <CloudStats provider={provider} onClose={() => setShowing(false)} />
+      )}
 
       {editing && (
         <EditAccount

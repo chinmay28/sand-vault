@@ -827,7 +827,7 @@ sand restore --parts A,B --manifest M         Rebuild a file offline from loose 
 ```
 sand remote kinds                             List backends and their settings
 sand remote add <kind> --name N --set k=v …   Connect an account (pings first)
-sand remote list                              Status, parts held, bytes stored, colour
+sand remote list                              Status, parts held, bytes stored, room left, colour
 sand remote edit <name-or-id> [--name N] [--color '#38bdf8'|auto]
                                               Rename it, or change the colour it wears
 sand remote test <name-or-id>                 Re-check reachability
@@ -917,7 +917,14 @@ pipe the password on stdin.
 
 - **Lock screen** — nothing can be listed or fetched until the vault is open
 - **Sidebar** — every connected account, live status, how many parts it holds,
-  quota where the provider reports it
+  and how full it is: a bar splitting what SAND put there from whatever else
+  already lives on the account, and from the room that is left. Local folders
+  report the drive they sit on, so a disk shared with the rest of the machine
+  says how much of itself is actually free
+- **Account stats** — *Stats* on any account card opens the breakdown behind
+  that bar: capacity against SAND's own share, what the parts belong to by kind
+  and by folder, the month they arrived in, the heaviest files, and how many
+  files could not be rebuilt without this account
 - **Connect dialog** — generated from each backend's own field spec, so new
   backends appear without frontend changes
 - **Browser** — folders, breadcrumbs, drag-and-drop upload with progress

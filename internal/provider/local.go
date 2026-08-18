@@ -201,6 +201,38 @@ func (p *localProvider) Ping(ctx context.Context) error {
 	return os.Remove(probe)
 }
 
+// errNoDiskUsage is what a platform with no way to ask returns. Not surfaced
+// to anyone: a Usage that fails is a Usage the account card simply does not
+// draw, the same as one from a backend that reports no quota at all.
+var errNoDiskUsage = errors.New("disk usage unavailable on this platform")
+
+// Usage reports the drive the folder sits on: how big it is, how much of it is
+// spoken for by everything on it, and how much a part could still be written
+// into.
+//
+// The folder itself is not measured — what SAND put here is already known from
+// the index, and walking a drive to weigh it again would cost a full traversal
+// on every refresh of the sidebar. What the index cannot know is the other
+// 800 GB on the disk, and that is what this asks for.
+//
+// A folder that is not there yet is answered for by the nearest parent that
+// is: the drive is the same drive either way, and Ping creates the folder on
+// the next refresh anyway.
+func (p *localProvider) Usage(ctx context.Context) (Usage, error) {
+	dir := p.root
+	for {
+		usage, err := diskUsage(dir)
+		if err == nil {
+			return usage, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return Usage{}, err
+		}
+		dir = parent
+	}
+}
+
 // cause strips the syscall wrapping off a filesystem error, leaving the part
 // that says what actually went wrong. The path is already in the sentence.
 func cause(err error) string {

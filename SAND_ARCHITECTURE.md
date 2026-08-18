@@ -1284,7 +1284,8 @@ type Provider interface {
 ```
 
 Optional, and each one is a capability the layers above check for rather than
-assume: `UsageReporter` for backends that can report quota, `Identifier` for
+assume: `UsageReporter` for backends that can report quota — including the
+local folder, which reports the drive it sits on (§8.7) — `Identifier` for
 backends that can name the account they are pointed at, and
 `CredentialRotator` for backends whose stored credentials change as they are
 used.
@@ -1406,6 +1407,39 @@ Drive is not a path-addressed store, so the SAND object key is written into the
 file's `appProperties` and looked up by query, with a per-provider ID cache so
 repeated reads skip the lookup.
 
+### 8.7 How full an account is
+
+`Usage` carries three figures — `used`, `total`, and `free` where the backend
+measured it rather than leaving it to be subtracted. The third exists for local
+folders: a filesystem keeps a reserve only root may spend, and a quota can cut
+an account's share down from the disk it sits on, so what can actually be
+written is not `total - used`. `Usage.Remaining()` prefers the measured figure
+and falls back to the subtraction.
+
+A local folder answers from `statfs` (`GetDiskFreeSpaceEx` on Windows) against
+the drive it sits on, climbing to the nearest existing parent for a folder that
+has not been created yet. Deliberately the drive and not the folder: what SAND
+put there is already known from the index, and the number the index cannot
+supply is the 800 GB of other things on the same disk. Nothing walks the tree.
+
+`ProviderStats` is that account taken apart, and every figure in it is read off
+the index — no listing, no traversal, so the panel costs one ping:
+
+| | |
+|---|---|
+| capacity | `Usage` against `Stored`: SAND's parts, everything else on the account, what is free, what is reserved |
+| `Files` / `Sole` | files with a part here, and those that could not be rebuilt without it — counted against the accounts that would survive the disconnect, exactly as the guard in §3.9 counts |
+| `Kinds` / `Folders` / `Largest` / `Months` | what the parts belong to, weighed by what each thing left *here* rather than by its own size |
+| `SubVaults` | one line: parts and bytes, from the inventory |
+
+The breakdowns come from the main vault's index alone. A sub vault reveals its
+name and its weight to the main password and nothing else about what is inside
+it (§3.8), and an open one would otherwise start naming its folders in a panel
+opened from the drawer — about an account, with nothing to say which vault a
+row came from. Its parts still count towards the capacity figures and towards
+`Sole`, from the same inventory `ProviderStatuses` uses, so a locked sub vault
+does not make an account look emptier than it is.
+
 ---
 
 ## 9. HTTP API
@@ -1444,6 +1478,7 @@ reveals only whether a vault exists.
 | POST | `/api/vaults/import` | Bring a vault the recovery scan found in as a sub vault, rather than recovering over this one |
 | GET | `/api/providers/specs` | Backend descriptions for the connect form |
 | GET | `/api/providers` | Connected accounts: online, parts held, quota |
+| GET | `/api/providers/stats/{id}` | One account taken apart: quota against SAND's own share, and what the load is made of (§8.7). The id trails `stats` because `{id}/stats` collides with the OAuth status route below |
 | POST | `/api/providers` | Connect an account (pings before saving) |
 | POST | `/api/providers/oauth/start` | Begin a sign-in; returns the consent URL |
 | GET | `/api/providers/oauth/callback` | Where the provider sends the browser back (public; matched on `state`) |

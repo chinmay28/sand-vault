@@ -166,3 +166,77 @@ func TestMountedReadOnly(t *testing.T) {
 		}
 	}
 }
+
+// TestLocalUsageReportsTheDrive checks that a local folder answers with the
+// filesystem it sits on rather than with what SAND put in it: the whole point
+// of the figure is the other things on the disk, which the index cannot see.
+func TestLocalUsageReportsTheDrive(t *testing.T) {
+	root := t.TempDir()
+	p, err := newLocalProvider(Config{Kind: KindLocal, Options: map[string]string{"path": root}})
+	if err != nil {
+		t.Fatalf("newLocalProvider: %v", err)
+	}
+	reporter, ok := p.(UsageReporter)
+	if !ok {
+		t.Fatal("a local folder does not report usage")
+	}
+
+	usage, err := reporter.Usage(context.Background())
+	if err != nil {
+		t.Fatalf("Usage: %v", err)
+	}
+	if usage.Total <= 0 {
+		t.Fatalf("drive reports no size: %+v", usage)
+	}
+	if usage.Used < 0 || usage.Used > usage.Total {
+		t.Errorf("used %d is not somewhere inside %d", usage.Used, usage.Total)
+	}
+	if usage.Free < 0 || usage.Free > usage.Total {
+		t.Errorf("free %d is not somewhere inside %d", usage.Free, usage.Total)
+	}
+	// An empty temp directory holds nothing, so anything used is other things
+	// on the same disk — which is exactly the figure the account card needs.
+	if usage.Remaining() != usage.Free {
+		t.Errorf("Remaining() = %d, want the measured %d", usage.Remaining(), usage.Free)
+	}
+}
+
+// TestLocalUsageBeforeTheFolderExists checks the drive still answers for a
+// folder that has not been created yet — a removable disk that is mounted but
+// whose SAND folder is one Ping away.
+func TestLocalUsageBeforeTheFolderExists(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "not", "there", "yet")
+	p, err := newLocalProvider(Config{Kind: KindLocal, Options: map[string]string{"path": root}})
+	if err != nil {
+		t.Fatalf("newLocalProvider: %v", err)
+	}
+	usage, err := p.(UsageReporter).Usage(context.Background())
+	if err != nil {
+		t.Fatalf("Usage: %v", err)
+	}
+	if usage.Total <= 0 {
+		t.Fatalf("drive reports no size: %+v", usage)
+	}
+}
+
+// TestUsageRemaining covers the arithmetic the account card leans on: a
+// backend that measured its free space is believed, one that only has a quota
+// is subtracted, and an account over its quota has no room rather than
+// negative room.
+func TestUsageRemaining(t *testing.T) {
+	cases := []struct {
+		name  string
+		usage Usage
+		want  int64
+	}{
+		{"measured", Usage{Used: 300, Total: 1000, Free: 650}, 650},
+		{"quota only", Usage{Used: 300, Total: 1000}, 700},
+		{"over quota", Usage{Used: 1200, Total: 1000}, 0},
+		{"unknown", Usage{}, 0},
+	}
+	for _, tc := range cases {
+		if got := tc.usage.Remaining(); got != tc.want {
+			t.Errorf("%s: Remaining() = %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}
