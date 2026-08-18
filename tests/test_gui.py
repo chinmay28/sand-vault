@@ -2460,3 +2460,45 @@ class TestWiderSchemes:
         app.get_by_role("button", name="Cancel").click()
         app.wait_for_selector("text=/Upload to \\d+ cloud/", state="detached", timeout=20000)
         assert app.get_by_text("between.txt").count() == 0
+
+    def test_widening_a_file_to_six_clouds_is_offered_not_greyed_out(
+        self, app, tmp_path, clouds
+    ):
+        """Going from three clouds to six rebuilds the file rather than
+        carrying its shards, and rebuilding is work: the button has to be
+        pressable. It moves no single shard, so a gate that counts only shards
+        moved and erased would grey out the one change that costs the most."""
+        for name in ("ui-four", "ui-five", "ui-six"):
+            connect_cloud(app, name, clouds)
+
+        source = tmp_path / "widened.txt"
+        source.write_text("three clouds, then six")
+        upload_and_settle(app, source, choose=["ui-one", "ui-two", "ui-three"])
+
+        row = app.locator('button[title="Open"]', has_text="widened.txt").locator("xpath=..")
+        row.locator('button[title="Where the shards live"]').click()
+        app.wait_for_selector("text=Where this file lives", timeout=20000)
+        app.get_by_role("button", name=re.compile("Move to other clouds")).click()
+        app.wait_for_selector("text=Move widened.txt", timeout=20000)
+
+        select_clouds(app, ["ui-one", "ui-two", "ui-three", "ui-four", "ui-five", "ui-six"])
+        # The estimate says rebuild rather than move — no shard travels — and
+        # the button is live all the same.
+        app.wait_for_selector("text=1 file to rebuild", timeout=20000)
+        move = app.get_by_role("button", name=re.compile("Move the shards"))
+        expect(move).to_be_enabled(timeout=20000)
+
+        move.click()
+        app.wait_for_selector("text=Rebuilt 1 file", timeout=120000)
+        app.get_by_role("button", name="Done").click()
+
+        # Six shards now, one per cloud, and it still rebuilds.
+        row = app.locator('button[title="Open"]', has_text="widened.txt").locator("xpath=..")
+        for name in ("ui-one", "ui-two", "ui-three", "ui-four", "ui-five", "ui-six"):
+            expect(row.get_by_title(re.compile(rf"Shard \d on {name}$"))).to_have_count(
+                1, timeout=20000
+            )
+
+        app.locator('button[title="Open"]', has_text="widened.txt").click()
+        app.wait_for_selector("text=three clouds, then six", timeout=60000)
+        app.keyboard.press("Escape")
