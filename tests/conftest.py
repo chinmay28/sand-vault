@@ -10,13 +10,18 @@ frontend_built   — True if the full React app is served (not the placeholder)
 vault_password   — the password the server fixture's vault is created with
 clouds           — a factory for throwaway "cloud account" directories
 unlocked         — a requests.Session with an initialized, unlocked vault
+s3_stub          — a stand-in S3 endpoint holding a bucket with something in it
+bucket_server    — a second sand serve whose only account is that bucket
 """
 import os
+import re
 import shutil
 import socket
 import subprocess
 import tempfile
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 import requests
@@ -317,3 +322,116 @@ def browser_type_launch_args(browser_type_launch_args):
     if executable and os.path.exists(executable):
         return {**browser_type_launch_args, "executable_path": executable}
     return browser_type_launch_args
+
+
+# ---------------------------------------------------------------------------
+# A bucket — the backend that reports no quota
+# ---------------------------------------------------------------------------
+
+# What is in the stand-in bucket: a part SAND could have written, and something
+# that was already in there. The second one is the whole point — it is the
+# figure the vault's own index cannot supply, and the reason counting a bucket
+# is worth the listing it costs.
+BUCKET_OBJECTS = [("vault/abc-p1.sand", 1_000_000), ("holiday.jpg", 4_000_000)]
+
+
+class _S3Stub(BaseHTTPRequestHandler):
+    """Enough of the S3 API to connect an account and count what is in it.
+
+    The signature is not checked: what these tests are about is the figures the
+    app draws from a listing, and SigV4 itself is covered by a Go test against
+    a stub that does read the headers (TestS3SigV4AgainstStubEndpoint).
+    """
+
+    def log_message(self, *args):
+        pass
+
+    def do_GET(self):
+        query = self.path.split("?", 1)[1] if "?" in self.path else ""
+        if "list-type=2" not in query:
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+
+        match = re.search(r"(?:^|&)prefix=([^&]*)", query)
+        prefix = match.group(1).replace("%2F", "/") if match else ""
+        rows = "".join(
+            f"<Contents><Key>{key}</Key><Size>{size}</Size></Contents>"
+            for key, size in BUCKET_OBJECTS if key.startswith(prefix)
+        )
+        payload = (
+            '<?xml version="1.0"?><ListBucketResult>'
+            "<IsTruncated>false</IsTruncated>" + rows + "</ListBucketResult>"
+        ).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/xml")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    do_HEAD = do_GET
+
+
+@pytest.fixture(scope="session")
+def s3_stub():
+    """An S3 endpoint on a free port, holding a bucket with two objects."""
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), _S3Stub)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{httpd.server_address[1]}"
+    httpd.shutdown()
+
+
+@pytest.fixture(scope="session")
+def bucket_server(sand_bin, s3_stub, vault_password):
+    """A second `sand serve`, with a bucket for an account and nothing else.
+
+    Its own vault and its own process on purpose: the shared one is wired to
+    three local folders, and the tests written against it count accounts and
+    read where parts landed. An S3 account dropped into that vault would change
+    both answers for everyone.
+    """
+    directory = tempfile.mkdtemp(prefix="sand-bucket-")
+    port = _find_free_port()
+    proc = subprocess.Popen(
+        [
+            sand_bin, "serve",
+            "--port", str(port),
+            "--bind", "127.0.0.1",
+            "--vault", os.path.join(directory, "vault.sand"),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    base_url = f"http://127.0.0.1:{port}"
+    _wait_for_server(base_url, proc, port)
+
+    session = requests.Session()
+    r = session.post(
+        f"{base_url}/api/vault/init",
+        json={"password": vault_password, "policy": "mirror"},
+        headers={"Origin": base_url},
+        timeout=60,
+    )
+    assert r.status_code == 201, r.text
+    r = session.post(
+        f"{base_url}/api/providers",
+        json={"kind": "s3", "name": "b2-cold", "options": {
+            "bucket": "shards",
+            "region": "us-west-004",
+            "access_key_id": "AKIAIOSFODNN7EXAMPLE",
+            "secret_access_key": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+            "endpoint": s3_stub,
+            "prefix": "vault/",
+        }},
+        headers={"Origin": base_url},
+        timeout=30,
+    )
+    assert r.status_code == 201, r.text
+
+    yield base_url
+
+    proc.terminate()
+    proc.wait(timeout=5)
+    shutil.rmtree(directory, ignore_errors=True)

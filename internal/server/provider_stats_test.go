@@ -147,3 +147,58 @@ func labelsOf(t *testing.T, raw any) map[string]float64 {
 	}
 	return out
 }
+
+// A capacity is the one figure in this panel that cannot be fetched from
+// anywhere: a bucket reports no quota, so somebody types what they know. It
+// arrives written the way it is read, and is stored with the account rather
+// than sent anywhere near the backend.
+func TestDeclaredCapacityIsTypedAndKept(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("declare a capacity", 1)
+	id := c.providerIDs()[0]
+
+	w, body := c.json(http.MethodPatch, "/api/providers/"+id, map[string]any{"capacity": "10 GB"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("declaring a capacity: %d %s", w.Code, w.Body.String())
+	}
+	if got := body["provider"].(map[string]any)["capacity"].(float64); int64(got) != 10<<30 {
+		t.Errorf("capacity = %v, want 10 GB in bytes", got)
+	}
+
+	// Still there after a round trip through the account list, and nothing
+	// about the name or the colour moved with it.
+	_, listed := c.json(http.MethodGet, "/api/providers", nil)
+	account := listed["providers"].([]any)[0].(map[string]any)
+	if int64(account["capacity"].(float64)) != 10<<30 {
+		t.Errorf("capacity did not survive: %v", account["capacity"])
+	}
+
+	if w, _ := c.json(http.MethodPatch, "/api/providers/"+id, map[string]any{"capacity": "lots"}); w.Code != http.StatusBadRequest {
+		t.Errorf("a capacity of \"lots\" was accepted: %d", w.Code)
+	}
+
+	if w, _ := c.json(http.MethodPatch, "/api/providers/"+id, map[string]any{"capacity": ""}); w.Code != http.StatusOK {
+		t.Fatalf("clearing the capacity: %d %s", w.Code, w.Body.String())
+	}
+	_, cleared := c.json(http.MethodGet, "/api/providers", nil)
+	if capacity := cleared["providers"].([]any)[0].(map[string]any)["capacity"]; capacity != nil {
+		t.Errorf("capacity = %v after being cleared", capacity)
+	}
+}
+
+// Counting is for the backends with no other way of answering. A local folder
+// has statfs, so it says it needs no count and refuses one.
+func TestMeasuringIsOnlyForBackendsThatCannotSay(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("count what cannot be asked", 1)
+	id := c.providerIDs()[0]
+
+	_, listed := c.json(http.MethodGet, "/api/providers", nil)
+	if measurable := listed["providers"].([]any)[0].(map[string]any)["measurable"]; measurable != nil {
+		t.Errorf("a local folder says it needs counting: %v", measurable)
+	}
+
+	if w, _ := c.json(http.MethodPost, "/api/providers/"+id+"/measure", nil); w.Code == http.StatusOK {
+		t.Error("a local folder was counted rather than asked")
+	}
+}

@@ -531,3 +531,147 @@ func TestCoversNameTheServicesBehindAProtocol(t *testing.T) {
 		t.Errorf("Dropbox covers %+v — its label already says it", dropbox.Covers)
 	}
 }
+
+// A capacity is typed, so it is read the way it is written: with a unit, with
+// a decimal point, or as the bare byte count an API client sends.
+func TestParseCapacity(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want int64
+	}{
+		{"", 0},
+		{"   ", 0},
+		{"—", 0},
+		{"0", 0},
+		{"1024", 1024},
+		{"10 GB", 10 << 30},
+		{"10gb", 10 << 30},
+		{"10 GiB", 10 << 30},
+		{"10G", 10 << 30},
+		{"1.5 TB", 1649267441664},
+		{"500 MB", 500 << 20},
+		{"2 PB", 2 << 50},
+	} {
+		got, err := ParseCapacity(tc.in)
+		if err != nil {
+			t.Errorf("ParseCapacity(%q): %v", tc.in, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("ParseCapacity(%q) = %d, want %d", tc.in, got, tc.want)
+		}
+	}
+
+	// The units are the ones the rest of SAND prints, so a figure copied off a
+	// card comes back as the same number of bytes.
+	if got, _ := ParseCapacity("10 GB"); got != 10*1024*1024*1024 {
+		t.Errorf("a GB here is %d bytes, want 1024³", got/10)
+	}
+
+	for _, bad := range []string{"lots", "10 furlongs", "-5 GB", "GB"} {
+		if _, err := ParseCapacity(bad); err == nil {
+			t.Errorf("ParseCapacity(%q) was accepted", bad)
+		}
+	}
+}
+
+// What is in a bucket is counted, not asked for: S3 has no quota call, so the
+// figure comes from a listing — the whole bucket rather than SAND's corner of
+// it, since everything else in there is exactly the part the index cannot
+// supply — and it is taken when somebody asks rather than on every ping.
+func TestS3MeasureUsageCountsTheWholeBucket(t *testing.T) {
+	var (
+		lists    int
+		prefixes []string
+	)
+
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("list-type") != "2" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		lists++
+		prefixes = append(prefixes, r.URL.Query().Get("prefix"))
+		w.Header().Set("Content-Type", "application/xml")
+		if r.URL.Query().Get("continuation-token") == "" {
+			w.Write([]byte(`<?xml version="1.0"?><ListBucketResult>` +
+				`<IsTruncated>true</IsTruncated><NextContinuationToken>page-2</NextContinuationToken>` +
+				`<Contents><Key>vault/abc-p1.sand</Key><Size>1000</Size></Contents>` +
+				`<Contents><Key>holiday.jpg</Key><Size>2000</Size></Contents>` +
+				`</ListBucketResult>`))
+			return
+		}
+		w.Write([]byte(`<?xml version="1.0"?><ListBucketResult>` +
+			`<IsTruncated>false</IsTruncated>` +
+			`<Contents><Key>vault/abc-p2.sand</Key><Size>500</Size></Contents>` +
+			`</ListBucketResult>`))
+	}))
+	defer stub.Close()
+
+	p, err := New(Config{Kind: KindS3, Name: "stub", Options: map[string]string{
+		"bucket":            "shards",
+		"region":            "us-east-1",
+		"access_key_id":     "AKIAIOSFODNN7EXAMPLE",
+		"secret_access_key": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+		"endpoint":          stub.URL,
+		"prefix":            "vault/",
+	}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	reporter, ok := p.(UsageReporter)
+	if !ok {
+		t.Fatal("the S3 backend reports no usage at all")
+	}
+	measurer, ok := p.(UsageMeasurer)
+	if !ok {
+		t.Fatal("the S3 backend cannot be measured")
+	}
+
+	// Nothing before somebody asks: the cheap call is on the ping path, and a
+	// bucket sweep behind every refresh of the drawer is what this design is
+	// avoiding.
+	before, err := reporter.Usage(t.Context())
+	if err != nil {
+		t.Fatalf("Usage: %v", err)
+	}
+	if before.UsedKnown() || lists != 0 {
+		t.Errorf("Usage listed the bucket unasked: %+v after %d listings", before, lists)
+	}
+
+	counted, err := measurer.MeasureUsage(t.Context())
+	if err != nil {
+		t.Fatalf("MeasureUsage: %v", err)
+	}
+	if counted.Used != 3500 {
+		t.Errorf("counted %d bytes, want 3500 — every object in the bucket, ours or not", counted.Used)
+	}
+	if !counted.Measured || counted.MeasuredAt.IsZero() {
+		t.Errorf("the count does not say it was counted: %+v", counted)
+	}
+	if counted.Total != 0 {
+		t.Errorf("total = %d — a bucket's size is not this backend's to know", counted.Total)
+	}
+	if lists != 2 {
+		t.Errorf("%d listings, want both pages walked", lists)
+	}
+	for _, prefix := range prefixes {
+		if prefix != "" {
+			t.Errorf("the sweep asked for prefix %q, want the whole bucket", prefix)
+		}
+	}
+
+	// And it is kept, so the card behind the panel draws the same figure
+	// without paying for it again.
+	after, err := reporter.Usage(t.Context())
+	if err != nil {
+		t.Fatalf("Usage after measuring: %v", err)
+	}
+	if after.Used != counted.Used || !after.Measured {
+		t.Errorf("Usage after measuring = %+v, want the count back", after)
+	}
+	if lists != 2 {
+		t.Errorf("Usage went back to the bucket: %d listings", lists)
+	}
+}

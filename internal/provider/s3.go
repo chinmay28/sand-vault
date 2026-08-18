@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -106,6 +107,14 @@ type s3Provider struct {
 	// whether the bucket is part of the host or the first path segment.
 	endpoint  *url.URL
 	pathStyle bool
+
+	// The last measurement of what is in the bucket, and the lock over it.
+	// Counting is a full listing, so it happens when somebody asks (see
+	// MeasureUsage) and the answer is kept: the sidebar's ping reads it back
+	// out through Usage instead of paying for it again, and every card of this
+	// account draws the same bar until the next count.
+	mu      sync.Mutex
+	counted Usage
 }
 
 func newS3Provider(cfg Config) (Provider, error) {
@@ -331,6 +340,90 @@ func (p *s3Provider) Ping(ctx context.Context) error {
 		return httpError("s3 bucket check", resp)
 	}
 	return nil
+}
+
+// Usage reports the last measurement taken of this bucket, and nothing at all
+// before one has been. It is on the ping path, so it asks the service nothing:
+// S3 has no call that answers this, and inventing one out of a listing here
+// would put a full bucket sweep behind every refresh of the drawer.
+//
+// The total is not this backend's to know. A bucket is as big as whoever pays
+// for it says, so the capacity a bar is drawn against comes from the account's
+// own Capacity (see Config) and is applied above this.
+func (p *s3Provider) Usage(ctx context.Context) (Usage, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.counted, nil
+}
+
+// MeasureUsage counts what is in the bucket by listing it, and remembers the
+// answer for Usage to hand back.
+//
+// The whole bucket rather than SAND's prefix within it. The question the figure
+// answers is how full the account is, and a prefix-shaped answer would leave
+// out exactly the part the index cannot supply — everything else already in
+// there. Where the credentials only reach the prefix, the listing comes back
+// short rather than failing, and what it says is still true of the part of the
+// bucket SAND can see.
+//
+// Cost: one request per thousand objects, which is a class C transaction at
+// Backblaze and a LIST at everyone else. Nothing calls this on a timer.
+func (p *s3Provider) MeasureUsage(ctx context.Context) (Usage, error) {
+	var (
+		used  int64
+		token string
+	)
+
+	for {
+		u := p.bucketURL()
+		q := url.Values{}
+		q.Set("list-type", "2")
+		if token != "" {
+			q.Set("continuation-token", token)
+		}
+		u.RawQuery = q.Encode()
+
+		resp, err := p.do(ctx, http.MethodGet, u, nil)
+		if err != nil {
+			return Usage{}, fmt.Errorf("s3 measure: %w", err)
+		}
+		if !isSuccess(resp.StatusCode) {
+			err := httpError("s3 measure", resp)
+			drainAndClose(resp)
+			return Usage{}, err
+		}
+		body, err := readAllBody(resp)
+		drainAndClose(resp)
+		if err != nil {
+			return Usage{}, fmt.Errorf("s3 measure: %w", err)
+		}
+
+		var result s3ListResult
+		if err := xml.Unmarshal(body, &result); err != nil {
+			return Usage{}, fmt.Errorf("s3 measure: parsing response: %w", err)
+		}
+		for _, item := range result.Contents {
+			used += item.Size
+		}
+
+		if !result.IsTruncated || result.NextContinuationToken == "" {
+			break
+		}
+		token = result.NextContinuationToken
+
+		// A bucket with millions of objects is a long walk, and the caller's
+		// deadline is the only thing that stops it. Checked between pages so a
+		// cancelled panel does not leave a sweep running.
+		if err := ctx.Err(); err != nil {
+			return Usage{}, fmt.Errorf("s3 measure: %w", err)
+		}
+	}
+
+	counted := Usage{Used: used, Measured: true, MeasuredAt: time.Now().UTC()}
+	p.mu.Lock()
+	p.counted = counted
+	p.mu.Unlock()
+	return counted, nil
 }
 
 // ---------------------------------------------------------------------------

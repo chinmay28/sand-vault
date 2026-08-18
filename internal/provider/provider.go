@@ -11,7 +11,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -58,6 +60,72 @@ type Config struct {
 	// one and the UI picks; a "#rrggbb" string is a choice, and it stays put as
 	// other accounts come and go.
 	Color string `json:"color,omitempty"`
+
+	// Capacity is how big the account holder says this account is, in bytes,
+	// for the backends that cannot say it themselves. A bucket has no quota
+	// call — S3 has never had one and B2's own API does not add one — so the
+	// figure a bar needs has to come from the person who set the cap in the
+	// provider's console, or who decided how much of an unlimited bucket this
+	// vault is allowed to fill. Zero means nobody has said, and the account
+	// goes on reporting no capacity rather than a guessed one.
+	//
+	// It is not a limit SAND enforces. Nothing here refuses an upload for
+	// crossing it: it is the denominator the usage bar is drawn against, and
+	// an account over the figure reads as full rather than as an error.
+	Capacity int64 `json:"capacity,omitempty"`
+}
+
+// ParseCapacity reads a declared capacity as somebody would write it — "10 GB",
+// "1.5t", "500 MiB", or a bare byte count — and returns it in bytes. An empty
+// string, a zero, or a dash is "nobody has said" rather than "an account with
+// no room", and returns zero.
+//
+// The units are the ones the rest of SAND prints: a GB here is 1024³, the same
+// figure the file list and the account cards mean by GB, so a capacity typed to
+// match what the browser shows does not come back a few percent different. GiB
+// is accepted and means the same thing.
+func ParseCapacity(value string) (int64, error) {
+	text := strings.ToLower(strings.TrimSpace(value))
+	if text == "" || text == "-" || text == "—" {
+		return 0, nil
+	}
+
+	digits := strings.TrimRight(text, "abcdefghijklmnopqrstuvwxyz ")
+	unit := strings.TrimSpace(strings.TrimPrefix(text, digits))
+	unit = strings.TrimSuffix(strings.TrimSuffix(unit, "b"), "i")
+
+	size, err := strconv.ParseFloat(strings.TrimSpace(digits), 64)
+	if err != nil {
+		return 0, fmt.Errorf("%q is not a size — write it like 10 GB", value)
+	}
+	if size < 0 {
+		return 0, fmt.Errorf("%q is not a size — a capacity cannot be negative", value)
+	}
+
+	scale := float64(1)
+	switch unit {
+	case "":
+		// A bare number is bytes, which is what an API client sends and what
+		// the field round-trips as.
+	case "k":
+		scale = 1 << 10
+	case "m":
+		scale = 1 << 20
+	case "g":
+		scale = 1 << 30
+	case "t":
+		scale = 1 << 40
+	case "p":
+		scale = 1 << 50
+	default:
+		return 0, fmt.Errorf("%q is not a size — %q is not a unit SAND knows", value, unit)
+	}
+
+	bytes := size * scale
+	if bytes > math.MaxInt64 {
+		return 0, fmt.Errorf("%q is not a size any account has", value)
+	}
+	return int64(bytes), nil
 }
 
 // NormalizeColor validates a chosen account colour and returns it in the one
@@ -130,6 +198,30 @@ type Usage struct {
 	Used  int64 `json:"used"`
 	Total int64 `json:"total"`
 	Free  int64 `json:"free,omitempty"`
+
+	// Measured says Used was arrived at by counting what is on the account
+	// rather than by asking it. A bucket answers "how full are you" with a
+	// listing and nothing else, so the figure costs a request per thousand
+	// objects and is taken when somebody asks for it rather than on every ping
+	// — and it is worth labelling as counted, since it is a moment's snapshot
+	// of somebody else's storage and not a live reading.
+	Measured   bool      `json:"measured,omitempty"`
+	MeasuredAt time.Time `json:"measured_at,omitzero"`
+
+	// Declared says Total is the figure the account holder typed rather than
+	// one the backend reports. The bar is drawn the same either way; the panel
+	// says whose number it is, because a wrong quota read off an API is a bug
+	// and a wrong one typed into a form is a typo, and they are not fixed in
+	// the same place.
+	Declared bool `json:"declared,omitempty"`
+}
+
+// UsedKnown reports whether Used means anything. A backend that reports
+// nothing at all leaves it zero, which is indistinguishable from an account
+// with nothing on it until something has actually looked: a quota call sets a
+// total, and a measurement says so.
+func (u Usage) UsedKnown() bool {
+	return (u.Total > 0 && !u.Declared) || u.Measured
 }
 
 // Remaining is what this account can still take, preferring a figure the
@@ -172,8 +264,24 @@ type Provider interface {
 }
 
 // UsageReporter is implemented by backends that can report quota.
+//
+// Called on every ping, so it must be cheap: one request that the service
+// answers from its own bookkeeping, or nothing at all. A backend with no such
+// call implements UsageMeasurer instead, or neither.
 type UsageReporter interface {
 	Usage(ctx context.Context) (Usage, error)
+}
+
+// UsageMeasurer is implemented by backends whose usage can only be counted.
+//
+// S3 has no quota call and never has, and Backblaze's own API does not add one
+// — the only honest answer to "what is in this bucket" is the sum of a full
+// listing, which costs a request per thousand objects and real money at some
+// providers. So it is never taken on the sidebar's ping: this is called when
+// somebody opens the panel that shows the figure, and the result is what the
+// backend's cheap Usage hands back afterwards.
+type UsageMeasurer interface {
+	MeasureUsage(ctx context.Context) (Usage, error)
 }
 
 // Identifier is implemented by backends that can say whose account they are

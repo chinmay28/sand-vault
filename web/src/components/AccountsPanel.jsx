@@ -600,7 +600,7 @@ function AccountCard({ provider, providers, isDefault, onRemove, onChanged }) {
       </div>
 
       {showing && (
-        <CloudStats provider={provider} onClose={() => setShowing(false)} />
+        <CloudStats provider={provider} onClose={() => setShowing(false)} onChanged={onChanged} />
       )}
 
       {editing && (

@@ -716,12 +716,18 @@ func (v *Vault) AddProvider(ctx context.Context, cfg provider.Config) (provider.
 type ProviderEdit struct {
 	Name  *string
 	Color *string
+
+	// Capacity is how big the account holder says the account is, in bytes,
+	// for backends with no quota call of their own. Zero clears it and the
+	// account goes back to reporting no capacity at all.
+	Capacity *int64
 }
 
-// UpdateProvider changes a connected account's label or its colour. Neither
-// touches the credentials, the backend or the parts sitting on it: this is what
-// the account is called and what colour it wears, and nothing is uploaded,
-// downloaded or re-encrypted by changing either.
+// UpdateProvider changes a connected account's label, its colour, or the
+// capacity its holder declares for it. None of the three touches the
+// credentials, the backend or the parts sitting on it: this is what the account
+// is called, what colour it wears and how big its owner says it is, and nothing
+// is uploaded, downloaded or re-encrypted by changing any of them.
 //
 // A rename is carried across the index as well. Every shard records the name of
 // the account holding it — that is what the file list and the health read-out
@@ -771,7 +777,14 @@ func (v *Vault) UpdateProvider(id string, edit ProviderEdit) (provider.Config, e
 		after.Color = color
 	}
 
-	if after.Name == before.Name && after.Color == before.Color {
+	if edit.Capacity != nil {
+		if *edit.Capacity < 0 {
+			return provider.Config{}, errors.New("an account cannot hold a negative number of bytes")
+		}
+		after.Capacity = *edit.Capacity
+	}
+
+	if after.Name == before.Name && after.Color == before.Color && after.Capacity == before.Capacity {
 		return after.Redacted(), nil
 	}
 
@@ -975,6 +988,13 @@ type ProviderStatus struct {
 	Shards int            `json:"shards"`
 	Stored int64          `json:"stored"`
 	Usage  provider.Usage `json:"usage"`
+
+	// Measurable says this account can be counted on request — a bucket, which
+	// has no quota call but can be listed (see provider.UsageMeasurer). It is
+	// what puts the "count what is in it" button in front of somebody, and what
+	// makes a declared capacity worth offering: without a used figure from
+	// somewhere, a capacity is a denominator with no numerator.
+	Measurable bool `json:"measurable,omitempty"`
 }
 
 // ProviderStatuses pings every connected account in parallel and reports how
@@ -995,6 +1015,7 @@ func (v *Vault) ProviderStatuses(ctx context.Context) ([]ProviderStatus, error) 
 			statuses[i].Error = err.Error()
 			continue
 		}
+		_, statuses[i].Measurable = p.(provider.UsageMeasurer)
 		live[i] = p
 	}
 	byID := make(map[string]*ProviderStatus, len(statuses))
@@ -1051,11 +1072,73 @@ func (v *Vault) ProviderStatuses(ctx context.Context) ([]ProviderStatus, error) 
 					statuses[i].Usage = usage
 				}
 			}
+			statuses[i].Usage = withDeclaredCapacity(statuses[i].Usage, statuses[i].Capacity)
 		}(i)
 	}
 	wg.Wait()
 
 	return statuses, nil
+}
+
+// withDeclaredCapacity puts the account holder's own figure in as the total
+// where the backend has none of its own.
+//
+// Only against a used figure somebody has taken. A capacity with nothing
+// measured against it draws a bar that says the account is empty, which is a
+// worse answer than the honest blank a bucket has given until now — so the
+// declared total waits for the count rather than the other way round.
+func withDeclaredCapacity(usage provider.Usage, capacity int64) provider.Usage {
+	if capacity <= 0 || usage.Total > 0 || !usage.UsedKnown() {
+		return usage
+	}
+	usage.Total = capacity
+	usage.Declared = true
+	return usage
+}
+
+// MeasureProvider counts what is on one account, for the backends that can only
+// answer that question by counting (see provider.UsageMeasurer).
+//
+// This is the expensive half of the usage figures and the reason it has a call
+// of its own: a bucket is measured by listing it end to end, so it happens when
+// somebody asks for the number and not on the ping that draws the sidebar. The
+// backend keeps what it counted, so every card and panel drawn afterwards shows
+// it without paying again.
+func (v *Vault) MeasureProvider(ctx context.Context, id string) (provider.Usage, error) {
+	v.mu.RLock()
+	if v.dataKey == nil {
+		v.mu.RUnlock()
+		return provider.Usage{}, ErrLocked
+	}
+	var (
+		cfg   provider.Config
+		found bool
+	)
+	for _, c := range v.providers {
+		if c.ID == id {
+			cfg, found = c, true
+			break
+		}
+	}
+	v.mu.RUnlock()
+	if !found {
+		return provider.Usage{}, fmt.Errorf("no connected account with id %s", id)
+	}
+
+	p, err := v.buildProvider(cfg)
+	if err != nil {
+		return provider.Usage{}, err
+	}
+	measurer, ok := p.(provider.UsageMeasurer)
+	if !ok {
+		return provider.Usage{}, fmt.Errorf("%s accounts cannot be counted", cfg.Kind)
+	}
+
+	usage, err := measurer.MeasureUsage(ctx)
+	if err != nil {
+		return provider.Usage{}, err
+	}
+	return withDeclaredCapacity(usage, cfg.Capacity), nil
 }
 
 // ---------------------------------------------------------------------------
