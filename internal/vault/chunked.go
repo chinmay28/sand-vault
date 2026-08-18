@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/chinmay28/sand-vault/internal/archive"
 	"github.com/chinmay28/sand-vault/internal/crypto"
@@ -314,12 +315,8 @@ func (v *Vault) gatherChunk(ctx context.Context, entry *Entry, index int, config
 	fetchCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	type getResult struct {
-		part int
-		blob []byte
-		err  error
-	}
-	results := make(chan getResult, len(entry.Shards))
+	results := make(chan shardFetch, len(entry.Shards))
+	v.reads.race()
 
 	pending := 0
 	for _, shard := range entry.Shards {
@@ -329,38 +326,48 @@ func (v *Vault) gatherChunk(ctx context.Context, entry *Entry, index int, config
 		}
 		pending++
 		go func(shard Shard, cfg provider.Config) {
+			started := time.Now()
 			p, err := v.buildProvider(cfg)
 			if err != nil {
-				results <- getResult{part: shard.Part, err: fmt.Errorf("part %d: %w", shard.Part, err)}
+				results <- shardFetch{shard: shard, took: time.Since(started),
+					err: fmt.Errorf("part %d: %w", shard.Part, err)}
 				return
 			}
 			blob, err := p.Get(fetchCtx, ChunkShardKey(entry.ArchiveID, index, shard.Part))
 			if err != nil {
-				results <- getResult{part: shard.Part, err: fmt.Errorf("part %d from %s: %w", shard.Part, cfg.Name, err)}
+				results <- shardFetch{shard: shard, took: time.Since(started),
+					err: fmt.Errorf("part %d from %s: %w", shard.Part, cfg.Name, err)}
 				return
 			}
-			results <- getResult{part: shard.Part, blob: blob}
+			results <- shardFetch{shard: shard, blob: blob, took: time.Since(started)}
 		}(shard, cfg)
 	}
 
 	held := map[int][]byte{}
 	var failures []string
+	taken := 0
 	for i := 0; i < pending; i++ {
 		r := <-results
+		taken++
 		if r.err != nil {
+			v.reads.record(r, lostOutcome(r))
 			failures = append(failures, r.err.Error())
 			continue
 		}
-		if _, already := held[r.part]; already {
+		if _, already := held[r.shard.Part]; already {
+			v.reads.record(r, shardLate)
 			continue
 		}
-		held[r.part] = r.blob
+		held[r.shard.Part] = r.blob
+		v.reads.record(r, shardWon)
 		if len(held) >= scheme.Data {
 			break
 		}
 	}
+	v.reads.drainLater(results, pending-taken)
 
 	if len(held) < scheme.Data {
+		v.reads.shortfall()
 		return nil, fmt.Errorf("could not gather %d shards for chunk %d of %s (got %d): %s",
 			scheme.Data, index, entry.Path(), len(held),
 			strings.Join(failures, "; "))

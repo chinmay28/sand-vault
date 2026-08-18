@@ -977,6 +977,14 @@ pipe the password on stdin.
   counts what is in the bucket instead, by listing it — once, on the way in, and
   again on request — and *Edit* takes the capacity you know it has, so the two
   together draw the same split every other account gets
+- **Read speed** — beside *Vault settings* at the foot of the sidebar. Opening a
+  file is a race between the accounts holding its shards, and the losers are
+  never mentioned anywhere else, so a cloud can stop pulling its weight without
+  anything looking wrong. This is the scoreboard: races entered and won per
+  account, how long each one's answers take, and what it did when it did not win
+  — arrived too late to be needed, was cut off once enough had arrived, or could
+  not answer at all. Counted by the running server and not stored, so *Start
+  again* is how you measure a change rather than the average since it came up
 - **Connect dialog** — generated from each backend's own field spec, so new
   backends appear without frontend changes
 - **Browser** — folders, breadcrumbs, drag-and-drop upload with progress
@@ -1273,6 +1281,8 @@ those folders, paid where they are listed instead.
 | POST · DELETE | `/api/folders` | Create / delete folders |
 | POST | `/api/folders/move` | Move a folder, and everything under it, `from` one path `to` another |
 | POST | `/api/relocate` | Move a file (`id`) or folder (`path`) onto other `accounts`; `preview` prices it without moving anything |
+| GET | `/api/reads` | Which account is winning the race every read runs, since the server came up |
+| POST | `/api/reads/reset` | Start that counting again |
 | GET | `/api/system/folders?path=` | Folders on this machine, for the folder picker |
 | POST | `/api/archive` · `/api/restore` | Standalone mode |
 

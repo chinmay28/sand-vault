@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/chinmay28/sand-vault/internal/archive"
 	"github.com/chinmay28/sand-vault/internal/crypto"
@@ -511,55 +512,68 @@ func (v *Vault) gather(ctx context.Context, shards []Shard, scheme archive.Schem
 	fetchCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	type getResult struct {
-		part int
-		blob []byte
-		err  error
-	}
-	results := make(chan getResult, len(shards))
+	// Buffered for every shard, so an account that loses the race can still
+	// put down what it found and go: nothing here blocks on a reader that has
+	// already been served, and the tail of the race is recorded off to one
+	// side rather than waited for. See readstats.go.
+	results := make(chan shardFetch, len(shards))
+	v.reads.race()
 
 	for _, shard := range shards {
 		cfg, ok := configs[shard.ProviderID]
 		if !ok {
-			results <- getResult{part: shard.Part, err: fmt.Errorf(
+			results <- shardFetch{shard: shard, err: fmt.Errorf(
 				"part %d: account %q is no longer connected", shard.Part, shard.ProviderName)}
 			continue
 		}
 
 		go func(shard Shard, cfg provider.Config) {
+			started := time.Now()
 			p, err := v.buildProvider(cfg)
 			if err != nil {
-				results <- getResult{part: shard.Part, err: fmt.Errorf("part %d: %w", shard.Part, err)}
+				results <- shardFetch{shard: shard, took: time.Since(started),
+					err: fmt.Errorf("part %d: %w", shard.Part, err)}
 				return
 			}
 			blob, err := p.Get(fetchCtx, shard.Key)
 			if err != nil {
-				results <- getResult{part: shard.Part, err: fmt.Errorf(
+				results <- shardFetch{shard: shard, took: time.Since(started), err: fmt.Errorf(
 					"part %d from %s: %w", shard.Part, cfg.Name, err)}
 				return
 			}
-			results <- getResult{part: shard.Part, blob: blob}
+			results <- shardFetch{shard: shard, blob: blob, took: time.Since(started)}
 		}(shard, cfg)
 	}
 
 	held := map[int][]byte{}
 	var failures []string
+	taken := 0
 	for i := 0; i < len(shards); i++ {
 		r := <-results
+		taken++
 		if r.err != nil {
+			v.reads.record(r, lostOutcome(r))
 			failures = append(failures, r.err.Error())
 			continue
 		}
-		if _, already := held[r.part]; already {
+		if _, already := held[r.shard.Part]; already {
+			v.reads.record(r, shardLate)
 			continue
 		}
-		held[r.part] = r.blob
+		held[r.shard.Part] = r.blob
+		v.reads.record(r, shardWon)
 		if len(held) >= scheme.Data {
 			break
 		}
 	}
+	// Whatever is still in flight now is about to be cancelled by the deferred
+	// cancel above. What each of those accounts does with that — answers
+	// anyway, gives up, or was already failing — is worth recording and is not
+	// worth waiting for.
+	v.reads.drainLater(results, len(shards)-taken)
 
 	if len(held) < scheme.Data {
+		v.reads.shortfall()
 		return nil, fmt.Errorf(
 			"could not gather %d shards for %s (got %d): %s",
 			scheme.Data, label, len(held), strings.Join(failures, "; "))

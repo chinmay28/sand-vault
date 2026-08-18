@@ -107,6 +107,11 @@ type Vault struct {
 	// backupWarned remembers the accounts already reported as holding another
 	// vault's backup, so the warning is said once rather than on every change.
 	backupWarned map[string]bool
+
+	// reads counts which accounts have been winning the race every read runs,
+	// for the process's lifetime. Its own lock, taken alone: recording is on
+	// the read path and must never wait on the index. See readstats.go.
+	reads *readStats
 }
 
 // Open returns a handle to the vault at path. The vault starts locked; if no
@@ -118,6 +123,7 @@ func Open(path string) (*Vault, error) {
 		chunkSize: archive.DefaultChunkSize,
 		chunks:    newChunkCache(DefaultChunkCacheBytes),
 		flight:    newChunkFlight(),
+		reads:     newReadStats(),
 	}
 	v.backupIdle.L = &v.backupMu
 
