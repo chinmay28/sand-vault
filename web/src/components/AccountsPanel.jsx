@@ -5,6 +5,7 @@ import { Banner, Button, IconButton, Spinner } from './ui'
 import CloudStats, { UsageBar, UsageLine, usageBreakdown } from './CloudStats'
 import ConnectCloud, { pendingOAuthFlow } from './ConnectCloud'
 import EditAccount from './EditAccount'
+import { DisconnectIcon, EditIcon, StatsIcon, TestIcon } from './Icons'
 import ReclaimVault from './ReclaimVault'
 import VaultSettings from './VaultSettings'
 import { DevMark } from './Brand'
@@ -544,14 +545,58 @@ function AccountCard({ provider, providers, isDefault, onRemove, onChanged }) {
         )}
       </div>
 
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '8px' }}>
-        <Button size="sm" variant="ghost" onClick={() => setShowing(true)}>Stats</Button>
-        <Button size="sm" variant="ghost" onClick={() => setEditing(true)}>Edit</Button>
-        <Button size="sm" variant="ghost" onClick={test} disabled={testing}>
-          {testing ? <Spinner size={10} /> : null}{testing ? 'Testing' : 'Test'}
-        </Button>
-        <Button size="sm" variant="ghost" onClick={onRemove}
-          style={{ color: COLORS.error }}>Disconnect</Button>
+      {/* Four words in a row, all of them bare text, one of them destructive:
+          the only thing separating "Test" from "Disconnect" was a gap the width
+          of a space. They are real buttons now, sharing the card's width — but
+          the drawer is only 286px wide, and four labels with an icon beside
+          each would need half again as much. So the icon sits above its word
+          instead: the tile ends up narrower than the label-and-icon row it
+          replaces, and taller, which is the shape a fingertip wants anyway.
+
+          Disconnect keeps the red outline the app uses everywhere for a step
+          that cannot be taken back, and stands off from the other three by a
+          wider gap than they leave between themselves. */}
+      <div style={{ display: 'flex', gap: '5px', marginTop: '10px' }}>
+        {[
+          { key: 'stats', label: 'Stats', icon: <StatsIcon size={15} />, onClick: () => setShowing(true) },
+          { key: 'edit', label: 'Edit', icon: <EditIcon size={15} />, onClick: () => setEditing(true) },
+          {
+            key: 'test',
+            label: testing ? 'Testing' : 'Test',
+            icon: testing ? <Spinner size={13} /> : <TestIcon size={15} />,
+            onClick: test,
+            disabled: testing,
+          },
+          {
+            key: 'disconnect',
+            label: 'Disconnect',
+            icon: <DisconnectIcon size={15} />,
+            onClick: onRemove,
+            variant: 'danger',
+            apart: true,
+          },
+        ].map((action) => (
+          <Button
+            key={action.key}
+            size="sm"
+            variant={action.variant}
+            onClick={action.onClick}
+            disabled={action.disabled}
+            style={{
+              /* Grow to fill the row, never shrink below the word inside —
+                 "Disconnect" is twice the length of "Edit" and takes the width
+                 it needs, rather than every tile being cut to its size. */
+              flex: '1 0 auto',
+              flexDirection: 'column',
+              justifyContent: 'center',
+              gap: '4px',
+              padding: '7px 5px',
+              fontSize: '9px',
+              letterSpacing: '0.4px',
+              marginLeft: action.apart ? '5px' : undefined,
+            }}
+          >{action.icon}{action.label}</Button>
+        ))}
       </div>
 
       {showing && (
