@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chinmay28/sand-vault/internal/archive"
 	"github.com/chinmay28/sand-vault/internal/thumb"
 	"github.com/chinmay28/sand-vault/internal/vault"
 )
@@ -127,6 +128,11 @@ func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	overwrite := r.FormValue("overwrite") == "true" || r.FormValue("overwrite") == "1"
 	accounts := formAccounts(r)
+	scheme, err := formScheme(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "BAD_SCHEME")
+		return
+	}
 
 	uploads := r.MultipartForm.File["files[]"]
 	if len(uploads) == 0 {
@@ -160,6 +166,7 @@ func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 		entry, warnings, err := v.UploadStreamAt(ctx, scope, dir, fh.Filename, f, fh.Size, vault.UploadOptions{
 			Overwrite: overwrite,
 			Accounts:  accounts,
+			Scheme:    scheme,
 		})
 		f.Close()
 		result.Warnings = warnings
@@ -192,6 +199,27 @@ func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusBadGateway
 	}
 	writeJSON(w, status, map[string]any{"results": results, "stored": stored})
+}
+
+// parseSchemeField reads a "k-of-n" scheme out of a JSON field, treating empty
+// as "no choice made" rather than as a malformed one.
+func parseSchemeField(raw string) (archive.Scheme, error) {
+	if strings.TrimSpace(raw) == "" {
+		return archive.Scheme{}, nil
+	}
+	return archive.ParseScheme(strings.TrimSpace(raw))
+}
+
+// formScheme reads the erasure code an upload chose to be cut with, written the
+// way a person writes one: "2-of-3", "3-of-5", "6-of-10". Absent or empty, how
+// many accounts were chosen settles it, which is what almost every upload
+// wants.
+func formScheme(r *http.Request) (archive.Scheme, error) {
+	raw := strings.TrimSpace(r.FormValue("scheme"))
+	if raw == "" {
+		return archive.Scheme{}, nil
+	}
+	return archive.ParseScheme(raw)
 }
 
 // formAccounts reads the accounts an upload chose to spread over. The field
@@ -353,9 +381,15 @@ type relocateRequest struct {
 	Path string `json:"path"`
 
 	// Accounts is where the shards should end up, and how many are named settles
-	// the scheme. Naming a different *count* from the one the file is on now
-	// changes its code, which rebuilds the file rather than moving it.
+	// the scheme unless Scheme names one. Ending up under a different code from
+	// the one a file is on now rebuilds it rather than moving it.
 	Accounts []string `json:"accounts"`
+
+	// Scheme is the code the files should end up cut with, written "k-of-n".
+	// Empty leaves it to the count of accounts, which names one only for the
+	// default family — so moving onto five clouds has to say what five clouds
+	// means, and moving onto six need not.
+	Scheme string `json:"scheme,omitempty"`
 
 	// Preview asks what the move would do without doing any of it. The answer
 	// comes out of the index alone, so it costs nothing and no account is
@@ -397,10 +431,16 @@ func (s *Server) handleRelocate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	scheme, err := parseSchemeField(req.Scheme)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "BAD_SCHEME")
+		return
+	}
+
 	v, _ := s.Vault()
 
 	if req.Preview {
-		plan, err := v.PlanRelocation(vault.Scope(req.Vault), target, req.Accounts)
+		plan, err := v.PlanRelocation(vault.Scope(req.Vault), target, req.Accounts, scheme)
 		if err != nil {
 			vaultErrorResponse(w, err)
 			return
@@ -412,7 +452,7 @@ func (s *Server) handleRelocate(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := contextWithTimeout(r, relocateTimeout)
 	defer cancel()
 
-	report, err := v.Relocate(ctx, vault.Scope(req.Vault), target, req.Accounts, nil)
+	report, err := v.Relocate(ctx, vault.Scope(req.Vault), target, req.Accounts, scheme, nil)
 	if err != nil {
 		vaultErrorResponse(w, err)
 		return

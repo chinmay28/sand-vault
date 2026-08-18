@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
+	"github.com/chinmay28/sand-vault/internal/archive"
 	"github.com/chinmay28/sand-vault/internal/vault"
 )
 
@@ -172,6 +173,7 @@ func putCmd() *cobra.Command {
 		dest      string
 		overwrite bool
 		accounts  []string
+		scheme    string
 	)
 
 	cmd := &cobra.Command{
@@ -189,6 +191,10 @@ func putCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			cut, err := parseSchemeFlag(scheme)
+			if err != nil {
+				return err
+			}
 
 			ctx := context.Background()
 			for _, path := range args {
@@ -200,6 +206,7 @@ func putCmd() *cobra.Command {
 				entry, warnings, err := v.Upload(ctx, scope, dest, filepath.Base(path), data, vault.UploadOptions{
 					Overwrite: overwrite,
 					Accounts:  chosen,
+					Scheme:    cut,
 				})
 				if err != nil {
 					return fmt.Errorf("uploading %s: %w", path, err)
@@ -216,8 +223,20 @@ func putCmd() *cobra.Command {
 	cmd.Flags().StringVar(&dest, "path", "/", "destination folder inside the vault")
 	cmd.Flags().BoolVar(&overwrite, "overwrite", false, "replace an existing file with the same name")
 	cmd.Flags().StringSliceVar(&accounts, "accounts", nil,
-		"accounts to scatter these files over, by name or id — any multiple of 3, which chooses 2m-of-3m (default: the vault's, or three at random)")
+		"accounts to scatter these files over, by name or id (default: the vault's, or three at random)")
+	cmd.Flags().StringVar(&scheme, "scheme", "",
+		"the code to cut with, k-of-n — 3-of-5, 6-of-10 (default: 2m-of-3m, from how many accounts were named)")
 	return cmd
+}
+
+// parseSchemeFlag reads a --scheme value. Empty is not a malformed scheme but
+// the absence of a choice, which leaves the code to how many accounts were
+// named.
+func parseSchemeFlag(raw string) (archive.Scheme, error) {
+	if strings.TrimSpace(raw) == "" {
+		return archive.Scheme{}, nil
+	}
+	return archive.ParseScheme(strings.TrimSpace(raw))
 }
 
 // resolveAccountNames turns what someone typed on the command line into
@@ -446,6 +465,7 @@ func moveFolderTo(v *vault.Vault, scope vault.Scope, from, target string) error 
 func relocateCmd() *cobra.Command {
 	var (
 		accounts []string
+		scheme   string
 		dryRun   bool
 	)
 
@@ -488,8 +508,12 @@ repeat — run it again and it moves whatever is still in the wrong place.
 			if err != nil {
 				return err
 			}
+			cut, err := parseSchemeFlag(scheme)
+			if err != nil {
+				return err
+			}
 
-			plan, err := v.PlanRelocation(scope, args[0], chosen)
+			plan, err := v.PlanRelocation(scope, args[0], chosen, cut)
 			if err != nil {
 				return err
 			}
@@ -502,11 +526,14 @@ repeat — run it again and it moves whatever is still in the wrong place.
 				printWarnings(plan.Warnings)
 				return nil
 			}
-			if plan.Moves == 0 && plan.Drops == 0 {
+			// Recoded counts too: a file whose scheme is changing has no shard
+			// to move, so a move that is only a recode would otherwise stop
+			// here having printed a plan it never carried out.
+			if plan.Moves == 0 && plan.Drops == 0 && plan.Recoded == 0 {
 				return nil
 			}
 
-			report, err := v.Relocate(cmd.Context(), scope, args[0], chosen, progressLine)
+			report, err := v.Relocate(cmd.Context(), scope, args[0], chosen, cut, progressLine)
 			clearProgressLine()
 			printWarnings(report.Warnings)
 			if err != nil {
@@ -527,7 +554,9 @@ repeat — run it again and it moves whatever is still in the wrong place.
 	}
 
 	cmd.Flags().StringSliceVar(&accounts, "accounts", nil,
-		"the accounts to move onto, by name or id — any multiple of 3; changing the count changes the scheme, which rebuilds the file")
+		"the accounts to move onto, by name or id; ending up under another scheme rebuilds the file")
+	cmd.Flags().StringVar(&scheme, "scheme", "",
+		"the code to end up cut with, k-of-n — 3-of-5, 6-of-10 (default: 2m-of-3m, from how many accounts were named)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "say what would move, and move nothing")
 	return cmd
 }

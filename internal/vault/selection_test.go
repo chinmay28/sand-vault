@@ -358,7 +358,7 @@ func TestSelectAccountsFillsInFromWhatIsConnected(t *testing.T) {
 	available := []string{"a", "b", "c", "d", "e"}
 
 	// A stale preference is dropped and made up from the rest.
-	chosen := SelectAccounts(available, []string{"gone", "b"}, 7)
+	chosen := SelectAccounts(available, []string{"gone", "b"}, 0, 7)
 	if len(chosen) != AccountsPerFile {
 		t.Fatalf("chose %v, want %d accounts", chosen, AccountsPerFile)
 	}
@@ -375,13 +375,13 @@ func TestSelectAccountsFillsInFromWhatIsConnected(t *testing.T) {
 
 	// Fewer accounts than a file has parts is not an error here: strict
 	// placement is what refuses it, with an explanation.
-	if got := SelectAccounts([]string{"a"}, nil, 1); len(got) != 1 {
+	if got := SelectAccounts([]string{"a"}, nil, 0, 1); len(got) != 1 {
 		t.Errorf("chose %v from one connected account, want just it", got)
 	}
 
 	// The same file always chooses the same way, whatever else has run.
-	first := SelectAccounts(available, nil, 42)
-	second := SelectAccounts(available, nil, 42)
+	first := SelectAccounts(available, nil, 0, 42)
+	second := SelectAccounts(available, nil, 0, 42)
 	if strings.Join(first, ",") != strings.Join(second, ",") {
 		t.Errorf("same seed chose %v then %v", first, second)
 	}

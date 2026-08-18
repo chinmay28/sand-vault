@@ -219,7 +219,7 @@ func TestOpenReaderRefusesAWholeFileEntry(t *testing.T) {
 	v, _ := newTestVault(t, 3)
 	ctx := context.Background()
 
-	placed, err := v.scatter(ctx, MainScope, "legacy.txt", []byte("stored whole"), nil, false)
+	placed, err := v.scatter(ctx, MainScope, "legacy.txt", []byte("stored whole"), spread{})
 	if err != nil {
 		t.Fatalf("scatter: %v", err)
 	}
@@ -405,7 +405,7 @@ func TestReadingAWholeFileEntryLeavesItAlone(t *testing.T) {
 func addWholeEntry(t *testing.T, v *Vault, id, name string, payload []byte) *Entry {
 	t.Helper()
 
-	placed, err := v.scatter(context.Background(), MainScope, name, payload, nil, false)
+	placed, err := v.scatter(context.Background(), MainScope, name, payload, spread{})
 	if err != nil {
 		t.Fatalf("scatter: %v", err)
 	}
@@ -441,7 +441,7 @@ func TestOpenReadSeekerRefusesAPreChunkingFile(t *testing.T) {
 	}
 
 	wholePayload := readerPayload(3000)
-	placed, err := v.scatter(ctx, MainScope, "whole.bin", wholePayload, nil, false)
+	placed, err := v.scatter(ctx, MainScope, "whole.bin", wholePayload, spread{})
 	if err != nil {
 		t.Fatalf("scatter: %v", err)
 	}

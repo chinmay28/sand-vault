@@ -51,8 +51,8 @@ func (v *Vault) uploadChunkSize() uint32 {
 // failure it erases what it wrote rather than leaving orphans behind. The
 // placement decision is made once, before the first chunk, because which
 // accounts may hold a file is a property of the file and not of its pieces.
-func (v *Vault) scatterChunked(ctx context.Context, scope Scope, name string, data []byte, preferred []string, exact bool, chunkSize uint32) (placement, error) {
-	target, err := v.snapshotTarget(scope, preferred, exact)
+func (v *Vault) scatterChunked(ctx context.Context, scope Scope, name string, data []byte, sp spread, chunkSize uint32) (placement, error) {
+	target, err := v.snapshotTarget(scope, sp)
 	if err != nil {
 		return placement{}, err
 	}

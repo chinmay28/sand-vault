@@ -289,7 +289,7 @@ export default function FileBrowser({
     setPending(files)
   }, [canUpload, onError])
 
-  const uploadFiles = useCallback(async (files, accounts) => {
+  const uploadFiles = useCallback(async (files, accounts, scheme = '') => {
     const batch = { id: Math.random().toString(36).slice(2), names: [...files].map((f) => f.name), progress: 0 }
     setUploads((prev) => [...prev, batch])
 
@@ -303,6 +303,7 @@ export default function FileBrowser({
       const resp = await api.upload(files, path, {
         vault,
         accounts,
+        scheme,
         thumbs: thumbnails,
         onProgress: (fraction) => setUploads((prev) =>
           prev.map((u) => (u.id === batch.id ? { ...u, progress: fraction } : u))),
@@ -606,7 +607,7 @@ export default function FileBrowser({
           defaults={defaultAccounts}
           onClose={() => setPending(null)}
           onChanged={onRefresh}
-          onUpload={(accounts) => { setPending(null); uploadFiles(pending, accounts) }}
+          onUpload={(accounts, scheme) => { setPending(null); uploadFiles(pending, accounts, scheme) }}
         />
       )}
 

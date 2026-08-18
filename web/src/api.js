@@ -196,8 +196,12 @@ export const api = {
      copied — swapping one cloud out of three moves one part, not the file — so
      `preview` is worth asking first: it answers out of the index alone, without
      contacting a single account, and says exactly how much would travel. */
-  relocate: ({ id, path, accounts, preview = false, vault = '', signal } = {}) =>
-    request('/api/relocate', { method: 'POST', body: { id, path, accounts, preview, vault }, signal }),
+  relocate: ({ id, path, accounts, scheme = '', preview = false, vault = '', signal } = {}) =>
+    request('/api/relocate', {
+      method: 'POST',
+      body: { id, path, accounts, scheme, preview, vault },
+      signal,
+    }),
 
   createFolder: (path, vault = '') =>
     request('/api/folders', { method: 'POST', body: { path, vault } }),
@@ -370,7 +374,9 @@ export const api = {
 
   /* Uploads go through XMLHttpRequest rather than fetch so the UI can show
      real progress while a large file is being split and scattered. */
-  upload(files, path, { overwrite = false, accounts = [], thumbs = [], vault = '', onProgress } = {}) {
+  upload(files, path, {
+    overwrite = false, accounts = [], scheme = '', thumbs = [], vault = '', onProgress,
+  } = {}) {
     return new Promise((resolve, reject) => {
       const form = new FormData()
       Array.from(files).forEach((file, i) => {
@@ -386,6 +392,9 @@ export const api = {
          either, and this way an ID is never mistaken for a list. Sending none
          leaves the choice to the vault's default. */
       for (const id of accounts) form.append('accounts', id)
+      // Empty means no choice was made, and the count of accounts settles the
+      // code the way it always did.
+      if (scheme) form.append('scheme', scheme)
 
       const xhr = new XMLHttpRequest()
       xhr.open('POST', vault ? `/api/files?vault=${encodeURIComponent(vault)}` : '/api/files')
