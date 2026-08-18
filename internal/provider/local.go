@@ -18,7 +18,9 @@ func init() {
 		Kind:        KindLocal,
 		Label:       "Local folder",
 		Description: "A directory on this machine or a mounted network/removable drive. Useful as an offline third leg alongside two cloud accounts.",
-		Order:       31,
+		// Last in the dialog: it is the one that names no service, and the
+		// answer when none of the others fit.
+		Order: 40,
 		Fields: []FieldSpec{
 			{
 				Key:         "path",

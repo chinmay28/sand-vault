@@ -408,17 +408,32 @@ function settingsOnly(spec, values) {
   return out
 }
 
+/* A backend that asks for nothing but folders is a different kind of thing to
+   connect: no account, no keys, just somewhere on the machine SAND runs on
+   that something else keeps in step. Read off the spec rather than listed by
+   name, so a backend added to the registry lands in the right section without
+   this file knowing it exists. */
+const isFolderBackend = (spec) =>
+  spec.fields?.length > 0 && spec.fields.every((field) => field.directory)
+
 function ProviderPicker({ specs, onChoose }) {
   const signIn = specs.filter((s) => s.oauth)
   const manual = specs.filter((s) => !s.oauth)
+  const credentials = manual.filter((s) => !isFolderBackend(s))
+  const folders = manual.filter(isFolderBackend)
 
   return (
     <>
       {signIn.length > 0 && <PickerHeading>Sign in with your account</PickerHeading>}
       {signIn.map((spec) => <ProviderCard key={spec.kind} spec={spec} onChoose={onChoose} />)}
 
-      {manual.length > 0 && <PickerHeading>Connect with credentials or a path</PickerHeading>}
-      {manual.map((spec) => <ProviderCard key={spec.kind} spec={spec} onChoose={onChoose} />)}
+      {credentials.length > 0 && <PickerHeading>Connect with credentials</PickerHeading>}
+      {credentials.map((spec) => <ProviderCard key={spec.kind} spec={spec} onChoose={onChoose} />)}
+
+      {folders.length > 0 && (
+        <PickerHeading>Point at a folder on this machine</PickerHeading>
+      )}
+      {folders.map((spec) => <ProviderCard key={spec.kind} spec={spec} onChoose={onChoose} />)}
     </>
   )
 }

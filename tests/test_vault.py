@@ -131,7 +131,8 @@ class TestVaultLifecycle:
         specs = requests.get(f"{server}/api/providers/specs", timeout=10).json()["specs"]
         kinds = {s["kind"] for s in specs}
         assert {"local", "s3", "webdav", "gdrive", "dropbox",
-                "onedrive", "box", "icloud", "proton"} <= kinds
+                "onedrive", "box", "icloud", "proton", "mega", "jottacloud",
+                "synccom", "tresorit", "icedrive"} <= kinds
         for spec in specs:
             assert spec["label"] and spec["description"]
             assert isinstance(spec["fields"], list)
@@ -149,8 +150,9 @@ class TestVaultLifecycle:
             assert oauth["configured"] is False
 
         assert by_kind["local"].get("oauth") is None
-        assert by_kind["proton"].get("oauth") is None
-        assert by_kind["icloud"].get("oauth") is None
+        for kind in ("proton", "icloud", "mega", "jottacloud", "synccom",
+                     "tresorit", "icedrive"):
+            assert by_kind[kind].get("oauth") is None, kind
 
         # The token endpoints and app credentials stay on the server.
         raw = requests.get(f"{server}/api/providers/specs", timeout=10).text
@@ -819,7 +821,8 @@ class TestCLI:
     def test_remote_kinds_documents_every_backend(self, sand_bin, vault_dir):
         result = cli(sand_bin, vault_dir, "remote", "kinds")
         for kind in ("local", "s3", "webdav", "gdrive", "dropbox",
-                     "onedrive", "box", "icloud", "proton"):
+                     "onedrive", "box", "icloud", "proton", "mega",
+                     "jottacloud", "synccom", "tresorit", "icedrive"):
             assert kind in result.stdout
 
 

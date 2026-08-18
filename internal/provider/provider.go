@@ -30,6 +30,14 @@ const (
 	KindBox      Kind = "box"
 	KindProton   Kind = "proton"
 	KindICloud   Kind = "icloud"
+
+	// The rest of the synced-folder backends, registered from one table in
+	// syncfolder.go.
+	KindMega       Kind = "mega"
+	KindJottacloud Kind = "jottacloud"
+	KindSyncCom    Kind = "synccom"
+	KindTresorit   Kind = "tresorit"
+	KindIcedrive   Kind = "icedrive"
 )
 
 // ErrNotFound is returned by Get and Delete when an object does not exist.

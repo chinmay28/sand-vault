@@ -63,26 +63,62 @@ says where the credentials are minted.
 
 ---
 
-## Tier 1 — a folder some client already syncs (~70 lines)
+## Tier 1 — a folder some client already syncs — **done**
 
-`proton.go` is a `Spec` and a default-path guess, handing the work to
-`newLocalProvider`. The whole backend is a form field. It applies to any
-service with a desktop client and no usable API: the parts are encrypted before
-the client ever sees them, so *"a folder that syncs"* and *"an account that
-answers HTTP"* are the same arrangement from the vault's point of view.
+Applies to any service with a desktop client and no usable API: the parts are
+encrypted before the client ever sees them, so *"a folder that syncs"* and *"an
+account that answers HTTP"* are the same arrangement from the vault's point of
+view.
 
-Shipped this way: **Proton Drive**, **iCloud Drive**.
+All of it now lives in one table in `syncfolder.go` — **Proton Drive**,
+**MEGA**, **Jottacloud**, **Sync.com**, **Tresorit**, **Icedrive** — where a
+service is a dozen lines: a kind, a label, a description, and a function
+guessing where this machine's client put its folder. **iCloud Drive** stayed in
+`icloud.go`, for the reason below. Adding another service means adding a row:
 
-Still open: **Mega**, **Jottacloud**, **Sync.com**, **Tresorit**, **Icedrive**,
-**MediaFire**. Each is a path guesser and a description.
+```go
+{
+    kind:        KindFilen,
+    label:       "Filen",
+    description: "Your Filen folder, kept in step by the Filen desktop app. …",
+    docsURL:     "https://docs.filen.io/",
+    order:       37,
+    fieldLabel:  "Filen folder",
+    fieldHelp:   "A folder inside the one Filen syncs. …",
+    folders: func(home string) []string {
+        return []string{filepath.Join(home, "Filen")}
+    },
+},
+```
 
-The one thing to check per service, and the reason `icloud.go` is 300 lines and
-`proton.go` is 70: **does the client evict?** A client that keeps every synced
-byte on disk needs nothing beyond the local backend. A client that reclaims
-space by replacing a file with a placeholder — iCloud Drive, OneDrive's Files
-On-Demand, Dropbox Smart Sync — hands the vault a folder where a part written
-in March is a stub in June, under a name nobody stored. See "How iCloud Drive
-handles eviction" below for the shape of the fix.
+Everything shared sits around the table: the form is generated from it, the
+default path prefers a folder that actually exists, and `Ping` refuses a folder
+whose *parent* is missing — a folder no client syncs would accept every part
+and upload none of them, which is the one failure mode of this whole tier and
+is invisible until the day the parts are needed.
+
+**MediaFire is deliberately not in the table.** It was on the original list,
+but its desktop sync client was retired years ago, so there is no folder on any
+machine for SAND to write into: a backend for it would be a menu entry that
+cannot be made to work. If a tool appears that presents MediaFire as WebDAV,
+that is the route, and it needs no code here at all.
+
+The one thing to check per service, and the reason `icloud.go` is 300 lines
+where a table row is a dozen: **does the client evict?** A client that keeps
+every synced byte on disk needs nothing beyond the local backend, and so does a
+virtual drive that fetches a file when something reads it — Tresorit Drive and
+Icedrive's mount both behave that way, which is why they are rows rather than
+files. What needs its own backend is a client that reclaims space by replacing
+a file with a placeholder *under a different name* — iCloud Drive, OneDrive's
+Files On-Demand, Dropbox Smart Sync — handing the vault a folder where a part
+written in March is a stub in June under a name nobody stored. See "How iCloud
+Drive handles eviction" below for the shape of the fix.
+
+Still open: **Filen** (which also has an API worth a tier-3 look), **Degoo**,
+and whatever else ships a client but no usable API. Check the service does not
+speak WebDAV first — Infomaniak kDrive and Seafile both do, which makes them
+tier-0 presets rather than rows here, and a preset needs no desktop app on the
+machine at all.
 
 ---
 
@@ -108,7 +144,9 @@ backend is one file: an `OAuthSpec` in the registration, and the six methods
 against the provider's REST API.
 
 - **pCloud** — a real API instead of the WebDAV preset, with quota reporting
-- **Yandex Disk**, **Jottacloud**, **Koofr**, **Egnyte**
+- **Yandex Disk**, **Koofr**, **Egnyte**
+- **Jottacloud** — already connectable as a synced folder; an API backend
+  would drop the desktop-app requirement and report quota
 - **Seafile** — token auth rather than OAuth, self-hosted
 - **SharePoint / Graph document libraries** — mostly `onedrive.go` pointed at a
   different drive ID; opens up work accounts
@@ -142,7 +180,9 @@ adding a backend. In order:
 
 1. **Kind constant** in `internal/provider/provider.go`.
 2. **A file** `internal/provider/<kind>.go` with an `init` that calls
-   `Register(Spec{…}, newXProvider)`. The `Spec` is the connect form: each
+   `Register(Spec{…}, newXProvider)` — or, for a service that is only a synced
+   folder, a row in the `syncFolders` table in `syncfolder.go`, which does the
+   registering for you. The `Spec` is the connect form: each
    `FieldSpec` becomes an input, `Secret` fields are redacted on the way to the
    browser, `Directory` fields get the folder picker, `Advanced` fields hide
    behind a disclosure, and `Presets` become buttons.

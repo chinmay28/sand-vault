@@ -181,6 +181,11 @@ Reads are a race, so a slow or offline account costs you nothing — it just los
 | `webdav` | Nextcloud, ownCloud, pCloud, Koofr, Fastmail, anything behind `rclone serve webdav` | URL, username, app password |
 | `icloud` | iCloud Drive, through the folder macOS or iCloud for Windows syncs | A path |
 | `proton` | Proton Drive, through the folder its desktop app syncs | A path |
+| `mega` | MEGA, through the folder its desktop app syncs | A path |
+| `jottacloud` | Jottacloud, through the folder its desktop app syncs | A path |
+| `synccom` | Sync.com, through the folder its desktop app syncs | A path |
+| `tresorit` | Tresorit, through a synced tresor or Tresorit Drive | A path |
+| `icedrive` | Icedrive, through a synced folder or its mounted drive | A path |
 | `local` | Any directory — external disk, NAS mount, sync folder | A path |
 
 All of them are built on the standard library — SigV4 signing, OAuth and
@@ -203,21 +208,27 @@ for adding one.
 > [Local folders on the systemd
 > service](#local-folders-on-the-systemd-service).
 
-> **The three backends that take a path** — `local`, `icloud` and `proton` —
-> are pointed at one rather than told it: the field has a **Browse…** button
-> that walks the folders of the machine SAND is running on, opening at the
-> first folder it can actually read — home, or the vault's own directory when
-> the service's sandbox denies `/home` — with the mount roots a drive turns up
-> under one tap away. That machine is rarely the one you are holding, which is
-> the whole problem with typing the path from memory on a phone. The
-> folder does not have to exist yet — name a new one inside the folder you
-> picked, and connecting creates it.
+> **The backends that take a path** — `local`, and the seven services whose
+> folders a desktop client syncs — are pointed at one rather than told it: the
+> field has a **Browse…** button that walks the folders of the machine SAND is
+> running on, opening at the first folder it can actually read — home, or the
+> vault's own directory when the service's sandbox denies `/home` — with the
+> mount roots a drive turns up under one tap away. That machine is rarely the
+> one you are holding, which is the whole problem with typing the path from
+> memory on a phone. The folder does not have to exist yet — name a new one
+> inside the folder you picked, and connecting creates it.
 
-> **Proton Drive** publishes no API. SAND writes its parts into the folder the
-> Proton Drive desktop app syncs, which is the same arrangement as any other
-> account: the parts are encrypted before Proton ever sees them. On a headless
-> box, run rclone's Proton Drive backend behind `rclone serve webdav` and
-> connect that as `webdav`.
+> **Proton Drive, MEGA, Jottacloud, Sync.com, Tresorit and Icedrive** publish
+> no API a third party can use. What they have is a desktop app that keeps a
+> folder on this machine in step with the account, and that folder is the way
+> in: SAND writes its parts there, already encrypted, and the app carries them
+> up. It is the same arrangement as any other account — a place holding one
+> fragment, able to do nothing with it — and it needs the app installed and
+> signed in on the machine SAND runs on. Connecting a folder whose parent does
+> not exist is refused rather than created, because a folder no app syncs would
+> accept every part and upload none of them. On a headless box, several of
+> these have an rclone backend that `rclone serve webdav` will put behind a URL
+> you can connect as `webdav` instead.
 
 > **iCloud Drive** publishes no API either, and is the same arrangement: SAND
 > writes its parts, already encrypted, into the folder the Mac — or the iCloud
