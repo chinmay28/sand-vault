@@ -259,7 +259,7 @@ func TestWholeFileEntriesAreStillReadable(t *testing.T) {
 	ctx := context.Background()
 
 	payload := []byte("stored the way the old build stored things")
-	placed, err := v.scatter(ctx, MainScope, "legacy.txt", payload, nil, false)
+	placed, err := v.scatter(ctx, MainScope, "legacy.txt", payload, spread{})
 	if err != nil {
 		t.Fatalf("scatter: %v", err)
 	}

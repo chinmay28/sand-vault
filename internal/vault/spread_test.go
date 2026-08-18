@@ -456,7 +456,7 @@ func TestSelectAccountsRefillsToASchemeWidth(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := SelectAccounts(available, tc.preferred, 7)
+			got := SelectAccounts(available, tc.preferred, 0, 7)
 			if len(got) != tc.want {
 				t.Fatalf("SelectAccounts chose %d accounts (%v), want %d", len(got), got, tc.want)
 			}
@@ -479,7 +479,7 @@ func TestSelectAccountsRefillsToASchemeWidth(t *testing.T) {
 // Nothing can be filled in that is not connected, so a preference wider than
 // the vault falls back to the widest scheme that fits.
 func TestSelectAccountsCannotExceedWhatIsConnected(t *testing.T) {
-	got := SelectAccounts([]string{"a", "b", "c", "d"}, []string{"a", "b", "c", "d"}, 3)
+	got := SelectAccounts([]string{"a", "b", "c", "d"}, []string{"a", "b", "c", "d"}, 0, 3)
 	if len(got) != AccountsPerFile {
 		t.Errorf("SelectAccounts chose %d accounts (%v), want %d", len(got), got, AccountsPerFile)
 	}
@@ -637,7 +637,7 @@ func TestRelocatingToTwelveCloudsRecodes(t *testing.T) {
 		t.Fatalf("Upload: %v", err)
 	}
 
-	plan, err := v.PlanRelocation(MainScope, entry.ID, ids)
+	plan, err := v.PlanRelocation(MainScope, entry.ID, ids, archive.Scheme{})
 	if err != nil {
 		t.Fatalf("PlanRelocation: %v", err)
 	}
@@ -648,7 +648,7 @@ func TestRelocatingToTwelveCloudsRecodes(t *testing.T) {
 		t.Errorf("plan targets %s, want 8-of-12", plan.Files[0].To)
 	}
 
-	if _, err := v.Relocate(ctx, MainScope, entry.ID, ids, nil); err != nil {
+	if _, err := v.Relocate(ctx, MainScope, entry.ID, ids, archive.Scheme{}, nil); err != nil {
 		t.Fatalf("Relocate: %v", err)
 	}
 	after := v.manifest.ByID(entry.ID)

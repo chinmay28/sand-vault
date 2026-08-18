@@ -55,7 +55,7 @@ func PlanChunks(archiveID [16]byte, filename string, originalHash [32]byte, orig
 	if chunkSize == 0 {
 		return ChunkPlan{}, fmt.Errorf("chunk size must not be zero")
 	}
-	if err := scheme.check(); err != nil {
+	if err := scheme.Check(); err != nil {
 		return ChunkPlan{}, err
 	}
 
@@ -144,7 +144,7 @@ func EncodeChunk(plan ChunkPlan, index uint32, plaintext, master []byte) (*Encod
 			index, plan.ChunkCount, want, len(plaintext))
 	}
 
-	if err := plan.Scheme.check(); err != nil {
+	if err := plan.Scheme.Check(); err != nil {
 		return nil, err
 	}
 

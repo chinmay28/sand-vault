@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/chinmay28/sand-vault/internal/archive"
 	"github.com/chinmay28/sand-vault/internal/crypto"
 )
 
@@ -356,7 +357,9 @@ func (v *Vault) MigrateFilesIn(ctx context.Context, scope Scope, accounts []stri
 			break
 		}
 
-		path, size, warnings, err := v.migrateFile(ctx, scope, id, accounts)
+		// No scheme: re-encrypting keeps each file cut the way it already is,
+		// whatever that is.
+		path, size, warnings, err := v.migrateFile(ctx, scope, id, accounts, archive.Scheme{})
 		report.Warnings = append(report.Warnings, warnings...)
 		switch {
 		case errors.Is(err, ErrLocked):
@@ -399,9 +402,17 @@ func (v *Vault) MigrateFilesIn(ctx context.Context, scope Scope, accounts []stri
 // accounts, when given, is where the new shards go — followed exactly, since it
 // is a choice somebody made rather than a default to top up.
 //
+// scheme, when given, is the code to cut the file with, and giving one is what
+// makes this a recode. Left at its zero value the file keeps the code it is
+// already cut with, which is what every reason other than a recode wants: a
+// password change re-seals a 3-of-5 file as a 3-of-5 file. That has to be said
+// rather than inferred, because inferring it from the account count would round
+// five accounts up to the default family's six and change the file's scheme
+// behind a rotation that was only supposed to change its key.
+//
 // scope is which of the vaults inside the file the entry belongs to, since an
 // assignment can leave one naming a key generation that is not this vault's.
-func (v *Vault) migrateFile(ctx context.Context, scope Scope, id string, accounts []string) (path string, size int64, warnings []string, err error) {
+func (v *Vault) migrateFile(ctx context.Context, scope Scope, id string, accounts []string, scheme archive.Scheme) (path string, size int64, warnings []string, err error) {
 	v.mu.RLock()
 	m, err := v.manifestForLocked(scope)
 	if err != nil {
@@ -441,12 +452,21 @@ func (v *Vault) migrateFile(ctx context.Context, scope Scope, id string, account
 			current = append(current, s.ProviderID)
 		}
 	}
+	// Only when nobody named accounts. A named set is a deliberate placement
+	// choice and the count of it settles the code the way an upload's does —
+	// which is what reclaiming a recovered vault onto three accounts means, and
+	// it has to be free to narrow a 4-of-6 file to 2-of-3 in the process. Left
+	// alone, the file goes back exactly as it was.
+	if scheme == (archive.Scheme{}) && !exact {
+		scheme = stale.Scheme()
+	}
 
 	// Re-encrypting writes the current format, so a file stored whole before
 	// chunking existed comes back chunked. That is the cheapest moment to do it:
 	// the file has already been gathered and is about to be scattered again, so
 	// changing format costs nothing beyond what the re-encryption was paying.
-	placed, err := v.scatterChunked(ctx, scope, name, data, current, exact, v.uploadChunkSize())
+	placed, err := v.scatterChunked(ctx, scope, name, data,
+		spread{preferred: current, exact: exact, scheme: scheme}, v.uploadChunkSize())
 	warnings = placed.warnings
 	if err != nil {
 		return path, 0, warnings, fmt.Errorf("re-encoding %s: %w", path, err)

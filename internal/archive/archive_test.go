@@ -757,3 +757,138 @@ func TestRoundTrip_VaryingSizes(t *testing.T) {
 		})
 	}
 }
+
+// A scheme is k of n, and from format 4 on that is what the header says rather
+// than what the build assumes. These are the tests for the numbers themselves:
+// which pairs SAND will write, how they are read back off a string, and what
+// the three columns of the tradeoff come to.
+
+func TestSchemeOfAcceptsAnyCodeTheCoderCanBuild(t *testing.T) {
+	for _, s := range []Scheme{
+		{Data: 2, Total: 3},
+		{Data: 2, Total: 5},
+		{Data: 3, Total: 5},
+		{Data: 6, Total: 10},
+		{Data: 4, Total: 4}, // no parity at all is a code, just not a redundant one
+		{Data: 2, Total: MaxAccounts},
+		{Data: MaxAccounts, Total: MaxAccounts},
+	} {
+		if _, err := SchemeOf(s.Data, s.Total); err != nil {
+			t.Errorf("SchemeOf(%d, %d): %v", s.Data, s.Total, err)
+		}
+	}
+}
+
+func TestSchemeOfRefusesWhatWouldNotBeSplitting(t *testing.T) {
+	for _, tc := range []struct {
+		data, total int
+		want        string
+	}{
+		{1, 3, "at least 2 shards"}, // one account would hold the whole file
+		{0, 3, "at least 2 shards"}, // the zero value of an old index row
+		{4, 3, "more shards to rebuild than it makes"},
+		{2, MaxAccounts + 1, "counts to"},
+	} {
+		_, err := SchemeOf(tc.data, tc.total)
+		if err == nil {
+			t.Fatalf("SchemeOf(%d, %d) was accepted", tc.data, tc.total)
+		}
+		if !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("SchemeOf(%d, %d) = %q, want it to mention %q", tc.data, tc.total, err, tc.want)
+		}
+	}
+}
+
+func TestParseSchemeRoundTripsString(t *testing.T) {
+	for _, s := range []Scheme{
+		SchemeDefault, SchemeWide, SchemeWider,
+		{Data: 2, Total: 5}, {Data: 6, Total: 10}, {Data: 20, Total: 30},
+	} {
+		got, err := ParseScheme(s.String())
+		if err != nil {
+			t.Fatalf("ParseScheme(%q): %v", s, err)
+		}
+		if got != s {
+			t.Errorf("ParseScheme(%q) = %s", s, got)
+		}
+	}
+}
+
+func TestParseSchemeRefusesWhatIsNotOne(t *testing.T) {
+	for _, raw := range []string{"", "3", "3of5", "3-of-", "-of-5", "3-of-five", "3/5", "1-of-3", "9-of-3"} {
+		if got, err := ParseScheme(raw); err == nil {
+			t.Errorf("ParseScheme(%q) = %s, want an error", raw, got)
+		}
+	}
+}
+
+func TestSchemeTradeoffColumns(t *testing.T) {
+	for _, tc := range []struct {
+		scheme    Scheme
+		storage   float64
+		tolerance int
+		family    bool
+	}{
+		{Scheme{Data: 2, Total: 3}, 1.5, 1, true},
+		{Scheme{Data: 3, Total: 5}, 5.0 / 3, 2, false},
+		{Scheme{Data: 2, Total: 5}, 2.5, 3, false},
+		{Scheme{Data: 6, Total: 9}, 1.5, 3, true},
+		{Scheme{Data: 6, Total: 10}, 10.0 / 6, 4, false},
+	} {
+		if got := tc.scheme.Storage(); got != tc.storage {
+			t.Errorf("%s stores %g×, want %g×", tc.scheme, got, tc.storage)
+		}
+		if got := tc.scheme.Tolerance(); got != tc.tolerance {
+			t.Errorf("%s survives %d losses, want %d", tc.scheme, got, tc.tolerance)
+		}
+		if got := tc.scheme.Family(); got != tc.family {
+			t.Errorf("%s.Family() = %v, want %v", tc.scheme, got, tc.family)
+		}
+	}
+}
+
+func TestOffFamilySchemesRoundTripThroughAChunk(t *testing.T) {
+	// The coder and the format have taken any k of n since version 4; this is
+	// the check that a chunk cut outside the default family comes back from
+	// exactly k of its shards, parity ones included.
+	for _, scheme := range []Scheme{
+		{Data: 2, Total: 5},
+		{Data: 3, Total: 5},
+		{Data: 6, Total: 10},
+	} {
+		t.Run(scheme.String(), func(t *testing.T) {
+			master := bytes.Repeat([]byte{0x5a}, 32)
+			payload := make([]byte, 40_000)
+			if _, err := rand.Read(payload); err != nil {
+				t.Fatalf("rand: %v", err)
+			}
+
+			var archiveID [16]byte
+			copy(archiveID[:], "off-family-abcde")
+			var hash [32]byte
+
+			plan, err := PlanChunks(archiveID, "x.bin", hash, uint64(len(payload)), uint32(len(payload)), scheme)
+			if err != nil {
+				t.Fatalf("PlanChunks as %s: %v", scheme, err)
+			}
+			encoded, err := EncodeChunk(plan, 0, payload, master)
+			if err != nil {
+				t.Fatalf("EncodeChunk as %s: %v", scheme, err)
+			}
+			if len(encoded.Parts) != scheme.Total {
+				t.Fatalf("cut into %d parts, want %d", len(encoded.Parts), scheme.Total)
+			}
+
+			// The last k shards, so the rebuild goes through the parity rows
+			// rather than down the systematic fast path.
+			survivors := encoded.Parts[scheme.Total-scheme.Data:]
+			decoded, err := DecodeChunk(survivors, master)
+			if err != nil {
+				t.Fatalf("DecodeChunk from the last %d shards of %s: %v", scheme.Data, scheme, err)
+			}
+			if !bytes.Equal(decoded.Data, payload) {
+				t.Fatal("what came back is not what went in")
+			}
+		})
+	}
+}

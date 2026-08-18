@@ -24,7 +24,7 @@ const SEARCH_DEBOUNCE_MS = 180
 const TILE_MIN_PX = { mobile: 108, desktop: 132 }
 
 export default function FileBrowser({
-  nav, listing, loading, error, providers, defaultAccounts, mobile,
+  nav, listing, loading, error, providers, defaultAccounts, defaultScheme, mobile,
   subVaults = [], showSubVaults = false, onOpenSubVault,
   onRefresh, onPreview, onInspect, onFilm, onError,
 }) {
@@ -289,7 +289,7 @@ export default function FileBrowser({
     setPending(files)
   }, [canUpload, onError])
 
-  const uploadFiles = useCallback(async (files, accounts) => {
+  const uploadFiles = useCallback(async (files, accounts, scheme = '') => {
     const batch = { id: Math.random().toString(36).slice(2), names: [...files].map((f) => f.name), progress: 0 }
     setUploads((prev) => [...prev, batch])
 
@@ -303,6 +303,7 @@ export default function FileBrowser({
       const resp = await api.upload(files, path, {
         vault,
         accounts,
+        scheme,
         thumbs: thumbnails,
         onProgress: (fraction) => setUploads((prev) =>
           prev.map((u) => (u.id === batch.id ? { ...u, progress: fraction } : u))),
@@ -604,9 +605,10 @@ export default function FileBrowser({
           path={path}
           providers={providers}
           defaults={defaultAccounts}
+          defaultScheme={defaultScheme}
           onClose={() => setPending(null)}
           onChanged={onRefresh}
-          onUpload={(accounts) => { setPending(null); uploadFiles(pending, accounts) }}
+          onUpload={(accounts, scheme) => { setPending(null); uploadFiles(pending, accounts, scheme) }}
         />
       )}
 

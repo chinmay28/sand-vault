@@ -74,6 +74,35 @@ func ErrSpread(n int) error {
 	return err
 }
 
+// checkSpread reports whether n chosen accounts can hold a file cut with the
+// given scheme.
+//
+// It is ValidSpread's counterpart for a scheme somebody named. There is no
+// arithmetic left to do — the code is already settled — so the only question
+// left is whether every account chosen has a shard to hold.
+//
+// Fewer accounts than shards is allowed, and is the shortfall a vault with two
+// clouds has always been allowed to store into: the shards there is no room for
+// go unwritten and the file has fewer spares than its scheme allows for. How
+// far that may go is a question about the placement policy rather than about
+// the scheme, so it is BuildPlan's to answer and not asked here.
+//
+// More accounts than shards is refused, because it would leave an account
+// somebody deliberately chose holding nothing — a choice quietly ignored rather
+// than a tradeoff accepted.
+func checkSpread(n int, scheme archive.Scheme) error {
+	if err := scheme.Check(); err != nil {
+		return err
+	}
+	if n > scheme.Total {
+		return fmt.Errorf(
+			"%s has %d shards and %d accounts were chosen — %d of them would hold nothing, "+
+				"so either unpick them or cut wider",
+			scheme, scheme.Total, n, n-scheme.Total)
+	}
+	return nil
+}
+
 // spreadWidth is how many accounts a file wants to be on, given how many it
 // already prefers and how many are connected.
 //
@@ -124,11 +153,16 @@ func spreadWidth(available, preferred int) int {
 // A choice someone actually made, whether for one upload or as the vault's
 // default, does not come through here: it is followed exactly.
 //
+// want is how many accounts to end up on. Zero leaves it to spreadWidth, which
+// is what an upload that named no scheme wants; a file cut with a scheme of its
+// own passes that scheme's width instead, so a 3-of-5 file tops back up to five
+// accounts rather than to the six the default family would round it to.
+//
 // The seed makes the random half deterministic per file rather than per
 // process. Passing the archive ID — 128 random bits minted for this file alone
 // — is what makes consecutive uploads land on different accounts instead of
 // piling onto whichever three were connected first.
-func SelectAccounts(available, preferred []string, seed uint64) []string {
+func SelectAccounts(available, preferred []string, want int, seed uint64) []string {
 	connected := make(map[string]bool, len(available))
 	for _, id := range available {
 		connected[id] = true
@@ -144,7 +178,14 @@ func SelectAccounts(available, preferred []string, seed uint64) []string {
 		taken[id] = true
 	}
 
-	want := spreadWidth(len(available), len(chosen))
+	if want <= 0 {
+		want = spreadWidth(len(available), len(chosen))
+	} else if want > len(available) {
+		// What is not connected cannot be used, however wide the scheme is. The
+		// shards there is no room for simply go unwritten, which BuildPlan
+		// reports as the shortfall it is.
+		want = len(available)
+	}
 	if len(chosen) >= want {
 		return chosen[:want]
 	}

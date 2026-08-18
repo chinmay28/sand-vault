@@ -30,9 +30,22 @@ type UploadOptions struct {
 	// choice of which clouds may hold a file must not be widened behind the
 	// user's back — that is the whole thing SAND is for.
 	//
-	// How many accounts are named is also what settles the erasure code: three
-	// is 2-of-3, six is 4-of-6, nine is 6-of-9 (archive.Scheme).
+	// How many accounts are named is also what settles the erasure code, unless
+	// Scheme says otherwise: three is 2-of-3, six is 4-of-6, nine is 6-of-9
+	// (archive.Scheme).
 	Accounts []string
+
+	// Scheme is the erasure code this one file is cut with, in place of the one
+	// its account count would name. The zero value means no choice was made and
+	// the count settles it, which is what almost every upload wants.
+	//
+	// Naming one is how a file gets a code outside the default family — 3-of-5
+	// on five clouds, 6-of-10 on ten — and how a file gets a different tradeoff
+	// from its neighbours on the same accounts. It is per file rather than per
+	// vault because that is where the tradeoff lives: k is how many accounts an
+	// attacker needs together, and a folder of holiday photos and a folder of
+	// tax records do not have to answer that question the same way.
+	Scheme archive.Scheme
 }
 
 // Upload encodes data into encrypted parts, scatters them across the accounts
@@ -55,18 +68,47 @@ func (v *Vault) Upload(ctx context.Context, scope Scope, dir, name string, data 
 	// Either the upload's own choice or, left to itself, the vault's default —
 	// and whichever it turns out to be is followed exactly. Only a vault with
 	// neither picks accounts of its own, inside the scatter.
-	placed, err := v.scatterChunked(ctx, scope, name, data, opts.Accounts, true, v.uploadChunkSize())
+	placed, err := v.scatterChunked(ctx, scope, name, data,
+		spread{preferred: opts.Accounts, exact: true, scheme: opts.Scheme}, v.uploadChunkSize())
 	if err != nil {
 		return nil, placed.warnings, err
 	}
 	return v.commitUpload(ctx, scope, dir, name, int64(len(data)), DetectMIME(name, data), placed, opts)
 }
 
+// spread is what a scatter is told about where a file goes and how it is cut.
+//
+// The two travel together because neither settles anything on its own: without
+// a scheme it is the count of accounts that names the code, and with one it is
+// the scheme that says how many accounts the file wants to be on. Every path
+// that writes shards — an upload, a re-encryption, a recode onto other clouds —
+// hands one of these to snapshotTarget.
+type spread struct {
+	// preferred is where the parts should go. Left empty it falls back to the
+	// vault's default accounts, and failing that to a random pick.
+	preferred []string
+
+	// exact makes a preference the whole answer: nothing is added to it and
+	// every account in it must still be connected, because it came from someone
+	// deliberately choosing which clouds may hold this file.
+	exact bool
+
+	// scheme is the code to cut with. The zero value leaves it to be settled by
+	// how many accounts are chosen, which is what an upload that named none
+	// wants; a file being re-encrypted passes the code it is already cut with,
+	// so that a password change does not quietly recode it.
+	scheme archive.Scheme
+}
+
 // resolveAccounts turns an explicit account selection into the list of IDs to
 // place across. An account that is not connected is an error rather than
 // something to skip over: quietly narrowing a chosen set would put the file on
 // fewer accounts than the person choosing believed it was going to.
-func resolveAccounts(selected []string, byID map[string]provider.Config) ([]string, error) {
+//
+// scheme, when non-zero, is the code the file will be cut with, and it is what
+// the count is then checked against — a count that names no scheme of its own
+// is fine once a scheme has been named for it.
+func resolveAccounts(selected []string, byID map[string]provider.Config, scheme archive.Scheme) ([]string, error) {
 	out := make([]string, 0, len(selected))
 	seen := map[string]bool{}
 	for _, id := range selected {
@@ -79,6 +121,12 @@ func resolveAccounts(selected []string, byID map[string]provider.Config) ([]stri
 		}
 		seen[id] = true
 		out = append(out, id)
+	}
+	if scheme != (archive.Scheme{}) {
+		if err := checkSpread(len(out), scheme); err != nil {
+			return nil, err
+		}
+		return out, nil
 	}
 	if !ValidSpread(len(out)) {
 		return nil, ErrSpread(len(out))
@@ -123,6 +171,46 @@ type transferTarget struct {
 	// chosen is set only when the caller named accounts exactly, in which case
 	// it is the whole answer and nothing is added to it.
 	chosen []string
+
+	// scheme is the code named for this file, or the zero value when nothing
+	// was named for it. See spread.
+	scheme archive.Scheme
+
+	// fallback is the vault's own default code, applied only where it fits the
+	// accounts a file actually lands on. See schemeFor.
+	fallback archive.Scheme
+}
+
+// schemeFor settles which code a file going to n accounts is cut with.
+//
+// Three answers in order of how deliberate they are. A scheme named for this
+// file wins outright, because somebody chose it for these bytes. The vault's
+// default comes next, and only where it fits — a default of 3-of-5 is a
+// statement about five accounts and has nothing to say about a file
+// deliberately sent to six, which is 4-of-6 as it would have been with no
+// default set at all. Failing both, the count settles it, which is what every
+// upload did before a scheme could be named.
+func (t *transferTarget) schemeFor(n int) (archive.Scheme, error) {
+	if t.scheme != (archive.Scheme{}) {
+		return t.scheme, nil
+	}
+	if t.fallback != (archive.Scheme{}) && t.fallback.Total == n {
+		return t.fallback, nil
+	}
+	return SchemeFor(n)
+}
+
+// width is how many accounts a file wants to be on before anything has been
+// chosen for it: the width of whichever code is going to cut it, or zero to
+// leave it to the default family's rounding.
+func (t *transferTarget) width() int {
+	if t.scheme != (archive.Scheme{}) {
+		return t.scheme.Total
+	}
+	if t.fallback != (archive.Scheme{}) {
+		return t.fallback.Total
+	}
+	return 0
 }
 
 // snapshotTarget takes what a scatter needs from the vault and settles which
@@ -133,7 +221,13 @@ type transferTarget struct {
 // the policy, the connected accounts and the default selection are the same
 // whichever vault inside the file the bytes belong to, because they are answers
 // about storage rather than about secrecy.
-func (v *Vault) snapshotTarget(scope Scope, preferred []string, exact bool) (*transferTarget, error) {
+func (v *Vault) snapshotTarget(scope Scope, sp spread) (*transferTarget, error) {
+	if sp.scheme != (archive.Scheme{}) {
+		if err := sp.scheme.Check(); err != nil {
+			return nil, err
+		}
+	}
+
 	v.mu.RLock()
 	if v.dataKey == nil {
 		v.mu.RUnlock()
@@ -154,6 +248,8 @@ func (v *Vault) snapshotTarget(scope Scope, preferred []string, exact bool) (*tr
 		shardPassword: shardPasswordFor(dataKey),
 		dataKey:       dataKey,
 		policy:        v.store.Policy,
+		scheme:        sp.scheme,
+		fallback:      v.defaultSchemeLocked(),
 	}
 	defaults := append([]string(nil), v.store.DefaultAccounts...)
 	configs := append([]provider.Config(nil), v.providers...)
@@ -170,7 +266,7 @@ func (v *Vault) snapshotTarget(scope Scope, preferred []string, exact bool) (*tr
 		t.byID[cfg.ID] = cfg
 	}
 
-	t.preferred = preferred
+	t.preferred = sp.preferred
 	if len(t.preferred) == 0 {
 		// Nothing was chosen for this file, so the vault's standing answer
 		// applies. Anything in it that has since been disconnected is dropped
@@ -182,11 +278,25 @@ func (v *Vault) snapshotTarget(scope Scope, preferred []string, exact bool) (*tr
 		}
 	}
 
-	if exact && len(t.preferred) > 0 {
-		var err error
-		if t.chosen, err = resolveAccounts(t.preferred, t.byID); err != nil {
+	if sp.exact && len(t.preferred) > 0 {
+		// The vault's default makes a count like five a spread that five
+		// accounts would not otherwise be, so it has to be in hand before the
+		// count is judged. It applies only where it fits.
+		against := t.scheme
+		if against == (archive.Scheme{}) && t.fallback.Total == len(t.preferred) {
+			against = t.fallback
+		}
+		chosen, err := resolveAccounts(t.preferred, t.byID, against)
+		if err != nil {
 			return nil, err
 		}
+		// The accounts are settled, so the code is too — and a count that names
+		// none, with nothing else naming one either, is a mistake to report
+		// before anything is encoded rather than after.
+		if _, err := t.schemeFor(len(chosen)); err != nil {
+			return nil, err
+		}
+		t.chosen = chosen
 	}
 	return t, nil
 }
@@ -198,9 +308,13 @@ func (v *Vault) snapshotTarget(scope Scope, preferred []string, exact bool) (*tr
 func (t *transferTarget) planFor(seed uint64) (Plan, archive.Scheme, error) {
 	chosen := t.chosen
 	if chosen == nil {
-		chosen = SelectAccounts(t.ids, t.preferred, seed)
+		// A code that is going to cut this file says how many accounts to end
+		// up on; without one the width is the default family's, rounded up from
+		// what the file already prefers.
+		chosen = SelectAccounts(t.ids, t.preferred, t.width(), seed)
 	}
-	scheme, err := SchemeFor(len(chosen))
+
+	scheme, err := t.schemeFor(len(chosen))
 	if err != nil {
 		return nil, scheme, err
 	}
@@ -229,8 +343,8 @@ func (t *transferTarget) planFor(seed uint64) (Plan, archive.Scheme, error) {
 // records in the returned shards is really on the accounts — on too few parts
 // landing it erases the ones that did and returns an error, so a caller never
 // has to clean up after a failure of its own.
-func (v *Vault) scatter(ctx context.Context, scope Scope, name string, data []byte, preferred []string, exact bool) (placement, error) {
-	target, err := v.snapshotTarget(scope, preferred, exact)
+func (v *Vault) scatter(ctx context.Context, scope Scope, name string, data []byte, sp spread) (placement, error) {
+	target, err := v.snapshotTarget(scope, sp)
 	if err != nil {
 		return placement{}, err
 	}

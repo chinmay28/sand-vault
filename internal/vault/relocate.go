@@ -100,6 +100,10 @@ type FilePlan struct {
 	From   string `json:"from_scheme,omitempty"`
 	To     string `json:"to_scheme,omitempty"`
 
+	// to is To as the scheme itself, carried so the recode cuts with exactly the
+	// code the plan was costed against rather than re-deriving one.
+	to archive.Scheme
+
 	// Bytes is what a re-encode would move: the file, down and up again. It is
 	// zero for a shard-by-shard move, where the per-move figures are the cost.
 	Bytes int64 `json:"bytes,omitempty"`
@@ -201,8 +205,13 @@ func (r *RelocationReport) Done() bool {
 // what each one weighs, and which of them the chosen accounts already hold. It
 // is what lets the question "move this folder off Dropbox" be answered with
 // "4 of 37 parts, 1.2 GB" before anything starts moving.
-func (v *Vault) PlanRelocation(scope Scope, target string, accounts []string) (*RelocationPlan, error) {
-	plan, err := v.planRelocation(scope, target, accounts)
+//
+// scheme, when given, is the code the files should end up cut with, in place of
+// the one the destination count would name. It is what makes a move onto five
+// clouds possible at all — five names no scheme of its own — and what lets a
+// move be a deliberate change of tradeoff rather than only a change of address.
+func (v *Vault) PlanRelocation(scope Scope, target string, accounts []string, scheme archive.Scheme) (*RelocationPlan, error) {
+	plan, err := v.planRelocation(scope, target, accounts, scheme)
 	if err != nil {
 		return nil, err
 	}
@@ -215,7 +224,7 @@ func (v *Vault) PlanRelocation(scope Scope, target string, accounts []string) (*
 
 // planRelocation is PlanRelocation with every file's row kept, which is what
 // the relocation itself walks.
-func (v *Vault) planRelocation(scope Scope, target string, accounts []string) (*RelocationPlan, error) {
+func (v *Vault) planRelocation(scope Scope, target string, accounts []string, scheme archive.Scheme) (*RelocationPlan, error) {
 	entries, dir, folder, err := v.relocationScope(scope, target)
 	if err != nil {
 		return nil, err
@@ -227,13 +236,21 @@ func (v *Vault) planRelocation(scope Scope, target string, accounts []string) (*
 		return nil, ErrLocked
 	}
 	policy := v.store.Policy
+	fallback := v.defaultSchemeLocked()
 	byID := make(map[string]provider.Config, len(v.providers))
 	for _, cfg := range v.providers {
 		byID[cfg.ID] = cfg
 	}
 	v.mu.RUnlock()
 
-	targets, err := resolveAccounts(accounts, byID)
+	// The vault's default makes a count like five a spread that five accounts
+	// would not otherwise be, so it has to be in hand before the count is
+	// judged. It applies only where it fits, exactly as it does for an upload.
+	against := scheme
+	if against == (archive.Scheme{}) && fallback != (archive.Scheme{}) && fallback.Total == len(accounts) {
+		against = fallback
+	}
+	targets, err := resolveAccounts(accounts, byID, against)
 	if err != nil {
 		return nil, err
 	}
@@ -244,11 +261,18 @@ func (v *Vault) planRelocation(scope Scope, target string, accounts []string) (*
 	if err != nil {
 		return nil, err
 	}
-	// How many accounts were chosen settles the code, and whether that matches
-	// what each file is already cut with settles whether it moves or is rebuilt.
-	want, err := SchemeFor(len(targets))
-	if err != nil {
-		return nil, err
+	// The code named for this move, failing that the vault's own where it fits
+	// the accounts chosen, and failing both the one their count settles — the
+	// same three answers in the same order an upload gets (transferTarget.
+	// schemeFor). Whether the result matches what each file is already cut with
+	// settles whether it moves or is rebuilt.
+	want := scheme
+	if want == (archive.Scheme{}) {
+		if fallback != (archive.Scheme{}) && fallback.Total == len(targets) {
+			want = fallback
+		} else if want, err = SchemeFor(len(targets)); err != nil {
+			return nil, err
+		}
 	}
 
 	plan := &RelocationPlan{
@@ -290,9 +314,9 @@ func (v *Vault) planRelocation(scope Scope, target string, accounts []string) (*
 		}
 		if fp.Recode {
 			plan.Warnings = append(plan.Warnings, fmt.Sprintf(
-				"%s is stored as %s and %d clouds is %s, so it has to be rebuilt rather than moved — "+
-					"the whole file comes down and goes back up",
-				fp.Path, fp.From, len(targets), fp.To))
+				"%s is stored as %s and is to be cut as %s, so it has to be rebuilt rather than "+
+					"moved — the whole file comes down and goes back up",
+				fp.Path, fp.From, fp.To))
 		}
 		plan.Files = append(plan.Files, fp)
 	}
@@ -312,8 +336,8 @@ func (v *Vault) planRelocation(scope Scope, target string, accounts []string) (*
 // repeat: running it again moves whatever is still not where it was asked to be.
 // A file whose account is offline is reported and left alone rather than holding
 // up the rest. progress may be nil.
-func (v *Vault) Relocate(ctx context.Context, scope Scope, target string, accounts []string, progress ProgressFunc) (*RelocationReport, error) {
-	plan, err := v.planRelocation(scope, target, accounts)
+func (v *Vault) Relocate(ctx context.Context, scope Scope, target string, accounts []string, scheme archive.Scheme, progress ProgressFunc) (*RelocationReport, error) {
+	plan, err := v.planRelocation(scope, target, accounts, scheme)
 	if err != nil {
 		return nil, err
 	}
@@ -441,6 +465,7 @@ func planFileRelocation(scope Scope, entry *Entry, targets []string, byID map[st
 		plan.Recode = true
 		plan.From = have.String()
 		plan.To = want.String()
+		plan.to = want
 		// Down once and up once: the shards that rebuild it, then the whole new
 		// set. Both are about the file's own size, the second by the scheme's
 		// ratio.
@@ -646,7 +671,7 @@ func (v *Vault) relocateEntry(ctx context.Context, plan *FilePlan, accounts []st
 func (v *Vault) recodeEntry(ctx context.Context, plan *FilePlan, accounts []string) (relocateOutcome, error) {
 	var out relocateOutcome
 
-	_, _, warnings, err := v.migrateFile(ctx, plan.vault, plan.ID, accounts)
+	_, _, warnings, err := v.migrateFile(ctx, plan.vault, plan.ID, accounts, plan.to)
 	out.warnings = append(out.warnings, warnings...)
 	if err != nil {
 		return out, err

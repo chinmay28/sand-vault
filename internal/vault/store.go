@@ -122,6 +122,20 @@ type storeFile struct {
 	// section it cannot open would have told it anyway.
 	DefaultAccounts []string `json:"default_accounts,omitempty"`
 
+	// DefaultScheme names the erasure code uploads are cut with when they do not
+	// choose their own, written "k-of-n". Empty means no preference, and how
+	// many accounts a file lands on settles the code as it always did.
+	//
+	// It is a preference rather than a rule, and it is applied only where it
+	// fits: a default of 3-of-5 cuts the files that go to five accounts, and a
+	// file deliberately sent to six is 4-of-6 because 3-of-5 has nothing to say
+	// about six accounts. See transferTarget.schemeFor.
+	//
+	// In the clear beside the accounts, and it gives away less than they do: two
+	// small numbers saying how a vault likes to be cut, which the shard headers
+	// on every account state outright anyway.
+	DefaultScheme string `json:"default_scheme,omitempty"`
+
 	// DataKeyID names the generation in DataKey, so a manifest entry can say
 	// which key its parts were sealed under. Absent on a vault written before
 	// the key could be rotated, which is why the empty string is a valid ID:

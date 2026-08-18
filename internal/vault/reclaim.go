@@ -154,6 +154,7 @@ func (v *Vault) Reclaim(ctx context.Context, accounts []string, progress Progres
 			byID[cfg.ID] = struct{}{}
 		}
 		policy := v.store.Policy
+		fallback := v.defaultSchemeLocked()
 		v.mu.RUnlock()
 
 		for _, id := range accounts {
@@ -161,11 +162,17 @@ func (v *Vault) Reclaim(ctx context.Context, accounts []string, progress Progres
 				return nil, fmt.Errorf("no connected account with id %s", id)
 			}
 		}
-		// How many accounts were named settles the scheme, so a count that
-		// names none is caught here too — before the key is rotated.
-		scheme, err := SchemeFor(len(accounts))
-		if err != nil {
-			return nil, err
+		// The vault's default where it fits, and failing that the code the
+		// count settles — the same order the scatter itself will use, so a
+		// selection this accepts is one the migration can actually carry out.
+		// A count that names no code at all is caught here, before the key is
+		// rotated.
+		scheme := fallback
+		if scheme.Total != len(accounts) {
+			var err error
+			if scheme, err = SchemeFor(len(accounts)); err != nil {
+				return nil, err
+			}
 		}
 		if _, err := BuildPlan(accounts, policy, scheme, 0); err != nil {
 			return nil, err

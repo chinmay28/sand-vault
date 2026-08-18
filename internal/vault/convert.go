@@ -129,7 +129,12 @@ func (v *Vault) Convert(ctx context.Context, id string) (*ConversionReport, erro
 		current = append(current, s.ProviderID)
 	}
 
-	placed, err := v.scatterStream(ctx, scope, stale.Name, spool, size, hash, current, false, v.uploadChunkSize())
+	// Under the code it is already cut with, too: converting a file to the
+	// chunked format is a change of container, not of scheme, and re-deriving
+	// the scheme from the account count would silently recode anything outside
+	// the default family.
+	placed, err := v.scatterStream(ctx, scope, stale.Name, spool, size, hash,
+		spread{preferred: current, scheme: stale.Scheme()}, v.uploadChunkSize())
 	report := &ConversionReport{Path: stale.Path(), Size: size, Warnings: placed.warnings}
 	if err != nil {
 		return report, fmt.Errorf("storing the converted %s: %w", stale.Path(), err)

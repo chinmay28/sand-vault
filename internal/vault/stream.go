@@ -52,7 +52,8 @@ func (v *Vault) UploadStream(ctx context.Context, scope Scope, dir, name string,
 		os.Remove(spool.Name())
 	}()
 
-	placed, err := v.scatterStream(ctx, scope, name, spool, size, hash, opts.Accounts, true, v.uploadChunkSize())
+	placed, err := v.scatterStream(ctx, scope, name, spool, size, hash,
+		spread{preferred: opts.Accounts, exact: true, scheme: opts.Scheme}, v.uploadChunkSize())
 	if err != nil {
 		return nil, placed.warnings, err
 	}
@@ -106,7 +107,8 @@ func (v *Vault) UploadStreamAt(ctx context.Context, scope Scope, dir, name strin
 		return nil, nil, fmt.Errorf("rewinding the upload: %w", err)
 	}
 
-	placed, err := v.scatterStream(ctx, scope, name, readerAt, size, hash, opts.Accounts, true, v.uploadChunkSize())
+	placed, err := v.scatterStream(ctx, scope, name, readerAt, size, hash,
+		spread{preferred: opts.Accounts, exact: true, scheme: opts.Scheme}, v.uploadChunkSize())
 	if err != nil {
 		return nil, placed.warnings, err
 	}
@@ -152,8 +154,8 @@ func (v *Vault) spool(r io.Reader) (*os.File, int64, [32]byte, error) {
 // scatterStream is scatterChunked reading from a file rather than a slice. The
 // two differ only in where a chunk's plaintext comes from; everything about
 // placement, per-part all-or-nothing and rollback is the same.
-func (v *Vault) scatterStream(ctx context.Context, scope Scope, name string, src io.ReaderAt, size int64, hash [32]byte, preferred []string, exact bool, chunkSize uint32) (placement, error) {
-	target, err := v.snapshotTarget(scope, preferred, exact)
+func (v *Vault) scatterStream(ctx context.Context, scope Scope, name string, src io.ReaderAt, size int64, hash [32]byte, sp spread, chunkSize uint32) (placement, error) {
+	target, err := v.snapshotTarget(scope, sp)
 	if err != nil {
 		return placement{}, err
 	}

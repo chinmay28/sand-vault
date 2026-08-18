@@ -3,35 +3,49 @@ import { COLORS, FONT, KIND_ICONS, accountColor, formatBytes } from '../theme'
 import { api } from '../api'
 import { Banner, Button, Modal, Spinner } from './ui'
 
-/* Choosing where a file's shards go.
+/* Choosing where a file's shards go, and how it is cut.
 
    A file is cut into shards and each one goes to a different account, so "which
-   clouds" is a choice of three — the vault's default, or something else for one
-   upload. Both are made with the same list of rows, which is what lives here.
+   clouds" is a choice of several — the vault's default, or something else for
+   one upload. Both are made with the same list of rows, which is what lives
+   here.
 
-   How many clouds are picked settles the code the file is cut with: three is
-   2-of-3, six is 4-of-6, nine is 6-of-9. All three store 1.5× the file, so
-   widening costs accounts rather than bytes, and what it buys is on both axes —
-   more clouds can go dark, and more of them have to be broken into together
-   before what they hold is enough to rebuild anything. */
+   How many clouds are picked settles how many shards there are. How many of
+   them it takes to rebuild the file — k — is a second choice, and the one that
+   actually says what the file is for. It moves three things at once, and not in
+   the same direction:
 
-/* The rule SAND cuts files by, mirroring archive.Scheme on the server: clouds
-   come in groups of three, and two thirds of the shards rebuild the file. Three
-   is 2-of-3, six is 4-of-6, thirty is 20-of-30 — there is no list, only the
-   rule. */
+     storage      n/k, what the file costs once every shard is stored
+     tolerance    n − k, how many clouds can go dark before it is lost
+     collusion    k, how many accounts must be broken into *together*
+                  before what they hold is enough to rebuild anything
+
+   Lowering k buys tolerance with storage and with collusion resistance both.
+   2-of-5 survives three clouds going away where 2-of-3 survives one, but two
+   accounts still rebuild the file and each of them now holds half of it. That
+   is the trade the picker has to show rather than hide. */
+
+/* The default family, mirroring archive.Scheme on the server: clouds come in
+   groups of three, and two thirds of the shards rebuild the file. It is what a
+   count of clouds names when nobody chooses otherwise — three is 2-of-3, six is
+   4-of-6, thirty is 20-of-30 — and it holds storage at 1.5× at every width. */
 export const CLOUDS_PER_GROUP = 3
 const DATA_PER_GROUP = 2
 
-/* A shard's number is one byte in its header, so a spread stops at 255 shards,
-   rounded down to whole groups. */
-export const MAX_CLOUDS = Math.floor(255 / CLOUDS_PER_GROUP) * CLOUDS_PER_GROUP
+/* A shard's number is one byte in its header, so a spread stops at 255 shards. */
+export const MAX_CLOUDS = 255
 
 export const PARTS_PER_FILE = CLOUDS_PER_GROUP
-const MIN_ACCOUNTS = 2
 
-/* The scheme a count of clouds names, or null when it names none. Fewer than a
-   full group is the default code with whatever shards there is room for, which
-   is what a vault with two clouds connected gets. */
+/* Two shards to rebuild from is the floor, and the server holds it too: with
+   one, an account would hold the whole file and splitting would not be
+   splitting. */
+export const MIN_DATA = 2
+const MIN_ACCOUNTS = MIN_DATA
+
+/* The scheme a count of clouds names by itself, or null when it names none.
+   Fewer than a full group is the default code with whatever shards there is
+   room for, which is what a vault with two clouds connected gets. */
 export function schemeFor(count) {
   if (count > 0 && count < CLOUDS_PER_GROUP) return schemeForGroups(1)
   if (count <= 0 || count > MAX_CLOUDS || count % CLOUDS_PER_GROUP !== 0) return null
@@ -42,34 +56,70 @@ export function schemeForGroups(groups) {
   return { data: DATA_PER_GROUP * groups, total: CLOUDS_PER_GROUP * groups }
 }
 
-/* How a scheme is written wherever a person reads it. */
+/* The scheme to start from for any count of clouds, family or not: the count's
+   own scheme where it has one, and otherwise the k that holds 1.5× as closely
+   as the count allows. It is a starting point the threshold picker then moves. */
+export function defaultSchemeFor(count) {
+  const named = schemeFor(count)
+  if (named && named.total === count) return named
+  if (count < MIN_ACCOUNTS) return null
+  return { data: Math.max(MIN_DATA, Math.floor((count * DATA_PER_GROUP) / CLOUDS_PER_GROUP)), total: count }
+}
+
+/* Every threshold a given number of clouds can be cut at, widest margin first.
+   k runs from two — below which one account holds the file — up to n, where
+   there is no margin at all. */
+export function thresholdsFor(count) {
+  const out = []
+  for (let k = MIN_DATA; k <= count; k++) out.push(k)
+  return out
+}
+
+/* How a scheme is written wherever a person reads it, and what the server reads
+   back off the wire. */
 export function schemeName(scheme) {
   return scheme ? `${scheme.data}-of-${scheme.total}` : ''
 }
 
-/* How many clouds can go dark with the file still readable: n − k, one per
-   group. */
+/* The inverse: the "k-of-n" the server hands back, or null for the empty string
+   it sends when a vault has no default code of its own. */
+export function parseScheme(text) {
+  const match = /^(\d+)-of-(\d+)$/.exec((text || '').trim())
+  if (!match) return null
+  const parsed = { data: Number(match[1]), total: Number(match[2]) }
+  return validScheme(parsed) ? parsed : null
+}
+
+/* How many clouds can go dark with the file still readable: n − k. */
 export function tolerance(scheme) {
   return scheme ? scheme.total - scheme.data : 0
 }
 
-/* The widest spread a set of clouds can fill. */
-export function maxSelectable(count) {
-  if (count < CLOUDS_PER_GROUP) return count
-  return Math.min(Math.floor(count / CLOUDS_PER_GROUP) * CLOUDS_PER_GROUP, MAX_CLOUDS)
+/* What the file costs once every shard is stored: n/k. */
+export function storage(scheme) {
+  return scheme && scheme.data > 0 ? scheme.total / scheme.data : 0
 }
 
-/* Whether a count of clouds is one the server will take. The counts this rules
-   out are the ones between groups: a fourth cloud has no shard of its own to
-   hold without a fifth and a sixth beside it. */
-export function validSpread(count) {
-  return count === 0 || schemeFor(count) !== null
+/* Rounded the way it is written next to the other two numbers. */
+export function storageName(scheme) {
+  const times = storage(scheme)
+  if (!times) return ''
+  return `${times.toFixed(times % 1 === 0 ? 0 : 2).replace(/0$/, '')}×`
 }
 
-/* Whether a selection is one that can actually be stored: enough clouds to
-   rebuild from, and a count that names a scheme. */
-export function usableSpread(count) {
-  return count >= MIN_ACCOUNTS && validSpread(count)
+/* Whether a scheme is one the server will write. */
+export function validScheme(scheme) {
+  return !!scheme
+    && scheme.data >= MIN_DATA
+    && scheme.total >= scheme.data
+    && scheme.total <= MAX_CLOUDS
+}
+
+/* Whether a selection is one that can be stored: enough clouds to rebuild from,
+   and a code as wide as there are clouds to hold it. Every dialog names a code
+   alongside the clouds now, so this is the only question any of them asks. */
+export function usableCut(count, scheme) {
+  return count >= MIN_ACCOUNTS && validScheme(scheme) && scheme.total === count
 }
 
 /* How many *distinct* shards of a file are stored, which is the number that
@@ -87,18 +137,6 @@ export function fileScheme(file) {
   return schemeForGroups(1)
 }
 
-/* The nearest spreads above and below a count that names none, for saying what
-   the two ways out of it are. */
-export function nextScheme(count) {
-  const up = Math.min((Math.floor(count / CLOUDS_PER_GROUP) + 1) * CLOUDS_PER_GROUP, MAX_CLOUDS)
-  return schemeFor(up) || schemeForGroups(1)
-}
-
-export function previousScheme(count) {
-  const down = Math.max(Math.floor(count / CLOUDS_PER_GROUP) * CLOUDS_PER_GROUP, CLOUDS_PER_GROUP)
-  return schemeFor(down) || schemeForGroups(1)
-}
-
 /* The clouds an upload starts on: the vault's default, and with none set three
    picked at random — which is exactly what the picker then lets the user
    change. A default is taken as it stands rather than made up to three, the
@@ -110,9 +148,10 @@ export function previousScheme(count) {
 export function initialSelection(providers, defaults = []) {
   const connected = new Set(providers.map((p) => p.id))
   const preferred = (defaults || []).filter((id) => connected.has(id))
-  // Trimmed only if a disconnected cloud has left the default a shape a file
-  // cannot be laid out over — five of a saved six becomes three, not five.
-  if (preferred.length > 0) return preferred.slice(0, maxSelectable(preferred.length))
+  // Taken as it stands. Any count of clouds is a spread now that the threshold
+  // is chosen beside them, and the server keeps the stored default coherent as
+  // accounts come and go, so there is nothing left here to trim.
+  if (preferred.length > 0) return preferred
 
   const pool = [...shuffle(providers.filter((p) => p.online)), ...shuffle(providers.filter((p) => !p.online))]
   return pool.slice(0, PARTS_PER_FILE).map((p) => p.id)
@@ -127,11 +166,15 @@ function shuffle(items) {
   return out
 }
 
-/* The rows themselves. Selection is capped at the widest scheme these clouds
-   can fill — three of four connected, six of seven — because a cloud past that
-   has no shard of its own to hold. */
-export function CloudChoice({ providers, selected, onChange }) {
-  const cap = maxSelectable(providers.length)
+/* The rows themselves.
+
+   `cap` is how many clouds may be picked. A dialog that can name a scheme
+   alongside the clouds passes every connected account, because any count of
+   them is a spread once the code is spelled out. The vault-wide default cannot
+   name one — it stores accounts and nothing else — so it leaves the cap at the
+   widest scheme the connected clouds can fill by themselves. */
+export function CloudChoice({ providers, selected, onChange, cap: capProp }) {
+  const cap = Math.min(capProp ?? providers.length, MAX_CLOUDS)
   const full = selected.length >= cap
 
   const toggle = (id) => {
@@ -234,26 +277,74 @@ export function CloudChoice({ providers, selected, onChange }) {
           fontSize: '10px',
           color: COLORS.textMuted,
         }}>
-          {schemeName(schemeFor(cap))} is as wide as {providers.length} clouds goes.
-          Unpick one to swap it for another.
+          {cap} clouds is as wide as a file goes. Unpick one to swap it for another.
         </p>
       )}
+    </div>
+  )
+}
 
-      {/* Between one scheme and the next there is no code to use, so say what
-          the next step up would be before it is reached. */}
-      {!full && selected.length > PARTS_PER_FILE && !validSpread(selected.length) && (
-        <p style={{
-          margin: '2px 0 0',
-          fontFamily: FONT.mono,
-          fontSize: '10px',
-          color: COLORS.warn,
-        }}>
-          {selected.length} clouds is between schemes — pick{' '}
-          {nextScheme(selected.length).total - selected.length} more for{' '}
-          {schemeName(nextScheme(selected.length))}, or unpick back to{' '}
-          {previousScheme(selected.length).total}.
-        </p>
-      )}
+/* How many of the chosen clouds it should take to rebuild the file.
+
+   The clouds above settle n. This settles k, and with it all three numbers
+   underneath — which is why they are printed beside the control rather than
+   left for the banner to explain after the fact. Every threshold from two up to
+   n is offered: two is the most durable and the easiest to collude against, n
+   is the reverse and keeps no spare at all. */
+export function ThresholdChoice({ scheme, onChange }) {
+  if (!scheme || scheme.total < MIN_ACCOUNTS) return null
+
+  const options = thresholdsFor(scheme.total)
+  const suggested = defaultSchemeFor(scheme.total)
+
+  return (
+    <div style={{ marginTop: '14px' }}>
+      <label style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        fontFamily: FONT.mono,
+        fontSize: '11px',
+        color: COLORS.textDim,
+      }}>
+        <span style={{ flexShrink: 0 }}>Rebuild from</span>
+        <select
+          value={scheme.data}
+          onChange={(e) => onChange({ ...scheme, data: Number(e.target.value) })}
+          style={{
+            fontFamily: FONT.mono,
+            fontSize: '11px',
+            padding: '4px 6px',
+            background: COLORS.bg,
+            color: COLORS.text,
+            border: `1px solid ${COLORS.border}`,
+            borderRadius: '4px',
+          }}
+        >
+          {options.map((k) => (
+            <option key={k} value={k}>
+              {k} of {scheme.total}{suggested && k === suggested.data ? ' (usual)' : ''}
+            </option>
+          ))}
+        </select>
+        <span style={{ flexShrink: 0 }}>clouds</span>
+      </label>
+
+      {/* The three numbers the choice moves, side by side, because reading any
+          one of them alone is how a 2-of-5 gets picked for the wrong reason. */}
+      <div style={{
+        display: 'flex',
+        gap: '14px',
+        flexWrap: 'wrap',
+        margin: '8px 0 0',
+        fontFamily: FONT.mono,
+        fontSize: '10px',
+        color: COLORS.textMuted,
+      }}>
+        <span>stores {storageName(scheme)}</span>
+        <span>survives {tolerance(scheme)} loss{tolerance(scheme) === 1 ? '' : 'es'}</span>
+        <span>{scheme.data} must collude</span>
+      </div>
     </div>
   )
 }
@@ -264,35 +355,26 @@ export function CloudChoice({ providers, selected, onChange }) {
    somewhere for the first time and picking it up off one cloud and setting it
    down on another — the second of which can also erase a spare shard, because
    the chosen clouds may not have room for all of them. */
-function SelectionNote({ providers, selected, moving = false }) {
+function SelectionNote({ providers, selected, scheme, moving = false }) {
   if (selected.length < MIN_ACCOUNTS) {
     return (
       <Banner tone="error">
-        Choose at least {MIN_ACCOUNTS} clouds. Any two parts rebuild a file, so one cloud on its
-        own could not — and would be the only thing standing between you and losing it.
+        Choose at least {MIN_ACCOUNTS} clouds. It takes at least two shards to rebuild a file, so
+        one cloud on its own could not — and would be the only thing standing between you and
+        losing it.
       </Banner>
     )
   }
-  if (selected.length < PARTS_PER_FILE) {
-    return (
-      <Banner tone="warn">
-        With {selected.length} clouds only {selected.length} of the {PARTS_PER_FILE} shards are
-        stored{moving ? ', so the spare is erased' : ''}. The file is recoverable and still
-        unreadable to either cloud alone, but it has no spare if one of them goes away.
-      </Banner>
-    )
-  }
-  if (!validSpread(selected.length)) {
+  if (!validScheme(scheme)) {
     return (
       <Banner tone="error">
-        {selected.length} clouds names no scheme. Clouds come in groups of {CLOUDS_PER_GROUP},
-        two thirds of which rebuild the file — so pick {previousScheme(selected.length).total} or{' '}
-        {nextScheme(selected.length).total}. A count in between would leave a cloud with no shard
-        of its own to hold.
+        {selected.length} clouds cannot be cut at {scheme ? scheme.data : '?'} — a file has to take
+        at least {MIN_DATA} shards to rebuild, and no more than the {selected.length} it is cut
+        into.
       </Banner>
     )
   }
-  const scheme = schemeFor(selected.length)
+
   const offline = providers.filter((p) => selected.includes(p.id) && !p.online)
   if (offline.length) {
     return (
@@ -304,27 +386,70 @@ function SelectionNote({ providers, selected, moving = false }) {
       </Banner>
     )
   }
-  if (scheme && scheme.total > PARTS_PER_FILE) {
+
+  // No spare at all: every cloud has to answer for the file to come back, which
+  // is a real choice but not one to make by accident.
+  if (tolerance(scheme) === 0) {
     return (
-      <Banner tone="success">
-        {schemeName(scheme)}: one shard on each of {scheme.total} clouds, any {scheme.data} of
-        which rebuild the file. {tolerance(scheme)} of them could go away before it was at risk,
-        and an attacker would need {scheme.data} of them together before what they hold is enough
-        to rebuild anything. It stores the same 1.5× that {schemeName(schemeForGroups(1))} does.
+      <Banner tone="warn">
+        {schemeName(scheme)} keeps no spare: all {scheme.total} clouds have to answer to rebuild
+        the file{moving ? ', and any shard the chosen clouds have no room for is erased' : ''}. It
+        is the cheapest at {storageName(scheme)} and the hardest to collude against, and one cloud
+        going away loses the file.
       </Banner>
     )
   }
-  return null
+
+  // A low threshold is durable and cheap to collude against at once, and the
+  // second half of that is the part a storage figure does not say.
+  if (scheme.data < DATA_PER_GROUP * scheme.total / CLOUDS_PER_GROUP) {
+    return (
+      <Banner tone="warn">
+        {schemeName(scheme)}: any {scheme.data} of {scheme.total} clouds rebuild the file, so it
+        survives {tolerance(scheme)} of them going away — but {scheme.data} of them together are
+        also enough for someone else to rebuild it, and each one holds a{' '}
+        {scheme.data === 2 ? 'half' : `1/${scheme.data}`} of it. It stores {storageName(scheme)}.
+      </Banner>
+    )
+  }
+
+  return (
+    <Banner tone="success">
+      {schemeName(scheme)}: one shard on each of {scheme.total} clouds, any {scheme.data} of
+      which rebuild the file. {tolerance(scheme)} of them could go away before it was at risk,
+      and an attacker would need {scheme.data} of them together before what they hold is enough
+      to rebuild anything. It stores {storageName(scheme)}.
+    </Banner>
+  )
 }
 
 /* The dialog every upload passes through: which files are going up, which three
    clouds they are being scattered over, and the chance to change that before a
    single byte leaves the machine. */
-export function UploadDestination({ files, path, providers, defaults, onUpload, onClose, onChanged }) {
+export function UploadDestination({
+  files, path, providers, defaults, defaultScheme, onUpload, onClose, onChanged,
+}) {
   const [selected, setSelected] = useState(() => initialSelection(providers, defaults))
+  // The vault's own default is where the threshold starts, so an upload that
+  // changes nothing is cut the way the settings say.
+  const [threshold, setThreshold] = useState(() => parseScheme(defaultScheme)?.data ?? null)
   const [remember, setRemember] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
+
+  /* The clouds settle n; k is the suggested one until somebody moves it, and a
+     k left over from a wider selection is pulled back inside the new one rather
+     than left naming a scheme that no longer exists. */
+  const scheme = useMemo(() => {
+    const suggested = defaultSchemeFor(selected.length)
+    if (!suggested) return null
+    if (threshold === null) return suggested
+    return { data: Math.min(Math.max(threshold, MIN_DATA), selected.length), total: selected.length }
+  }, [selected.length, threshold])
+
+  // Only a scheme the count would not have named by itself has to be sent; the
+  // rest leave the server's own default in charge, as before.
+  const named = scheme && (!schemeFor(scheme.total) || schemeFor(scheme.total).data !== scheme.data)
 
   const usingDefault = useMemo(() => {
     const set = new Set(defaults || [])
@@ -341,10 +466,10 @@ export function UploadDestination({ files, path, providers, defaults, onUpload, 
       // Saved first: an upload that fails should not also lose the choice the
       // user just made about where their files live from now on.
       if (remember) {
-        await api.setDefaultAccounts(selected)
+        await api.setDefaultAccounts(selected, named ? schemeName(scheme) : '')
         onChanged?.()
       }
-      onUpload(selected)
+      onUpload(selected, named ? schemeName(scheme) : '')
     } catch (err) {
       setError(err.message)
       setBusy(false)
@@ -355,7 +480,7 @@ export function UploadDestination({ files, path, providers, defaults, onUpload, 
     <Modal
       title={names.length === 1 ? `Upload ${names[0]}` : `Upload ${names.length} files`}
       subtitle={`${formatBytes(total)} into ${path} — cut ${
-        schemeName(schemeFor(selected.length)) || 'across the chosen clouds'
+        schemeName(scheme) || 'across the chosen clouds'
       }, one encrypted shard per cloud`}
       onClose={busy ? undefined : onClose}
       width={460}
@@ -376,10 +501,17 @@ export function UploadDestination({ files, path, providers, defaults, onUpload, 
             : `No default is set, so ${PARTS_PER_FILE} clouds were picked at random. Change them if you want.`)}
       </p>
 
-      <CloudChoice providers={providers} selected={selected} onChange={setSelected} />
+      <CloudChoice
+        providers={providers}
+        selected={selected}
+        onChange={setSelected}
+        cap={providers.length}
+      />
+
+      <ThresholdChoice scheme={scheme} onChange={(next) => setThreshold(next.data)} />
 
       <div style={{ marginTop: '14px' }}>
-        <SelectionNote providers={providers} selected={selected} />
+        <SelectionNote providers={providers} selected={selected} scheme={scheme} />
       </div>
 
       <label style={{
@@ -396,10 +528,10 @@ export function UploadDestination({ files, path, providers, defaults, onUpload, 
           type="checkbox"
           checked={remember}
           onChange={(e) => setRemember(e.target.checked)}
-          disabled={!usableSpread(selected.length)}
+          disabled={!usableCut(selected.length, scheme)}
           style={{ accentColor: COLORS.accent, width: '15px', height: '15px', minHeight: 0 }}
         />
-        Make this the default for the whole vault
+        Make this the default for the whole vault{named ? ` — ${schemeName(scheme)}` : ''}
       </label>
 
       <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
@@ -408,7 +540,7 @@ export function UploadDestination({ files, path, providers, defaults, onUpload, 
           type="button"
           variant="primary"
           onClick={submit}
-          disabled={busy || !usableSpread(selected.length)}
+          disabled={busy || !usableCut(selected.length, scheme)}
         >
           {busy ? <Spinner size={10} /> : null}
           ↑ Upload to {selected.length} cloud{selected.length === 1 ? '' : 's'}
@@ -418,18 +550,32 @@ export function UploadDestination({ files, path, providers, defaults, onUpload, 
   )
 }
 
-/* The same choice, made once for the whole vault. */
-export function DefaultClouds({ providers, defaults, onClose, onChanged, zIndex }) {
+/* The same choice, made once for the whole vault: which clouds, and how they
+   are cut. Both are stored together, because a code is only a default while
+   clouds as wide as it are named under it. */
+export function DefaultClouds({ providers, defaults, defaultScheme, onClose, onChanged, zIndex }) {
   const [selected, setSelected] = useState(() => (defaults || []).filter(
     (id) => providers.some((p) => p.id === id)))
+  const [threshold, setThreshold] = useState(() => parseScheme(defaultScheme)?.data ?? null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
 
-  const save = async (accounts) => {
+  const scheme = useMemo(() => {
+    const suggested = defaultSchemeFor(selected.length)
+    if (!suggested) return null
+    if (threshold === null) return suggested
+    return { data: Math.min(Math.max(threshold, MIN_DATA), selected.length), total: selected.length }
+  }, [selected.length, threshold])
+
+  // Only a code the count would not have named by itself is worth storing; the
+  // server drops the rest for the same reason.
+  const named = scheme && (!schemeFor(scheme.total) || schemeFor(scheme.total).data !== scheme.data)
+
+  const save = async (accounts, cut) => {
     setBusy(true)
     setError(null)
     try {
-      await api.setDefaultAccounts(accounts)
+      await api.setDefaultAccounts(accounts, cut)
       onChanged()
       onClose()
     } catch (err) {
@@ -448,16 +594,19 @@ export function DefaultClouds({ providers, defaults, onClose, onChanged, zIndex 
     >
       {error && <Banner tone="error">{error}</Banner>}
 
-      <CloudChoice providers={providers} selected={selected} onChange={setSelected} />
+      <CloudChoice
+        providers={providers}
+        selected={selected}
+        onChange={setSelected}
+        cap={providers.length}
+      />
 
-      {selected.length > 0 && !usableSpread(selected.length) && (
+      <ThresholdChoice scheme={scheme} onChange={(next) => setThreshold(next.data)} />
+
+      {selected.length > 0 && !usableCut(selected.length, scheme) && (
         <div style={{ marginTop: '14px' }}>
           <Banner tone="error">
-            {selected.length < MIN_ACCOUNTS
-              ? `Choose at least ${MIN_ACCOUNTS} clouds, or none at all to let every upload pick its own.`
-              : `Choose clouds in groups of ${CLOUDS_PER_GROUP} — ${
-                previousScheme(selected.length).total} or ${nextScheme(selected.length).total}, not ${
-                selected.length}.`}
+            Choose at least {MIN_ACCOUNTS} clouds, or none at all to let every upload pick its own.
           </Banner>
         </div>
       )}
@@ -470,22 +619,22 @@ export function DefaultClouds({ providers, defaults, onClose, onChanged, zIndex 
         lineHeight: 1.6,
       }}>
         With no default, each file picks {PARTS_PER_FILE} clouds of its own at random — which is
-        what spreads a vault evenly over more than {PARTS_PER_FILE} accounts. Saving a default of
-        6, 9 or more — any group of {CLOUDS_PER_GROUP} — cuts every upload{' '}
-        {schemeName(schemeForGroups(2))}, {schemeName(schemeForGroups(3))} and so on, for the same
-        storage and a group's worth of extra margin each time.
+        what spreads a vault evenly over more than {PARTS_PER_FILE} accounts. Saving one fixes both
+        halves: which clouds every upload goes to, and how many of them it takes to rebuild a file.
+        An upload can still override either, and changing this leaves everything already stored cut
+        the way it was.
       </p>
 
       <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
-        <Button type="button" variant="ghost" onClick={() => save([])} disabled={busy}>
+        <Button type="button" variant="ghost" onClick={() => save([], '')} disabled={busy}>
           Pick per upload
         </Button>
         <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>Cancel</Button>
         <Button
           type="button"
           variant="primary"
-          onClick={() => save(selected)}
-          disabled={busy || !usableSpread(selected.length)}
+          onClick={() => save(selected, named ? schemeName(scheme) : '')}
+          disabled={busy || !usableCut(selected.length, scheme)}
         >
           {busy ? <Spinner size={10} /> : null}Save default
         </Button>
@@ -514,6 +663,7 @@ const PREVIEW_DEBOUNCE_MS = 220
 export function RelocateClouds({ target, targets, title, subtitle, current, providers, onClose, onDone }) {
   const [selected, setSelected] = useState(() => (current || []).filter(
     (id) => providers.some((p) => p.id === id)))
+  const [threshold, setThreshold] = useState(null)
   const [plan, setPlan] = useState(null)
   const [planning, setPlanning] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -522,8 +672,18 @@ export function RelocateClouds({ target, targets, title, subtitle, current, prov
   const [report, setReport] = useState(null)
 
   const scope = (targets && targets.length ? targets : [target]).filter(Boolean)
-  const enough = usableSpread(selected.length)
-  const key = selected.join(',')
+
+  const scheme = useMemo(() => {
+    const suggested = defaultSchemeFor(selected.length)
+    if (!suggested) return null
+    if (threshold === null) return suggested
+    return { data: Math.min(Math.max(threshold, MIN_DATA), selected.length), total: selected.length }
+  }, [selected.length, threshold])
+
+  const named = scheme && (!schemeFor(scheme.total) || schemeFor(scheme.total).data !== scheme.data)
+  const cut = named ? schemeName(scheme) : ''
+  const enough = usableCut(selected.length, scheme)
+  const key = `${selected.join(',')}|${cut}`
   const scopeKey = scope.map((t) => t.id || t.path).join('\n')
 
   useEffect(() => {
@@ -541,7 +701,7 @@ export function RelocateClouds({ target, targets, title, subtitle, current, prov
          the index with no account contacted, so a selection of thirty is
          thirty cheap answers and no reason to wait for them in turn. */
       Promise.all(scope.map((t) => api.relocate({
-        ...t, accounts: selected, preview: true, signal: controller.signal,
+        ...t, accounts: selected, scheme: cut, preview: true, signal: controller.signal,
       })))
         .then((plans) => { setPlan(mergePlans(plans)); setError(null) })
         .catch((err) => {
@@ -570,7 +730,7 @@ export function RelocateClouds({ target, targets, title, subtitle, current, prov
          where it was — which is exactly what running it again then finishes. */
       const reports = []
       for (const t of scope) {
-        reports.push(await api.relocate({ ...t, accounts: selected }))
+        reports.push(await api.relocate({ ...t, accounts: selected, scheme: cut }))
         setMoved(reports.length)
       }
       setReport(mergeReports(reports))
@@ -608,15 +768,23 @@ export function RelocateClouds({ target, targets, title, subtitle, current, prov
             lineHeight: 1.6,
           }}>
             Shards already on a cloud you keep stay exactly where they are — only the rest are
-            carried across, still encrypted, without ever being rebuilt. Changing how many clouds
-            a file is on is different: that changes the code it is cut with, so the file is
-            gathered and written out again. The estimate below says which is happening.
+            carried across, still encrypted, without ever being rebuilt. Changing the code a file
+            is cut with is different — a wider spread, or a different threshold — because no
+            shard of the old file is a shard of the new one, so it is gathered and written out
+            again. The estimate below says which is happening.
           </p>
 
-          <CloudChoice providers={providers} selected={selected} onChange={setSelected} />
+          <CloudChoice
+            providers={providers}
+            selected={selected}
+            onChange={setSelected}
+            cap={providers.length}
+          />
+
+          <ThresholdChoice scheme={scheme} onChange={(next) => setThreshold(next.data)} />
 
           <div style={{ marginTop: '14px' }}>
-            <SelectionNote providers={providers} selected={selected} moving />
+            <SelectionNote providers={providers} selected={selected} scheme={scheme} moving />
           </div>
 
           {enough && <RelocationCost plan={plan} planning={planning} />}

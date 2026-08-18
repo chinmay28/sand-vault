@@ -489,7 +489,8 @@ func (v *Vault) savePackOn(ctx context.Context, scope Scope, dir string, items m
 		accounts = accounts[:archive.SchemeDefault.Total]
 	}
 
-	placed, err := v.scatter(ctx, scope, thumbArchiveName, encodePack(items), accounts, len(accounts) > 0)
+	placed, err := v.scatter(ctx, scope, thumbArchiveName, encodePack(items),
+		spread{preferred: accounts, exact: len(accounts) > 0, scheme: archive.SchemeDefault})
 	if err != nil {
 		return err
 	}

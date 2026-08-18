@@ -6,7 +6,9 @@ import ChangePassword from './ChangePassword'
 import MountDrive from './MountDrive'
 import { FilmKeySettings } from './FilmDetails'
 import SubVaults from './SubVaults'
-import { DefaultClouds, PARTS_PER_FILE, schemeFor, schemeName } from './CloudSelect'
+import {
+  DefaultClouds, PARTS_PER_FILE, defaultSchemeFor, parseScheme, schemeName,
+} from './CloudSelect'
 
 /* Everything you set on the vault itself, in one place.
 
@@ -67,9 +69,11 @@ export default function VaultSettings({
             icon="☁️"
             label="Default clouds"
             hint="Where an upload goes unless it picks its own"
+            /* The code as well as the count, because a default of five clouds
+               says nothing on its own about what five clouds means here. */
             status={defaults.length > 0
-              ? `${defaults.length} of ${providers.length}${
-                defaults.length > PARTS_PER_FILE ? ` · ${schemeName(schemeFor(defaults.length))}` : ''}`
+              ? `${defaults.length} of ${providers.length} · ${schemeName(
+                parseScheme(stats?.default_scheme) || defaultSchemeFor(defaults.length))}`
               : `${PARTS_PER_FILE} per upload`}
             onClick={() => setOpen('defaults')}
           />
@@ -128,6 +132,7 @@ export default function VaultSettings({
         <DefaultClouds
           providers={providers}
           defaults={stats?.default_accounts || []}
+          defaultScheme={stats?.default_scheme || ''}
           zIndex={CHILD_Z}
           onClose={close}
           onChanged={onChanged}
