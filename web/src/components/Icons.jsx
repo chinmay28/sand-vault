@@ -26,21 +26,21 @@ function Icon({ children, size = 13 }) {
 }
 
 /* Three bars, tallest in the middle — what the stats sheet opens onto. */
-export const StatsIcon = () => (
-  <Icon><path d="M3.5 12.5v-3M8 12.5v-9M12.5 12.5v-5" /></Icon>
+export const StatsIcon = (props) => (
+  <Icon {...props}><path d="M3.5 12.5v-3M8 12.5v-9M12.5 12.5v-5" /></Icon>
 )
 
 /* A pencil at the usual 45°, its tip in the lower left. */
-export const EditIcon = () => (
-  <Icon><path d="M10.5 2.8l2.7 2.7M11 2.3l2.7 2.7-7.4 7.4-3.4.7.7-3.4z" /></Icon>
+export const EditIcon = (props) => (
+  <Icon {...props}><path d="M10.5 2.8l2.7 2.7M11 2.3l2.7 2.7-7.4 7.4-3.4.7.7-3.4z" /></Icon>
 )
 
 /* A trace with one beat in it: the account answered. */
-export const TestIcon = () => (
-  <Icon><path d="M2 8.5h2.8l1.7-4 2.6 7 1.6-3h3.3" /></Icon>
+export const TestIcon = (props) => (
+  <Icon {...props}><path d="M2 8.5h2.8l1.7-4 2.6 7 1.6-3h3.3" /></Icon>
 )
 
 /* An arrow leaving an open-sided box — the way out, not a deletion. */
-export const DisconnectIcon = () => (
-  <Icon><path d="M6.5 3H3.5v10h3M9.5 5.2L12.4 8l-2.9 2.8M12.2 8H6.2" /></Icon>
+export const DisconnectIcon = (props) => (
+  <Icon {...props}><path d="M6.5 3H3.5v10h3M9.5 5.2L12.4 8l-2.9 2.8M12.2 8H6.2" /></Icon>
 )
