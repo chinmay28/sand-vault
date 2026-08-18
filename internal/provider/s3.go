@@ -22,6 +22,30 @@ func init() {
 		Description: "Amazon S3, Cloudflare R2, Backblaze B2, Wasabi, MinIO, or any other " +
 			"service speaking the S3 API. Leave the endpoint blank for Amazon S3.",
 		Order: 20,
+		// Every service below has been reached with this backend's SigV4
+		// signing and nothing else. The hints are shapes, not hostnames: a
+		// region or an account number is part of most of them, and a pattern
+		// survives a provider adding a region where a copied hostname does
+		// not. Anything else speaking S3 works too, listed or not.
+		Covers: []Service{
+			{Name: "Amazon S3", Hint: "leave the endpoint blank"},
+			{Name: "Cloudflare R2", Hint: "https://<account>.r2.cloudflarestorage.com, region auto"},
+			{Name: "Google Cloud Storage", Hint: "https://storage.googleapis.com, with an HMAC key"},
+			{Name: "Backblaze B2", Hint: "https://s3.<region>.backblazeb2.com"},
+			{Name: "Wasabi", Hint: "https://s3.<region>.wasabisys.com"},
+			{Name: "Storj", Hint: "https://gateway.storjshare.io"},
+			{Name: "DigitalOcean Spaces", Hint: "https://<region>.digitaloceanspaces.com"},
+			{Name: "Scaleway", Hint: "https://s3.<region>.scw.cloud"},
+			{Name: "Akamai / Linode", Hint: "https://<region>.linodeobjects.com"},
+			{Name: "Filebase", Hint: "https://s3.filebase.com"},
+			{Name: "Tigris", Hint: "https://fly.storage.tigris.dev"},
+			{Name: "Hetzner Object Storage", Hint: "https://<region>.your-objectstorage.com"},
+			{Name: "OVHcloud", Hint: "the endpoint your object-storage console shows"},
+			{Name: "IDrive e2", Hint: "the endpoint your e2 console shows"},
+			{Name: "Oracle Cloud", Hint: "the S3-compatible endpoint for your namespace"},
+			{Name: "Vultr, Contabo, Seagate Lyve", Hint: "the endpoint the provider's console shows"},
+			{Name: "MinIO, Ceph, Garage, SeaweedFS", Hint: "your own server's address"},
+		},
 		Presets: []Preset{
 			{Key: "aws", Label: "Amazon S3", Values: map[string]string{"endpoint": ""}},
 			{

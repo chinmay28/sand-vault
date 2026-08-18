@@ -21,6 +21,11 @@ func init() {
 		// Last in the dialog: it is the one that names no service, and the
 		// answer when none of the others fit.
 		Order: 40,
+		Covers: []Service{
+			{Name: "An external or network drive", Hint: "wherever it is mounted"},
+			{Name: "A NAS share", Hint: "an SMB or NFS mount on this machine"},
+			{Name: "Any folder another tool keeps in step", Hint: "including a service SAND has no backend for"},
+		},
 		Fields: []FieldSpec{
 			{
 				Key:         "path",

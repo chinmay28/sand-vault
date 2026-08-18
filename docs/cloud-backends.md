@@ -56,8 +56,17 @@ Contabo, Oracle OCI, Seagate Lyve.
 **WebDAV — worth presetting:** Seafile, Yandex Disk, Infomaniak kDrive, Hetzner
 Storage Box, Synology and QNAP NAS boxes, OpenDrive, Zoho WorkDrive.
 
-Verify before adding one: endpoints move, and a preset that fills the form with
-a dead hostname is worse than an empty field. Check the region placeholder is
+A preset is for the services worth a button. Everything else the protocol
+reaches belongs in the backend's `Covers` list, which is what the browser's
+catalogue window is drawn from — one line per service with the shape of the
+endpoint it wants. Adding a name there costs nothing in the connect dialog,
+which is the point: the dialog stays fourteen entries long while the catalogue
+answers *does it do Wasabi?*
+
+Verify before adding either: endpoints move, and a preset that fills the form
+with a dead hostname is worse than an empty field. Prefer a shape
+(`https://s3.<region>.wasabisys.com`) over a hostname in a `Covers` hint — it
+stays true when a provider adds a region. Check the region placeholder is
 obviously a placeholder (`<account>`, not a real account ID) and that `Help`
 says where the credentials are minted.
 
@@ -198,7 +207,10 @@ adding a backend. In order:
 6. **An icon** in `web/src/theme.js` (`KIND_ICONS`) — one character. Missing
    kinds fall back to `☁`, so this is cosmetic, but the committed bundle in
    `internal/server/dist` has to be rebuilt (`make build-web`) for it to show.
-7. **The table** in `README.md` under *Supported Backends*.
+7. **`Covers`** on the spec if the backend reaches services its label does not
+   name — that is the browser's catalogue window, and the only place the full
+   list lives.
+8. **The table** in `README.md` under *Supported Backends*.
 
 ---
 

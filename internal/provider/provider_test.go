@@ -480,3 +480,54 @@ func keysOf(m map[string][]byte) []string {
 	}
 	return out
 }
+
+// TestCoversNameTheServicesBehindAProtocol pins the data the browser's
+// catalogue is drawn from. Two backends are protocols rather than services,
+// and "S3-compatible storage" is a true label that answers none of the
+// questions people actually arrive with — whether their Wasabi bucket, their
+// Seafile server or their Google Cloud Storage bucket can hold a part.
+func TestCoversNameTheServicesBehindAProtocol(t *testing.T) {
+	for _, kind := range []Kind{KindS3, KindWebDAV, KindLocal} {
+		spec, ok := SpecFor(kind)
+		if !ok {
+			t.Fatalf("%s is not registered", kind)
+		}
+		if len(spec.Covers) == 0 {
+			t.Errorf("%s names no services, so the catalogue has nothing to show", kind)
+		}
+		seen := map[string]bool{}
+		for _, service := range spec.Covers {
+			if service.Name == "" {
+				t.Errorf("%s: a covered service with no name", kind)
+			}
+			if seen[service.Name] {
+				t.Errorf("%s: %q listed twice", kind, service.Name)
+			}
+			seen[service.Name] = true
+			// The endpoint or URL is the only thing that differs between
+			// services on a shared protocol, so it is the one thing the entry
+			// has to say.
+			if kind != KindLocal && service.Hint == "" {
+				t.Errorf("%s: %q says nothing about what to put in the endpoint", kind, service.Name)
+			}
+		}
+	}
+
+	// A few that are the whole point: reachable today, named nowhere else.
+	s3, _ := SpecFor(KindS3)
+	named := map[string]bool{}
+	for _, service := range s3.Covers {
+		named[service.Name] = true
+	}
+	for _, want := range []string{"Amazon S3", "Google Cloud Storage", "Wasabi", "Storj"} {
+		if !named[want] {
+			t.Errorf("the S3 backend does not admit to reaching %s", want)
+		}
+	}
+
+	// A backend whose label is already the service needs no list.
+	dropbox, _ := SpecFor(KindDropbox)
+	if len(dropbox.Covers) != 0 {
+		t.Errorf("Dropbox covers %+v — its label already says it", dropbox.Covers)
+	}
+}

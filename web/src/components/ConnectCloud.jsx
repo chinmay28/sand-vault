@@ -3,6 +3,7 @@ import { COLORS, FONT, KIND_ICONS } from '../theme'
 import { api } from '../api'
 import { Banner, Button, CopyField, Input, Modal, PasswordInput, Spinner } from './ui'
 import DirectoryPicker from './DirectoryPicker'
+import CloudCatalog from './CloudCatalog'
 
 /* Connecting an account, without leaving the app.
 
@@ -44,6 +45,9 @@ const callbackURL = () => `${window.location.origin}/api/providers/oauth/callbac
 export default function ConnectCloud({ onClose, onConnected }) {
   const [specs, setSpecs] = useState([])
   const [kind, setKind] = useState(null)
+
+  // The catalogue of everything connectable, opened from the picker.
+  const [catalog, setCatalog] = useState(false)
 
   // 'signin' walks the OAuth flow; 'form' is the generated credentials form,
   // which is also where an OAuth backend lands if you would rather paste
@@ -257,15 +261,43 @@ export default function ConnectCloud({ onClose, onConnected }) {
 
   if (!spec) {
     return (
-      <Modal
-        title="Connect a cloud account"
-        subtitle="Pick where SAND should put one of the parts. Each account holds an encrypted fragment that is useless on its own."
-        onClose={close}
-      >
-        {error && <Banner tone="error">{error}</Banner>}
-        {specs.length === 0 && !error && <Spinner />}
-        <ProviderPicker specs={specs} onChoose={choose} />
-      </Modal>
+      <>
+        <Modal
+          title="Connect a cloud account"
+          subtitle="Pick where SAND should put one of the parts. Each account holds an encrypted fragment that is useless on its own."
+          onClose={close}
+        >
+          {error && <Banner tone="error">{error}</Banner>}
+          {specs.length === 0 && !error && <Spinner />}
+          <ProviderPicker specs={specs} onChoose={choose} />
+
+          {/* Two of those entries are protocols, not services, and cover
+              dozens of names between them. The full list lives in a window of
+              its own rather than in this one, which is already as long as a
+              dialog can usefully be. */}
+          {specs.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setCatalog(true)}
+              style={{
+                display: 'block',
+                width: '100%',
+                marginTop: '2px',
+                padding: '10px',
+                background: 'none',
+                border: `1px dashed ${COLORS.border}`,
+                borderRadius: '7px',
+                color: COLORS.textMuted,
+                fontFamily: FONT.mono,
+                fontSize: '11px',
+                cursor: 'pointer',
+              }}
+            >Not here? See the full list of services →</button>
+          )}
+        </Modal>
+
+        {catalog && <CloudCatalog specs={specs} onClose={() => setCatalog(false)} />}
+      </>
     )
   }
 

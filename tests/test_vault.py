@@ -137,6 +137,15 @@ class TestVaultLifecycle:
             assert spec["label"] and spec["description"]
             assert isinstance(spec["fields"], list)
 
+        # Two backends are protocols, not services. What they reach is data on
+        # the spec, so the browser's catalogue can name it without keeping its
+        # own list to drift out of date.
+        by_kind = {s["kind"]: s for s in specs}
+        s3_covers = {c["name"] for c in by_kind["s3"].get("covers", [])}
+        assert {"Amazon S3", "Google Cloud Storage", "Wasabi"} <= s3_covers, s3_covers
+        assert by_kind["webdav"].get("covers"), "the WebDAV backend names no services"
+        assert all(c.get("hint") for c in by_kind["s3"]["covers"])
+
     def test_specs_say_which_backends_are_connected_by_signing_in(self, server):
         specs = requests.get(f"{server}/api/providers/specs", timeout=10).json()["specs"]
         by_kind = {s["kind"]: s for s in specs}

@@ -193,8 +193,14 @@ Microsoft Graph's chunked uploads included — so there are no cloud SDKs, no
 CGO, and the artifact is still one static binary.
 
 Anything speaking the S3 or WebDAV protocol works today by typing an endpoint
-or a URL, whether or not it is named above. What a backend of its own would
-cost, service by service, is written down in
+or a URL, whether or not it is named above. In the browser, **+ Connect a
+cloud → Not here? See the full list of services** opens a searchable catalogue
+of every service each backend reaches — Google Cloud Storage, Storj, Seafile,
+Yandex Disk and the rest — with the endpoint each one wants. It is drawn from
+the same registry the connect form is generated from, so the list cannot drift
+away from what the code can actually do.
+
+What a backend of its own would cost, service by service, is written down in
 [`docs/cloud-backends.md`](./docs/cloud-backends.md) — along with the recipe
 for adding one.
 
