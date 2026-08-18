@@ -5,6 +5,7 @@ import { Banner, Button, IconButton, Spinner } from './ui'
 import CloudStats, { UsageBar, UsageLine, usageBreakdown } from './CloudStats'
 import ConnectCloud, { pendingOAuthFlow } from './ConnectCloud'
 import EditAccount from './EditAccount'
+import { DisconnectIcon, EditIcon, StatsIcon, TestIcon } from './Icons'
 import ReclaimVault from './ReclaimVault'
 import VaultSettings from './VaultSettings'
 import { DevMark } from './Brand'
@@ -547,29 +548,32 @@ function AccountCard({ provider, providers, isDefault, onRemove, onChanged }) {
       {/* Four words in a row, all of them bare text, one of them destructive:
           the only thing separating "Test" from "Disconnect" was a gap the width
           of a space. So the three safe actions are drawn as real buttons —
-          filled, bordered, and stretched to share the card's width evenly so
-          each is a wide target rather than a word-sized one — and Disconnect is
-          pushed below a rule of its own, wearing the red outline the app uses
-          everywhere else for a step that cannot be taken back. */}
+          filled, bordered, sharing the card's width evenly so each is a wide
+          target rather than a word-sized one — and Disconnect goes below a rule
+          on a line of its own, spanning it, wearing the red outline the app
+          uses everywhere for a step that cannot be taken back. Each carries the
+          shape of what it does, so the row can be read at a glance rather than
+          word by word. */}
       <div style={{ display: 'flex', gap: '6px', marginTop: '10px' }}>
         <Button size="sm" style={{ flex: 1, justifyContent: 'center' }}
-          onClick={() => setShowing(true)}>Stats</Button>
+          onClick={() => setShowing(true)}><StatsIcon />Stats</Button>
         <Button size="sm" style={{ flex: 1, justifyContent: 'center' }}
-          onClick={() => setEditing(true)}>Edit</Button>
+          onClick={() => setEditing(true)}><EditIcon />Edit</Button>
         <Button size="sm" style={{ flex: 1, justifyContent: 'center' }}
           onClick={test} disabled={testing}>
-          {testing ? <Spinner size={10} /> : null}{testing ? 'Testing' : 'Test'}
+          {testing ? <Spinner size={10} /> : <TestIcon />}{testing ? 'Testing' : 'Test'}
         </Button>
       </div>
 
       <div style={{
-        display: 'flex',
-        justifyContent: 'flex-end',
-        marginTop: '10px',
-        paddingTop: '10px',
+        marginTop: '9px',
+        paddingTop: '9px',
         borderTop: `1px solid ${COLORS.border}`,
       }}>
-        <Button size="sm" variant="danger" onClick={onRemove}>Disconnect</Button>
+        <Button size="sm" variant="danger" onClick={onRemove}
+          style={{ width: '100%', justifyContent: 'center' }}>
+          <DisconnectIcon />Disconnect
+        </Button>
       </div>
 
       {showing && (
