@@ -172,9 +172,45 @@ type transferTarget struct {
 	// it is the whole answer and nothing is added to it.
 	chosen []string
 
-	// scheme is the code named for this file, or the zero value when the count
-	// of accounts is to settle it. See spread.
+	// scheme is the code named for this file, or the zero value when nothing
+	// was named for it. See spread.
 	scheme archive.Scheme
+
+	// fallback is the vault's own default code, applied only where it fits the
+	// accounts a file actually lands on. See schemeFor.
+	fallback archive.Scheme
+}
+
+// schemeFor settles which code a file going to n accounts is cut with.
+//
+// Three answers in order of how deliberate they are. A scheme named for this
+// file wins outright, because somebody chose it for these bytes. The vault's
+// default comes next, and only where it fits — a default of 3-of-5 is a
+// statement about five accounts and has nothing to say about a file
+// deliberately sent to six, which is 4-of-6 as it would have been with no
+// default set at all. Failing both, the count settles it, which is what every
+// upload did before a scheme could be named.
+func (t *transferTarget) schemeFor(n int) (archive.Scheme, error) {
+	if t.scheme != (archive.Scheme{}) {
+		return t.scheme, nil
+	}
+	if t.fallback != (archive.Scheme{}) && t.fallback.Total == n {
+		return t.fallback, nil
+	}
+	return SchemeFor(n)
+}
+
+// width is how many accounts a file wants to be on before anything has been
+// chosen for it: the width of whichever code is going to cut it, or zero to
+// leave it to the default family's rounding.
+func (t *transferTarget) width() int {
+	if t.scheme != (archive.Scheme{}) {
+		return t.scheme.Total
+	}
+	if t.fallback != (archive.Scheme{}) {
+		return t.fallback.Total
+	}
+	return 0
 }
 
 // snapshotTarget takes what a scatter needs from the vault and settles which
@@ -213,6 +249,7 @@ func (v *Vault) snapshotTarget(scope Scope, sp spread) (*transferTarget, error) 
 		dataKey:       dataKey,
 		policy:        v.store.Policy,
 		scheme:        sp.scheme,
+		fallback:      v.defaultSchemeLocked(),
 	}
 	defaults := append([]string(nil), v.store.DefaultAccounts...)
 	configs := append([]provider.Config(nil), v.providers...)
@@ -242,10 +279,24 @@ func (v *Vault) snapshotTarget(scope Scope, sp spread) (*transferTarget, error) 
 	}
 
 	if sp.exact && len(t.preferred) > 0 {
-		var err error
-		if t.chosen, err = resolveAccounts(t.preferred, t.byID, t.scheme); err != nil {
+		// The vault's default makes a count like five a spread that five
+		// accounts would not otherwise be, so it has to be in hand before the
+		// count is judged. It applies only where it fits.
+		against := t.scheme
+		if against == (archive.Scheme{}) && t.fallback.Total == len(t.preferred) {
+			against = t.fallback
+		}
+		chosen, err := resolveAccounts(t.preferred, t.byID, against)
+		if err != nil {
 			return nil, err
 		}
+		// The accounts are settled, so the code is too — and a count that names
+		// none, with nothing else naming one either, is a mistake to report
+		// before anything is encoded rather than after.
+		if _, err := t.schemeFor(len(chosen)); err != nil {
+			return nil, err
+		}
+		t.chosen = chosen
 	}
 	return t, nil
 }
@@ -257,18 +308,15 @@ func (v *Vault) snapshotTarget(scope Scope, sp spread) (*transferTarget, error) 
 func (t *transferTarget) planFor(seed uint64) (Plan, archive.Scheme, error) {
 	chosen := t.chosen
 	if chosen == nil {
-		// A named scheme says how many accounts to end up on; without one the
-		// width is the default family's, rounded up from what the file already
-		// prefers.
-		chosen = SelectAccounts(t.ids, t.preferred, t.scheme.Total, seed)
+		// A code that is going to cut this file says how many accounts to end
+		// up on; without one the width is the default family's, rounded up from
+		// what the file already prefers.
+		chosen = SelectAccounts(t.ids, t.preferred, t.width(), seed)
 	}
 
-	scheme := t.scheme
-	if scheme == (archive.Scheme{}) {
-		var err error
-		if scheme, err = SchemeFor(len(chosen)); err != nil {
-			return nil, scheme, err
-		}
+	scheme, err := t.schemeFor(len(chosen))
+	if err != nil {
+		return nil, scheme, err
 	}
 	plan, err := BuildPlan(chosen, t.policy, scheme, seed)
 	return plan, scheme, err

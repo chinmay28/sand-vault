@@ -43,11 +43,15 @@ export const api = {
   unlock: (password) => request('/api/vault/unlock', { method: 'POST', body: { password } }),
   lock: () => request('/api/vault/lock', { method: 'POST' }),
   setPolicy: (policy) => request('/api/vault/policy', { method: 'POST', body: { policy } }),
-  /* The accounts an upload spreads over unless it names its own. An empty list
-     clears the default, which puts every upload back to picking three clouds
-     at random. */
-  setDefaultAccounts: (accounts) =>
-    request('/api/vault/defaults', { method: 'POST', body: { accounts } }),
+  /* The accounts an upload spreads over unless it names its own, and the code
+     they are cut with. An empty list clears the default, which puts every
+     upload back to picking three clouds at random.
+
+     Both halves go at once, because neither is checkable alone: a scheme is
+     only a default while accounts as wide as it are named under it. Passing no
+     scheme clears that half and hands the code back to the count. */
+  setDefaultAccounts: (accounts, scheme = '') =>
+    request('/api/vault/defaults', { method: 'POST', body: { accounts, scheme } }),
   /* Changing the password rotates the key the stored parts are encrypted
      under, so unless the migration is deferred this call only comes back once
      every file has been rebuilt onto the new key — minutes, on a full vault.

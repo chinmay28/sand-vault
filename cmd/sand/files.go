@@ -571,9 +571,24 @@ func printRelocationPlan(plan *vault.RelocationPlan) {
 	}
 	fmt.Printf("%s %s: %d file(s), %d already in place\n", what, plan.Path, plan.Total, plan.Unchanged)
 
+	// Recodes first, because they are the expensive half and saying "nothing to
+	// move" above them reads as "nothing to do" when the whole file is about to
+	// come down and go back up.
+	if plan.Recoded > 0 {
+		fmt.Printf("%d file(s) to rebuild under a different scheme, %s in all\n",
+			plan.Recoded, formatBytes(plan.RecodeBytes))
+		for _, f := range plan.Files {
+			if f.Recode {
+				fmt.Printf("  %s\t%s → %s\t%s\n", f.Path, f.From, f.To, formatBytes(f.Bytes))
+			}
+		}
+	}
+
 	switch {
 	case plan.Moves == 0 && plan.Drops == 0:
-		fmt.Println("Nothing to move — every part is already on one of those accounts.")
+		if plan.Recoded == 0 {
+			fmt.Println("Nothing to move — every part is already on one of those accounts.")
+		}
 		return
 	case plan.Moves == 0:
 		// Narrowing the accounts rather than changing them: nothing travels,

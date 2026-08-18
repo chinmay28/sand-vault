@@ -342,6 +342,7 @@ export default function App() {
             error={error}
             providers={providers}
             defaultAccounts={status.stats?.default_accounts || []}
+            defaultScheme={status.stats?.default_scheme || ''}
             mobile={mobile}
             subVaults={subVaults}
             showSubVaults={showSubVaults}

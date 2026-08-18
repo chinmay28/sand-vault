@@ -236,13 +236,21 @@ func (v *Vault) planRelocation(scope Scope, target string, accounts []string, sc
 		return nil, ErrLocked
 	}
 	policy := v.store.Policy
+	fallback := v.defaultSchemeLocked()
 	byID := make(map[string]provider.Config, len(v.providers))
 	for _, cfg := range v.providers {
 		byID[cfg.ID] = cfg
 	}
 	v.mu.RUnlock()
 
-	targets, err := resolveAccounts(accounts, byID, scheme)
+	// The vault's default makes a count like five a spread that five accounts
+	// would not otherwise be, so it has to be in hand before the count is
+	// judged. It applies only where it fits, exactly as it does for an upload.
+	against := scheme
+	if against == (archive.Scheme{}) && fallback != (archive.Scheme{}) && fallback.Total == len(accounts) {
+		against = fallback
+	}
+	targets, err := resolveAccounts(accounts, byID, against)
 	if err != nil {
 		return nil, err
 	}
@@ -253,12 +261,16 @@ func (v *Vault) planRelocation(scope Scope, target string, accounts []string, sc
 	if err != nil {
 		return nil, err
 	}
-	// The code named, or failing that the one how many accounts were chosen
-	// settles — and whether that matches what each file is already cut with
+	// The code named for this move, failing that the vault's own where it fits
+	// the accounts chosen, and failing both the one their count settles — the
+	// same three answers in the same order an upload gets (transferTarget.
+	// schemeFor). Whether the result matches what each file is already cut with
 	// settles whether it moves or is rebuilt.
 	want := scheme
 	if want == (archive.Scheme{}) {
-		if want, err = SchemeFor(len(targets)); err != nil {
+		if fallback != (archive.Scheme{}) && fallback.Total == len(targets) {
+			want = fallback
+		} else if want, err = SchemeFor(len(targets)); err != nil {
 			return nil, err
 		}
 	}

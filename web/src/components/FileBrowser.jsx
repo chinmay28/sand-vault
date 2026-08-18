@@ -24,7 +24,7 @@ const SEARCH_DEBOUNCE_MS = 180
 const TILE_MIN_PX = { mobile: 108, desktop: 132 }
 
 export default function FileBrowser({
-  nav, listing, loading, error, providers, defaultAccounts, mobile,
+  nav, listing, loading, error, providers, defaultAccounts, defaultScheme, mobile,
   subVaults = [], showSubVaults = false, onOpenSubVault,
   onRefresh, onPreview, onInspect, onFilm, onError,
 }) {
@@ -605,6 +605,7 @@ export default function FileBrowser({
           path={path}
           providers={providers}
           defaults={defaultAccounts}
+          defaultScheme={defaultScheme}
           onClose={() => setPending(null)}
           onChanged={onRefresh}
           onUpload={(accounts, scheme) => { setPending(null); uploadFiles(pending, accounts, scheme) }}

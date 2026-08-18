@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/chinmay28/sand-vault/internal/archive"
 	"github.com/chinmay28/sand-vault/internal/vault"
 )
 
@@ -213,27 +214,54 @@ func (s *Server) handleVaultMigrate(w http.ResponseWriter, r *http.Request) {
 
 type defaultAccountsRequest struct {
 	// Accounts is the vault-wide selection new uploads start from. How many are
-	// named settles the erasure code — 3 is 2-of-3, 6 is 4-of-6, 9 is 6-of-9. An
-	// empty list clears it, which puts every upload back to picking its own
-	// accounts at random.
+	// named settles the erasure code unless Scheme names one — 3 is 2-of-3, 6 is
+	// 4-of-6, 9 is 6-of-9. An empty list clears it, which puts every upload back
+	// to picking its own accounts at random.
 	Accounts []string `json:"accounts"`
+
+	// Scheme is the code those uploads are cut with, written "k-of-n", and it
+	// has to be as wide as the accounts are many. Empty clears it and hands the
+	// code back to the count.
+	//
+	// The two are set together, as one object, because neither can be checked
+	// without the other: 3-of-5 is only a default while five accounts are named
+	// under it. A request that sends accounts and omits the scheme is therefore
+	// clearing the scheme, not leaving it alone.
+	Scheme string `json:"scheme,omitempty"`
 }
 
 // handleVaultDefaults records which accounts uploads should use when they do
-// not name their own.
+// not name their own, and which code to cut them with.
 func (s *Server) handleVaultDefaults(w http.ResponseWriter, r *http.Request) {
 	var req defaultAccountsRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
 		return
 	}
+	scheme, err := parseSchemeField(req.Scheme)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "BAD_SCHEME")
+		return
+	}
 
 	v, _ := s.Vault()
-	if err := v.SetDefaultAccounts(req.Accounts); err != nil {
+	if err := v.SetDefaults(req.Accounts, scheme); err != nil {
 		vaultErrorResponse(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"default_accounts": v.DefaultAccounts()})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"default_accounts": v.DefaultAccounts(),
+		"default_scheme":   schemeField(v.DefaultScheme()),
+	})
+}
+
+// schemeField writes a scheme the way the API carries one, with the zero value
+// as the empty string rather than as "0-of-0".
+func schemeField(scheme archive.Scheme) string {
+	if scheme == (archive.Scheme{}) {
+		return ""
+	}
+	return scheme.String()
 }
 
 type policyRequest struct {

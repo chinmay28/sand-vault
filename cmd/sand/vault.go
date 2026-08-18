@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/chinmay28/sand-vault/internal/archive"
 	"github.com/chinmay28/sand-vault/internal/server"
 	"github.com/chinmay28/sand-vault/internal/vault"
 )
@@ -375,7 +376,10 @@ func runMigration(cmd *cobra.Command, v *vault.Vault) error {
 }
 
 func vaultDefaultsCmd() *cobra.Command {
-	var clear bool
+	var (
+		clear  bool
+		scheme string
+	)
 
 	cmd := &cobra.Command{
 		Use:   "defaults [account]...",
@@ -398,8 +402,21 @@ than bytes. What it buys grows with the width: one more cloud can fail per
 group, and an attacker needs two more of your providers together before what
 they hold is enough to rebuild anything.
 
+--scheme cuts to a code of your own instead, k-of-n, as wide as the accounts
+named. It is what any other count of clouds means, and what a different balance
+of the three costs looks like:
+
+  5 accounts  --scheme 3-of-5   1.67x   2 can go dark   3 must collude
+  5 accounts  --scheme 2-of-5   2.5x    3 can go dark   2 must collude
+  10 accounts --scheme 6-of-10  1.67x   4 can go dark   6 must collude
+
+Lowering k buys durability with storage and with secrecy both: 2-of-5 survives
+three clouds going away, and two of them together still rebuild the file.
+
 With no default set, each file picks its own three at random, so a large vault
-still spreads over everything connected instead of filling the same three.`,
+still spreads over everything connected instead of filling the same three.
+'sand put --scheme' overrides the code per upload, as --accounts does the
+clouds.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			v, err := openVault(cmd)
 			if err != nil {
@@ -407,18 +424,29 @@ still spreads over everything connected instead of filling the same three.`,
 			}
 			defer closeVault(v)
 
-			if len(args) == 0 && !clear {
+			if len(args) == 0 && !clear && scheme == "" {
 				return printDefaultAccounts(v)
 			}
-			if len(args) > 0 && clear {
-				return fmt.Errorf("--clear takes no accounts")
+			if clear && (len(args) > 0 || scheme != "") {
+				return fmt.Errorf("--clear takes no accounts and no scheme")
 			}
 
 			chosen, err := resolveAccountNames(v, args)
 			if err != nil {
 				return err
 			}
-			if err := v.SetDefaultAccounts(chosen); err != nil {
+			cut, err := parseSchemeFlag(scheme)
+			if err != nil {
+				return err
+			}
+			// Naming a scheme and no accounts would be half a preference — the
+			// scheme says how many clouds it wants and there would be none under
+			// it — so the accounts already stored stand in, which is what
+			// "change the code, keep the clouds" means.
+			if len(chosen) == 0 && !clear {
+				chosen = v.DefaultAccounts()
+			}
+			if err := v.SetDefaults(chosen, cut); err != nil {
 				return err
 			}
 			if clear {
@@ -430,6 +458,8 @@ still spreads over everything connected instead of filling the same three.`,
 	}
 
 	cmd.Flags().BoolVar(&clear, "clear", false, "forget the default and pick accounts per upload instead")
+	cmd.Flags().StringVar(&scheme, "scheme", "",
+		"the code to cut uploads with, k-of-n — 3-of-5, 6-of-10 (default: 2m-of-3m, from how many accounts are named)")
 	return cmd
 }
 
@@ -446,6 +476,16 @@ func printDefaultAccounts(v *vault.Vault) error {
 	configs, err := v.Providers()
 	if err != nil {
 		return err
+	}
+	// The code before the clouds, because it is the line that says what the
+	// list underneath actually comes to.
+	scheme := v.DefaultScheme()
+	if scheme == (archive.Scheme{}) {
+		scheme, _ = archive.SchemeFor(len(defaults))
+	}
+	if scheme != (archive.Scheme{}) {
+		fmt.Printf("%s — stores %.2gx, %d can go dark, %d must collude\n",
+			scheme, scheme.Storage(), scheme.Tolerance(), scheme.Data)
 	}
 	for _, id := range defaults {
 		name := id

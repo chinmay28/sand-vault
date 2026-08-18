@@ -81,6 +81,15 @@ export function schemeName(scheme) {
   return scheme ? `${scheme.data}-of-${scheme.total}` : ''
 }
 
+/* The inverse: the "k-of-n" the server hands back, or null for the empty string
+   it sends when a vault has no default code of its own. */
+export function parseScheme(text) {
+  const match = /^(\d+)-of-(\d+)$/.exec((text || '').trim())
+  if (!match) return null
+  const parsed = { data: Number(match[1]), total: Number(match[2]) }
+  return validScheme(parsed) ? parsed : null
+}
+
 /* How many clouds can go dark with the file still readable: n − k. */
 export function tolerance(scheme) {
   return scheme ? scheme.total - scheme.data : 0
@@ -106,29 +115,9 @@ export function validScheme(scheme) {
     && scheme.total <= MAX_CLOUDS
 }
 
-/* The widest spread a set of clouds can fill, for a dialog that can only offer
-   the default family — the vault-wide default, which names accounts and no
-   scheme, so the count has to name one by itself. */
-export function maxSelectable(count) {
-  if (count < CLOUDS_PER_GROUP) return count
-  return Math.min(Math.floor(count / CLOUDS_PER_GROUP) * CLOUDS_PER_GROUP, MAX_CLOUDS)
-}
-
-/* Whether a count of clouds is one the server will take with no scheme named.
-   The counts this rules out are the ones between groups: a fourth cloud has no
-   shard of its own to hold without a fifth and a sixth beside it — unless the
-   upload says what four clouds should mean. */
-export function validSpread(count) {
-  return count === 0 || schemeFor(count) !== null
-}
-
-/* Whether a selection is one that can actually be stored with no scheme named. */
-export function usableSpread(count) {
-  return count >= MIN_ACCOUNTS && validSpread(count)
-}
-
-/* Whether a selection is one that can be stored once a scheme is named
-   alongside it, which is the question the upload and relocate dialogs ask. */
+/* Whether a selection is one that can be stored: enough clouds to rebuild from,
+   and a code as wide as there are clouds to hold it. Every dialog names a code
+   alongside the clouds now, so this is the only question any of them asks. */
 export function usableCut(count, scheme) {
   return count >= MIN_ACCOUNTS && validScheme(scheme) && scheme.total === count
 }
@@ -148,18 +137,6 @@ export function fileScheme(file) {
   return schemeForGroups(1)
 }
 
-/* The nearest spreads above and below a count that names none, for saying what
-   the two ways out of it are. */
-export function nextScheme(count) {
-  const up = Math.min((Math.floor(count / CLOUDS_PER_GROUP) + 1) * CLOUDS_PER_GROUP, MAX_CLOUDS)
-  return schemeFor(up) || schemeForGroups(1)
-}
-
-export function previousScheme(count) {
-  const down = Math.max(Math.floor(count / CLOUDS_PER_GROUP) * CLOUDS_PER_GROUP, CLOUDS_PER_GROUP)
-  return schemeFor(down) || schemeForGroups(1)
-}
-
 /* The clouds an upload starts on: the vault's default, and with none set three
    picked at random — which is exactly what the picker then lets the user
    change. A default is taken as it stands rather than made up to three, the
@@ -171,9 +148,10 @@ export function previousScheme(count) {
 export function initialSelection(providers, defaults = []) {
   const connected = new Set(providers.map((p) => p.id))
   const preferred = (defaults || []).filter((id) => connected.has(id))
-  // Trimmed only if a disconnected cloud has left the default a shape a file
-  // cannot be laid out over — five of a saved six becomes three, not five.
-  if (preferred.length > 0) return preferred.slice(0, maxSelectable(preferred.length))
+  // Taken as it stands. Any count of clouds is a spread now that the threshold
+  // is chosen beside them, and the server keeps the stored default coherent as
+  // accounts come and go, so there is nothing left here to trim.
+  if (preferred.length > 0) return preferred
 
   const pool = [...shuffle(providers.filter((p) => p.online)), ...shuffle(providers.filter((p) => !p.online))]
   return pool.slice(0, PARTS_PER_FILE).map((p) => p.id)
@@ -196,7 +174,7 @@ function shuffle(items) {
    name one — it stores accounts and nothing else — so it leaves the cap at the
    widest scheme the connected clouds can fill by themselves. */
 export function CloudChoice({ providers, selected, onChange, cap: capProp }) {
-  const cap = Math.min(capProp ?? maxSelectable(providers.length), MAX_CLOUDS)
+  const cap = Math.min(capProp ?? providers.length, MAX_CLOUDS)
   const full = selected.length >= cap
 
   const toggle = (id) => {
@@ -299,8 +277,7 @@ export function CloudChoice({ providers, selected, onChange, cap: capProp }) {
           fontSize: '10px',
           color: COLORS.textMuted,
         }}>
-          {schemeName(schemeFor(cap))} is as wide as {providers.length} clouds goes.
-          Unpick one to swap it for another.
+          {cap} clouds is as wide as a file goes. Unpick one to swap it for another.
         </p>
       )}
     </div>
@@ -449,9 +426,13 @@ function SelectionNote({ providers, selected, scheme, moving = false }) {
 /* The dialog every upload passes through: which files are going up, which three
    clouds they are being scattered over, and the chance to change that before a
    single byte leaves the machine. */
-export function UploadDestination({ files, path, providers, defaults, onUpload, onClose, onChanged }) {
+export function UploadDestination({
+  files, path, providers, defaults, defaultScheme, onUpload, onClose, onChanged,
+}) {
   const [selected, setSelected] = useState(() => initialSelection(providers, defaults))
-  const [threshold, setThreshold] = useState(null)
+  // The vault's own default is where the threshold starts, so an upload that
+  // changes nothing is cut the way the settings say.
+  const [threshold, setThreshold] = useState(() => parseScheme(defaultScheme)?.data ?? null)
   const [remember, setRemember] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
@@ -485,7 +466,7 @@ export function UploadDestination({ files, path, providers, defaults, onUpload, 
       // Saved first: an upload that fails should not also lose the choice the
       // user just made about where their files live from now on.
       if (remember) {
-        await api.setDefaultAccounts(selected)
+        await api.setDefaultAccounts(selected, named ? schemeName(scheme) : '')
         onChanged?.()
       }
       onUpload(selected, named ? schemeName(scheme) : '')
@@ -547,13 +528,10 @@ export function UploadDestination({ files, path, providers, defaults, onUpload, 
           type="checkbox"
           checked={remember}
           onChange={(e) => setRemember(e.target.checked)}
-          disabled={!usableSpread(selected.length)}
-          title={usableSpread(selected.length)
-            ? undefined
-            : `A vault-wide default names clouds and no scheme, so it has to be a count that names one by itself — ${CLOUDS_PER_GROUP}, ${2 * CLOUDS_PER_GROUP}, ${3 * CLOUDS_PER_GROUP}…`}
+          disabled={!usableCut(selected.length, scheme)}
           style={{ accentColor: COLORS.accent, width: '15px', height: '15px', minHeight: 0 }}
         />
-        Make this the default for the whole vault
+        Make this the default for the whole vault{named ? ` — ${schemeName(scheme)}` : ''}
       </label>
 
       <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
@@ -572,18 +550,32 @@ export function UploadDestination({ files, path, providers, defaults, onUpload, 
   )
 }
 
-/* The same choice, made once for the whole vault. */
-export function DefaultClouds({ providers, defaults, onClose, onChanged, zIndex }) {
+/* The same choice, made once for the whole vault: which clouds, and how they
+   are cut. Both are stored together, because a code is only a default while
+   clouds as wide as it are named under it. */
+export function DefaultClouds({ providers, defaults, defaultScheme, onClose, onChanged, zIndex }) {
   const [selected, setSelected] = useState(() => (defaults || []).filter(
     (id) => providers.some((p) => p.id === id)))
+  const [threshold, setThreshold] = useState(() => parseScheme(defaultScheme)?.data ?? null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
 
-  const save = async (accounts) => {
+  const scheme = useMemo(() => {
+    const suggested = defaultSchemeFor(selected.length)
+    if (!suggested) return null
+    if (threshold === null) return suggested
+    return { data: Math.min(Math.max(threshold, MIN_DATA), selected.length), total: selected.length }
+  }, [selected.length, threshold])
+
+  // Only a code the count would not have named by itself is worth storing; the
+  // server drops the rest for the same reason.
+  const named = scheme && (!schemeFor(scheme.total) || schemeFor(scheme.total).data !== scheme.data)
+
+  const save = async (accounts, cut) => {
     setBusy(true)
     setError(null)
     try {
-      await api.setDefaultAccounts(accounts)
+      await api.setDefaultAccounts(accounts, cut)
       onChanged()
       onClose()
     } catch (err) {
@@ -602,16 +594,19 @@ export function DefaultClouds({ providers, defaults, onClose, onChanged, zIndex 
     >
       {error && <Banner tone="error">{error}</Banner>}
 
-      <CloudChoice providers={providers} selected={selected} onChange={setSelected} />
+      <CloudChoice
+        providers={providers}
+        selected={selected}
+        onChange={setSelected}
+        cap={providers.length}
+      />
 
-      {selected.length > 0 && !usableSpread(selected.length) && (
+      <ThresholdChoice scheme={scheme} onChange={(next) => setThreshold(next.data)} />
+
+      {selected.length > 0 && !usableCut(selected.length, scheme) && (
         <div style={{ marginTop: '14px' }}>
           <Banner tone="error">
-            {selected.length < MIN_ACCOUNTS
-              ? `Choose at least ${MIN_ACCOUNTS} clouds, or none at all to let every upload pick its own.`
-              : `Choose clouds in groups of ${CLOUDS_PER_GROUP} — ${
-                previousScheme(selected.length).total} or ${nextScheme(selected.length).total}, not ${
-                selected.length}.`}
+            Choose at least {MIN_ACCOUNTS} clouds, or none at all to let every upload pick its own.
           </Banner>
         </div>
       )}
@@ -624,22 +619,22 @@ export function DefaultClouds({ providers, defaults, onClose, onChanged, zIndex 
         lineHeight: 1.6,
       }}>
         With no default, each file picks {PARTS_PER_FILE} clouds of its own at random — which is
-        what spreads a vault evenly over more than {PARTS_PER_FILE} accounts. Saving a default of
-        6, 9 or more — any group of {CLOUDS_PER_GROUP} — cuts every upload{' '}
-        {schemeName(schemeForGroups(2))}, {schemeName(schemeForGroups(3))} and so on, for the same
-        storage and a group's worth of extra margin each time.
+        what spreads a vault evenly over more than {PARTS_PER_FILE} accounts. Saving one fixes both
+        halves: which clouds every upload goes to, and how many of them it takes to rebuild a file.
+        An upload can still override either, and changing this leaves everything already stored cut
+        the way it was.
       </p>
 
       <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
-        <Button type="button" variant="ghost" onClick={() => save([])} disabled={busy}>
+        <Button type="button" variant="ghost" onClick={() => save([], '')} disabled={busy}>
           Pick per upload
         </Button>
         <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>Cancel</Button>
         <Button
           type="button"
           variant="primary"
-          onClick={() => save(selected)}
-          disabled={busy || !usableSpread(selected.length)}
+          onClick={() => save(selected, named ? schemeName(scheme) : '')}
+          disabled={busy || !usableCut(selected.length, scheme)}
         >
           {busy ? <Spinner size={10} /> : null}Save default
         </Button>

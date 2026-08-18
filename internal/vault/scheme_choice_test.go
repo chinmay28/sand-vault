@@ -320,3 +320,189 @@ func TestFilesOnTheSameCloudsCanBeCutDifferently(t *testing.T) {
 		t.Error("the secret file should need more accounts to collude than the durable one")
 	}
 }
+
+// The vault-wide default: a code chosen once in settings rather than per file.
+// It is a preference and not a rule, which is the whole of its behaviour — it
+// applies where it fits, an upload overrides it, and anything already stored
+// keeps the code it was cut with.
+
+func TestTheVaultsDefaultSchemeCutsUploadsThatChooseNothing(t *testing.T) {
+	scheme := archive.Scheme{Data: 3, Total: 5}
+	v, _ := newTestVault(t, 5)
+	ids := accountIDs(t, v)
+
+	if err := v.SetDefaults(ids, scheme); err != nil {
+		t.Fatalf("SetDefaults: %v", err)
+	}
+	if got := v.DefaultScheme(); got != scheme {
+		t.Fatalf("default reads back as %s, want %s", got, scheme)
+	}
+
+	// Nothing named for this upload at all: no accounts, no code.
+	entry, warnings, err := v.Upload(context.Background(), MainScope, "/", "settled.bin",
+		schemeTestPayload(t, 24*1024), UploadOptions{})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Errorf("unexpected warnings: %v", warnings)
+	}
+	if got := entry.Scheme(); got != scheme {
+		t.Fatalf("cut %s, want the vault's default %s", got, scheme)
+	}
+	if got := len(entry.Shards); got != scheme.Total {
+		t.Fatalf("stored %d shards, want %d", got, scheme.Total)
+	}
+}
+
+func TestAnUploadOverridesTheVaultsDefaultScheme(t *testing.T) {
+	v, _ := newTestVault(t, 5)
+	ids := accountIDs(t, v)
+	if err := v.SetDefaults(ids, archive.Scheme{Data: 3, Total: 5}); err != nil {
+		t.Fatalf("SetDefaults: %v", err)
+	}
+
+	want := archive.Scheme{Data: 2, Total: 5}
+	entry, _, err := v.Upload(context.Background(), MainScope, "/", "louder.bin",
+		schemeTestPayload(t, 16*1024), UploadOptions{Accounts: ids, Scheme: want})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if got := entry.Scheme(); got != want {
+		t.Fatalf("cut %s, want the upload's own %s", got, want)
+	}
+}
+
+func TestTheVaultsDefaultSchemeOnlyAppliesWhereItFits(t *testing.T) {
+	// A default of 3-of-5 is a statement about five accounts. A file
+	// deliberately sent to three is 2-of-3, exactly as it would be with no
+	// default set — the alternative is an upload failing because settings named
+	// a width it does not have.
+	v, _ := newTestVault(t, 6)
+	ids := accountIDs(t, v)
+	if err := v.SetDefaults(ids[:5], archive.Scheme{Data: 3, Total: 5}); err != nil {
+		t.Fatalf("SetDefaults: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name     string
+		accounts []string
+		want     archive.Scheme
+	}{
+		{"three accounts", ids[:3], archive.SchemeDefault},
+		{"six accounts", ids, archive.SchemeWide},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entry, _, err := v.Upload(context.Background(), MainScope, "/", tc.name+".bin",
+				schemeTestPayload(t, 8*1024), UploadOptions{Accounts: tc.accounts})
+			if err != nil {
+				t.Fatalf("Upload onto %d accounts: %v", len(tc.accounts), err)
+			}
+			if got := entry.Scheme(); got != tc.want {
+				t.Fatalf("cut %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestTheDefaultSchemeAndItsAccountsAreSetTogether(t *testing.T) {
+	v, _ := newTestVault(t, 6)
+	ids := accountIDs(t, v)
+
+	for _, tc := range []struct {
+		name     string
+		accounts []string
+		scheme   archive.Scheme
+		want     string
+	}{
+		{"a code wider than the accounts under it", ids[:3], archive.Scheme{Data: 3, Total: 5}, "pick 5"},
+		{"a code narrower than them", ids, archive.Scheme{Data: 3, Total: 5}, "pick 5"},
+		{"a code with no accounts at all", nil, archive.Scheme{Data: 3, Total: 5}, "names 5 accounts"},
+		{"a code that is not one", ids[:3], archive.Scheme{Data: 1, Total: 3}, "at least 2 shards"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := v.SetDefaults(tc.accounts, tc.scheme)
+			if err == nil {
+				t.Fatalf("%s was accepted", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("refused with %q, want it to mention %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestADefaultSchemeIsOnlyStoredWhenItSaysSomethingNew(t *testing.T) {
+	// 4-of-6 against six accounts is what six accounts already mean. Storing it
+	// would freeze a default that is not a choice, and would then have to be
+	// cleared by hand after every change to the list.
+	v, _ := newTestVault(t, 6)
+	ids := accountIDs(t, v)
+
+	if err := v.SetDefaults(ids, archive.SchemeWide); err != nil {
+		t.Fatalf("SetDefaults: %v", err)
+	}
+	if got := v.DefaultScheme(); got != (archive.Scheme{}) {
+		t.Fatalf("stored %s as a default, want the count to keep naming it", got)
+	}
+	stats, err := v.Stats()
+	if err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if stats.DefaultScheme != "" {
+		t.Fatalf("status reports %q, want it empty", stats.DefaultScheme)
+	}
+}
+
+func TestDisconnectingAnAccountDoesNotLeaveAStrandedDefaultScheme(t *testing.T) {
+	// 3-of-5 has nothing to say about the four accounts left, and a default that
+	// names a width the vault does not have would fail every upload after it.
+	v, _ := newTestVault(t, 5)
+	ids := accountIDs(t, v)
+	if err := v.SetDefaults(ids, archive.Scheme{Data: 3, Total: 5}); err != nil {
+		t.Fatalf("SetDefaults: %v", err)
+	}
+
+	if err := v.RemoveProvider(ids[0], true); err != nil {
+		t.Fatalf("RemoveProvider: %v", err)
+	}
+	if got := v.DefaultScheme(); got != (archive.Scheme{}) {
+		t.Fatalf("default scheme survived as %s, want it cleared", got)
+	}
+	// And what is left has to still name a code by itself, which four does not.
+	if got := len(v.DefaultAccounts()); got != 3 {
+		t.Fatalf("default trimmed to %d accounts, want 3", got)
+	}
+
+	entry, _, err := v.Upload(context.Background(), MainScope, "/", "after.bin",
+		schemeTestPayload(t, 8*1024), UploadOptions{})
+	if err != nil {
+		t.Fatalf("Upload after disconnecting: %v", err)
+	}
+	if got := entry.Scheme(); got != archive.SchemeDefault {
+		t.Fatalf("cut %s, want %s", got, archive.SchemeDefault)
+	}
+}
+
+func TestChangingTheDefaultSchemeLeavesStoredFilesAlone(t *testing.T) {
+	v, _ := newTestVault(t, 5)
+	ids := accountIDs(t, v)
+
+	before, _, err := v.Upload(context.Background(), MainScope, "/", "earlier.bin",
+		schemeTestPayload(t, 12*1024), UploadOptions{Accounts: ids[:3]})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+
+	if err := v.SetDefaults(ids, archive.Scheme{Data: 2, Total: 5}); err != nil {
+		t.Fatalf("SetDefaults: %v", err)
+	}
+
+	after, err := v.Entry(before.ID)
+	if err != nil {
+		t.Fatalf("Entry: %v", err)
+	}
+	if got := after.Scheme(); got != archive.SchemeDefault {
+		t.Fatalf("a stored file became %s, want it left as %s", got, archive.SchemeDefault)
+	}
+}
