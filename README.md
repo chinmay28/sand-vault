@@ -980,11 +980,15 @@ pipe the password on stdin.
 - **Read speed** — beside *Vault settings* at the foot of the sidebar. Opening a
   file is a race between the accounts holding its shards, and the losers are
   never mentioned anywhere else, so a cloud can stop pulling its weight without
-  anything looking wrong. This is the scoreboard: races entered and won per
-  account, how long each one's answers take, and what it did when it did not win
-  — arrived too late to be needed, was cut off once enough had arrived, or could
-  not answer at all. Counted by the running server and not stored, so *Start
-  again* is how you measure a change rather than the average since it came up
+  anything looking wrong. This is the scoreboard, in three charts: *share of the
+  reads*, one bar cut into each account's share of the shards actually used;
+  *how long an answer takes*, each account's average with the spread from its
+  quickest answer to its slowest behind it; and *who answers*, a bar per account
+  split by what became of every shard it was asked for — won, arrived too late
+  to be needed, was cut off once enough had arrived, or could not answer at all.
+  Every figure is written out beside its bar, so nothing is gated behind reading
+  a colour. Counted by the running server and not stored, so *Start again* is how
+  you measure a change rather than the average since it came up
 - **Connect dialog** — generated from each backend's own field spec, so new
   backends appear without frontend changes
 - **Browser** — folders, breadcrumbs, drag-and-drop upload with progress

@@ -694,7 +694,9 @@ waits on the accounts it has already stopped needing. The counters are the
 server process's, deliberately: counting reads into the vault file would mean a
 write on every chunk of every stream, to the one file everything else depends
 on. `GET /api/reads` serves them and **Read speed**, beside Vault settings in
-the accounts drawer, draws them.
+the accounts drawer, draws them as three charts — share of the shards used, how
+long each account takes to answer with its fastest-to-slowest spread behind it,
+and what became of every fetch — each with its figures written out beside it.
 
 ### 4.3 Reading at an offset
 

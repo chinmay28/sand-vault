@@ -14,15 +14,38 @@ import { useIsMobile } from '../hooks'
    slower. The others simply carry it, until the day two of them are offline
    and the passenger is suddenly load-bearing.
 
-   So this is the race, kept. One row per account: how many races it entered,
-   how many it won, and how long its answers take. The bar is its share of the
-   wins, which is the figure to read across accounts — an account holding one
-   shard of a 4-of-6 file should be winning about two races in three, and one
-   winning none is the finding.
+   So this is the race, kept, in three pictures and the figures behind them:
+   who is carrying the reads, how long each account takes to answer, and what
+   became of every shard it was asked for. Each answers a different question and
+   none of them is the same question twice — the share says who is winning, the
+   times say why, and the outcomes say whether losing was a fault or just the
+   read path doing its job.
+
+   The charts are laid out by hand, like every other one in this app: a bar is a
+   box as wide as its share and a column is a box as tall as one. Nothing is
+   fetched to draw them, so opening the vault still makes no third-party
+   requests at all.
 
    The figures are the server's, since it came up. Nothing is stored: counting
    reads into the vault file would mean a write on every chunk of every stream,
    to the one file everything else depends on. */
+
+/* What became of a fetch, and what colour says so.
+
+   A win wears the account's own colour — the same one its card, its shard
+   badges and its slice of the share bar wear, so one account is one colour
+   everywhere in the app. The two ways of not winning are deliberately grey:
+   neither is a fault, and colouring them would make an account that is merely
+   slower than four others look like one that is breaking. Only a genuine
+   failure is red, which is the one thing here worth somebody's attention. */
+const OUTCOMES = [
+  { key: 'late', label: 'too late', color: COLORS.textDim,
+    hint: 'It answered, but the rebuild already had enough shards.' },
+  { key: 'aborted', label: 'cut off', color: COLORS.textMuted,
+    hint: 'We cancelled it: enough shards had already arrived. Not a fault.' },
+  { key: 'failures', label: 'failed', color: COLORS.error,
+    hint: 'The account could not answer at all.' },
+]
 
 /* An account is expected to win about k/n of what it enters. Nobody here knows
    k and n — a vault holds files cut every which way — so the comparison is
@@ -73,13 +96,16 @@ export default function ReadStats({ onClose }) {
 
   const accounts = board?.accounts || []
   const wins = accounts.reduce((sum, a) => sum + a.wins, 0)
-  const best = accounts.reduce((max, a) => Math.max(max, a.wins), 0)
   const delivered = accounts.reduce((sum, a) => sum + a.bytes, 0)
   /* The quickest of the accounts that have actually answered something. An
      account with no answers has no time, and a zero would win every time. */
-  const quickest = accounts
-    .filter((a) => a.average_ms > 0)
-    .sort((a, b) => a.average_ms - b.average_ms)[0]
+  // Sorted so the two ends of the range can be named: the quickest is the
+  // figure at the top of the panel, and the slowest sets the scale the latency
+  // chart is drawn against.
+  const timed = accounts.filter((a) => a.average_ms > 0)
+    .sort((a, b) => a.average_ms - b.average_ms)
+  const quickest = timed[0]
+  const slowest = timed[timed.length - 1]
 
   return (
     <Modal
@@ -118,7 +144,7 @@ export default function ReadStats({ onClose }) {
             <Stat value={wins.toLocaleString()} label={wins === 1 ? 'shard used' : 'shards used'} />
             <Stat value={formatBytes(delivered)} label="delivered" />
             <Stat
-              value={quickest ? `${formatMS(quickest.average_ms)}` : '—'}
+              value={quickest ? formatMS(quickest.average_ms) : '—'}
               label="quickest"
               tone={COLORS.success}
             />
@@ -128,15 +154,40 @@ export default function ReadStats({ onClose }) {
           </div>
 
           <Section
-            title="Who answers"
-            hint={`A read asks every account holding a shard and rebuilds from the first
-                   to answer, cutting off the rest — so the bar is each account's share of
-                   the shards actually used. An account that enters races and wins none is
-                   holding parts nobody has been able to use.`}
+            title="Share of the reads"
+            hint={`Every shard that went into a rebuild, by the account that supplied it.
+                   An account holding one shard of a 4-of-6 file should be taking
+                   something like two races in three; a sliver here is an account whose
+                   parts nobody has been able to use.`}
           >
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+            <ShareBar accounts={accounts} wins={wins} />
+          </Section>
+
+          {slowest && (
+            <Section
+              title="How long an answer takes"
+              hint={`The bar is the average and the wash behind it is the spread, from
+                     that account's quickest answer to its slowest. A long bar is a cloud
+                     that is losing races on speed; a long wash behind a short bar is one
+                     that is usually fine and occasionally not. A wash that runs off the
+                     end is marked — that account's slowest answer is past the scale the
+                     rest of them fit on.`}
+            >
+              <LatencyBars accounts={accounts} slowest={slowest} />
+            </Section>
+          )}
+
+          <Section
+            title="Who answers"
+            hint={`One bar per account, split by what became of every shard it was
+                   asked for. Losing is three different things and only the red one is a
+                   fault: the read path cancels the accounts it no longer needs, which
+                   is the whole point of asking them all at once.`}
+          >
+            <OutcomeKey />
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', marginTop: '14px' }}>
               {accounts.map((account) => (
-                <Row key={account.provider_id} account={account} best={best} wins={wins} />
+                <Row key={account.provider_id} account={account} wins={wins} />
               ))}
             </div>
           </Section>
@@ -145,7 +196,7 @@ export default function ReadStats({ onClose }) {
             <Banner tone="warn">
               {board.shortfalls} read{board.shortfalls === 1 ? '' : 's'} could not find enough
               shards to rebuild what was asked for. That is a file that did not open, not a
-              cloud that was slow — check the accounts below with failures against them.
+              cloud that was slow — check the accounts above with failures against them.
             </Banner>
           )}
         </>
@@ -174,27 +225,235 @@ export default function ReadStats({ onClose }) {
   )
 }
 
-/* One account's standing.
+/* Who carried the reads: one bar, cut into each account's share of the shards
+   that were actually used.
 
-   The wins are the headline and the rest of the race is the line underneath,
-   because "lost" is four different things and only one of them is a fault: an
-   answer that arrived too late to be needed, a download we cut off ourselves
-   once enough had arrived, and an account that could not answer at all. Only
-   the last is worth anybody's attention, so only the last is coloured. */
-function Row({ account, best, wins }) {
-  const color = accountColor(account.provider_id)
-  const share = wins > 0 ? account.wins / wins : 0
-  const raced = account.fetches > 0
-  const struggling = raced && account.fetches >= IDLE_FLOOR && account.wins / account.fetches < STRUGGLING
+   Part-to-whole, so one bar rather than one per account — the question is what
+   fraction of the work each cloud did, and a row of separate bars makes that a
+   subtraction. The legend under it names every slice with its figures, because
+   a slice is identified by colour and colour alone is never enough: two
+   accounts can wear neighbouring hues, and one of the two may be looking at
+   them through a colour vision that makes them the same. */
+function ShareBar({ accounts, wins }) {
+  const winners = accounts.filter((a) => a.wins > 0)
+  if (wins === 0 || winners.length === 0) {
+    return <p style={{ ...noteStyle, margin: 0 }}>No shards have been used yet.</p>
+  }
 
   return (
     <div>
       <div style={{
         display: 'flex',
-        alignItems: 'baseline',
-        gap: '8px',
-        marginBottom: '5px',
+        height: '14px',
+        borderRadius: '7px',
+        // Whatever is left over is the track, which nothing should be: the
+        // slices are shares of the wins and they add up to all of them.
+        background: COLORS.surfaceRaised,
+        overflow: 'hidden',
       }}>
+        {winners.map((account, i) => (
+          <span
+            key={account.provider_id}
+            title={`${account.name}: ${account.wins} of ${wins} shards used`}
+            style={{
+              width: `${(account.wins / wins) * 100}%`,
+              // A share that rounds to less than a pixel is still a share: it
+              // keeps a hairline rather than disappearing. The gap between
+              // slices is the surface showing through, not a border drawn
+              // round them — a stroke would add ink that is not data.
+              minWidth: '2px',
+              flexShrink: 0,
+              background: accountColor(account.provider_id),
+              marginLeft: i > 0 ? '2px' : 0,
+            }}
+          />
+        ))}
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '7px', marginTop: '12px' }}>
+        {winners.map((account) => (
+          <Key
+            key={account.provider_id}
+            color={accountColor(account.provider_id)}
+            label={account.name || account.provider_id}
+            value={`${account.wins.toLocaleString()} shard${account.wins === 1 ? '' : 's'}`}
+            share={percent(account.wins, wins)}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/* How long each account takes to answer.
+
+   Bars rather than columns, and one row each, because the accounts are named
+   things rather than points along an axis: a name reads across a row and gets
+   truncated under a column, and the figure belongs at the end of the bar it
+   describes rather than balanced on top of it.
+
+   The bar is the average. The wash behind it is that account's spread, quickest
+   answer to slowest, which is the difference between a cloud that is steadily
+   slow and one that is usually quick and occasionally stalls — two problems
+   with different fixes.
+
+   The axis is the slowest *average*, not the slowest single answer. One
+   pathological fetch would otherwise set the scale and squash every account
+   that is behaving into an indistinguishable stub. A spread that runs past the
+   end is marked rather than quietly cut: the mark is the honest half of
+   choosing a scale that something does not fit on. */
+function LatencyBars({ accounts, slowest }) {
+  const ceiling = slowest?.average_ms || 0
+  if (ceiling <= 0) return null
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+      {accounts.map((account) => {
+        const color = accountColor(account.provider_id)
+        const answered = account.average_ms > 0
+        const spreadFrom = Math.min(account.fastest_ms || 0, account.average_ms || 0)
+        const spreadTo = Math.max(account.slowest_ms || 0, account.average_ms || 0)
+        const clipped = spreadTo > ceiling
+
+        return (
+          <div
+            key={account.provider_id}
+            title={answered
+              ? `${account.name}: ${formatMS(account.average_ms)} average, `
+                + `${formatMS(account.fastest_ms)} at its quickest, ${formatMS(account.slowest_ms)} at its slowest`
+              : `${account.name}: has not finished an answer`}
+            style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
+          >
+            <span style={{
+              width: '84px',
+              flexShrink: 0,
+              fontFamily: FONT.mono,
+              fontSize: '10px',
+              color: COLORS.textMuted,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}>{account.name || account.provider_id}</span>
+
+            <span style={{ position: 'relative', flex: 1, height: '10px', minWidth: 0 }}>
+              {/* The spread, as a wash rather than a second bar: it is context
+                  for the average in front of it, not a value competing with it
+                  for the eye. */}
+              {answered && spreadTo > spreadFrom && (
+                <span aria-hidden="true" style={{
+                  position: 'absolute',
+                  top: '1px',
+                  bottom: '1px',
+                  left: `${Math.min(100, (spreadFrom / ceiling) * 100)}%`,
+                  right: `${Math.max(0, 100 - Math.min(100, (spreadTo / ceiling) * 100))}%`,
+                  background: `${color}2e`,
+                  borderRadius: clipped ? '3px 0 0 3px' : '3px',
+                }} />
+              )}
+
+              {/* The average. Square where it starts, rounded at the end that
+                  carries the value. */}
+              <span aria-hidden="true" style={{
+                position: 'absolute',
+                top: '2px',
+                bottom: '2px',
+                left: 0,
+                width: answered ? `${Math.max(1.5, Math.min(100, (account.average_ms / ceiling) * 100))}%` : '2px',
+                background: answered ? color : COLORS.border,
+                borderRadius: '0 4px 4px 0',
+              }} />
+
+              {/* Where the spread leaves the chart. Two hairlines at the edge
+                  rather than an arrowhead, which at this size is a smudge. */}
+              {clipped && (
+                <span aria-hidden="true" title={`slowest answer ${formatMS(account.slowest_ms)}, past the scale`} style={{
+                  position: 'absolute',
+                  top: 0,
+                  bottom: 0,
+                  right: '-4px',
+                  width: '4px',
+                  borderLeft: `1px solid ${color}`,
+                  borderRight: `1px solid ${color}`,
+                  opacity: 0.7,
+                }} />
+              )}
+            </span>
+
+            <span style={{
+              width: '58px',
+              flexShrink: 0,
+              textAlign: 'right',
+              fontFamily: FONT.mono,
+              fontVariantNumeric: 'tabular-nums',
+              fontSize: '10px',
+              color: answered ? COLORS.textDim : COLORS.textMuted,
+            }}>{answered ? formatMS(account.average_ms) : '—'}</span>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+/* The legend for the outcome bars. The account's own colour stands for a win,
+   which is why that entry has no swatch of its own — there are as many colours
+   for it as there are accounts, and the bars below each wear theirs. */
+function OutcomeKey() {
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 14px' }}>
+      <LegendItem
+        color={null}
+        label="won"
+        title="The shard arrived in time to be part of the rebuild. Drawn in the account's own colour."
+      />
+      {OUTCOMES.map((outcome) => (
+        <LegendItem key={outcome.key} color={outcome.color} label={outcome.label} title={outcome.hint} />
+      ))}
+    </div>
+  )
+}
+
+function LegendItem({ color, label, title }) {
+  return (
+    <span title={title} style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+      <span aria-hidden="true" style={{
+        width: '8px',
+        height: '8px',
+        flexShrink: 0,
+        borderRadius: '2px',
+        // The win swatch is the one that cannot be a colour, so it is drawn as
+        // the outline of one.
+        background: color || 'transparent',
+        border: color ? 'none' : `1px solid ${COLORS.borderBright}`,
+      }} />
+      <span style={{ fontFamily: FONT.mono, fontSize: '9.5px', color: COLORS.textMuted }}>{label}</span>
+    </span>
+  )
+}
+
+/* One account's standing: the figures, and a bar cut into what became of every
+   shard it was asked for.
+
+   The bar is that account's own fetches rather than a share of everybody's, so
+   a quiet account is not squeezed into a sliver — the question this one answers
+   is "of what this cloud was asked, how much did it deliver", and that is the
+   same question whether it was asked twice or two thousand times. Who did the
+   most work is the chart at the top. */
+function Row({ account, wins }) {
+  const color = accountColor(account.provider_id)
+  const raced = account.fetches > 0
+  const struggling = raced && account.fetches >= IDLE_FLOOR && account.wins / account.fetches < STRUGGLING
+
+  const segments = raced
+    ? [
+      { key: 'wins', label: 'won', color, count: account.wins },
+      ...OUTCOMES.map((o) => ({ key: o.key, label: o.label, color: o.color, count: account[o.key] })),
+    ].filter((segment) => segment.count > 0)
+    : []
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px', marginBottom: '5px' }}>
         <span aria-hidden="true" style={{
           width: '8px',
           height: '8px',
@@ -228,18 +487,33 @@ function Row({ account, best, wins }) {
         </span>
       </div>
 
-      <div
-        title={`${account.name}: ${account.wins} of the ${wins} shards used`}
-        style={{ height: '6px', borderRadius: '3px', background: COLORS.surfaceRaised }}
-      >
-        <div style={{
-          width: `${best > 0 ? Math.max(account.wins > 0 ? 2 : 0, (account.wins / best) * 100) : 0}%`,
-          height: '100%',
-          borderRadius: '3px',
-          background: color,
-        }} />
+      {/* Eight pixels rather than six: four segments and three gaps have to be
+          told apart inside it, and two of the four are greys a hairline would
+          lose against the track. */}
+      <div style={{
+        display: 'flex',
+        height: '8px',
+        borderRadius: '4px',
+        background: COLORS.surfaceRaised,
+        overflow: 'hidden',
+      }}>
+        {segments.map((segment, i) => (
+          <span
+            key={segment.key}
+            title={`${account.name}: ${segment.count} ${segment.label}`}
+            style={{
+              width: `${(segment.count / account.fetches) * 100}%`,
+              minWidth: '2px',
+              flexShrink: 0,
+              background: segment.color,
+              marginLeft: i > 0 ? '2px' : 0,
+            }}
+          />
+        ))}
       </div>
 
+      {/* The figures the bars are drawn from, written out — which is also the
+          table view for anybody the colours are not working for. */}
       <div style={{
         marginTop: '5px',
         fontFamily: FONT.mono,
@@ -252,17 +526,16 @@ function Row({ account, best, wins }) {
         {!raced && <span>Not asked yet — it holds no part of anything that has been read.</span>}
         {raced && (
           <>
-            <span>{share > 0 ? `${percent(account.wins, wins)} of all shards used` : 'no shards used'}</span>
+            <span>{account.wins > 0 ? `${percent(account.wins, wins)} of all shards used` : 'no shards used'}</span>
             {account.average_ms > 0 && (
-              <span title={`fastest ${formatMS(account.fastest_ms)}, slowest ${formatMS(account.slowest_ms)}`}>
+              <span>
                 {formatMS(account.average_ms)} average
+                {account.slowest_ms > account.fastest_ms &&
+                  ` (${formatMS(account.fastest_ms)}–${formatMS(account.slowest_ms)})`}
               </span>
             )}
             {account.bytes > 0 && <span>{formatBytes(account.bytes)} delivered</span>}
             {account.late > 0 && <span>{account.late} too late</span>}
-            {/* Named as ours rather than as theirs: the read path cancelled
-                these the moment it had enough, and a cloud is not at fault for
-                being the fifth of six to answer. */}
             {account.aborted > 0 && <span>{account.aborted} cut off</span>}
             {account.failures > 0 && (
               <span style={{ color: COLORS.error }}>{account.failures} failed</span>
@@ -284,6 +557,44 @@ function Row({ account, best, wins }) {
           {account.last_error}
         </div>
       )}
+    </div>
+  )
+}
+
+/* A swatch and a name, for the share bar's legend. Identity never rests on the
+   colour alone: every slice is named here with its figures beside it, so the
+   bar is a picture of something the panel has already said in words. */
+function Key({ color, label, value, share }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'baseline', gap: '7px' }}>
+      <span aria-hidden="true" style={{
+        width: '9px',
+        height: '9px',
+        flexShrink: 0,
+        borderRadius: '2px',
+        background: color,
+        alignSelf: 'center',
+      }} />
+      <span style={{
+        fontFamily: FONT.mono,
+        fontSize: '11px',
+        color: COLORS.textDim,
+        minWidth: 0,
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+      }}>{label}</span>
+      <span style={{
+        fontFamily: FONT.mono, fontSize: '11px', color: COLORS.text, marginLeft: 'auto', flexShrink: 0,
+      }}>{value}</span>
+      <span style={{
+        fontFamily: FONT.mono,
+        fontSize: '10px',
+        color: COLORS.textMuted,
+        minWidth: '38px',
+        textAlign: 'right',
+        flexShrink: 0,
+      }}>{share}</span>
     </div>
   )
 }

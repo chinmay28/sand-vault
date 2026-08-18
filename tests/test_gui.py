@@ -1954,11 +1954,22 @@ class TestReadSpeed:
         # One race or many: the label under the figure is written for what it
         # counts, so the assertion has to be too.
         expect(panel.get_by_text(re.compile(r"^races?$"))).to_be_visible(timeout=20000)
+
+        # The three charts, each answering a different question about the same
+        # race: who carried it, how long each account took, and what became of
+        # every shard it was asked for.
+        for heading in ("Share of the reads", "How long an answer takes", "Who answers"):
+            expect(panel.get_by_role("heading", name=heading)).to_be_visible()
+        # The outcome bars are read through their key, so identity never rests
+        # on the colour of a 8px bar alone.
+        for entry in ("won", "too late", "cut off", "failed"):
+            expect(panel.get_by_text(entry, exact=True).first).to_be_visible()
+
         # Every connected account is on the board, including any that won
         # nothing — an account winning none of its races is the finding this
         # panel exists for, and leaving it out would hide exactly that.
         for name in ("ui-one", "ui-two", "ui-three"):
-            expect(panel.get_by_text(name, exact=True)).to_have_count(1)
+            expect(panel.get_by_text(name, exact=True).first).to_be_visible()
         expect(panel.get_by_text(re.compile(r"\d+ won")).first).to_be_visible()
 
         app.keyboard.press("Escape")
