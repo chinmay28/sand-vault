@@ -215,6 +215,22 @@ func (v *Vault) rotate(oldPassword, newPassword string) error {
 	v.manifest = current.manifest
 	v.settings = current.settings
 
+	// The read history was sealed under the key that has just been retired, so
+	// it is written again here and not left to the next half-minute mark: a
+	// process that stopped in between would leave a sidecar nothing could ever
+	// open again.
+	//
+	// An open vault holds everything the file holds and more, so what is in
+	// memory is what gets written. A locked one holds none of it — a password
+	// can be changed at the lock screen — and the file is then the only copy
+	// there is, so it is re-sealed from the old key to the new one instead.
+	// Either way this is the last moment anything can open what is on disk.
+	if v.reads.recorded() {
+		v.saveReadHistoryLocked(true)
+	} else {
+		v.resealReadHistoryLocked(current.dataKey, dataKey)
+	}
+
 	// The copies on the accounts are sealed under the password, so they still
 	// answer to the old one until they are replaced. Forced, because the guard
 	// against clobbering a foreign backup cannot tell them apart from one.

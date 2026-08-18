@@ -34,6 +34,9 @@ func newTestVault(t *testing.T) *vault.Vault {
 		t.Fatalf("Init: %v", err)
 	}
 	t.Cleanup(v.AwaitBackupSync)
+	// The read history saves itself on a goroutine, into the directory the
+	// vault file is in — let it land before that directory is removed.
+	t.Cleanup(v.AwaitReadHistory)
 
 	for i := 0; i < 3; i++ {
 		if _, err := v.AddProvider(context.Background(), provider.Config{

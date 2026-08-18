@@ -987,8 +987,13 @@ pipe the password on stdin.
   split by what became of every shard it was asked for — won, arrived too late
   to be needed, was cut off once enough had arrived, or could not answer at all.
   Every figure is written out beside its bar, so nothing is gated behind reading
-  a colour. Counted by the running server and not stored, so *Start again* is how
-  you measure a change rather than the average since it came up
+  a colour. Four tabs — today, this month, this year, all of it — over the same
+  counters summed across different spans, with a sparkline per account of how its
+  share has been moving, which is the difference between "slow right now" and
+  "slowly getting worse". The figures are kept by the day in a file beside the
+  vault, sealed under a key derived from the vault's own, so they survive a
+  restart and are readable only while the vault is open. *Forget history* erases
+  them, file and all
 - **Connect dialog** — generated from each backend's own field spec, so new
   backends appear without frontend changes
 - **Browser** — folders, breadcrumbs, drag-and-drop upload with progress
@@ -1285,8 +1290,8 @@ those folders, paid where they are listed instead.
 | POST · DELETE | `/api/folders` | Create / delete folders |
 | POST | `/api/folders/move` | Move a folder, and everything under it, `from` one path `to` another |
 | POST | `/api/relocate` | Move a file (`id`) or folder (`path`) onto other `accounts`; `preview` prices it without moving anything |
-| GET | `/api/reads` | Which account is winning the race every read runs, since the server came up |
-| POST | `/api/reads/reset` | Start that counting again |
+| GET | `/api/reads?window=` | Which account is winning the race every read runs — `today` (default), `month`, `year` or `all` |
+| POST | `/api/reads/forget` | Erase that history, in memory and on disk |
 | GET | `/api/system/folders?path=` | Folders on this machine, for the folder picker |
 | POST | `/api/archive` · `/api/restore` | Standalone mode |
 
@@ -1728,6 +1733,7 @@ touch your real vault.
 |---|---|
 | `~/.sand/vault.sand` | Encrypted index + cloud credentials, and the film database key if you set one. Back this up — though since every account also carries a `manifest.sand`, losing it is recoverable with your password. |
 | `<archive-id>-pN.sand` | How parts appear on each account, inside whatever folder or prefix that account is configured with. The ID is random and reveals nothing. |
+| `~/.sand/vault.sand.reads` | The read-speed history: which cloud answered how many reads, by the day, for the last 400 days plus an all-time total. Encrypted under a key derived from the vault's data key, so it opens only while the vault does. Delete it and the panel starts counting again; nothing else depends on it. |
 | `manifest.sand` | An encrypted copy of the index, on every account. Opens with your vault password alone. It carries the film details, since those are part of the index — but never the film database key, which stays in the vault file alone. So recovering from a backup restores your films and asks for the key again. |
 
 Override the vault location with `--vault` or `SAND_VAULT`.

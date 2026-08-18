@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import { COLORS, FONT, KIND_ICONS, accountColor, formatBytes, formatDate } from '../theme'
 import { api } from '../api'
-import { Banner, Button, Empty, Modal, Spinner } from './ui'
+import { Banner, Button, ConfirmDialog, Empty, Modal, Spinner } from './ui'
 import { useIsMobile } from '../hooks'
 
 /* Which cloud is actually answering.
@@ -26,9 +26,19 @@ import { useIsMobile } from '../hooks'
    fetched to draw them, so opening the vault still makes no third-party
    requests at all.
 
-   The figures are the server's, since it came up. Nothing is stored: counting
-   reads into the vault file would mean a write on every chunk of every stream,
-   to the one file everything else depends on. */
+   The figures are kept by the day, so the tabs are additions over the same
+   buckets: today, this month, this year, all of it. They survive a restart —
+   sealed beside the vault under a key derived from its own, because when a
+   vault is read and how much comes off each cloud is the same kind of thing
+   the index is. */
+
+/* The spans somebody asks about, in the order they widen. */
+const WINDOWS = [
+  { key: 'today', label: 'Today' },
+  { key: 'month', label: 'Month' },
+  { key: 'year', label: 'Year' },
+  { key: 'all', label: 'All time' },
+]
 
 /* What became of a fetch, and what colour says so.
 
@@ -55,20 +65,25 @@ const STRUGGLING = 0.15
 const IDLE_FLOOR = 4
 
 export default function ReadStats({ onClose }) {
+  /* Opens on today, which is the question the panel is most often opened for —
+     something is slow right now — and the one tab that moves while you watch
+     it. The wider spans are a click away and say so when today is empty. */
+  const [span, setSpan] = useState('today')
   const [board, setBoard] = useState(null)
   const [error, setError] = useState(null)
   const [busy, setBusy] = useState(false)
+  const [forgetting, setForgetting] = useState(false)
   const mobile = useIsMobile()
 
   const load = useCallback(async () => {
     try {
-      const resp = await api.readStats()
+      const resp = await api.readStats(span)
       setBoard(resp.reads)
       setError(null)
     } catch (err) {
       setError(err.message)
     }
-  }, [])
+  }, [span])
 
   /* Refetched while the panel is open, because the thing it is about may be
      happening right now — someone opens this in the middle of a film to see
@@ -76,17 +91,22 @@ export default function ReadStats({ onClose }) {
      the machine this page came from, so the poll costs a loopback request and
      touches nobody's storage. */
   useEffect(() => {
+    // Switching tabs asks again immediately rather than waiting out the poll,
+    // and drops what was drawn so a wider window is never briefly shown with a
+    // narrower one's figures under it.
+    setBoard(null)
     load()
     const timer = setInterval(load, 4000)
     return () => clearInterval(timer)
   }, [load])
 
-  const reset = async () => {
+  const forget = async () => {
     setBusy(true)
     try {
-      const resp = await api.resetReadStats()
+      const resp = await api.forgetReadStats(span)
       setBoard(resp.reads)
       setError(null)
+      setForgetting(false)
     } catch (err) {
       setError(err.message)
     } finally {
@@ -117,18 +137,24 @@ export default function ReadStats({ onClose }) {
     >
       {error && <Banner tone="error">{error}</Banner>}
 
+      <Tabs value={span} onChange={setSpan} />
+
       {!board && !error && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '18px' }}>
           <Spinner size={12} />
           <span style={noteStyle}>Reading the score…</span>
         </div>
       )}
 
       {board && board.races === 0 && (
-        <Empty icon="🏁" title="No reads yet">
-          Nothing has been rebuilt since counting started, so no cloud has had
-          the chance to answer. Open a file, play something, or let a folder draw
-          its thumbnails, and the accounts will start racing each other for it.
+        <Empty icon="🏁" title={emptyTitle(span)}>
+          {span === 'all'
+            ? `Nothing has been rebuilt since counting started, so no cloud has had
+               the chance to answer. Open a file, play something, or let a folder draw
+               its thumbnails, and the accounts will start racing each other for it.`
+            : `Nothing was read in this window. The wider ones above may have
+               something in them — the figures go back as far as the vault has been
+               open on this machine.`}
         </Empty>
       )}
 
@@ -187,7 +213,7 @@ export default function ReadStats({ onClose }) {
             <OutcomeKey />
             <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', marginTop: '14px' }}>
               {accounts.map((account) => (
-                <Row key={account.provider_id} account={account} wins={wins} />
+                <Row key={account.provider_id} account={account} wins={wins} mobile={mobile} />
               ))}
             </div>
           </Section>
@@ -214,15 +240,95 @@ export default function ReadStats({ onClose }) {
           borderTop: `1px solid ${COLORS.border}`,
         }}>
           <span style={{ ...noteStyle, margin: 0 }}>
-            Counting since {formatDate(board.since)}. Nothing is stored — a restart starts it again.
+            {board.since
+              ? `Counting since ${formatDate(board.since)}, kept beside the vault and sealed with it.`
+              : 'Nothing counted yet.'}
+            {board.days > 0 && ` Day by day for the last ${board.days === 1 ? 'day' : `${board.days} days`}.`}
           </span>
-          <Button size="sm" variant="ghost" onClick={reset} disabled={busy}>
-            {busy ? 'Clearing…' : 'Start again'}
+          {/* Named differently from the button inside the dialog it opens, so
+              that "the one that asks" and "the one that does it" are never the
+              same word twice. */}
+          <Button size="sm" variant="ghost" onClick={() => setForgetting(true)} disabled={busy}>
+            Forget history…
           </Button>
         </div>
       )}
+
+      {forgetting && (
+        <ConfirmDialog
+          title="Forget the read history?"
+          subtitle="Every window, and the file it is kept in"
+          confirmLabel="Forget it all"
+          busy={busy}
+          zIndex={130}
+          onConfirm={forget}
+          onClose={() => setForgetting(false)}
+        >
+          This erases what every account has done since counting started — today,
+          this month, this year and all of it — and deletes the file it is kept in.
+          Nothing else is touched: no file moves, no account changes, and nothing
+          stored on a cloud is affected. Counting starts again from the next read.
+        </ConfirmDialog>
+      )}
     </Modal>
   )
+}
+
+/* The four spans, as a row of tabs.
+
+   A segmented control rather than a dropdown: there are four of them, they are
+   ordered, and which one you are looking at is the single most important thing
+   about every figure underneath — so it is a thing you can see rather than a
+   thing you have to open. */
+function Tabs({ value, onChange }) {
+  return (
+    <div role="tablist" aria-label="How far back" style={{
+      display: 'flex',
+      gap: '2px',
+      padding: '2px',
+      marginBottom: '18px',
+      background: COLORS.surfaceRaised,
+      borderRadius: '8px',
+    }}>
+      {WINDOWS.map((option) => {
+        const selected = option.key === value
+        return (
+          <button
+            key={option.key}
+            type="button"
+            role="tab"
+            aria-selected={selected}
+            onClick={() => onChange(option.key)}
+            style={{
+              flex: 1,
+              // Past the fingertip floor, so the row is usable on a phone.
+              minHeight: '32px',
+              padding: '6px 4px',
+              border: 'none',
+              borderRadius: '6px',
+              cursor: 'pointer',
+              fontFamily: FONT.mono,
+              fontSize: '11px',
+              letterSpacing: '0.4px',
+              background: selected ? COLORS.surface : 'transparent',
+              color: selected ? COLORS.text : COLORS.textMuted,
+              boxShadow: selected ? `inset 0 0 0 1px ${COLORS.borderBright}` : 'none',
+              transition: 'background 0.15s ease, color 0.15s ease',
+            }}
+          >{option.label}</button>
+        )
+      })}
+    </div>
+  )
+}
+
+function emptyTitle(span) {
+  switch (span) {
+    case 'today': return 'Nothing read today'
+    case 'month': return 'Nothing read this month'
+    case 'year': return 'Nothing read this year'
+    default: return 'No reads yet'
+  }
 }
 
 /* Who carried the reads: one bar, cut into each account's share of the shards
@@ -439,7 +545,7 @@ function LegendItem({ color, label, title }) {
    is "of what this cloud was asked, how much did it deliver", and that is the
    same question whether it was asked twice or two thousand times. Who did the
    most work is the chart at the top. */
-function Row({ account, wins }) {
+function Row({ account, wins, mobile }) {
   const color = accountColor(account.provider_id)
   const raced = account.fetches > 0
   const struggling = raced && account.fetches >= IDLE_FLOOR && account.wins / account.fetches < STRUGGLING
@@ -475,8 +581,16 @@ function Row({ account, wins }) {
           {KIND_ICONS[account.kind] || '☁'}
           {!account.connected && ' · disconnected'}
         </span>
+        {/* How that share has moved across the window, where the window is
+            long enough to have a shape. It is the one thing here that answers
+            "is this getting worse" rather than "how is it now", which is the
+            question somebody opens a year's worth of figures to ask. */}
+        {!mobile && account.trend?.length >= 3 && (
+          <TrendLine trend={account.trend} color={color} name={account.name} />
+        )}
+
         <span style={{
-          marginLeft: 'auto',
+          marginLeft: mobile || !(account.trend?.length >= 3) ? 'auto' : '8px',
           flexShrink: 0,
           fontFamily: FONT.mono,
           fontSize: '11px',
@@ -558,6 +672,70 @@ function Row({ account, wins }) {
         </div>
       )}
     </div>
+  )
+}
+
+/* One account's win rate across the window, as a sparkline.
+
+   The scale is fixed from none of its races to all of them, rather than fitted
+   to what this account happens to have done. A sparkline that rescales itself
+   draws the same picture for a cloud sliding from 70% to 65% as for one falling
+   off a cliff, and the two are not the same news. Nothing is labelled: the
+   figures are in the row it sits in, and the line is here to say which way they
+   have been going.
+
+   A span nothing was read in is a gap rather than a zero — nobody asked that
+   account for anything, which is not the same as it failing to answer — so the
+   line is drawn in pieces and each piece needs two points to exist. */
+function TrendLine({ trend, color, name }) {
+  const width = 68
+  const height = 16
+  const step = trend.length > 1 ? width / (trend.length - 1) : 0
+
+  const pieces = []
+  let run = []
+  trend.forEach((point, i) => {
+    if (!point.fetches) {
+      if (run.length > 1) pieces.push(run)
+      run = []
+      return
+    }
+    const rate = point.wins / point.fetches
+    run.push([i * step, height - 1 - rate * (height - 2)])
+  })
+  if (run.length > 1) pieces.push(run)
+  if (pieces.length === 0) return null
+
+  const last = pieces[pieces.length - 1][pieces[pieces.length - 1].length - 1]
+
+  return (
+    <svg
+      width={width}
+      height={height}
+      viewBox={`0 0 ${width} ${height}`}
+      aria-hidden="true"
+      focusable="false"
+      // Centred rather than sat on the text baseline the row aligns to: a line
+      // chart has no baseline of its own and hanging it from one leaves it
+      // floating above the figures it belongs to.
+      style={{ flexShrink: 0, marginLeft: 'auto', alignSelf: 'center', overflow: 'visible' }}
+    >
+      <title>{`${name}: share of its own races won, across the window`}</title>
+      {pieces.map((piece, i) => (
+        <polyline
+          key={i}
+          points={piece.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' ')}
+          fill="none"
+          stroke={color}
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          opacity="0.9"
+        />
+      ))}
+      {/* Where it stands now, which is the end the eye goes to. */}
+      <circle cx={last[0]} cy={last[1]} r="2" fill={color} />
+    </svg>
   )
 }
 

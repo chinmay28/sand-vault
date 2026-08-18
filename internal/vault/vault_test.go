@@ -31,8 +31,10 @@ func newTestVault(t *testing.T, accounts int) (*Vault, []string) {
 	}
 	// The manifest backup is pushed in the background, and so is the conversion
 	// of any file still stored whole, so let both finish before the temporary
-	// directories they write into are cleaned up.
+	// directories they write into are cleaned up. The read history saves itself
+	// on a goroutine too, into the directory the vault file is in.
 	t.Cleanup(v.AwaitBackupSync)
+	t.Cleanup(v.AwaitReadHistory)
 
 	roots := make([]string, accounts)
 	for i := 0; i < accounts; i++ {

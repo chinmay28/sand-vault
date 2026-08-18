@@ -132,3 +132,47 @@ func TestDeriveChunkKeyMatchesItsGoldenValues(t *testing.T) {
 		}
 	}
 }
+
+// The read history is sealed under a key derived this way, and a build that
+// derived a different one would quietly forget every figure anybody had ever
+// collected — the file would still be there and would simply refuse to open.
+// Nothing about the derivation is allowed to drift without this failing first.
+func TestDerivePurposeKeyMatchesItsGoldenValues(t *testing.T) {
+	master := make([]byte, MasterKeySize)
+	for i := range master {
+		master[i] = byte(i)
+	}
+
+	golden := map[string]string{
+		"sand-read-history-v1": "c9adf856411a85097269ea5482257791534a54c43ce3b03f0e5c58f9a415937b",
+		"something-else":       "e8031d0e4bb73ad16068f51739c3da72594f7e7296e9212eabed9af31926523a",
+	}
+	for purpose, want := range golden {
+		key, err := DerivePurposeKey(master, purpose)
+		if err != nil {
+			t.Fatalf("%s: %v", purpose, err)
+		}
+		if got := hex.EncodeToString(key); got != want {
+			t.Errorf("%s derived %s, want %s — what it sealed would no longer open", purpose, got, want)
+		}
+	}
+
+	// The purpose is the whole of the separation, so two of them must not meet.
+	one, _ := DerivePurposeKey(master, "sand-read-history-v1")
+	two, _ := DerivePurposeKey(master, "something-else")
+	if hex.EncodeToString(one) == hex.EncodeToString(two) {
+		t.Errorf("two purposes derived the same key")
+	}
+
+	// And a key derived for a purpose is not the master it came from.
+	if hex.EncodeToString(one) == hex.EncodeToString(master) {
+		t.Errorf("the derived key is the master key")
+	}
+
+	if _, err := DerivePurposeKey(master, ""); err == nil {
+		t.Errorf("a key with no purpose to separate it was derived anyway")
+	}
+	if _, err := DerivePurposeKey(master[:8], "sand-read-history-v1"); err == nil {
+		t.Errorf("a short master key was accepted")
+	}
+}

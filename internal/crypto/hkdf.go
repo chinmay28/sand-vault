@@ -50,3 +50,31 @@ func DeriveChunkKey(master []byte, archiveID [16]byte, chunkIndex uint32) ([]byt
 	}
 	return key, nil
 }
+
+// purposeKeyLabel is the salt for keys derived for one particular use of the
+// vault's data key, and it is a constant so that the same purpose always
+// derives the same key from the same master.
+const purposeKeyLabel = "sand-purpose-key-v1"
+
+// DerivePurposeKey produces a 32-byte key for one named use of the master key.
+//
+// Chunk keys have DeriveChunkKey, which salts with the archive ID because every
+// file needs a key of its own. This is for the other kind: one key for one
+// standing purpose — the read history sidecar is the first — where what matters
+// is only that the key is not the master itself and is not shared with any other
+// use of it. The purpose string is the whole of the domain separation, so it has
+// to be a constant somebody chose, not something a caller assembles.
+func DerivePurposeKey(master []byte, purpose string) ([]byte, error) {
+	if len(master) != MasterKeySize {
+		return nil, fmt.Errorf("master key must be %d bytes, got %d", MasterKeySize, len(master))
+	}
+	if purpose == "" {
+		return nil, fmt.Errorf("a derived key needs a purpose to be separated by")
+	}
+
+	key, err := hkdf.Key(sha256.New, master, []byte(purposeKeyLabel), purpose, 32)
+	if err != nil {
+		return nil, fmt.Errorf("deriving the %s key: %w", purpose, err)
+	}
+	return key, nil
+}
