@@ -3,6 +3,8 @@ package vault
 import (
 	"strings"
 	"testing"
+
+	"github.com/chinmay28/sand-vault/internal/provider"
 )
 
 // The breakdown, and the line it will not cross. A sub vault's weight belongs
@@ -120,4 +122,125 @@ func paths(report ProviderReport) []string {
 		out = append(out, item.Path)
 	}
 	return out
+}
+
+// A capacity somebody typed is a denominator, and a denominator with no
+// numerator draws an account as empty. So it waits for a figure something has
+// actually taken, and never overrides one the backend reports itself.
+func TestDeclaredCapacityWaitsForACount(t *testing.T) {
+	const declared = int64(10 << 30)
+
+	for _, tc := range []struct {
+		name      string
+		usage     provider.Usage
+		capacity  int64
+		wantTotal int64
+		wantOwn   bool // the total is the account holder's figure
+	}{
+		{
+			name:      "nothing counted",
+			usage:     provider.Usage{},
+			capacity:  declared,
+			wantTotal: 0,
+		},
+		{
+			name:      "counted",
+			usage:     provider.Usage{Used: 1 << 20, Measured: true},
+			capacity:  declared,
+			wantTotal: declared,
+			wantOwn:   true,
+		},
+		{
+			name:      "counted empty",
+			usage:     provider.Usage{Used: 0, Measured: true},
+			capacity:  declared,
+			wantTotal: declared,
+			wantOwn:   true,
+		},
+		{
+			name:      "the backend has a quota of its own",
+			usage:     provider.Usage{Used: 250, Total: 1000},
+			capacity:  declared,
+			wantTotal: 1000,
+		},
+		{
+			name:      "counted, nobody declaring",
+			usage:     provider.Usage{Used: 1 << 20, Measured: true},
+			capacity:  0,
+			wantTotal: 0,
+		},
+	} {
+		got := withDeclaredCapacity(tc.usage, tc.capacity)
+		if got.Total != tc.wantTotal {
+			t.Errorf("%s: total = %d, want %d", tc.name, got.Total, tc.wantTotal)
+		}
+		if got.Declared != tc.wantOwn {
+			t.Errorf("%s: declared = %v, want %v", tc.name, got.Declared, tc.wantOwn)
+		}
+	}
+}
+
+// The declared capacity is stored with the account, like its name and its
+// colour: nothing about it reaches the backend, and it survives a lock.
+func TestUpdateProviderStoresTheDeclaredCapacity(t *testing.T) {
+	v, _ := newTestVault(t, 1)
+
+	statuses, err := v.ProviderStatuses(t.Context())
+	if err != nil {
+		t.Fatalf("ProviderStatuses: %v", err)
+	}
+	id := statuses[0].ID
+
+	capacity := int64(10 << 30)
+	if _, err := v.UpdateProvider(id, ProviderEdit{Capacity: &capacity}); err != nil {
+		t.Fatalf("UpdateProvider: %v", err)
+	}
+
+	fresh := reopen(t, v)
+	after, err := fresh.ProviderStatuses(t.Context())
+	if err != nil {
+		t.Fatalf("ProviderStatuses after reopening: %v", err)
+	}
+	if after[0].Capacity != capacity {
+		t.Errorf("capacity after reopening = %d, want %d", after[0].Capacity, capacity)
+	}
+	// A local folder measures the drive under it, so the figure it reports is
+	// the one drawn against — a declared capacity does not overrule an account
+	// that can answer for itself.
+	if after[0].Usage.Declared {
+		t.Errorf("a declared capacity overruled the drive's own: %+v", after[0].Usage)
+	}
+
+	cleared := int64(0)
+	if _, err := fresh.UpdateProvider(id, ProviderEdit{Capacity: &cleared}); err != nil {
+		t.Fatalf("clearing the capacity: %v", err)
+	}
+	if again, _ := fresh.ProviderStatuses(t.Context()); again[0].Capacity != 0 {
+		t.Errorf("capacity = %d after being cleared", again[0].Capacity)
+	}
+
+	negative := int64(-1)
+	if _, err := fresh.UpdateProvider(id, ProviderEdit{Capacity: &negative}); err == nil {
+		t.Error("an account was allowed to hold a negative number of bytes")
+	}
+}
+
+// Only the backends with no other way of answering can be counted, and a
+// folder on a disk is not one of them: statfs already knows.
+func TestMeasureProviderRefusesABackendThatCanAnswer(t *testing.T) {
+	v, _ := newTestVault(t, 1)
+
+	statuses, err := v.ProviderStatuses(t.Context())
+	if err != nil {
+		t.Fatalf("ProviderStatuses: %v", err)
+	}
+	if statuses[0].Measurable {
+		t.Error("a local folder says it needs counting")
+	}
+	if _, err := v.MeasureProvider(t.Context(), statuses[0].ID); err == nil {
+		t.Error("a local folder was counted rather than asked")
+	}
+	if _, err := v.MeasureProvider(t.Context(), "no-such-account"); err == nil {
+		t.Error("an account that is not connected was measured")
+	}
 }

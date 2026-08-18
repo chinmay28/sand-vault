@@ -332,9 +332,11 @@ you could pick and then not be able to read.
 ./sand remote edit r2-cold --name r2-archive       # rename it
 ./sand remote edit r2-cold --color '#38bdf8'       # or any hex colour
 ./sand remote edit r2-cold --color auto            # back to the browser's pick
+./sand remote edit b2-cold --capacity '10 GB'      # how big the bucket is
+./sand remote edit b2-cold --capacity none         # back to saying nothing
 ```
 
-Neither field reaches the cloud. Nothing is uploaded, downloaded or
+Neither of the first two fields reaches the cloud, and nor does the third. Nothing is uploaded, downloaded or
 re-encrypted, no credential is touched, and not one part moves — the account
 answers to exactly what it did before. A rename does travel through the index:
 every part records the name of the account holding it, which is what the file
@@ -863,16 +865,26 @@ sand restore --parts A,B --manifest M         Rebuild a file offline from loose 
 sand remote kinds                             List backends and their settings
 sand remote add <kind> --name N --set k=v …   Connect an account (pings first)
 sand remote list                              Status, parts held, bytes stored, room left, colour
-sand remote edit <name-or-id> [--name N] [--color '#38bdf8'|auto]
-                                              Rename it, or change the colour it wears
+sand remote edit <name-or-id> [--name N] [--color '#38bdf8'|auto] [--capacity '10 GB'|none]
+                                              Rename it, recolour it, or say how big it is
 sand remote test <name-or-id>                 Re-check reachability
+sand remote measure <name-or-id>              Count what is on it, for backends that cannot say
 sand remote remove <name-or-id> [--force]     Disconnect
 ```
 
-`sand remote edit` changes what an account is called and the colour it wears in
-the browser. Neither reaches the cloud: no credential is touched and not one
-part moves. See [Naming an account and choosing its
+`sand remote edit` changes what an account is called, the colour it wears in the
+browser, and — for the backends that report no quota — how big you say it is.
+None of them reaches the cloud: no credential is touched and not one part moves.
+See [Naming an account and choosing its
 colour](#naming-an-account-and-choosing-its-colour).
+
+`sand remote measure` is the other half of that, and the one call here that does
+reach the cloud: a bucket reports no quota and no total, so what is in it has to
+be counted by listing it — every object, SAND's parts and whatever else already
+lives there. A request per thousand objects, billed as a transaction at some
+providers, so nothing takes it on a schedule. The figure is kept until the vault
+closes, and with a declared capacity it becomes the usage bar the other accounts
+have always had.
 
 ### Files
 
@@ -960,6 +972,11 @@ pipe the password on stdin.
   that bar: capacity against SAND's own share, what the parts belong to by kind
   and by folder, the month they arrived in, the heaviest files, and how many
   files could not be rebuilt without this account
+- **Buckets get a bar too** — an S3 account (Backblaze B2, R2, Wasabi, MinIO)
+  reports no quota, because the S3 API has never had a call for one. The panel
+  counts what is in the bucket instead, by listing it — once, on the way in, and
+  again on request — and *Edit* takes the capacity you know it has, so the two
+  together draw the same split every other account gets
 - **Connect dialog** — generated from each backend's own field spec, so new
   backends appear without frontend changes
 - **Browser** — folders, breadcrumbs, drag-and-drop upload with progress

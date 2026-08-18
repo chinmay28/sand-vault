@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react'
 import {
   ACCOUNT_COLORS, ACCOUNT_COLOR_NAMES, ACCOUNT_PALETTE, COLORS, FONT, KIND_ICONS,
-  accountColor, accountColorName, autoAccountColor, normalizeHex,
+  accountColor, accountColorName, autoAccountColor, formatBytes, normalizeHex,
 } from '../theme'
 import { api } from '../api'
 import { useIsMobile } from '../hooks'
@@ -17,10 +17,11 @@ function chunk(items, size) {
 /* Editing an account.
 
    Everything else you can do to a connected cloud reaches the cloud: testing it
-   pings it, disconnecting it forgets the parts it holds. These two do not. What
+   pings it, disconnecting it forgets the parts it holds. Nothing here does. What
    an account is called and what colour it wears are how *you* tell it apart
-   from the others — nothing is uploaded, downloaded or re-encrypted by changing
-   either, and the credentials are not touched.
+   from the others, and a declared capacity is what *you* know about an account
+   that cannot answer the question itself — nothing is uploaded, downloaded or
+   re-encrypted by changing any of them, and the credentials are not touched.
 
    The colour is worth taking seriously even though it is only a colour. It is
    the same shade on the account's card here and on every part badge in the file
@@ -35,6 +36,12 @@ export default function EditAccount({ provider, providers = [], onClose, onChang
   // '' is a real value here rather than "unset": it is the account with no
   // colour of its own, which is what the Automatic swatch selects.
   const [color, setColor] = useState(() => normalizeHex(provider.color))
+  // Typed rather than picked, and shown the way the rest of the app prints a
+  // size, so what goes back in is what was read out. Empty is nobody declaring
+  // one, which is where every account starts.
+  const [capacity, setCapacity] = useState(
+    () => (provider.capacity > 0 ? formatBytes(provider.capacity) : ''),
+  )
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   // The full palette opens on its own when the account is already wearing a
@@ -59,7 +66,14 @@ export default function EditAccount({ provider, providers = [], onClose, onChang
   const hueColumns = mobile ? 6 : ACCOUNT_PALETTE.length
   const trimmed = name.trim()
   const preview = color || autoAccountColor(provider.id)
-  const unchanged = trimmed === (provider.name || '') && color === normalizeHex(provider.color)
+  // A capacity nobody has retyped is a capacity nobody is changing: the field
+  // shows a rounded figure, and sending back "33.9 GB" for a capacity stored as
+  // 36,401,835,212 bytes would quietly move it every time the dialog is opened.
+  const declaredCapacity = provider.capacity > 0 ? formatBytes(provider.capacity) : ''
+  const capacityChanged = capacity.trim() !== declaredCapacity
+  const unchanged = trimmed === (provider.name || '')
+    && color === normalizeHex(provider.color)
+    && !capacityChanged
 
   const submit = async (e) => {
     e.preventDefault()
@@ -68,7 +82,11 @@ export default function EditAccount({ provider, providers = [], onClose, onChang
     setBusy(true)
     setError(null)
     try {
-      await api.updateProvider(provider.id, { name: trimmed, color })
+      await api.updateProvider(provider.id, {
+        name: trimmed,
+        color,
+        ...(capacityChanged ? { capacity: capacity.trim() } : null),
+      })
       onChanged()
       onClose()
     } catch (err) {
@@ -80,7 +98,7 @@ export default function EditAccount({ provider, providers = [], onClose, onChang
   return (
     <Modal
       title="Edit account"
-      subtitle="What this cloud is called, and the colour it wears here. Neither touches its credentials or the parts stored on it."
+      subtitle="What this cloud is called, the colour it wears here, and — where the backend cannot say — how big it is. None of them touches its credentials or the parts stored on it."
       onClose={busy ? undefined : onClose}
       width={480}
     >
@@ -98,6 +116,34 @@ export default function EditAccount({ provider, providers = [], onClose, onChang
           help="Yours alone — the provider never sees it, and no two accounts may share one."
           onChange={(e) => setName(e.target.value)}
         />
+
+        {/* How big the account is, for the backends that cannot say.
+
+            A bucket has no quota call — S3 never had one and B2's own API does
+            not add one — so an S3 account's card has always had a figure for
+            what SAND put there and nothing to measure it against. This is that
+            missing half, and it has to be typed because there is nowhere to
+            read it from: the cap set in the provider's console, or simply how
+            much of an unlimited bucket this vault is allowed to fill.
+
+            Only offered where it does something. An account that reports its
+            own quota is already answering the question, and one that can be
+            neither asked nor counted would take the figure and still have no
+            used to draw against it. */}
+        {(provider.measurable || provider.capacity > 0) && (
+          <Input
+            label="Capacity"
+            value={capacity}
+            spellCheck={false}
+            disabled={busy}
+            maxLength={24}
+            placeholder="10 GB"
+            help={'What this account holds, as you know it — a bucket does not report a quota. ' +
+              'Blank means nobody is saying, and the account goes back to showing no capacity. ' +
+              'Nothing is enforced: this is what the usage bar is drawn against.'}
+            onChange={(e) => setCapacity(e.target.value)}
+          />
+        )}
 
         <span style={{
           display: 'block',

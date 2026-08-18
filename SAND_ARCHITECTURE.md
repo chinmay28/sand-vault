@@ -1285,10 +1285,10 @@ type Provider interface {
 
 Optional, and each one is a capability the layers above check for rather than
 assume: `UsageReporter` for backends that can report quota — including the
-local folder, which reports the drive it sits on (§8.7) — `Identifier` for
-backends that can name the account they are pointed at, and
-`CredentialRotator` for backends whose stored credentials change as they are
-used.
+local folder, which reports the drive it sits on (§8.7) — `UsageMeasurer` for
+the ones that can only be counted, `Identifier` for backends that can name the
+account they are pointed at, and `CredentialRotator` for backends whose stored
+credentials change as they are used.
 
 ### 8.2 Backends
 
@@ -1426,6 +1426,34 @@ an account's share down from the disk it sits on, so what can actually be
 written is not `total - used`. `Usage.Remaining()` prefers the measured figure
 and falls back to the subtraction.
 
+Two flags say where the figures came from, because for a bucket neither of them
+is the account talking. `Measured` marks a `used` that was counted rather than
+asked for, and `Declared` a `total` that was typed rather than reported.
+`Usage.UsedKnown()` is the difference between an account with nothing on it and
+one nobody has looked at, which is zero either way.
+
+**Buckets.** S3 has no quota call, and Backblaze's own API adds none, so an S3
+account has always had a figure for what SAND put there and nothing to measure
+it against. Both halves are now answerable:
+
+- `UsageMeasurer.MeasureUsage` counts what is in the bucket by listing it end to
+  end — the whole bucket rather than SAND's prefix, since everything else in
+  there is exactly the part the index cannot supply. It costs a request per
+  thousand objects and is billed as a transaction at some providers, so nothing
+  takes it on a timer: `POST /api/providers/{id}/measure` and `sand remote
+  measure` are the two callers, and the backend keeps what it counted for its
+  cheap `Usage` to hand back on the ping path afterwards.
+- `Config.Capacity` is the denominator, typed by whoever pays for the bucket —
+  the cap in the provider's console, or how much of it this vault may fill. It
+  is set through the same `PATCH` that renames an account, never reaches the
+  backend, and enforces nothing: an upload over it is not refused, the bar just
+  reads full.
+
+`withDeclaredCapacity` puts the two together, and only in that order: a declared
+capacity applies when something has actually counted, since a denominator with
+no numerator draws an account as empty, and it never overrules a backend that
+reports a quota of its own.
+
 A local folder answers from `statfs` (`GetDiskFreeSpaceEx` on Windows) against
 the drive it sits on, climbing to the nearest existing parent for a folder that
 has not been created yet. Deliberately the drive and not the folder: what SAND
@@ -1489,6 +1517,7 @@ reveals only whether a vault exists.
 | GET | `/api/providers/specs` | Backend descriptions for the connect form |
 | GET | `/api/providers` | Connected accounts: online, parts held, quota |
 | GET | `/api/providers/stats/{id}` | One account taken apart: quota against SAND's own share, and what the load is made of (§8.7). The id trails `stats` because `{id}/stats` collides with the OAuth status route below |
+| POST | `/api/providers/{id}/measure` | Count what is on an account that reports no quota, by listing it (§8.7). The expensive half of the panel above, which is why it is a call of its own |
 | POST | `/api/providers` | Connect an account (pings before saving) |
 | POST | `/api/providers/oauth/start` | Begin a sign-in; returns the consent URL |
 | GET | `/api/providers/oauth/callback` | Where the provider sends the browser back (public; matched on `state`) |
@@ -1496,7 +1525,7 @@ reveals only whether a vault exists.
 | POST | `/api/providers/oauth/exchange` | Finish a sign-in from a pasted redirect URL |
 | POST | `/api/providers/oauth/complete` | Turn a finished sign-in into an account |
 | POST | `/api/providers/{id}/test` | Re-check one account |
-| PATCH | `/api/providers/{id}` | Rename it / set its colour — index only, the backend is never contacted (§3.9) |
+| PATCH | `/api/providers/{id}` | Rename it / set its colour / declare its capacity — index only, the backend is never contacted (§3.9) |
 | DELETE | `/api/providers/{id}` | Disconnect (`?force=1` to override the guard) |
 | GET | `/api/files?path=` | List a folder (`&vault=` for a sub vault; absent is the main one) |
 | GET | `/api/search?q=` | Find files and folders by name (`&path=` scopes to a subtree, `&vault=`, `&type=file\|folder`, `&limit=`) |

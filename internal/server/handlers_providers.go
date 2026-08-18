@@ -47,6 +47,27 @@ func (s *Server) handleProviderStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"stats": report})
 }
 
+// handleProviderMeasure counts what is on one account, for the backends that
+// have no way to say it: a bucket is listed end to end and the sizes added up.
+//
+// Its own route, and its own long deadline, because it is the one figure in the
+// panel that costs a walk of somebody else's storage — a request per thousand
+// objects, and real money at the providers that bill for listing. The panel
+// asks for it beside the cheap stats rather than as part of them, so the rest of
+// the breakdown draws immediately and this fills in when it is done.
+func (s *Server) handleProviderMeasure(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := contextWithTimeout(r, 10*time.Minute)
+	defer cancel()
+
+	v, _ := s.Vault()
+	usage, err := v.MeasureProvider(ctx, r.PathValue("id"))
+	if err != nil {
+		vaultErrorResponse(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"usage": usage})
+}
+
 type addProviderRequest struct {
 	Kind    provider.Kind     `json:"kind"`
 	Name    string            `json:"name"`
@@ -81,12 +102,18 @@ func (s *Server) handleProviderAdd(w http.ResponseWriter, r *http.Request) {
 }
 
 // editProviderRequest carries the fields of a connected account the edit menu
-// can change. Both are pointers so that an absent field means "leave it alone"
-// and a present empty one means something: "" is a colour cleared back to the
-// automatic one, and a name that is blank is a mistake the vault rejects.
+// can change. All three are pointers so that an absent field means "leave it
+// alone" and a present empty one means something: "" is a colour cleared back
+// to the automatic one, "" is a capacity nobody is declaring any more, and a
+// name that is blank is a mistake the vault rejects.
+//
+// Capacity arrives as text rather than a number because it is typed rather than
+// picked — "10 GB" is what somebody reads off a bucket's console, and the form
+// should not make them count the zeroes.
 type editProviderRequest struct {
-	Name  *string `json:"name"`
-	Color *string `json:"color"`
+	Name     *string `json:"name"`
+	Color    *string `json:"color"`
+	Capacity *string `json:"capacity"`
 }
 
 func (s *Server) handleProviderUpdate(w http.ResponseWriter, r *http.Request) {
@@ -96,11 +123,18 @@ func (s *Server) handleProviderUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	edit := vault.ProviderEdit{Name: req.Name, Color: req.Color}
+	if req.Capacity != nil {
+		bytes, err := provider.ParseCapacity(*req.Capacity)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
+			return
+		}
+		edit.Capacity = &bytes
+	}
+
 	v, _ := s.Vault()
-	cfg, err := v.UpdateProvider(r.PathValue("id"), vault.ProviderEdit{
-		Name:  req.Name,
-		Color: req.Color,
-	})
+	cfg, err := v.UpdateProvider(r.PathValue("id"), edit)
 	if err != nil {
 		vaultErrorResponse(w, err)
 		return

@@ -237,9 +237,14 @@ func (s *Server) Handler() (http.Handler, error) {
 		// than the other, and ServeMux refuses the pair outright. Moving the
 		// older route would be a break for the sake of a nicer new path.
 		"GET /api/providers/stats/{id}": s.handleProviderStats,
-		// What an account is called and what colour it wears. Neither is a
-		// credential and neither moves a byte, so this is the one write against
-		// an account that never touches the backend holding it.
+		// The expensive half of that panel, kept apart from it: what is
+		// actually in a bucket, counted by listing it. Only the backends with
+		// no quota call have one, and nothing calls it on a schedule.
+		"POST /api/providers/{id}/measure": s.handleProviderMeasure,
+		// What an account is called, what colour it wears, and how big its
+		// holder says it is. None of the three is a credential and none of them
+		// moves a byte, so this is the one write against an account that never
+		// touches the backend holding it.
 		"PATCH /api/providers/{id}":  s.handleProviderUpdate,
 		"DELETE /api/providers/{id}": s.handleProviderRemove,
 

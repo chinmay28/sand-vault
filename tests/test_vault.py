@@ -586,6 +586,35 @@ class TestCLI:
         assert clash.returncode != 0
         assert "already connected" in (clash.stderr + clash.stdout)
 
+    def test_a_capacity_is_declared_and_a_bucket_is_counted(self, sand_bin, vault_dir):
+        """The two halves of a usage bar for a backend that reports neither.
+
+        A bucket has no quota call, so the whole is typed and the used is
+        counted. A local folder is neither: statfs already knows both, which is
+        why it takes the figure and refuses the count."""
+        path = os.path.join(vault_dir, "cli-clouds", "cli-capacity")
+        cli(sand_bin, vault_dir, "remote", "add", "local", "--name", "cli-capacity",
+            "--set", f"path={path}")
+
+        said = cli(sand_bin, vault_dir, "remote", "edit", "cli-capacity",
+                   "--capacity", "10 GB")
+        assert "10.0 GB" in said.stdout, said.stdout
+
+        # Written the way it is read, and cleared the way a colour is.
+        cleared = cli(sand_bin, vault_dir, "remote", "edit", "cli-capacity",
+                      "--capacity", "none")
+        assert "no declared capacity" in cleared.stdout, cleared.stdout
+
+        nonsense = cli(sand_bin, vault_dir, "remote", "edit", "cli-capacity",
+                       "--capacity", "lots", check=False)
+        assert nonsense.returncode != 0
+        assert "not a size" in (nonsense.stderr + nonsense.stdout)
+
+        # Counting is for the accounts that cannot answer. This one can.
+        counted = cli(sand_bin, vault_dir, "remote", "measure", "cli-capacity", check=False)
+        assert counted.returncode != 0
+        assert "cannot be counted" in (counted.stderr + counted.stdout)
+
     def test_put_get_round_trip(self, sand_bin, vault_dir, tmp_path):
         source = tmp_path / "cli-round-trip.bin"
         payload = os.urandom(64_000)

@@ -1,7 +1,7 @@
-import React, { useEffect, useState } from 'react'
-import { COLORS, FONT, KIND_ICONS, accountColor, formatBytes } from '../theme'
+import React, { useCallback, useEffect, useState } from 'react'
+import { COLORS, FONT, KIND_ICONS, accountColor, formatBytes, formatDate } from '../theme'
 import { api } from '../api'
-import { Banner, Modal, Spinner } from './ui'
+import { Banner, Button, Modal, Spinner } from './ui'
 import { useIsMobile } from '../hooks'
 
 /* One account, taken apart.
@@ -34,9 +34,31 @@ export function usageBreakdown(provider) {
   const usage = provider?.usage || {}
   const total = usage.total > 0 ? usage.total : 0
   const stored = Math.max(0, provider?.stored || 0)
+  // Where the two figures came from, which the panel says out loud. A bucket
+  // has no quota call, so what is in it was counted by listing it and the
+  // capacity it is drawn against was typed by whoever pays for the bucket —
+  // both are true and neither is the account talking.
+  const counted = Boolean(usage.measured)
+  const declared = Boolean(usage.declared)
+  const countedAt = usage.measured_at || ''
 
   if (!total) {
-    return { known: false, total: 0, used: 0, sand: stored, other: 0, free: 0, reserved: 0 }
+    // Counted but with nothing to measure it against: how full the account is
+    // has no answer, and how much is on it does. Saying the second is the whole
+    // point of having counted.
+    const measured = counted ? Math.max(0, usage.used || 0) : 0
+    return {
+      known: false,
+      counted,
+      declared,
+      countedAt,
+      total: 0,
+      used: measured,
+      sand: counted ? Math.min(stored, measured) : stored,
+      other: counted ? Math.max(0, measured - stored) : 0,
+      free: 0,
+      reserved: 0,
+    }
   }
 
   const used = Math.min(Math.max(0, usage.used || 0), total)
@@ -44,6 +66,9 @@ export function usageBreakdown(provider) {
   const free = usage.free > 0 ? Math.min(usage.free, total - used) : Math.max(0, total - used)
   return {
     known: true,
+    counted,
+    declared,
+    countedAt,
     total,
     used,
     sand,
@@ -120,8 +145,14 @@ export function UsageBar({ provider, height = 6, gap = 2 }) {
 /* The line under the bar on an account card: how full the account is, and how
    much room is left on it. */
 export function UsageLine({ provider }) {
-  const { known, total, used, free } = usageBreakdown(provider)
-  if (!known) return null
+  const { known, counted, total, used, free } = usageBreakdown(provider)
+  if (!known) {
+    // Counted, with no capacity to measure it against. It is still worth a
+    // line: the account card's other figure is what SAND put there, and this
+    // is what is there — the gap between the two is somebody else's files.
+    if (!counted) return null
+    return <div>{formatBytes(used)} on the account</div>
+  }
 
   // What SAND's own share of that is stays on the line above, which already
   // says how many parts are here and what they weigh. Two figures fit the
@@ -364,9 +395,38 @@ function Key({ color, label, title, bytes, share, outline }) {
   )
 }
 
-export default function CloudStats({ provider, onClose }) {
+/* What the Capacity section is looking at, in one sentence.
+
+   Four different situations end up here and they are not the same claim. An
+   account with a quota is quoting itself. A bucket with a declared capacity is
+   quoting you, against a figure something counted. A bucket that has only been
+   counted has no denominator at all. And a backend that can do neither is where
+   this panel has always shrugged. */
+function capacityHint(space, measurable) {
+  if (space.known && space.declared) {
+    return 'Measured against the capacity you set for this account, since a bucket reports none of its own — so the whole is your figure rather than the service\'s, and what is in it was counted by listing it.'
+  }
+  if (space.known) {
+    return 'Not all of an account is SAND. Its parts are the coloured slice, the neutral one is whatever else already lives there, and what is left after both is room.'
+  }
+  if (space.counted) {
+    return 'What is in the bucket, counted by listing it. How full that makes it has no answer until somebody says how big the bucket is — Edit the account to set a capacity, and this becomes a bar.'
+  }
+  if (measurable) {
+    return 'A bucket reports no quota — S3 has never had a call for it — so what is in one has to be counted by listing it.'
+  }
+  return 'This backend reports no quota, so there is nothing to measure the parts against — a bucket or a share is as big as whoever runs it says.'
+}
+
+export default function CloudStats({ provider, onClose, onChanged }) {
   const [stats, setStats] = useState(null)
   const [error, setError] = useState(null)
+  // A measurement taken from this panel, which outranks whatever the stats
+  // call came back with — that one is as fresh as the last count, this one is
+  // the count.
+  const [counted, setCounted] = useState(null)
+  const [counting, setCounting] = useState(false)
+  const [countError, setCountError] = useState(null)
   const mobile = useIsMobile()
 
   useEffect(() => {
@@ -378,11 +438,50 @@ export default function CloudStats({ provider, onClose }) {
     return () => { live = false }
   }, [provider.id])
 
+  /* Counting what is in a bucket, for the backends that answer no other way.
+
+     It costs a listing — a request per thousand objects, billed at some
+     providers — so it is taken once and kept: the first time this panel is
+     opened for an account nobody has counted, and by the button after that.
+     Repeat visits read back what the last count found rather than paying for
+     the same answer twice.
+
+     The drawer behind is told, because the server keeps the figure too and the
+     account's card can draw a bar from it the moment there is a capacity to
+     draw it against. */
+  const measure = useCallback(async () => {
+    setCounting(true)
+    setCountError(null)
+    try {
+      const resp = await api.measureProvider(provider.id)
+      setCounted(resp.usage)
+      onChanged?.()
+    } catch (err) {
+      setCountError(err.message)
+    } finally {
+      setCounting(false)
+    }
+  }, [provider.id, onChanged])
+
+  useEffect(() => {
+    // Not at an account that is not answering: the ping behind the card
+    // already failed, and a listing would fail the same way with a longer
+    // wait and a second error to dismiss.
+    if (!provider.measurable || provider.usage?.measured || provider.online === false) return
+    measure()
+    // Once per account, on the way in. `measure` is stable for an account and
+    // the guard above is what stops a second run: a count that has happened is
+    // a count this panel does not repeat.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [provider.id])
+
   const color = accountColor(provider.id)
   // The panel re-pings the account as it opens, so what it answers with is
   // fresher than the card that was clicked; until it does, the card's own
   // figures stand in and nothing jumps.
-  const account = stats || provider
+  const account = counted
+    ? { ...(stats || provider), usage: counted }
+    : (stats || provider)
   const space = usageBreakdown(account)
 
   return (
@@ -427,9 +526,7 @@ export default function CloudStats({ provider, onClose }) {
 
       <Section
         title="Capacity"
-        hint={space.known
-          ? "Not all of an account is SAND. Its parts are the coloured slice, the neutral one is whatever else already lives there, and what is left after both is room."
-          : 'This backend reports no quota, so there is nothing to measure the parts against — a bucket or a share is as big as whoever runs it says.'}
+        hint={capacityHint(space, provider.measurable)}
       >
         {space.known ? (
           <>
@@ -445,12 +542,47 @@ export default function CloudStats({ provider, onClose }) {
               )}
             </div>
           </>
+        ) : space.counted ? (
+          /* Counted, with nothing to measure it against. The bar wants a
+             denominator and there is none, so the two figures are said instead:
+             what is in the bucket, and how much of that is ours. */
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '7px' }}>
+            <Key color={color} label="SAND's parts" bytes={space.sand}
+              share={percent(space.sand, space.used)} />
+            <Key color={COLORS.textMuted} label="everything else on it" bytes={space.other}
+              share={percent(space.other, space.used)} />
+          </div>
         ) : (
           <p style={{ ...noteStyle, margin: 0, color: COLORS.textDim }}>
             {formatBytes(account.stored || 0)} of parts across {account.shards || 0} object
             {account.shards === 1 ? '' : 's'}.
           </p>
         )}
+
+        {/* Where the figures came from, and the offer to take them again. Only
+            the backends that can be counted get either — for a Drive this
+            section is the account's own answer and there is nothing to press. */}
+        {provider.measurable && (
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            gap: '10px',
+            marginTop: '14px',
+          }}>
+            <span style={{ ...noteStyle, flex: 1, minWidth: '160px' }}>
+              {counting
+                ? 'Counting what is in the bucket…'
+                : space.counted
+                  ? `Counted ${formatDate(space.countedAt)}${space.declared ? ', against the capacity you set for this account' : ''}.`
+                  : 'Nothing has counted this bucket yet.'}
+            </span>
+            <Button size="sm" onClick={measure} disabled={counting}>
+              {counting ? <Spinner size={11} /> : space.counted ? 'Count again' : 'Count it'}
+            </Button>
+          </div>
+        )}
+        {countError && <Banner tone="error" onDismiss={() => setCountError(null)}>{countError}</Banner>}
       </Section>
 
       {stats && (

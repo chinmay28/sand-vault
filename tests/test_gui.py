@@ -606,6 +606,90 @@ class TestAccountStats:
         app.keyboard.press("Escape")
 
 
+class TestABucketWithNoQuota:
+    """The account that cannot answer either question about itself.
+
+    S3 has no quota call — it never has, and Backblaze's own API adds none — so
+    a bucket has always shown what SAND put there and nothing to measure it
+    against. Both halves are answerable, and neither comes from the service:
+    what is in the bucket is counted by listing it, and how big the bucket is
+    said to be is typed by whoever pays for it.
+
+    Its own server, because the vault behind it holds one S3 account and the
+    shared one holds three local folders that other tests count.
+    """
+
+    def open_vault(self, page, bucket_server, vault_password):
+        page.goto(bucket_server)
+        if page.get_by_text("Create your vault").count() > 0:
+            boxes = page.locator('input[autocomplete="new-password"]')
+            boxes.nth(0).fill(vault_password)
+            boxes.nth(1).fill(vault_password)
+            page.get_by_text("▶ Create vault").click()
+        else:
+            page.locator('input[type="password"]').first.fill(vault_password)
+            page.get_by_text("▶ Unlock").click()
+        page.wait_for_selector("text=Connected clouds", timeout=20000)
+        return page
+
+    def test_the_panel_counts_the_bucket_it_cannot_ask(self, page, bucket_server, vault_password):
+        """Opening Stats on a bucket counts it, once, and says both that it
+        counted and that the count has nothing to be measured against."""
+        app = self.open_vault(page, bucket_server, vault_password)
+        app.get_by_role("button", name="Stats").first.click()
+
+        app.wait_for_selector("text=counted by listing it", timeout=30000)
+        app.wait_for_selector("text=Count again", timeout=30000)
+
+        body = app.locator('div[role="dialog"]').inner_text()
+        # The two objects in the bucket: one that could be a part of ours, one
+        # that was already there. Nothing of this vault has landed on it, so
+        # every byte counted belongs to somebody else.
+        assert "everything else on it" in body
+        assert "4.8 MB" in body, body
+        # And no bar, because there is no whole to draw one against.
+        assert "ROOM LEFT\n—" in body or "—\nROOM LEFT" in body, body
+        app.keyboard.press("Escape")
+
+    def test_a_declared_capacity_turns_the_count_into_a_bar(self, page, bucket_server, vault_password):
+        """The figure the backend cannot supply is typed in Edit, and the
+        account card gets the line every other account has."""
+        app = self.open_vault(page, bucket_server, vault_password)
+
+        # The count first, since that is the half a capacity is measured
+        # against: a denominator with no numerator would draw the account as
+        # empty, so the bar waits for something to have looked.
+        app.get_by_role("button", name="Stats").first.click()
+        app.wait_for_selector("text=Count again", timeout=30000)
+        app.keyboard.press("Escape")
+
+        app.get_by_role("button", name="Edit").first.click()
+        app.wait_for_selector("text=Edit account", timeout=20000)
+        app.get_by_label("Capacity").fill("10 GB")
+        app.get_by_role("button", name="Save").click()
+
+        app.wait_for_selector("text=10 GB used", timeout=30000)
+        card = app.get_by_text("b2-cold", exact=True).first.locator("xpath=ancestor::div[3]")
+        assert "free" in card.inner_text()
+
+        # And the panel behind it now names the whole as the account holder's
+        # own figure rather than the service's.
+        app.get_by_role("button", name="Stats").first.click()
+        app.wait_for_selector("text=the capacity you set for this account", timeout=30000)
+        body = app.locator('div[role="dialog"]').inner_text()
+        assert "free" in body and "10 GB" in body, body
+        app.keyboard.press("Escape")
+
+        # Cleared, the account goes back to saying nothing about its size.
+        app.get_by_role("button", name="Edit").first.click()
+        app.wait_for_selector("text=Edit account", timeout=20000)
+        app.get_by_label("Capacity").fill("")
+        app.get_by_role("button", name="Save").click()
+        app.wait_for_timeout(1500)
+        assert "10 GB used" not in app.get_by_text("b2-cold", exact=True).first.locator(
+            "xpath=ancestor::div[3]").inner_text()
+
+
 class TestPickingAFolder:
     """A local folder is chosen by walking to it, not by typing it out.
 

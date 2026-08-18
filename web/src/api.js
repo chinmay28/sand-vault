@@ -106,17 +106,29 @@ export const api = {
      The id trails the word rather than leading it because the router will not
      take `{id}/stats` — it collides with the sign-in status route above. */
   providerStats: (id) => request(`/api/providers/stats/${encodeURIComponent(id)}`),
-  /* What an account is called and what colour it wears. Only the fields passed
-     change — an absent one is left alone — and neither touches the credentials
-     or the parts sitting on the account: nothing is uploaded, downloaded or
-     re-encrypted by renaming a cloud. A color of '' hands the choice back to
-     the browser. */
-  updateProvider: (id, { name, color } = {}) =>
+  /* What is actually in a bucket, counted by listing it end to end.
+
+     The one figure in the panel that costs a walk of somebody else's storage —
+     a request per thousand objects, billed as a transaction at the providers
+     that charge for listing — so it is asked for rather than taken, and only
+     accounts flagged `measurable` have anything to count. The server keeps what
+     it counted, so the account's card shows the same figure afterwards without
+     paying for it again. */
+  measureProvider: (id) =>
+    request(`/api/providers/${encodeURIComponent(id)}/measure`, { method: 'POST' }),
+  /* What an account is called, what colour it wears, and how big its holder
+     says it is. Only the fields passed change — an absent one is left alone —
+     and none of them touches the credentials or the parts sitting on the
+     account: nothing is uploaded, downloaded or re-encrypted by renaming a
+     cloud. A color of '' hands the choice back to the browser, and a capacity
+     of '' is nobody declaring one. */
+  updateProvider: (id, { name, color, capacity } = {}) =>
     request(`/api/providers/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       body: {
         ...(name === undefined ? null : { name }),
         ...(color === undefined ? null : { color }),
+        ...(capacity === undefined ? null : { capacity }),
       },
     }),
 

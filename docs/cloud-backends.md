@@ -141,7 +141,7 @@ standard library, which is what keeps the artifact one static CGO-free binary.
 |---|---|---|
 | **Azure Blob Storage** | The biggest real gap — the third hyperscaler, and the only one with no S3 face | SharedKey signing, same exercise as the SigV4 code in `s3.go` |
 | **SFTP** | One backend covers rsync.net, BorgBase, Hetzner Storage Box, every VPS and every NAS | Needs `golang.org/x/crypto/ssh` — the only new dependency on this page, and still no CGO |
-| **Backblaze B2 native** | — | Low value: the S3 preset already covers B2 |
+| **Backblaze B2 native** | — | Low value: the S3 preset already covers B2, and B2's own API reports no bucket size either — usage there is counted by listing and measured against a declared capacity (`UsageMeasurer`, `Config.Capacity`) |
 
 ---
 
@@ -197,9 +197,11 @@ adding a backend. In order:
    behind a disclosure, and `Presets` become buttons.
 3. **The six methods** — `Put`, `Get`, `Stat`, `Delete`, `List`, `Ping`.
    `Get`/`Stat` return `ErrNotFound` for a missing object; `Delete` is
-   idempotent. Implement `UsageReporter` where the service reports a quota,
-   `Identifier` so a freshly connected account can name itself, and
-   `CredentialRotator` if credentials change as they are spent.
+   idempotent. Implement `UsageReporter` where the service reports a quota —
+   cheaply, since it is on the ping path — `UsageMeasurer` where it can only be
+   counted, as an S3 bucket can, `Identifier` so a freshly connected account can
+   name itself, and `CredentialRotator` if credentials change as they are
+   spent.
 4. **Order** — 10s for sign-in backends, 20s for credentials, 30s for the ones
    that take a path. Ties break by label.
 5. **Tests** in `internal/provider/`. The HTTP backends are tested against an
