@@ -29,6 +29,24 @@ func (s *Server) handleProvidersList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"providers": statuses})
 }
 
+// handleProviderStats reports one account on its own: what it is holding, what
+// room is left on it, and what the load is made of. The sidebar's one-line
+// summary is in here too — the panel is opened straight from that line and
+// re-pings as it opens, so it answers with what it found rather than with what
+// the last refresh found.
+func (s *Server) handleProviderStats(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := contextWithTimeout(r, 30*time.Second)
+	defer cancel()
+
+	v, _ := s.Vault()
+	report, err := v.ProviderStats(ctx, r.PathValue("id"))
+	if err != nil {
+		vaultErrorResponse(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"stats": report})
+}
+
 type addProviderRequest struct {
 	Kind    provider.Kind     `json:"kind"`
 	Name    string            `json:"name"`

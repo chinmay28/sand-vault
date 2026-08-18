@@ -111,9 +111,30 @@ type ObjectInfo struct {
 
 // Usage reports how full an account is. Total <= 0 means the backend does not
 // report a quota.
+//
+// Free is what can still be written, which is not always Total - Used. A
+// filesystem keeps a reserve only root may spend, so a local drive with 5 GB
+// unused may have 4.7 GB a service running as an ordinary user can put a part
+// in; a backend that reports only a quota leaves it zero and Remaining answers
+// from the other two.
 type Usage struct {
 	Used  int64 `json:"used"`
 	Total int64 `json:"total"`
+	Free  int64 `json:"free,omitempty"`
+}
+
+// Remaining is what this account can still take, preferring a figure the
+// backend measured over one subtracted from a quota. Zero when nothing is
+// known, and never negative — an account over its quota has no room, not
+// negative room.
+func (u Usage) Remaining() int64 {
+	if u.Free > 0 {
+		return u.Free
+	}
+	if u.Total > u.Used {
+		return u.Total - u.Used
+	}
+	return 0
 }
 
 // Provider is the object-store surface every backend implements.

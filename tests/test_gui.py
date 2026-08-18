@@ -514,6 +514,70 @@ class TestEditingAnAccount:
         app.keyboard.press("Escape")
 
 
+class TestAccountStats:
+    """How full an account is, and how much of that is SAND's doing.
+
+    A local folder is the case that made this worth drawing: a directory on a
+    5 TB disk holding 34 GB of parts says nothing on its own about whether
+    there is room for the next file, because the disk is shared with everything
+    else on the machine. Clouds have the same problem in a milder form — a
+    Drive is mostly photographs somebody put there by hand.
+    """
+
+    USED = re.compile(r"[\d.]+ [KMGT]?B / [\d.]+ [KMGT]?B used")
+
+    def card(self, app, name):
+        return (app.locator("div")
+                .filter(has=app.get_by_text(name, exact=True))
+                .filter(has=app.get_by_role("button", name="Stats"))
+                .last)
+
+    def test_a_local_folder_shows_the_drive_it_sits_on(self, app):
+        card = self.card(app, "ui-one")
+        text = card.inner_text()
+
+        assert self.USED.search(text), f"no drive figures on the card: {text!r}"
+        assert "free" in text
+
+        # And the bar under the figures is drawn from them: a segment for what
+        # SAND holds, one for everything else on the drive.
+        bar = card.locator("div").filter(has_not=app.locator("button")).last
+        assert bar.count() == 1
+
+    def test_the_stats_panel_breaks_the_account_down(self, app, tmp_path):
+        # Named to sort after the files earlier classes open by position: the
+        # vault is shared across the session, and a file landing at the top of
+        # the listing changes what "the first row" means for everyone.
+        source = tmp_path / "stats-breakdown.txt"
+        source.write_text("something to weigh" * 500)
+        upload_and_settle(app, source, choose=["ui-one", "ui-two", "ui-three"])
+
+        self.card(app, "ui-one").get_by_role("button", name="Stats").click()
+
+        app.wait_for_selector("text=Capacity", timeout=30000)
+        app.wait_for_selector("text=SAND's parts", timeout=30000)
+        app.wait_for_selector("text=What SAND keeps here", timeout=30000)
+
+        body = app.locator('div[role="dialog"]').inner_text()
+        # The drive's three figures, each named rather than left to a colour.
+        assert "everything else on it" in body
+        assert "free" in body
+        # What the parts belong to, and where they came from.
+        assert "documents" in body
+        assert "/stats-breakdown.txt" in body
+
+    def test_the_panel_says_when_an_account_is_the_only_copy(self, app, tmp_path):
+        """The count that matters before disconnecting one: the disconnect
+        guard refuses on exactly this, and the panel says it beforehand."""
+        source = tmp_path / "stats-pinned.txt"
+        source.write_text("only two clouds hold this")
+        upload_and_settle(app, source, choose=["ui-one", "ui-two"])
+
+        self.card(app, "ui-one").get_by_role("button", name="Stats").click()
+        app.wait_for_selector("text=could not be rebuilt without this account", timeout=30000)
+        app.keyboard.press("Escape")
+
+
 class TestPickingAFolder:
     """A local folder is chosen by walking to it, not by typing it out.
 

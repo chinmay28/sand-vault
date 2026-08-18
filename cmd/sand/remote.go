@@ -146,7 +146,7 @@ func remoteListCmd() *cobra.Command {
 			}
 
 			tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(tw, "NAME\tKIND\tSTATUS\tPARTS\tSTORED\tCOLOUR\tID")
+			fmt.Fprintln(tw, "NAME\tKIND\tSTATUS\tPARTS\tSTORED\tFREE\tCOLOUR\tID")
 			for _, s := range statuses {
 				status := "online"
 				if !s.Online {
@@ -162,8 +162,17 @@ func remoteListCmd() *cobra.Command {
 				if colour == "" {
 					colour = "auto"
 				}
-				fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
-					s.Name, s.Kind, status, s.Shards, formatBytes(s.Stored), colour, s.ID)
+				// What is left on the account, which is a different question
+				// from what SAND has put there: a local folder answers with the
+				// drive it sits on, shared with everything else on the machine.
+				// A backend that reports no quota says nothing rather than
+				// nothing-in-particular.
+				free := "—"
+				if room := s.Usage.Remaining(); room > 0 {
+					free = formatBytes(room)
+				}
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\n",
+					s.Name, s.Kind, status, s.Shards, formatBytes(s.Stored), free, colour, s.ID)
 			}
 			return tw.Flush()
 		},

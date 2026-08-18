@@ -61,6 +61,45 @@ else. Standalone mode follows the same scheme: `sand archive` writes
 each part's key is recorded in the manifest when it is written, so parts stored
 under the old layout are still found where they are.
 
+### How full a drive is, and how much of that is SAND
+
+An account card used to say "195 parts · 33.9 GB" and, for the clouds that
+report a quota, "16.3 GB / 17.9 GB used". Neither number answers the question
+somebody actually has in front of an upload, which is whether there is room —
+and on a local folder there was no second line at all: a directory on a 5 TB
+disk and a directory on a nearly full USB stick looked identical.
+
+Local folders now report the drive they sit on, so every account has a capacity
+line, and the line is drawn as a bar with the split in it: **what SAND put
+there, what was already on the account, and what is free**. The distinction is
+the point. A Drive is mostly photographs somebody put there by hand, and a disk
+is shared with everything else on the machine; the parts SAND wrote are usually
+the small part, and drawing them as the whole of a 5 TB disk described a
+computer nobody has. Free space is what the filesystem says can actually be
+written, not the subtraction — a reserve only root may spend, or a quota that
+cuts an account down from the disk under it, is named as its own figure rather
+than counted as room you have.
+
+**Stats** on any account card opens the breakdown behind that bar:
+
+- capacity, with SAND's share, everything else, free and reserved each named
+  and measured rather than left to a colour
+- what the parts belong to, by kind and by folder, weighed by what each thing
+  left *on this account* rather than by its own size
+- when they arrived, by month
+- the heaviest files on it
+- how many files could not be rebuilt without this account — the count the
+  disconnect guard refuses on, said before you go looking for it
+
+Everything in the panel is read off the index, so it costs one ping and no
+listing: the vault already knows which parts it wrote where and what each one
+weighs. The breakdowns come from the main vault alone. What a sub vault put on
+an account counts towards the capacity figures and towards the last of those
+counts — as it always has, from the inventory, so a locked sub vault never
+makes an account look emptier than it is — but it is one line rather than a
+list of its folders. A panel about a *cloud* is not where a second password's
+contents should start appearing.
+
 ### A vault inside your vault
 
 Some things should not be readable by whoever holds your vault password —
