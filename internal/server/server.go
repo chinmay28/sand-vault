@@ -248,11 +248,12 @@ func (s *Server) Handler() (http.Handler, error) {
 		"PATCH /api/providers/{id}":  s.handleProviderUpdate,
 		"DELETE /api/providers/{id}": s.handleProviderRemove,
 
-		// Which accounts have been winning the race every read runs, since the
-		// server came up. Counters the read path already keeps, so this costs
-		// nothing and touches nobody's storage. See handlers_reads.go.
-		"GET /api/reads":        s.handleReadStats,
-		"POST /api/reads/reset": s.handleReadStatsReset,
+		// Which accounts have been winning the race every read runs, over
+		// today, this month, this year or all of it. Counters the read path
+		// already keeps, so this costs nothing and touches nobody's storage.
+		// See handlers_reads.go.
+		"GET /api/reads":         s.handleReadStats,
+		"POST /api/reads/forget": s.handleReadStatsForget,
 
 		// Folders on this machine, for the backends configured with a path.
 		"GET /api/system/folders": s.handleSystemFolders,

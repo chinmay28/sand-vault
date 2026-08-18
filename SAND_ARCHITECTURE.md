@@ -690,13 +690,28 @@ to be part of the rebuild — answers that came too late to be used, downloads
 cancelled once enough had arrived, and outright failures, with how long an
 answer takes. The winners are recorded by the reader itself as it picks them;
 the losers are drained and recorded on a goroutine of their own, so a read never
-waits on the accounts it has already stopped needing. The counters are the
-server process's, deliberately: counting reads into the vault file would mean a
-write on every chunk of every stream, to the one file everything else depends
-on. `GET /api/reads` serves them and **Read speed**, beside Vault settings in
-the accounts drawer, draws them as three charts — share of the shards used, how
-long each account takes to answer with its fastest-to-slowest spread behind it,
-and what became of every fetch — each with its figures written out beside it.
+waits on the accounts it has already stopped needing. Counting is by the day: one bucket per
+account per day, which is the smallest window anybody asks about and the largest
+that sums into every other — this month, this year and all time are additions
+over the same buckets. Daily buckets are kept for 400 days and an all-time total
+accumulates beside them, so pruning thins the shape without touching the sum.
+
+The buckets live in a sidecar, `<vault>.reads`, and not in the vault file:
+counting a read into that would mean a write on every chunk of every stream, to
+the one file everything else here depends on being intact. It is sealed with
+AES-256-GCM under `crypto.DerivePurposeKey(dataKey, "sand-read-history-v1")` —
+which cloud a vault is on, when it is read and how much comes off each one is the
+same kind of thing the index is — so it is readable only while the vault is open,
+written at most every 30 seconds while reads are happening, and again when the
+vault is locked and when its password changes (the key it was sealed under is
+retired by that change, so it is rewritten before the old one goes). A sidecar
+that will not open is reported and started again rather than treated as damage.
+
+`GET /api/reads?window=today|month|year|all` serves them and **Read speed**,
+beside Vault settings in the accounts drawer, draws them as tabs over three
+charts — share of the shards used, how long each account takes to answer with
+its fastest-to-slowest spread behind it, and what became of every fetch — plus a
+sparkline per account of how its share has moved across the window.
 
 ### 4.3 Reading at an offset
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -12,29 +13,158 @@ import (
 
 // Which cloud answers a read, and how quickly.
 //
-// Every read is a race. gather asks all n accounts holding a file for their
-// shard and rebuilds from the first k distinct ones to arrive, cutting the
-// rest off mid-flight (transfer.go, and gatherChunk in chunked.go for a
-// chunked file). That is what makes a wide code quick to read as well as hard
-// to lose — 4-of-6 reads from whichever four clouds are quickest today.
+// Every read is a race. gather asks all n accounts holding a shard and rebuilds
+// from the first k distinct ones to arrive, cutting the rest off mid-flight
+// (transfer.go, and gatherChunk in chunked.go for a chunked file). That is what
+// makes a wide code quick to read as well as hard to lose — 4-of-6 reads from
+// whichever four clouds are quickest today.
 //
 // It also means the vault runs a timed comparison of every account against
-// every other one, hundreds of times over a single film, and has until now
-// thrown the result away. This keeps it: how many races each account was
-// entered into, how many it won — a win being an answer that arrived in time
-// to be part of the rebuild — and what it did when it did not win.
+// every other one, hundreds of times over a single film, and used to throw the
+// result away. This keeps it: how many races each account was entered into, how
+// many it won — a win being an answer that arrived in time to be part of the
+// rebuild — and what it did when it did not win.
 //
 // The point of keeping it is that the race hides a slow account right up until
 // the moment it becomes a failure. Nothing downloads any slower for one cloud
-// falling behind; it simply stops contributing, and the other five carry the
-// vault. An account winning none of the races it enters is holding shards
-// nobody has been able to use in weeks, which is worth knowing before the day
-// two of the others go offline and it is suddenly load-bearing.
+// falling behind; it simply stops contributing, and the others carry the vault.
 //
-// The figures are this process's own. Nothing here is written to the vault
-// file: a read would otherwise mean a write — on every chunk of every stream —
-// to the one file everything else depends on, and a counter is not worth that.
-// Since says when counting started, and Reset starts it again.
+// Counting is by the day. A day is the smallest window somebody asks about and
+// the largest one that can be summed into every other — this month, this year
+// and all time are additions over the same buckets — and one bucket per account
+// per day is small enough to keep for over a year in a file measured in
+// kilobytes. What survives a restart, and how, is readhistory.go.
+type readStats struct {
+	mu sync.Mutex
+
+	// since is when the oldest surviving figure was recorded. It is what the
+	// panel means by "counting since", and it moves only when the history is
+	// forgotten.
+	since time.Time
+
+	// names is what each account was called the last time it answered, so a
+	// row survives the account being disconnected — what a cloud was doing
+	// before somebody removed it is exactly what they may be about to want to
+	// explain.
+	names map[string]readAccountName
+
+	// total is every fetch ever recorded, kept apart from the daily buckets so
+	// that all time survives them being pruned.
+	total readBucket
+	days  map[string]*readBucket
+
+	// dayKey is the bucket now falls in, cached with the moment it stops being
+	// today: the hot path formats a date once a day rather than once a shard.
+	dayKey  string
+	dayEnds time.Time
+
+	// The sidecar is written by whoever set flush — the vault, which is what
+	// holds the key it is sealed under. rev counts recorded fetches so a write
+	// that started before the latest one does not mark it saved.
+	rev       uint64
+	savedRev  uint64
+	dirty     bool
+	flushing  bool
+	lastFlush time.Time
+	flush     func()
+
+	// saving tracks the flush goroutine, so a caller that is about to go away
+	// — a CLI command ending, a test cleaning up its directory — can wait for
+	// the write rather than leaving a file appearing behind it.
+	saving sync.WaitGroup
+
+	// tail tracks the goroutines still recording what the losers of a decided
+	// race eventually did. Nothing waits on it in the app — the reader is long
+	// gone by then — but a test that asserts on the losing side has to.
+	tail sync.WaitGroup
+}
+
+// readAccountName is what an account was called, kept alongside the figures so
+// the history can name an account the vault no longer has.
+type readAccountName struct {
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+}
+
+// readBucket is one span of time: what the vault did, and what each account did
+// inside it. A day is one of these and so is all time.
+type readBucket struct {
+	Races      int64                  `json:"races"`
+	Shortfalls int64                  `json:"shortfalls"`
+	Accounts   map[string]*readCounts `json:"accounts"`
+}
+
+func (b *readBucket) counterFor(id string) *readCounts {
+	if b.Accounts == nil {
+		b.Accounts = map[string]*readCounts{}
+	}
+	c := b.Accounts[id]
+	if c == nil {
+		c = &readCounts{}
+		b.Accounts[id] = c
+	}
+	return c
+}
+
+// readCounts is one account's tally inside one bucket. Durations are kept as
+// durations and rounded to milliseconds only when a report is built.
+type readCounts struct {
+	Fetches  int64 `json:"fetches"`
+	Wins     int64 `json:"wins"`
+	Late     int64 `json:"late"`
+	Aborted  int64 `json:"aborted"`
+	Failures int64 `json:"failures"`
+
+	// Answers is wins + late: the fetches that finished, which are the only
+	// ones a duration means anything for. An aborted fetch was stopped by us
+	// and a failed one never arrived, so folding either into an average would
+	// make a cloud look fast for having been given up on.
+	Answers int64         `json:"answers"`
+	Bytes   int64         `json:"bytes"`
+	Total   time.Duration `json:"total"`
+	Fastest time.Duration `json:"fastest"`
+	Slowest time.Duration `json:"slowest"`
+
+	LastError    string    `json:"last_error,omitempty"`
+	LastErrorAt  time.Time `json:"last_error_at,omitzero"`
+	LastAnswerAt time.Time `json:"last_answer_at,omitzero"`
+}
+
+// add folds one bucket's figures into another, which is how a month is built
+// out of days and how a loaded file is merged into what is already counted.
+func (c *readCounts) add(other *readCounts) {
+	c.Fetches += other.Fetches
+	c.Wins += other.Wins
+	c.Late += other.Late
+	c.Aborted += other.Aborted
+	c.Failures += other.Failures
+	c.Answers += other.Answers
+	c.Bytes += other.Bytes
+	c.Total += other.Total
+	if other.Fastest > 0 && (c.Fastest == 0 || other.Fastest < c.Fastest) {
+		c.Fastest = other.Fastest
+	}
+	if other.Slowest > c.Slowest {
+		c.Slowest = other.Slowest
+	}
+	// The later of the two errors, and the later of the two answers: a summed
+	// bucket says when this account last did each of them, not how many times.
+	if other.LastErrorAt.After(c.LastErrorAt) {
+		c.LastError = other.LastError
+		c.LastErrorAt = other.LastErrorAt
+	}
+	if other.LastAnswerAt.After(c.LastAnswerAt) {
+		c.LastAnswerAt = other.LastAnswerAt
+	}
+}
+
+func (b *readBucket) add(other *readBucket) {
+	b.Races += other.Races
+	b.Shortfalls += other.Shortfalls
+	for id, counts := range other.Accounts {
+		b.counterFor(id).add(counts)
+	}
+}
 
 // shardFetch is one account's answer in a read's race: which shard was asked
 // for, what came back, and how long the asking took.
@@ -69,53 +199,41 @@ const (
 	shardFailed
 )
 
-// readCounter is one account's running tally. Durations are kept as durations
-// and rounded to milliseconds only when the report is built.
-type readCounter struct {
-	name string
-	kind string
-
-	fetches  int64
-	wins     int64
-	late     int64
-	aborted  int64
-	failures int64
-
-	// answers is wins + late: the fetches that finished, which are the only
-	// ones a duration means anything for. An aborted fetch was stopped by us
-	// and a failed one never arrived, so folding either into an average would
-	// make a cloud look fast for having been given up on.
-	answers int64
-	bytes   int64
-	total   time.Duration
-	fastest time.Duration
-	slowest time.Duration
-
-	lastError   string
-	lastErrorAt time.Time
-	lastAnswer  time.Time
-}
-
-type readStats struct {
-	mu         sync.Mutex
-	since      time.Time
-	races      int64
-	shortfalls int64
-	accounts   map[string]*readCounter
-
-	// tail tracks the goroutines still recording what the losers of a decided
-	// race eventually did. Nothing waits on it in the app — the reader is long
-	// gone by then — but a test that asserts on the losing side has to.
-	tail sync.WaitGroup
-}
-
 func newReadStats() *readStats {
-	return &readStats{since: time.Now(), accounts: map[string]*readCounter{}}
+	return &readStats{names: map[string]readAccountName{}, days: map[string]*readBucket{}}
 }
 
 // Every method is safe on a nil receiver, so a Vault assembled field by field
 // — which the package's own tests do — reads and writes without a recorder
 // rather than panicking on one it never built.
+
+// bucketLocked returns the bucket now belongs in, opening a new day when the
+// clock has walked into one. Local time, because "today" and "this month" are
+// questions about the day the person asking is having.
+func (s *readStats) bucketLocked(now time.Time) *readBucket {
+	if s.days == nil {
+		s.days = map[string]*readBucket{}
+	}
+	if s.dayKey == "" || !now.Before(s.dayEnds) {
+		s.dayKey = now.Format(dayFormat)
+		s.dayEnds = startOfDay(now).AddDate(0, 0, 1)
+	}
+	bucket := s.days[s.dayKey]
+	if bucket == nil {
+		bucket = &readBucket{}
+		s.days[s.dayKey] = bucket
+	}
+	if s.since.IsZero() {
+		s.since = now
+	}
+	return bucket
+}
+
+func (s *readStats) touchedLocked(now time.Time) {
+	s.rev++
+	s.dirty = true
+	s.maybeFlushLocked(now)
+}
 
 // race notes that a read has begun. One chunk of a chunked file is one race,
 // because one chunk is what the accounts are actually racing over.
@@ -123,9 +241,12 @@ func (s *readStats) race() {
 	if s == nil {
 		return
 	}
+	now := time.Now()
 	s.mu.Lock()
-	s.races++
-	s.mu.Unlock()
+	defer s.mu.Unlock()
+	s.bucketLocked(now).Races++
+	s.total.Races++
+	s.touchedLocked(now)
 }
 
 // shortfall notes a race that could not find k shards, which is a read that
@@ -134,9 +255,12 @@ func (s *readStats) shortfall() {
 	if s == nil {
 		return
 	}
+	now := time.Now()
 	s.mu.Lock()
-	s.shortfalls++
-	s.mu.Unlock()
+	defer s.mu.Unlock()
+	s.bucketLocked(now).Shortfalls++
+	s.total.Shortfalls++
+	s.touchedLocked(now)
 }
 
 func (s *readStats) record(f shardFetch, out readOutcome) {
@@ -144,51 +268,53 @@ func (s *readStats) record(f shardFetch, out readOutcome) {
 		return
 	}
 
+	now := time.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	c := s.accounts[f.shard.ProviderID]
-	if c == nil {
-		c = &readCounter{}
-		s.accounts[f.shard.ProviderID] = c
-	}
-	// Named off the shard rather than off the account list, so a row survives
-	// the account being disconnected: what a cloud was doing before somebody
-	// removed it is exactly the thing they may be about to want to explain.
-	if f.shard.ProviderName != "" {
-		c.name = f.shard.ProviderName
-	}
-	if f.shard.ProviderKind != "" {
-		c.kind = f.shard.ProviderKind
+	if f.shard.ProviderName != "" || f.shard.ProviderKind != "" {
+		s.names[f.shard.ProviderID] = readAccountName{
+			Name: f.shard.ProviderName,
+			Kind: f.shard.ProviderKind,
+		}
 	}
 
-	c.fetches++
+	// Every fetch lands in two places: the day it happened on, which is what
+	// the windows are summed from, and the all-time total, which is what
+	// survives the day being pruned.
+	observe(s.bucketLocked(now).counterFor(f.shard.ProviderID), f, out, now)
+	observe(s.total.counterFor(f.shard.ProviderID), f, out, now)
+	s.touchedLocked(now)
+}
+
+func observe(c *readCounts, f shardFetch, out readOutcome, now time.Time) {
+	c.Fetches++
 	switch out {
 	case shardWon:
-		c.wins++
+		c.Wins++
 	case shardLate:
-		c.late++
+		c.Late++
 	case shardAborted:
-		c.aborted++
+		c.Aborted++
 	case shardFailed:
-		c.failures++
+		c.Failures++
 		if f.err != nil {
-			c.lastError = f.err.Error()
-			c.lastErrorAt = time.Now()
+			c.LastError = f.err.Error()
+			c.LastErrorAt = now
 		}
 	}
 
 	if out == shardWon || out == shardLate {
-		c.answers++
-		c.bytes += int64(len(f.blob))
-		c.total += f.took
-		if c.fastest == 0 || f.took < c.fastest {
-			c.fastest = f.took
+		c.Answers++
+		c.Bytes += int64(len(f.blob))
+		c.Total += f.took
+		if c.Fastest == 0 || f.took < c.Fastest {
+			c.Fastest = f.took
 		}
-		if f.took > c.slowest {
-			c.slowest = f.took
+		if f.took > c.Slowest {
+			c.Slowest = f.took
 		}
-		c.lastAnswer = time.Now()
+		c.LastAnswerAt = now
 	}
 }
 
@@ -248,20 +374,53 @@ func (s *readStats) reset() {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.since = time.Now()
-	s.races = 0
-	s.shortfalls = 0
-	s.accounts = map[string]*readCounter{}
+	s.since = time.Time{}
+	s.names = map[string]readAccountName{}
+	s.total = readBucket{}
+	s.days = map[string]*readBucket{}
+	s.dayKey = ""
+	s.rev++
+	s.dirty = false
+	s.savedRev = s.rev
 }
 
-// ReadStat is one account's standing in the read race.
+// ReadWindow is a span the figures can be asked for.
+type ReadWindow string
+
+const (
+	WindowToday ReadWindow = "today"
+	WindowMonth ReadWindow = "month"
+	WindowYear  ReadWindow = "year"
+	WindowAll   ReadWindow = "all"
+)
+
+// ParseReadWindow reads the window a request asked for. An empty string is
+// today, which is the one the panel opens on.
+func ParseReadWindow(s string) (ReadWindow, error) {
+	switch ReadWindow(strings.TrimSpace(strings.ToLower(s))) {
+	case "":
+		return WindowToday, nil
+	case WindowToday:
+		return WindowToday, nil
+	case WindowMonth:
+		return WindowMonth, nil
+	case WindowYear:
+		return WindowYear, nil
+	case WindowAll:
+		return WindowAll, nil
+	}
+	return "", errors.New(`window must be one of "today", "month", "year" or "all"`)
+}
+
+// ReadStat is one account's standing in the read race, over whichever window
+// was asked for.
 type ReadStat struct {
 	ProviderID string `json:"provider_id"`
 	Name       string `json:"name"`
 	Kind       string `json:"kind"`
 
 	// Connected is false for an account that has been removed since it last
-	// answered. Its record stays until the counters are reset.
+	// answered. Its record stays until the history is forgotten.
 	Connected bool `json:"connected"`
 
 	// Fetches is every shard this account was asked for, and the four figures
@@ -285,57 +444,112 @@ type ReadStat struct {
 	LastError    string    `json:"last_error,omitempty"`
 	LastErrorAt  time.Time `json:"last_error_at,omitzero"`
 	LastAnswerAt time.Time `json:"last_answer_at,omitzero"`
+
+	// Trend is this account's standing across the window, in order. Absent
+	// where the window is too short to have a shape — today is one bucket, and
+	// a line through one point says nothing.
+	Trend []ReadTrendPoint `json:"trend,omitempty"`
 }
 
-// ReadReport is the whole board: every account that has raced, plus every
-// connected account that has not, since counting started.
+// ReadTrendPoint is one span of a window: a day, or several of them where the
+// window is longer than the chart has room for.
+type ReadTrendPoint struct {
+	From    time.Time `json:"from"`
+	To      time.Time `json:"to"`
+	Days    int       `json:"days"`
+	Fetches int64     `json:"fetches"`
+	Wins    int64     `json:"wins"`
+	// AverageMS is over the answers inside this span alone.
+	AverageMS float64 `json:"average_ms"`
+}
+
+// ReadReport is the whole board over one window: every account that raced in
+// it, plus every connected account that did not.
 //
 // The ones with nothing to show are in it on purpose. An account with no wins
 // is the finding this panel exists for, and an account with no wins is also
 // the one a report built only from what was recorded would leave out.
 type ReadReport struct {
-	Since      time.Time  `json:"since"`
+	Window ReadWindow `json:"window"`
+
+	// From is the start of the window, and is absent for all time — which
+	// starts wherever the figures do. Since is where they do.
+	From  time.Time `json:"from,omitzero"`
+	Since time.Time `json:"since,omitzero"`
+
 	Races      int64      `json:"races"`
 	Shortfalls int64      `json:"shortfalls"`
 	Accounts   []ReadStat `json:"accounts"`
+
+	// Days is how many daily buckets the window was summed from, so the panel
+	// can say what "all time" actually reaches back over.
+	Days int `json:"days"`
 }
 
-// ReadStats reports which accounts have been answering this vault's reads.
-func (v *Vault) ReadStats() ReadReport {
+// ReadStats reports which accounts have been answering this vault's reads over
+// one window.
+func (v *Vault) ReadStats(window ReadWindow) ReadReport {
 	v.mu.RLock()
 	connected := append([]provider.Config(nil), v.providers...)
 	v.mu.RUnlock()
-	return v.reads.report(connected)
+	return v.reads.report(window, connected, time.Now())
 }
 
-// ResetReadStats starts the counting again from now.
-func (v *Vault) ResetReadStats() { v.reads.reset() }
+// ForgetReadStats erases the history, in memory and on disk.
+func (v *Vault) ForgetReadStats() error {
+	v.reads.reset()
+	return removeReadHistory(v.path)
+}
 
-func (s *readStats) report(connected []provider.Config) ReadReport {
+// trendPoints is how many spans a window is drawn as, at most. A year is 365
+// days and a sparkline is a couple of hundred pixels: past this the chart is
+// drawing detail nobody can see and the answer is carrying it.
+const trendPoints = 32
+
+func (s *readStats) report(window ReadWindow, connected []provider.Config, now time.Time) ReadReport {
 	if s == nil {
-		return ReadReport{Accounts: []ReadStat{}}
+		return ReadReport{Window: window, Accounts: []ReadStat{}}
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	report := ReadReport{
-		Since:      s.since,
-		Races:      s.races,
-		Shortfalls: s.shortfalls,
-		Accounts:   make([]ReadStat, 0, len(s.accounts)+len(connected)),
+	report := ReadReport{Window: window, Since: s.since}
+
+	var summed readBucket
+	var spans []readSpan
+	if window == WindowAll {
+		summed.add(&s.total)
+		// All time is the total, which outlives the daily buckets; the shape
+		// of it is whatever days are still kept.
+		spans = s.spansLocked(s.dayKeysLocked(""), now)
+		report.Days = len(s.days)
+	} else {
+		from, prefix := windowStart(window, now)
+		report.From = from
+		keys := s.dayKeysLocked(prefix)
+		for _, key := range keys {
+			summed.add(s.days[key])
+		}
+		spans = s.spansLocked(keys, now)
+		report.Days = len(keys)
 	}
+
+	report.Races = summed.Races
+	report.Shortfalls = summed.Shortfalls
+	report.Accounts = make([]ReadStat, 0, len(summed.Accounts)+len(connected))
 
 	seen := map[string]bool{}
 	for _, cfg := range connected {
 		seen[cfg.ID] = true
-		report.Accounts = append(report.Accounts, statFor(cfg.ID, cfg.Name, string(cfg.Kind), true, s.accounts[cfg.ID]))
+		report.Accounts = append(report.Accounts,
+			s.statLocked(cfg.ID, cfg.Name, string(cfg.Kind), true, summed.Accounts[cfg.ID], spans))
 	}
-	for id, c := range s.accounts {
+	for id, counts := range summed.Accounts {
 		if seen[id] {
 			continue
 		}
-		report.Accounts = append(report.Accounts, statFor(id, c.name, c.kind, false, c))
+		report.Accounts = append(report.Accounts, s.statLocked(id, "", "", false, counts, spans))
 	}
 
 	// Winners first, which is the order somebody reads this in: the question
@@ -358,32 +572,116 @@ func (s *readStats) report(connected []provider.Config) ReadReport {
 	return report
 }
 
-func statFor(id, name, kind string, connected bool, c *readCounter) ReadStat {
-	stat := ReadStat{ProviderID: id, Name: name, Kind: kind, Connected: connected}
-	if c == nil {
-		return stat
+// readSpan is one column of a trend: the days it covers, and where they fall.
+type readSpan struct {
+	keys []string
+	from time.Time
+	to   time.Time
+}
+
+// dayKeysLocked lists the recorded days matching a prefix — "2026-08" for a
+// month, "2026" for a year, the whole key for a day, "" for everything — in
+// order. Day keys sort chronologically because they are written the only way a
+// date can be both readable and sortable.
+func (s *readStats) dayKeysLocked(prefix string) []string {
+	keys := make([]string, 0, len(s.days))
+	for key := range s.days {
+		if prefix == "" || strings.HasPrefix(key, prefix) {
+			keys = append(keys, key)
+		}
 	}
+	sort.Strings(keys)
+	return keys
+}
+
+// spansLocked cuts a run of days into at most trendPoints columns. A month is
+// one column per day; a year is a fortnight or so per column, which is the
+// right resolution for a chart the width of a table row.
+func (s *readStats) spansLocked(keys []string, now time.Time) []readSpan {
+	if len(keys) < 3 {
+		// One or two columns is not a shape, and drawing it as one invites
+		// somebody to read a trend out of a single day.
+		return nil
+	}
+
+	per := (len(keys) + trendPoints - 1) / trendPoints
+	spans := make([]readSpan, 0, (len(keys)+per-1)/per)
+	for at := 0; at < len(keys); at += per {
+		end := at + per
+		if end > len(keys) {
+			end = len(keys)
+		}
+		group := keys[at:end]
+		from, _ := time.ParseInLocation(dayFormat, group[0], now.Location())
+		to, _ := time.ParseInLocation(dayFormat, group[len(group)-1], now.Location())
+		spans = append(spans, readSpan{keys: group, from: from, to: to.AddDate(0, 0, 1)})
+	}
+	return spans
+}
+
+func (s *readStats) statLocked(id, name, kind string, connected bool, c *readCounts, spans []readSpan) ReadStat {
+	stat := ReadStat{ProviderID: id, Name: name, Kind: kind, Connected: connected}
 	if stat.Name == "" {
-		stat.Name = c.name
+		stat.Name = s.names[id].Name
 	}
 	if stat.Kind == "" {
-		stat.Kind = c.kind
+		stat.Kind = s.names[id].Kind
 	}
-	stat.Fetches = c.fetches
-	stat.Wins = c.wins
-	stat.Late = c.late
-	stat.Aborted = c.aborted
-	stat.Failures = c.failures
-	stat.Bytes = c.bytes
-	stat.LastError = c.lastError
-	stat.LastErrorAt = c.lastErrorAt
-	stat.LastAnswerAt = c.lastAnswer
-	if c.answers > 0 {
-		stat.AverageMS = millis(c.total / time.Duration(c.answers))
-		stat.FastestMS = millis(c.fastest)
-		stat.SlowestMS = millis(c.slowest)
+	if stat.Name == "" {
+		stat.Name = id
+	}
+
+	if c != nil {
+		stat.Fetches = c.Fetches
+		stat.Wins = c.Wins
+		stat.Late = c.Late
+		stat.Aborted = c.Aborted
+		stat.Failures = c.Failures
+		stat.Bytes = c.Bytes
+		stat.LastError = c.LastError
+		stat.LastErrorAt = c.LastErrorAt
+		stat.LastAnswerAt = c.LastAnswerAt
+		if c.Answers > 0 {
+			stat.AverageMS = millis(c.Total / time.Duration(c.Answers))
+			stat.FastestMS = millis(c.Fastest)
+			stat.SlowestMS = millis(c.Slowest)
+		}
+	}
+
+	for _, span := range spans {
+		point := ReadTrendPoint{From: span.from, To: span.to, Days: len(span.keys)}
+		var counts readCounts
+		for _, key := range span.keys {
+			day := s.days[key]
+			if day == nil || day.Accounts[id] == nil {
+				continue
+			}
+			counts.add(day.Accounts[id])
+		}
+		point.Fetches = counts.Fetches
+		point.Wins = counts.Wins
+		if counts.Answers > 0 {
+			point.AverageMS = millis(counts.Total / time.Duration(counts.Answers))
+		}
+		stat.Trend = append(stat.Trend, point)
 	}
 	return stat
+}
+
+// windowStart is where a window begins, and the day-key prefix that selects it.
+func windowStart(window ReadWindow, now time.Time) (time.Time, string) {
+	switch window {
+	case WindowMonth:
+		return time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location()), now.Format("2006-01")
+	case WindowYear:
+		return time.Date(now.Year(), 1, 1, 0, 0, 0, 0, now.Location()), now.Format("2006")
+	default:
+		return startOfDay(now), now.Format(dayFormat)
+	}
+}
+
+func startOfDay(at time.Time) time.Time {
+	return time.Date(at.Year(), at.Month(), at.Day(), 0, 0, 0, 0, at.Location())
 }
 
 // millis renders a duration in milliseconds to one decimal place. A local disk

@@ -1,6 +1,10 @@
 package server
 
-import "net/http"
+import (
+	"net/http"
+
+	"github.com/chinmay28/sand-vault/internal/vault"
+)
 
 // Which cloud has been answering the reads.
 //
@@ -15,18 +19,34 @@ import "net/http"
 // figures are counters the read path has already written, so the panel opens
 // instantly and opening it costs no request against anybody's storage.
 func (s *Server) handleReadStats(w http.ResponseWriter, r *http.Request) {
+	window, err := vault.ParseReadWindow(r.URL.Query().Get("window"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
+		return
+	}
+
 	v, _ := s.Vault()
-	writeJSON(w, http.StatusOK, map[string]any{"reads": v.ReadStats()})
+	writeJSON(w, http.StatusOK, map[string]any{"reads": v.ReadStats(window)})
 }
 
-// handleReadStatsReset starts the counting again from now.
+// handleReadStatsForget erases the history, in memory and on disk.
 //
-// Worth having rather than making somebody restart the server: the figures are
-// most useful right after something changed — an account moved to a different
-// region, a laptop moved to a different network — and a fresh count is how you
-// tell what changed from what has been averaged in since the server came up.
-func (s *Server) handleReadStatsReset(w http.ResponseWriter, r *http.Request) {
+// Worth having, and worth confirming before it runs: it is the only thing in
+// the panel that destroys anything. What it is for is a fresh start after
+// something changed — an account moved region, a laptop moved network — where
+// the old figures are no longer measuring the same setup and averaging the two
+// together answers nothing.
+func (s *Server) handleReadStatsForget(w http.ResponseWriter, r *http.Request) {
+	window, err := vault.ParseReadWindow(r.URL.Query().Get("window"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
+		return
+	}
+
 	v, _ := s.Vault()
-	v.ResetReadStats()
-	writeJSON(w, http.StatusOK, map[string]any{"reads": v.ReadStats()})
+	if err := v.ForgetReadStats(); err != nil {
+		vaultErrorResponse(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"reads": v.ReadStats(window)})
 }

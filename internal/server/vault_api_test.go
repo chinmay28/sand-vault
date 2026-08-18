@@ -40,11 +40,13 @@ func newTestClient(t *testing.T) *testClient {
 	if err != nil {
 		t.Fatalf("Handler: %v", err)
 	}
-	// Manifest backups are pushed in the background, so let any in-flight push
-	// finish before the temporary account folders are cleaned up.
+	// Manifest backups are pushed in the background, and so is the read
+	// history's own save, so let both finish before the temporary folders they
+	// write into are cleaned up.
 	t.Cleanup(func() {
 		if s.vault != nil {
 			s.vault.AwaitBackupSync()
+			s.vault.AwaitReadHistory()
 		}
 	})
 	return &testClient{t: t, handler: handler, server: s, origin: "http://example.test"}

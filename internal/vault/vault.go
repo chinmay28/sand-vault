@@ -108,10 +108,12 @@ type Vault struct {
 	// vault's backup, so the warning is said once rather than on every change.
 	backupWarned map[string]bool
 
-	// reads counts which accounts have been winning the race every read runs,
-	// for the process's lifetime. Its own lock, taken alone: recording is on
-	// the read path and must never wait on the index. See readstats.go.
-	reads *readStats
+	// reads counts which accounts have been winning the race every read runs.
+	// Its own lock, taken alone: recording is on the read path and must never
+	// wait on the index. readsMu serializes the saves, and is taken after mu
+	// and before the recorder's own. See readstats.go and readhistory.go.
+	reads   *readStats
+	readsMu sync.Mutex
 }
 
 // Open returns a handle to the vault at path. The vault starts locked; if no
@@ -125,6 +127,10 @@ func Open(path string) (*Vault, error) {
 		flight:    newChunkFlight(),
 		reads:     newReadStats(),
 	}
+	// How the recorder saves itself. It counts on the read path and knows
+	// nothing about keys or files; this is the one line that hands it back to
+	// the vault, which has both. See readhistory.go.
+	v.reads.flush = v.flushReadHistory
 	v.backupIdle.L = &v.backupMu
 
 	// A conversion only ever holds its spool open, so anything matching that
@@ -389,6 +395,11 @@ func (v *Vault) Unlock(password string) error {
 	v.adoptLocked(u)
 	v.resetLiveCache()
 
+	// The read history is sealed under the key that has just arrived, so this
+	// is the first moment it can be read — and the panel that draws it is one
+	// of the first things somebody opens after signing in.
+	v.loadReadHistoryLocked()
+
 	// Anything that changed while an account was unreachable — or while the
 	// vault was locked mid-push — is repaired here rather than staying stale
 	// until the next upload.
@@ -433,6 +444,11 @@ func (v *Vault) VerifyPassword(password string) error {
 func (v *Vault) Lock() {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+
+	// Last chance to save what has been counted: the key it is sealed under is
+	// about to be wiped along with everything else.
+	v.flushReadHistoryLocked()
+	v.reads.reset()
 
 	crypto.ZeroBytes(v.vaultKey)
 	crypto.ZeroBytes(v.dataKey)

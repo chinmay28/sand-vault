@@ -18,6 +18,13 @@ import (
 // race did. Only a test needs to: a read never waits for them.
 func waitForReads(v *Vault) { v.reads.waitForTail() }
 
+func forgetReads(t *testing.T, v *Vault) {
+	t.Helper()
+	if err := v.ForgetReadStats(); err != nil {
+		t.Fatalf("ForgetReadStats: %v", err)
+	}
+}
+
 func TestReadStatsRecordsWhoAnsweredTheRace(t *testing.T) {
 	v, _ := newTestVault(t, 3)
 
@@ -27,14 +34,14 @@ func TestReadStatsRecordsWhoAnsweredTheRace(t *testing.T) {
 		t.Fatalf("Upload: %v", err)
 	}
 	// Only the read is being counted, so the writing is not.
-	v.ResetReadStats()
+	forgetReads(t, v)
 
 	if _, _, err := v.Fetch(context.Background(), entry.ID); err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
 	waitForReads(v)
 
-	report := v.ReadStats()
+	report := v.ReadStats(WindowToday)
 	if report.Races == 0 {
 		t.Fatalf("no races recorded for a file that was read")
 	}
@@ -108,7 +115,7 @@ func TestReadStatsListsAccountsThatHaveNotRaced(t *testing.T) {
 	newcomer := cfg.ID
 
 	found := false
-	for _, a := range v.ReadStats().Accounts {
+	for _, a := range v.ReadStats(WindowToday).Accounts {
 		if a.ProviderID != newcomer {
 			continue
 		}
@@ -143,14 +150,14 @@ func TestReadStatsCountsFailuresApartFromLosses(t *testing.T) {
 	if err := os.RemoveAll(roots[0]); err != nil {
 		t.Fatalf("breaking an account: %v", err)
 	}
-	v.ResetReadStats()
+	forgetReads(t, v)
 
 	if _, _, err := v.Fetch(context.Background(), entry.ID); err != nil {
 		t.Fatalf("Fetch with one account down: %v", err)
 	}
 	waitForReads(v)
 
-	for _, a := range v.ReadStats().Accounts {
+	for _, a := range v.ReadStats(WindowToday).Accounts {
 		if a.ProviderID != broken {
 			continue
 		}
@@ -181,19 +188,19 @@ func TestReadStatsCountsShortfalls(t *testing.T) {
 			t.Fatalf("breaking an account: %v", err)
 		}
 	}
-	v.ResetReadStats()
+	forgetReads(t, v)
 
 	if _, _, err := v.Fetch(context.Background(), entry.ID); err == nil {
 		t.Fatalf("Fetch succeeded with only one account left")
 	}
 	waitForReads(v)
 
-	if got := v.ReadStats().Shortfalls; got == 0 {
+	if got := v.ReadStats(WindowToday).Shortfalls; got == 0 {
 		t.Errorf("shortfalls = 0 after a read that could not gather enough shards")
 	}
 }
 
-func TestResetReadStatsStartsAgain(t *testing.T) {
+func TestForgetReadStatsStartsAgain(t *testing.T) {
 	v, _ := newTestVault(t, 3)
 
 	entry, _, err := v.Upload(context.Background(), MainScope, "/", "notes.txt",
@@ -206,26 +213,26 @@ func TestResetReadStatsStartsAgain(t *testing.T) {
 	}
 	waitForReads(v)
 
-	before := v.ReadStats()
+	before := v.ReadStats(WindowToday)
 	if before.Races == 0 {
-		t.Fatalf("nothing recorded to reset")
+		t.Fatalf("nothing recorded to forget")
 	}
 
-	v.ResetReadStats()
-	after := v.ReadStats()
+	forgetReads(t, v)
+	after := v.ReadStats(WindowToday)
 	if after.Races != 0 || after.Shortfalls != 0 {
-		t.Errorf("reset left %d races and %d shortfalls", after.Races, after.Shortfalls)
+		t.Errorf("forgetting left %d races and %d shortfalls", after.Races, after.Shortfalls)
 	}
-	if after.Since.Before(before.Since) {
-		t.Errorf("reset moved the counting start backwards")
+	if !after.Since.IsZero() {
+		t.Errorf("forgetting left a start date of %v", after.Since)
 	}
 	// The accounts stay — they are still connected — with nothing against them.
 	if len(after.Accounts) != 3 {
-		t.Errorf("accounts = %d after reset, want the 3 connected", len(after.Accounts))
+		t.Errorf("accounts = %d after forgetting, want the 3 connected", len(after.Accounts))
 	}
 	for _, a := range after.Accounts {
 		if a.Fetches != 0 || a.Wins != 0 || a.AverageMS != 0 {
-			t.Errorf("%s kept a figure across the reset: %+v", a.Name, a)
+			t.Errorf("%s kept a figure across the forgetting: %+v", a.Name, a)
 		}
 	}
 }
@@ -263,7 +270,7 @@ func TestReadStatsAveragesOnlyWhatArrived(t *testing.T) {
 	s.record(shardFetch{shard: shard, took: 9 * time.Second}, shardAborted)
 	s.record(shardFetch{shard: shard, took: 9 * time.Second, err: errors.New("timeout")}, shardFailed)
 
-	stats := s.report(nil).Accounts
+	stats := s.report(WindowAll, nil, time.Now()).Accounts
 	if len(stats) != 1 {
 		t.Fatalf("accounts = %d, want 1", len(stats))
 	}
@@ -302,7 +309,7 @@ func TestReadStatsRanksWinnersFirst(t *testing.T) {
 	}
 
 	order := []string{}
-	for _, a := range s.report(nil).Accounts {
+	for _, a := range s.report(WindowAll, nil, time.Now()).Accounts {
 		order = append(order, a.ProviderID)
 	}
 	want := []string{"busiest", "middling", "quiet"}
