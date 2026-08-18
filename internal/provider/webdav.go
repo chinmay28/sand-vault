@@ -18,6 +18,21 @@ func init() {
 			"any other WebDAV server. Use an app password where the provider offers one.",
 		DocsURL: "https://docs.nextcloud.com/server/latest/user_manual/en/files/access_webdav.html",
 		Order:   21,
+		// A WebDAV server is a WebDAV server; these are the ones people
+		// actually have. The hint is the shape of the URL field, since that is
+		// the only part that differs between them.
+		Covers: []Service{
+			{Name: "Nextcloud, ownCloud", Hint: "https://<server>/remote.php/dav/files/<user>"},
+			{Name: "pCloud", Hint: "https://webdav.pcloud.com, or eapi… in the EU region"},
+			{Name: "Koofr", Hint: "https://app.koofr.net/dav/Koofr"},
+			{Name: "Fastmail Files", Hint: "https://webdav.fastmail.com/"},
+			{Name: "Seafile", Hint: "https://<server>/seafdav"},
+			{Name: "Yandex Disk", Hint: "https://webdav.yandex.com"},
+			{Name: "Hetzner Storage Box", Hint: "https://<box>.your-storagebox.de"},
+			{Name: "Synology, QNAP and other NAS boxes", Hint: "the WebDAV address the box serves"},
+			{Name: "Infomaniak kDrive, OpenDrive, 4shared", Hint: "the WebDAV address the service shows"},
+			{Name: "MEGA, Jottacloud, anything rclone speaks", Hint: "`rclone serve webdav` on your own machine"},
+		},
 		Presets: []Preset{
 			{
 				Key:    "nextcloud",

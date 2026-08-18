@@ -179,7 +179,13 @@ export const KIND_ICONS = {
   dropbox: '◈',
   onedrive: '⬡',
   box: '▣',
+  icloud: '◇',
   proton: '◉',
+  mega: '⊙',
+  jottacloud: '❖',
+  synccom: '⇄',
+  tresorit: '▩',
+  icedrive: '✧',
 }
 
 export function formatBytes(bytes) {

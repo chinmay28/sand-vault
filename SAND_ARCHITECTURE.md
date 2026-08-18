@@ -40,7 +40,7 @@ product.
 | Interface | Archive / Restore forms | A file browser with folders and previews |
 | State | None — every run standalone | An encrypted index of what is stored where |
 | Retrieval | Find the right zips, extract, restore | Click the file |
-| Providers | — | Google Drive, OneDrive, Dropbox, Box, S3-compatible, WebDAV, Proton Drive, local disk |
+| Providers | — | Google Drive, OneDrive, Dropbox, Box, S3-compatible, WebDAV, iCloud Drive, Proton Drive, MEGA, Jottacloud, Sync.com, Tresorit, Icedrive, local disk |
 | Failure handling | Manual | Reads route around an account that is down |
 
 ---
@@ -63,13 +63,13 @@ product.
 ├───────────────────────────┬──────────────────────────────────────────┤
 │  internal/archive         │  internal/provider                       │
 │  compress → split → XOR   │  one tiny object-store interface,        │
-│  → encrypt (and back)     │  eight backends behind it                │
+│  → encrypt (and back)     │  fourteen backends behind it             │
 └───────────────────────────┴──────────────┬───────────────────────────┘
                                            │
         ┌──────────────┬───────────────┬───┴──────────┬───────────────┐
         ▼              ▼               ▼              ▼               ▼
    Google Drive    S3 / R2 / B2     WebDAV      OneDrive / Box   Local folder
-      part 1          part 2         part 3           …          Proton Drive
+      part 1          part 2         part 3           …         iCloud · Proton
 ```
 
 The layering rule that keeps this honest: **`internal/provider` never sees
@@ -1301,17 +1301,27 @@ used.
 | `onedrive` | OneDrive, personal or work | Microsoft Graph, chunked upload sessions |
 | `dropbox` | Dropbox | API v2, OAuth refresh grant |
 | `box` | Box | API 2.0, OAuth with rotating refresh tokens |
-| `proton` | Proton Drive, via the folder its desktop app syncs | Filesystem, atomic writes |
+| `icloud` | iCloud Drive, via the folder macOS or iCloud for Windows syncs | Filesystem, plus `brctl` for an evicted part |
+| `proton`, `mega`, `jottacloud`, `synccom`, `tresorit`, `icedrive` | Proton Drive, MEGA, Jottacloud, Sync.com, Tresorit, Icedrive — each via the folder its desktop app syncs | Filesystem, atomic writes |
 
 Everything is built on `net/http` and the standard library. No cloud SDKs — the
 dependency footprint stays at five modules and `CGO_ENABLED=0` still yields a
 fully static binary.
 
-Proton Drive is the odd one out: it publishes no API, so the backend is the
-local one pointed at the folder Proton's desktop client syncs. That is not a
-compromise of the threat model — parts are encrypted long before the sync
-client sees them — but it does mean the account is only as live as the machine
-running the client.
+The synced-folder backends are the odd ones out: those services publish no API
+a third party can use, so the backend is the local one pointed at the folder
+their desktop client keeps in step. That is not a compromise of the threat
+model — parts are encrypted long before the sync client sees them — but it does
+mean such an account is only as live as the machine running the client, and its
+`Ping` refuses a folder whose parent does not exist, since a folder no client
+syncs would accept every part and upload none of them. All six live in one
+table in `syncfolder.go`, where a service is a dozen lines.
+
+iCloud Drive needs a file of its own because macOS evicts: it reclaims disk by
+replacing a synced file with a `.name.icloud` placeholder, so `icloud.go`
+overrides the methods that touch a name on disk — asking the sync daemon for an
+evicted part on `Get`, reporting it present but unweighed on `Stat`, and
+mapping placeholder names back to keys in `List`.
 
 ### 8.3 Self-describing configuration
 

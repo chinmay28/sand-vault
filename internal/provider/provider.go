@@ -29,6 +29,15 @@ const (
 	KindOneDrive Kind = "onedrive"
 	KindBox      Kind = "box"
 	KindProton   Kind = "proton"
+	KindICloud   Kind = "icloud"
+
+	// The rest of the synced-folder backends, registered from one table in
+	// syncfolder.go.
+	KindMega       Kind = "mega"
+	KindJottacloud Kind = "jottacloud"
+	KindSyncCom    Kind = "synccom"
+	KindTresorit   Kind = "tresorit"
+	KindIcedrive   Kind = "icedrive"
 )
 
 // ErrNotFound is returned by Get and Delete when an object does not exist.
@@ -220,6 +229,20 @@ type Preset struct {
 	Values map[string]string `json:"values"`
 }
 
+// Service names one storage service a backend reaches, for the catalogue the
+// browser shows behind the connect dialog. The generic backends are where this
+// earns its keep: "S3-compatible storage" is a true description and a useless
+// answer to "can it hold my Google Cloud Storage bucket?", which it can.
+//
+// Hint is what to put in the endpoint or URL field, and is deliberately a
+// shape rather than a hostname wherever the real one carries a region or an
+// account in it — a pattern stays true when a provider adds a region, and a
+// copied-out hostname does not.
+type Service struct {
+	Name string `json:"name"`
+	Hint string `json:"hint,omitempty"`
+}
+
 // Spec describes a backend and everything needed to connect one.
 type Spec struct {
 	Kind        Kind        `json:"kind"`
@@ -228,6 +251,10 @@ type Spec struct {
 	DocsURL     string      `json:"docs_url,omitempty"`
 	Fields      []FieldSpec `json:"fields"`
 	Presets     []Preset    `json:"presets,omitempty"`
+
+	// Covers lists the services this backend reaches beyond the one its label
+	// names. Empty where the label already says it — Dropbox covers Dropbox.
+	Covers []Service `json:"covers,omitempty"`
 
 	// OAuth, when set, means this backend can be connected by signing in from
 	// the browser instead of pasting credentials.

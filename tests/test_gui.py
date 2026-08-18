@@ -323,6 +323,34 @@ class TestConnectingAnAccount:
 
         app.keyboard.press("Escape")
 
+    def test_the_catalogue_names_the_services_behind_a_protocol(self, app):
+        """The picker offers "S3-compatible storage", which is a true label and
+        no answer to *can it hold my Google Cloud Storage bucket*. The
+        catalogue behind it is where that question is answered, without the
+        picker growing to forty entries."""
+        app.get_by_text("+ Connect a cloud").click()
+        app.wait_for_selector("text=Sign in with your account")
+        assert app.get_by_text("Google Cloud Storage", exact=True).count() == 0
+
+        app.get_by_text("Not here?").click()
+        catalogue = app.get_by_text("Every cloud SAND can hold parts on", exact=True)
+        expect(catalogue).to_be_visible()
+        for label in ("Google Cloud Storage", "Seafile", "Storj"):
+            assert app.get_by_text(label, exact=True).count() > 0, label
+
+        # A search answers the question asked, rather than handing back the
+        # whole backend the answer happens to live in.
+        app.get_by_placeholder("wasabi, seafile, nextcloud…").fill("wasabi")
+        expect(app.get_by_text("Wasabi", exact=True)).to_be_visible()
+        expect(app.get_by_text("Storj", exact=True)).to_have_count(0)
+
+        # Escape closes the window on top and leaves the picker underneath it,
+        # which is the whole reason it is a window of its own.
+        app.keyboard.press("Escape")
+        expect(catalogue).to_have_count(0)
+        expect(app.get_by_text("Sign in with your account")).to_be_visible()
+        app.keyboard.press("Escape")
+
     def test_signing_in_asks_for_an_app_and_shows_the_redirect_to_register(self, app, server):
         app.get_by_text("+ Connect a cloud").click()
         app.wait_for_selector("text=Sign in with your account")

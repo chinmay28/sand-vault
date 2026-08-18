@@ -131,10 +131,20 @@ class TestVaultLifecycle:
         specs = requests.get(f"{server}/api/providers/specs", timeout=10).json()["specs"]
         kinds = {s["kind"] for s in specs}
         assert {"local", "s3", "webdav", "gdrive", "dropbox",
-                "onedrive", "box", "proton"} <= kinds
+                "onedrive", "box", "icloud", "proton", "mega", "jottacloud",
+                "synccom", "tresorit", "icedrive"} <= kinds
         for spec in specs:
             assert spec["label"] and spec["description"]
             assert isinstance(spec["fields"], list)
+
+        # Two backends are protocols, not services. What they reach is data on
+        # the spec, so the browser's catalogue can name it without keeping its
+        # own list to drift out of date.
+        by_kind = {s["kind"]: s for s in specs}
+        s3_covers = {c["name"] for c in by_kind["s3"].get("covers", [])}
+        assert {"Amazon S3", "Google Cloud Storage", "Wasabi"} <= s3_covers, s3_covers
+        assert by_kind["webdav"].get("covers"), "the WebDAV backend names no services"
+        assert all(c.get("hint") for c in by_kind["s3"]["covers"])
 
     def test_specs_say_which_backends_are_connected_by_signing_in(self, server):
         specs = requests.get(f"{server}/api/providers/specs", timeout=10).json()["specs"]
@@ -149,7 +159,9 @@ class TestVaultLifecycle:
             assert oauth["configured"] is False
 
         assert by_kind["local"].get("oauth") is None
-        assert by_kind["proton"].get("oauth") is None
+        for kind in ("proton", "icloud", "mega", "jottacloud", "synccom",
+                     "tresorit", "icedrive"):
+            assert by_kind[kind].get("oauth") is None, kind
 
         # The token endpoints and app credentials stay on the server.
         raw = requests.get(f"{server}/api/providers/specs", timeout=10).text
@@ -818,7 +830,8 @@ class TestCLI:
     def test_remote_kinds_documents_every_backend(self, sand_bin, vault_dir):
         result = cli(sand_bin, vault_dir, "remote", "kinds")
         for kind in ("local", "s3", "webdav", "gdrive", "dropbox",
-                     "onedrive", "box", "proton"):
+                     "onedrive", "box", "icloud", "proton", "mega",
+                     "jottacloud", "synccom", "tresorit", "icedrive"):
             assert kind in result.stdout
 
 
