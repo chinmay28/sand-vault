@@ -544,14 +544,32 @@ function AccountCard({ provider, providers, isDefault, onRemove, onChanged }) {
         )}
       </div>
 
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '8px' }}>
-        <Button size="sm" variant="ghost" onClick={() => setShowing(true)}>Stats</Button>
-        <Button size="sm" variant="ghost" onClick={() => setEditing(true)}>Edit</Button>
-        <Button size="sm" variant="ghost" onClick={test} disabled={testing}>
+      {/* Four words in a row, all of them bare text, one of them destructive:
+          the only thing separating "Test" from "Disconnect" was a gap the width
+          of a space. So the three safe actions are drawn as real buttons —
+          filled, bordered, and stretched to share the card's width evenly so
+          each is a wide target rather than a word-sized one — and Disconnect is
+          pushed below a rule of its own, wearing the red outline the app uses
+          everywhere else for a step that cannot be taken back. */}
+      <div style={{ display: 'flex', gap: '6px', marginTop: '10px' }}>
+        <Button size="sm" style={{ flex: 1, justifyContent: 'center' }}
+          onClick={() => setShowing(true)}>Stats</Button>
+        <Button size="sm" style={{ flex: 1, justifyContent: 'center' }}
+          onClick={() => setEditing(true)}>Edit</Button>
+        <Button size="sm" style={{ flex: 1, justifyContent: 'center' }}
+          onClick={test} disabled={testing}>
           {testing ? <Spinner size={10} /> : null}{testing ? 'Testing' : 'Test'}
         </Button>
-        <Button size="sm" variant="ghost" onClick={onRemove}
-          style={{ color: COLORS.error }}>Disconnect</Button>
+      </div>
+
+      <div style={{
+        display: 'flex',
+        justifyContent: 'flex-end',
+        marginTop: '10px',
+        paddingTop: '10px',
+        borderTop: `1px solid ${COLORS.border}`,
+      }}>
+        <Button size="sm" variant="danger" onClick={onRemove}>Disconnect</Button>
       </div>
 
       {showing && (
