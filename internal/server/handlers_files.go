@@ -628,6 +628,30 @@ func (s *Server) handleFolderArt(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, body)
 }
 
+// handleFolderSurvey answers what is under a folder: every file at or below it
+// with its kind and how deep it sits, and every folder below it with what it is
+// holding.
+//
+// It is what the organizer plans from — flattening a tree, clearing out the
+// folders left empty, finding every file of a kind — and it is deliberately the
+// only thing added for them. Each of those tools then runs over the endpoints
+// that already existed, one item at a time from the browser, so a run that
+// stalls has done exactly what its progress said it had. See vault.Survey.
+func (s *Server) handleFolderSurvey(w http.ResponseWriter, r *http.Request) {
+	dir := r.URL.Query().Get("path")
+	if dir == "" {
+		dir = "/"
+	}
+
+	v, _ := s.Vault()
+	survey, err := v.Survey(requestScope(r), dir)
+	if err != nil {
+		vaultErrorResponse(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, survey)
+}
+
 // handleFolderArtSet records the picture somebody picked for a folder, or drops
 // it so the folder goes back to its icon.
 func (s *Server) handleFolderArtSet(w http.ResponseWriter, r *http.Request) {

@@ -13,6 +13,7 @@ import { Breadcrumbs, FolderHeader, NavCluster, SearchField, SelectionBar, ViewC
 import { BulkAssign, BulkDelete, BulkDownload } from './BulkActions'
 import MoveToFolder from './MoveToFolder'
 import { FilmButton, FilmLookupSettings } from './FilmDetails'
+import { OrganizerButton, OrganizerMenu, OrganizerTool } from './Organizer'
 
 /* How long to sit on a keystroke before asking the server. Long enough that
    typing a word is one query rather than six, short enough to feel live. */
@@ -46,6 +47,17 @@ export default function FileBrowser({
   const [selected, setSelected] = useState(() => new Set())
   const [bulk, setBulk] = useState(null)
   const [films, setFilms] = useState(false)
+  /* Choosing between the folder's four tools, and then whichever was chosen.
+     Two states rather than one: picking closes the sheet and opens the tool in
+     the same click, and a single state would have the sheet's own dismissal
+     land on the tool it had just opened. */
+  const [organizing, setOrganizing] = useState(false)
+  const [tool, setTool] = useState(null)
+  /* Files the organizer picked from below this folder, which have no row here
+     to be ticked. They join the selection as items in their own right — see
+     `chosen` — so the selection bar can move, download, scatter or erase a
+     hundred subtitle files that are scattered over forty folders. */
+  const [deeper, setDeeper] = useState([])
   const fileInput = useRef(null)
   const dragDepth = useRef(0)
   // Where the last tick was put, so a shift-click has a range to reach back to.
@@ -207,15 +219,43 @@ export default function FileBrowser({
   /* A selection is about the things in front of you, so walking somewhere else
      — or asking a different question of the index — ends it rather than
      carrying a set of hidden rows along to be acted on by surprise. */
-  useEffect(() => { setSelected(new Set()); anchor.current = null }, [path, searchTerm])
+  useEffect(() => {
+    setSelected(new Set())
+    setDeeper([])
+    anchor.current = null
+  }, [path, searchTerm])
 
-  const chosen = useMemo(
-    () => entries.filter((entry) => selected.has(entry.key)), [entries, selected])
+  /* What is selected: the ticked rows, and whatever the organizer picked from
+     under this folder. The two are kept apart because only one of them can be
+     ticked — a file four folders down has no row here — and put together
+     because everything downstream of a selection acts on files by ID and does
+     not care which of the two a file came from. */
+  const chosen = useMemo(() => ([
+    ...entries.filter((entry) => selected.has(entry.key)),
+    ...deeper.filter((entry) => selected.has(entry.key)),
+  ]), [entries, deeper, selected])
   const chosenFiles = chosen.filter((entry) => entry.kind !== 'folder')
 
   const selectAll = useCallback(() => {
-    setSelected(new Set(entries.map((entry) => entry.key)))
+    setSelected(new Set([...entries, ...deeper].map((entry) => entry.key)))
+  }, [entries, deeper])
+
+  /* What picking by type hands back. Whatever is already a row here is ticked
+     as if it had been clicked; the rest is carried alongside, counted on the
+     bar so a selection is never larger than it looks without saying so. */
+  const pickFiles = useCallback((files) => {
+    const rows = new Set(entries.filter((e) => e.kind !== 'folder').map((e) => e.file.id))
+    setDeeper(files.filter((file) => !rows.has(file.id)).map((file) => ({
+      kind: 'file', key: `file:${file.id}`, name: file.name, file,
+    })))
+    setSelected(new Set(files.map((file) => `file:${file.id}`)))
+    setSelecting(true)
   }, [entries])
+
+  const stopSelecting = useCallback((on) => {
+    setSelecting(on)
+    if (!on) { setSelected(new Set()); setDeeper([]) }
+  }, [])
 
   /* Ticking a box, with shift extending from the last one ticked — the range
      select every file manager has, and the only bearable way to pick forty
@@ -401,7 +441,7 @@ export default function FileBrowser({
             view={view}
             selecting={selecting}
             canUpload={canUpload}
-            onSelecting={(on) => { setSelecting(on); if (!on) setSelected(new Set()) }}
+            onSelecting={stopSelecting}
             onSearch={() => setSearchOpen(true)}
             onNewFolder={() => setCreatingFolder(true)}
             onUpload={() => fileInput.current?.click()}
@@ -410,6 +450,9 @@ export default function FileBrowser({
                the folder is opted in, since a folder that talks to a third
                party should never do so quietly. */
             film={<FilmButton lookup={lookup} mobile onOpen={() => setFilms(true)} />}
+            /* Beside it, because both are things done to the folder rather
+               than to a row in it. */
+            organizer={<OrganizerButton mobile onOpen={() => setOrganizing(true)} />}
             /* Handed to the heading rather than put in its place: the field
                takes over the strip of icons underneath and the folder stays
                named above it, so a screen of results still says what was being
@@ -438,12 +481,13 @@ export default function FileBrowser({
               <NavCluster nav={nav} mobile={false} />
               <Breadcrumbs path={path} vault={vaultLabel} mobile={false} onNavigate={nav.navigate} />
               <FilmButton lookup={lookup} mobile={false} onOpen={() => setFilms(true)} />
+              <OrganizerButton mobile={false} onOpen={() => setOrganizing(true)} />
               <ViewControls
                 mobile={false}
                 prefs={prefs}
                 view={view}
                 selecting={selecting}
-                onSelecting={(on) => { setSelecting(on); if (!on) setSelected(new Set()) }}
+                onSelecting={stopSelecting}
               />
             </div>
 
@@ -475,13 +519,15 @@ export default function FileBrowser({
         <SelectionBar
           mobile={mobile}
           count={chosen.length}
-          total={entries.length}
+          total={entries.length + deeper.length}
           files={chosenFiles.length}
-          allSelected={entries.length > 0 && chosen.length === entries.length}
+          deeper={deeper.length}
+          allSelected={entries.length + deeper.length > 0
+            && chosen.length === entries.length + deeper.length}
           busy={!!bulk}
           onAll={selectAll}
           onNone={() => setSelected(new Set())}
-          onDone={() => { setSelecting(false); setSelected(new Set()) }}
+          onDone={() => stopSelecting(false)}
           onDownload={() => setBulk('download')}
           onMoveTo={() => setBulk('folder')}
           onMove={() => setBulk('clouds')}
@@ -612,6 +658,29 @@ export default function FileBrowser({
         />
       )}
 
+      {organizing && (
+        <OrganizerMenu
+          path={path}
+          onClose={() => setOrganizing(false)}
+          onPick={setTool}
+        />
+      )}
+
+      {tool && (
+        <OrganizerTool
+          tool={tool}
+          path={path}
+          vault={vault}
+          onClose={() => setTool(null)}
+          /* A flatten moves files out of folders and a prune removes the
+             folders; either way what is on screen is no longer what is there.
+             The selection goes with it — half of what was ticked may have
+             moved. */
+          onDone={() => { setSelected(new Set()); setDeeper([]); onRefresh() }}
+          onSelect={pickFiles}
+        />
+      )}
+
       {films && (
         <FilmLookupSettings
           path={path}
@@ -638,7 +707,7 @@ export default function FileBrowser({
           onClose={() => setBulk(null)}
           /* What was deleted cannot stay ticked, and what survived a partial
              run is still there to be tried again. */
-          onDone={() => { setSelected(new Set()); listProps.onRefresh() }}
+          onDone={() => { setSelected(new Set()); setDeeper([]); listProps.onRefresh() }}
         />
       )}
 
@@ -653,7 +722,7 @@ export default function FileBrowser({
           /* What moved is not in this folder any more, so it cannot stay
              ticked; what a partial run left behind is still here to try
              again. */
-          onDone={() => { setSelected(new Set()); listProps.onRefresh() }}
+          onDone={() => { setSelected(new Set()); setDeeper([]); listProps.onRefresh() }}
         />
       )}
 
@@ -663,7 +732,7 @@ export default function FileBrowser({
           from={vault}
           targets={assignTargets}
           onClose={() => setBulk(null)}
-          onDone={() => { setBulk(null); setSelected(new Set()); onRefresh() }}
+          onDone={() => { setBulk(null); setSelected(new Set()); setDeeper([]); onRefresh() }}
           onError={onError}
         />
       )}

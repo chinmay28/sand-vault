@@ -312,6 +312,11 @@ func (s *Server) Handler() (http.Handler, error) {
 		// answer is a file ID, drawn through that file's own thumbnail.
 		"GET /api/folders/art":  s.handleFolderArt,
 		"POST /api/folders/art": s.handleFolderArtSet,
+		// Everything under a folder in one walk of the index, which is what
+		// tidying one up has to see before it changes anything. Read-only: the
+		// organizer's four tools plan from this answer and then run over the
+		// move, delete and remove-folder endpoints above, one item at a time.
+		"GET /api/folders/survey": s.handleFolderSurvey,
 		// Moving a folder within the vault, which moves everything under it.
 		// No part leaves the account it is on: a folder is a path in the index,
 		// so this is a rewrite of that index and nothing more — the same as
