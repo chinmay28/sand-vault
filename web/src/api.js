@@ -236,6 +236,19 @@ export const api = {
   moveFolder: (from, to, vault = '') =>
     request('/api/folders/move', { method: 'POST', body: { from, to, vault } }),
 
+  /* Everything under a folder, in one walk of the index: every file at or
+     below it with its kind, its size and how deep it sits, and every folder
+     below it with what that folder is holding.
+
+     This is what the organizer plans from. It reads and nothing else — the
+     tidying itself runs over moveFile, deleteFile and deleteFolder above, one
+     item at a time from here, so a run that stalls halfway has moved exactly
+     what its progress said it had and the rest is untouched. No account is
+     contacted: the index is already open on the server, and this is a walk of
+     it. */
+  survey: (path, vault = '') =>
+    request(`/api/folders/survey?path=${encodeURIComponent(path)}${vaultParam(vault)}`),
+
   /* The picture a folder is drawn with, and what else it could be drawn with:
      every file under it that has a thumbnail, films first. What comes back is a
      file id — the picture itself is that file's own thumbnail, drawn through

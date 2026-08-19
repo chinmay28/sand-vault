@@ -509,6 +509,59 @@ cheaper bargain in both directions.
 
 ---
 
+### 3.12 Organizing a folder: one read, then the writes that already existed
+
+The organizer (`🗂`) does four things to a folder and everything under it —
+flatten it, remove the folders holding nothing, erase every file of a kind,
+select every file of a kind. All four are the same shape: **one read to plan
+from, then the per-item endpoints the app already had.**
+
+The read is `Vault.Survey` (`organize.go`), answered by
+`GET /api/folders/survey`. It walks the index once and hands back every file at
+or below the folder — ID, name, folder, size, lowercased extension, and how many
+folders down it sits — and every folder below it with what that folder holds
+directly, what it holds at any depth, and what that comes to. Two counts per
+folder rather than one, because they answer different questions: a folder
+holding nothing *directly* is still not empty if something sits below it, and a
+folder is safe to remove exactly when the deeper count is zero. Folders nobody
+has ever put a file in are in the answer too — `Manifest.AllFolders` includes
+them — since a folder created and never used is precisely what the empty-folder
+tool is looking for.
+
+Nothing else was added on the server. A flatten is a `POST /api/files/{id}/move`
+per file followed by a `DELETE /api/folders` per emptied folder; a purge is a
+`DELETE /api/files/{id}` per match. The loop runs **in the browser, one item at
+a time**, which is the same bargain the bulk actions make (§9): a run that
+stalls on the fortieth of two hundred has moved thirty-nine things and can name
+the one that refused, and what did not move is untouched and still there to try
+again. A `POST /api/organize/flatten` would have been one call that could
+half-succeed with no way to report which half — and no way to show progress
+through the minutes it takes to walk a few hundred files.
+
+Two invariants make the composition safe without the server knowing an
+organizer exists:
+
+- **Names are planned before anything moves.** A folder per camera or per disc
+  means `IMG_0001.jpg` in every one of them, so the browser builds the whole
+  target-name set first — against the names already in the destination as well
+  as against each other — and numbers or prefixes the collisions itself. It has
+  to: `SanitizeName` keeps only the leaf of anything with a slash in it, so a
+  "prefix with the folder it came from" naming that used the path separator
+  would be silently undone. It joins with ` - ` instead.
+- **Folder removal stays non-recursive.** Empty folders are removed deepest
+  first with `recursive=0`, so `Rmdir`'s own refusal — *"%s is not empty"* — is
+  what guarantees a tidy can never take a file with it. The browser's idea of
+  which folders are empty came from a survey taken some milliseconds ago; the
+  server's is current, and the server's is the one that decides.
+
+Flattening and pruning move no bytes at all. A file records the folder it is in
+and its parts are named after the file rather than after the folder (§4.1), so
+both are rewrites of the encrypted index — a folder of four hundred films
+flattens as fast as a rename. Deleting is the exception it always was, and both
+delete-shaped tools end in the same confirmation the delete button uses.
+
+---
+
 ### 3.8 Sub vaults
 
 A sub vault is a vault inside the vault, with a password of its own. It exists
@@ -1574,6 +1627,7 @@ reveals only whether a vault exists.
 | POST | `/api/files/{id}/move` | Rename or move into another folder (index only, §5.6) |
 | DELETE | `/api/files/{id}` | Erase every part, drop the entry |
 | GET | `/api/folders` | Every folder in the vault, root first — the whole tree in one answer, for a destination picker |
+| GET | `/api/folders/survey?path=` | Everything under a folder in one walk of the index: every file with its kind and depth, every folder with what it holds. Read-only — the organizer plans from it and then runs the move/delete endpoints per item (§3.12) |
 | GET | `/api/folders/art?path=` | Which file's thumbnail a folder is drawn with, if any, and every file under it that could be (§3.11) |
 | POST | `/api/folders/art` | Give it a picture (`path`, `id`), or take it away again with an empty `id` |
 | POST | `/api/folders` | Create a folder |

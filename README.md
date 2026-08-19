@@ -1041,6 +1041,11 @@ pipe the password on stdin.
   would show them. Off everywhere until a folder asks for it, because it is the
   one thing in SAND that talks to anyone but your own accounts — see
   [Film details](#film-details)
+- **Organize a folder** — `🗂` beside `🎬` in the toolbar: flatten everything
+  below into this folder, remove the folders holding nothing, erase every file
+  of a kind, or select every file of a kind and hand it to the selection bar.
+  Each counts what it would do before it does any of it — see
+  [Organizing a folder](#organizing-a-folder)
 - **Preview** — images, video, audio, PDF and text render inline, rebuilt on
   demand; anything else downloads. A matched film opens on its poster and
   summary rather than an unplayed black rectangle
@@ -1248,6 +1253,53 @@ those folders, paid where they are listed instead.
 
 ---
 
+## Organizing a folder
+
+`🗂` in the toolbar, beside `🎬`, acts on the folder you are standing in and
+everything under it. Four jobs, all of them the kind nobody does one row at a
+time — which is why they never get done:
+
+- **Flatten into this folder** — every file below comes up to here, and the
+  folders they came from are dropped. Two files called `IMG_0001.jpg` is the
+  normal case rather than the edge case, so the names are planned before
+  anything moves: numbered the way a desktop file manager numbers a collision,
+  or — on a tick — written out with the folders they came from, so
+  `2023/corfu/IMG_0001.jpg` lands as `2023 - corfu - IMG_0001.jpg`.
+- **Remove empty folders** — every folder under here holding no file *at any
+  depth*, so a folder whose only contents are three more empty folders goes
+  too. Deepest first, each removed on its own and never recursively: a folder
+  that turns out to be holding something is refused rather than emptied.
+- **Remove files by type** — pick the kinds (`.nfo`, `.txt`, whatever is down
+  there, each with how many and how much) and erase them. It ends in the same
+  confirmation the delete button uses, because it is the same act: every part
+  of every file, gone from each account holding it.
+- **Select files by type** — pick the same kinds and tick them instead. What
+  is in this folder is ticked in the listing; what is deeper joins the
+  selection alongside it, counted on the bar as *"N from folders below"*, and
+  the selection bar's Download, Folder, Clouds, sub vault and Delete all work
+  on the lot. Selecting every `.srt` under a films folder and moving it to
+  `/Subtitles` is two clicks and a folder pick.
+
+Each of the four counts what it would do before there is a button to do it
+with, because none of them acts on something you picked row by row — the count
+is the whole of what stands between a button and a tree.
+
+Nothing here touches a cloud account except deleting. A file records the folder
+it is in, and its parts are named after the file rather than after the folder,
+so flattening four hundred films is a rewrite of the encrypted index and as
+fast as a rename; removing an empty folder is the same. Deleting is the
+exception and always was.
+
+The tools read the folder once — `GET /api/folders/survey` walks the index and
+contacts nothing — and then run over the endpoints that already existed, one
+item at a time, from the browser. So a run that stalls on the fortieth of two
+hundred has moved thirty-nine things and says exactly which one refused; what
+did not move is still where it was, and organizing again picks up precisely
+what is left. There is no flatten endpoint to half-succeed with no way to
+report which half.
+
+---
+
 ## HTTP API
 
 | Method | Path | Purpose |
@@ -1286,6 +1338,7 @@ those folders, paid where they are listed instead.
 | POST | `/api/files/{id}/move` | Rename / move into another folder |
 | DELETE | `/api/files/{id}` | Erase every part |
 | GET | `/api/folders` | Every folder in the vault, for a destination picker |
+| GET | `/api/folders/survey?path=` | Everything under a folder in one walk of the index — every file with its kind and depth, every folder with what it holds. What the organizer plans from |
 | GET · POST | `/api/folders/art?path=` | Which file's thumbnail a folder is drawn with, and what else it could be (`id` to pick one, `""` for none) |
 | POST · DELETE | `/api/folders` | Create / delete folders |
 | POST | `/api/folders/move` | Move a folder, and everything under it, `from` one path `to` another |

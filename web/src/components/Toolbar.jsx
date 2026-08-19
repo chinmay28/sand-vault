@@ -121,7 +121,7 @@ function Crumb({ label, mobile, onClick, active }) {
    which is readable four folders deep where crumbs are not, and carries
    Forward when there is somewhere to go forward to. */
 export function FolderHeader({
-  nav, path, vault = '', stats, prefs, view, selecting, canUpload, search, film,
+  nav, path, vault = '', stats, prefs, view, selecting, canUpload, search, film, organizer,
   onSelecting, onSearch, onNewFolder, onUpload,
 }) {
   const [jumping, setJumping] = useState(false)
@@ -266,11 +266,12 @@ export function FolderHeader({
           }}
         />
 
-        {/* Whatever the folder itself offers — today, whether its videos are
-            matched against the film database. It arrives drawn rather than
-            described, so this strip stays a strip and does not have to learn
-            what a film is. */}
+        {/* Whatever the folder itself offers — whether its videos are matched
+            against the film database, and the tools that tidy the tree under
+            it. Both arrive drawn rather than described, so this strip stays a
+            strip and does not have to learn what a film or a flatten is. */}
         {film}
+        {organizer}
 
         <span style={{ flex: 1 }} />
 
@@ -465,7 +466,7 @@ function SortSheet({ prefs, view, onClose }) {
 /* What is picked, and what can be done with it. Only on screen while something
    is being selected, which is why it can afford to be a whole row of its own. */
 export function SelectionBar({
-  mobile, count, total, files, allSelected, busy, vaultAction,
+  mobile, count, total, files, deeper = 0, allSelected, busy, vaultAction,
   onAll, onNone, onDone, onDownload, onMoveTo, onMove, onAssign, onDelete,
 }) {
   const nothing = count === 0
@@ -486,6 +487,17 @@ export function SelectionBar({
       }}>
         {nothing ? 'Nothing selected' : `${count} of ${total} selected`}
       </span>
+
+      {/* Picking by type reaches under the folder, so some of what is selected
+          has no row on screen to be ticked. Left unsaid, a bar reading "31
+          selected" over four ticked rows is the app being wrong about itself —
+          and Delete is one of the buttons beside it. */}
+      {deeper > 0 && (
+        <span style={{
+          fontFamily: FONT.mono, fontSize: mobile ? '11px' : '10.5px',
+          color: COLORS.accent, flexShrink: 0,
+        }}>{deeper} from folders below</span>
+      )}
 
       <Button
         size={mobile ? 'md' : 'sm'}
