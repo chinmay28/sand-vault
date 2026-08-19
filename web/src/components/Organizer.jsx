@@ -155,6 +155,10 @@ const TITLES = {
 function Flatten({ survey, vault, onClose, onDone }) {
   const [prefix, setPrefix] = useState(false)
   const [prune, setPrune] = useState(true)
+  /* Whether the plan is on screen. Off to begin with, because the answer is
+     usually a number and occasionally two hundred rows — but one click away,
+     because the number is a promise and the rows are the thing itself. */
+  const [showing, setShowing] = useState(false)
   const [started, setStarted] = useState(null)
 
   const base = survey.path
@@ -230,6 +234,18 @@ function Flatten({ survey, vault, onClose, onDone }) {
             hint="Emptied by the moves above, so nothing is in them to lose. One that still holds something is refused rather than taken."
           />
 
+          {/* Under the naming rather than over it: the plan is what the two
+              choices above produce, so it is worth reading after they have been
+              made — and it redraws under the tick, which is the clearest thing
+              either choice could say about itself. */}
+          <div style={{ marginBottom: showing ? '10px' : '16px' }}>
+            <Button size="sm" variant="ghost" onClick={() => setShowing(!showing)}>
+              {showing ? '▾ Hide the moves' : `▸ Show all ${moves.length} move${moves.length === 1 ? '' : 's'}`}
+            </Button>
+          </div>
+
+          {showing && <Moves moves={moves} folders={prune ? survey.folders.length : 0} />}
+
           <Actions>
             <Button variant="primary" onClick={() => setStarted(items)}>
               Flatten {moves.length} file{moves.length === 1 ? '' : 's'}
@@ -299,6 +315,87 @@ function unique(name, taken) {
 function sample(moves) {
   const shown = moves[0]?.to || ''
   return shown.length > 46 ? `${shown.slice(0, 45)}…` : shown
+}
+
+/* How many rows of the plan are drawn before it stops being a plan and starts
+   being a scroll. Whatever is past this is counted rather than hidden — a
+   preview that quietly showed some of what was about to happen would be worse
+   than one that showed none of it. */
+const MOVES_SHOWN = 300
+
+/* The plan itself: where each file is now, and what it will be called when it
+   gets here.
+
+   Both halves are needed and neither is enough. The source path is the only
+   thing that tells three files called IMG_0001.jpg apart, and the new name is
+   the whole question the naming choice above decides — a preview showing only
+   the second column would be a list of names nobody could trace back, and only
+   the first would be the survey again. Names the flatten had to change are lit,
+   so what the collision rule did is legible at a glance rather than by
+   comparing two columns line by line. */
+function Moves({ moves, folders }) {
+  // On a phone the two halves stack rather than share the line: a name is the
+  // whole point of the row, and half a phone's width truncates most of them —
+  // where the title attribute that saves a desk from the same fate is a
+  // tooltip nothing can hover over.
+  const mobile = useIsMobile()
+  const shown = moves.slice(0, MOVES_SHOWN)
+  const rest = moves.length - shown.length
+
+  return (
+    <>
+      <div style={{
+        maxHeight: '240px', overflowY: 'auto', marginBottom: '10px',
+        border: `1px solid ${COLORS.border}`, borderRadius: '6px', background: COLORS.bg,
+      }}>
+        {shown.map((move) => {
+          const renamed = move.to !== move.file
+          return (
+            <div
+              key={move.id}
+              style={{
+                display: 'flex',
+                flexDirection: mobile ? 'column' : 'row',
+                alignItems: mobile ? 'stretch' : 'baseline',
+                gap: mobile ? '2px' : '8px',
+                padding: '7px 11px',
+                borderBottom: `1px solid ${COLORS.border}`,
+                fontFamily: FONT.mono, fontSize: '11.5px',
+              }}
+            >
+              <span style={{
+                flex: mobile ? undefined : '1 1 45%', minWidth: 0, color: COLORS.textDim,
+                overflow: 'hidden', textOverflow: 'ellipsis',
+                whiteSpace: mobile ? 'normal' : 'nowrap',
+                wordBreak: mobile ? 'break-all' : undefined,
+              }} title={move.name}>{move.name}</span>
+              {!mobile && (
+                <span aria-hidden="true" style={{ flexShrink: 0, color: COLORS.textMuted }}>→</span>
+              )}
+              <span style={{
+                flex: mobile ? undefined : '1 1 40%', minWidth: 0,
+                overflow: 'hidden', textOverflow: 'ellipsis',
+                whiteSpace: mobile ? 'normal' : 'nowrap',
+                wordBreak: mobile ? 'break-all' : undefined,
+                color: renamed ? COLORS.accentBright : COLORS.textMuted,
+              }} title={move.to}>{mobile ? `→ ${move.to}` : move.to}</span>
+            </div>
+          )
+        })}
+      </div>
+      <p style={{
+        margin: '0 0 16px', fontFamily: FONT.sans, fontSize: '11px',
+        lineHeight: 1.5, color: COLORS.textMuted,
+      }}>
+        {rest > 0
+          ? `The first ${MOVES_SHOWN} of ${moves.length}; the other ${rest} move the same way. `
+          : ''}
+        Every name is against the folder as it will be, so nothing here lands on anything
+        else here. A lit name is one the flatten had to change.
+        {folders > 0 && ` Then ${folders} folder${folders === 1 ? '' : 's'} go, deepest first.`}
+      </p>
+    </>
+  )
 }
 
 /* --- Empty folders ---------------------------------------------------- */

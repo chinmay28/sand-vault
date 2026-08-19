@@ -1265,6 +1265,10 @@ time — which is why they never get done:
   anything moves: numbered the way a desktop file manager numbers a collision,
   or — on a tick — written out with the folders they came from, so
   `2023/corfu/IMG_0001.jpg` lands as `2023 - corfu - IMG_0001.jpg`.
+  **Show all N moves** puts that plan on screen before you commit to it — every
+  file as `where it is now → what it will be called` — and it redraws under the
+  naming tick, with the names the flatten had to change lit, so what the
+  collision rule did is legible without reading two columns line by line.
 - **Remove empty folders** — every folder under here holding no file *at any
   depth*, so a folder whose only contents are three more empty folders goes
   too. Deepest first, each removed on its own and never recursively: a folder

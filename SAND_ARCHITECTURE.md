@@ -547,7 +547,13 @@ organizer exists:
   as against each other — and numbers or prefixes the collisions itself. It has
   to: `SanitizeName` keeps only the leaf of anything with a slash in it, so a
   "prefix with the folder it came from" naming that used the path separator
-  would be silently undone. It joins with ` - ` instead.
+  would be silently undone. It joins with ` - ` instead. Because the whole plan
+  exists before the first request, it is also showable: the flatten dialog will
+  draw every `source path → new name` pair on request, redrawn under the naming
+  choice, which is the clearest thing that choice could say about itself. Past
+  a few hundred rows it draws the first of them and *counts* the rest — a
+  preview that quietly showed some of what was about to happen would be worse
+  than one that showed none.
 - **Folder removal stays non-recursive.** Empty folders are removed deepest
   first with `recursive=0`, so `Rmdir`'s own refusal — *"%s is not empty"* — is
   what guarantees a tidy can never take a file with it. The browser's idea of
