@@ -6,6 +6,7 @@ import CloudStats, { UsageBar, UsageLine, usageBreakdown } from './CloudStats'
 import ConnectCloud, { pendingOAuthFlow } from './ConnectCloud'
 import EditAccount from './EditAccount'
 import { DisconnectIcon, EditIcon, StatsIcon, TestIcon } from './Icons'
+import MissingParts from './MissingParts'
 import ReadStats from './ReadStats'
 import ReclaimVault from './ReclaimVault'
 import VaultSettings from './VaultSettings'
@@ -35,6 +36,48 @@ function Figure({ value, label }) {
         marginTop: '3px',
       }}>{label}</div>
     </div>
+  )
+}
+
+/* The count of files missing a part, as the way into them.
+
+   It reads as the sentence it always was — the underline and the ▸ are the
+   only marks of a control on it — because the line has to keep working as a
+   read-out for the people who never click it. Warn-coloured like the text it
+   replaces, and lit rather than recoloured on hover, so nothing about the
+   figure changes meaning when a pointer happens to rest on it. */
+function DegradedLink({ count, onClick }) {
+  const [hover, setHover] = useState(false)
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      onFocus={() => setHover(true)}
+      onBlur={() => setHover(false)}
+      title="See which files, and choose other clouds for them"
+      style={{
+        display: 'block',
+        width: '100%',
+        marginTop: '6px',
+        padding: 0,
+        background: 'none',
+        border: 'none',
+        textAlign: 'left',
+        cursor: 'pointer',
+        fontFamily: FONT.mono,
+        fontSize: '10px',
+        color: COLORS.warn,
+        lineHeight: 1.7,
+        textDecoration: 'underline',
+        textDecorationStyle: 'dotted',
+        textUnderlineOffset: '3px',
+        filter: hover ? 'brightness(1.25)' : 'none',
+        transition: 'filter 0.15s ease',
+      }}
+    >{count} file{count === 1 ? '' : 's'} missing a spare part <span aria-hidden="true">▸</span></button>
   )
 }
 
@@ -121,6 +164,7 @@ export default function AccountsPanel({
   const [connecting, setConnecting] = useState(() => Boolean(pendingOAuthFlow()))
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [readsOpen, setReadsOpen] = useState(false)
+  const [missingOpen, setMissingOpen] = useState(false)
   const [reclaiming, setReclaiming] = useState(false)
   const [error, setError] = useState(null)
 
@@ -278,14 +322,14 @@ export default function AccountsPanel({
             }}>
               {formatBytes(stats.stored_bytes)} across accounts · {stats.policy}
             </div>
+            {/* The one figure down here that names something to do rather than
+                something to know: a file short a part stays short until
+                somebody sends it somewhere else. So it is a button, and the
+                list behind it is the list of files it has been counting all
+                along — with the clouds each of them is on, and the choice of
+                different ones, on the row. */}
             {stats.degraded > 0 && (
-              <div style={{
-                marginTop: '6px',
-                fontFamily: FONT.mono,
-                fontSize: '10px',
-                color: COLORS.warn,
-                lineHeight: 1.7,
-              }}>{stats.degraded} file{stats.degraded === 1 ? '' : 's'} missing a spare part</div>
+              <DegradedLink count={stats.degraded} onClick={() => setMissingOpen(true)} />
             )}
           </div>
         )}
@@ -361,6 +405,14 @@ export default function AccountsPanel({
       )}
 
       {readsOpen && <ReadStats onClose={() => setReadsOpen(false)} />}
+
+      {missingOpen && (
+        <MissingParts
+          providers={providers}
+          onClose={() => setMissingOpen(false)}
+          onChanged={onChanged}
+        />
+      )}
 
       {settingsOpen && (
         <VaultSettings

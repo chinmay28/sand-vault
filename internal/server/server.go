@@ -286,8 +286,12 @@ func (s *Server) Handler() (http.Handler, error) {
 		// recovery scan's answer, above.
 		"POST /api/vaults/import": s.handleVaultImport,
 
-		"GET /api/search":            s.handleSearch,
-		"GET /api/files":             s.handleFilesList,
+		"GET /api/search": s.handleSearch,
+		"GET /api/files":  s.handleFilesList,
+		// The files behind the "missing a spare part" figure the accounts panel
+		// shows. Paged, and a read of the index alone — putting a part back is
+		// POST /api/relocate, the same call the file list's own move uses.
+		"GET /api/degraded":          s.handleDegradedList,
 		"POST /api/files":            s.handleFilesUpload,
 		"GET /api/files/{id}":        s.handleFileMeta,
 		"DELETE /api/files/{id}":     s.handleFileDelete,

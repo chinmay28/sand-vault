@@ -441,6 +441,45 @@ Moving a file between clouds *at the same width* is still the cheap case — onl
 the shards that have to move are copied, and nothing is decrypted. The dry run
 says which of the two is about to happen.
 
+### Files that went out short
+
+A cloud that is not answering at the moment a file is scattered does not fail
+the upload. Two shards of three go out, the file is readable, and nothing turns
+red — it is simply one cloud worse off than it asked to be, for good, because
+nothing ever goes back to finish it.
+
+The accounts panel has always counted those at its foot:
+
+```
+4 files missing a spare part
+```
+
+That line is a button. It opens the list of exactly those files, worst first —
+anything down to its last usable shard leads — twenty-five to a page, each row
+showing the shards it does have, coloured by the account holding each, and an
+outlined square where the missing one should be. **⇄ Clouds** on a row opens the
+same cloud picker a file row offers, already ticked to the clouds the file is on
+now, so swapping the one that failed for one that is answering is a click on
+each.
+
+Putting a shard back is not a copy. The missing shard is on no account to copy
+*from*, so a file that is short is gathered, cut again and written out whole —
+the same work as changing its width. The estimate says `1 file to rebuild`
+rather than a count of shards, and says why, before anything starts:
+
+```bash
+./sand relocate /holiday.mov --accounts box,s3,drive --dry-run
+#   /holiday.mov is missing 1 of its 3 shards, so it has to be rebuilt rather
+#   than moved — the missing shard is on no account to copy from, and the whole
+#   file comes down and goes back up to make one
+```
+
+A file below its threshold — fewer shards recorded than it takes to rebuild it —
+is in the list too, marked red and with nothing offered: no arrangement of
+clouds brings back a shard that was never written. `sand check` and the file's
+own **Where the shards live** say the same thing per file; this is the vault-wide
+answer to "which ones, and can I fix them from here".
+
 ## Moving something to another folder
 
 The other kind of move, and the cheap one. Which folder a file is in is a field
@@ -1339,6 +1378,7 @@ report which half.
 | GET · POST · DELETE | `/api/files/{id}/movie` | What film this is / look it up (`query`, `year`, `tmdb_id`) / forget it |
 | GET | `/api/files/{id}/movie/candidates?q=` | Search the database without storing anything, to correct a match |
 | GET | `/api/files/{id}/health` | Per-part reachability |
+| GET | `/api/degraded?offset=&limit=` | The files missing at least one part, worst first and paged — what the accounts panel's "N files missing a spare part" is counting |
 | POST | `/api/files/{id}/move` | Rename / move into another folder |
 | DELETE | `/api/files/{id}` | Erase every part |
 | GET | `/api/folders` | Every folder in the vault, for a destination picker |
@@ -1346,7 +1386,7 @@ report which half.
 | GET · POST | `/api/folders/art?path=` | Which file's thumbnail a folder is drawn with, and what else it could be (`id` to pick one, `""` for none) |
 | POST · DELETE | `/api/folders` | Create / delete folders |
 | POST | `/api/folders/move` | Move a folder, and everything under it, `from` one path `to` another |
-| POST | `/api/relocate` | Move a file (`id`) or folder (`path`) onto other `accounts`; `preview` prices it without moving anything |
+| POST | `/api/relocate` | Move a file (`id`) or folder (`path`) onto other `accounts`; `preview` prices it without moving anything. A file short a part is rebuilt rather than carried, which is how a missing part is put back |
 | GET | `/api/reads?window=` | Which account is winning the race every read runs — `today` (default), `month`, `year` or `all` |
 | POST | `/api/reads/forget` | Erase that history, in memory and on disk |
 | GET | `/api/system/folders?path=` | Folders on this machine, for the folder picker |

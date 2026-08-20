@@ -566,6 +566,51 @@ both are rewrites of the encrypted index — a folder of four hundred films
 flattens as fast as a rename. Deleting is the exception it always was, and both
 delete-shaped tools end in the same confirmation the delete button uses.
 
+### 3.13 The files that went out short, and the way back to whole
+
+An upload commits on two of three parts (§4.1). A cloud that is not answering at
+that moment therefore costs a file its spare shard and nothing else: the upload
+succeeds, the file reads back, no screen turns red, and the file stays one cloud
+worse off than it asked to be for good — nothing in SAND goes back to finish it
+later. `Stats.Degraded` has always counted them, and the accounts panel has
+always drawn that count. It named a problem and gave no way to reach it.
+
+`Vault.Degraded` (`degraded.go`), answered by `GET /api/degraded`, is the list
+behind the number. Same rule as the count — fewer distinct shards recorded than
+the file's own scheme calls for — and deliberately the same scope, **the main
+vault alone**, exactly as `Stats` is: a figure somebody clicks and the
+list they land in have to be the same set of files, or the number is naming
+something the dialog cannot show.
+
+It is read out of the decrypted index and contacts no account, which is what
+makes it cheap enough for the dialog to ask again after every repair. Whether an
+account really still holds what the index says it holds is the other question,
+asked per file by `Vault.Health`; this one is about shards that were never
+written, and the index is the authority on those.
+
+Two things shape the answer:
+
+- **Worst first, not alphabetical.** Rows are ordered by `Spare` — how many more
+  clouds the file could lose and still be rebuilt — then by how many shards are
+  missing, then by path. The point of the list is to fix things, so a file down
+  to its last usable shard leads whatever it is called, and the path tiebreak
+  keeps the order stable between calls so a page turned twice shows the same
+  thing twice.
+- **Paged, because the cause is not one file at a time.** An account down for an
+  afternoon leaves every file uploaded that afternoon short, so this list is
+  normally zero rows or a great many and rarely three. `offset`/`limit`, 25 by
+  default and 200 at most; `Total`, `Bytes` and `Unreadable` describe the whole
+  list rather than the page, so the dialog can say what it is showing a slice
+  of. An offset past the end is an empty page rather than an error — a file
+  repaired while the dialog is open is allowed to shorten the list under it.
+
+Nothing was added for the repair itself. Each row hands its file to the same
+`POST /api/relocate` a file row's **Move to other clouds** uses, opened on the
+accounts the file is on now — and a file that is short takes relocation's
+rebuild branch (§5.6), which is what actually puts the missing shard back. A
+file below its threshold is listed and marked, with nothing offered: no
+arrangement of clouds recreates a shard that was never written.
+
 ---
 
 ### 3.8 Sub vaults
@@ -1094,12 +1139,25 @@ being kept claim it, and only then hands out what is left:
 | A, B, C | A…F | **Rebuilt.** 2-of-3 to 4-of-6 shares no shards, so the file is gathered, cut again and written out (§5.3). |
 | A…F | A, B, C | **Rebuilt**, the other way, and the shards on D, E and F are erased. |
 | A, B, C | A, B | Shards on A and B stay; the third is erased, because under `strict` no account may hold two shards of one file. |
+| A, B (shard 3 never stored) | A, B, D | **Rebuilt.** The missing shard is on no account to copy from, so the file is gathered and cut again — see below. |
 
-The two rebuild rows are the ones worth saying out loud, and both the CLI and
-the browser do before anything happens — a rebuild moves the whole file where a
-move at the same width moves 1/k of it per relocated shard. `--dry-run` and the
+The rebuild rows are the ones worth saying out loud, and both the CLI and the
+browser do before anything happens — a rebuild moves the whole file where a move
+at the same width moves 1/k of it per relocated shard. `--dry-run` and the
 browser's estimate both label it as a rebuild and price it separately from the
 moves.
+
+**A file that is short is rebuilt, whatever it is asked for.** An upload commits
+on two of three parts (§4.1), so a cloud that was not answering at the time
+leaves a file permanently one shard short of its own scheme. That file cannot be
+carried part by part onto a full set: the shard that is missing does not exist
+anywhere to be copied. So `planFileRelocation` takes the rebuild branch whenever
+`entry.Redundancy() < entry.Scheme().Total`, even when the code asked for is the
+code the file already has, and marks the row `repair` so the estimate can say
+which of the two reasons applies. It is the only way a missing shard is ever put
+back, and it is what the browser's list of short files (§3.13) sends each row
+through. A file below its threshold cannot be gathered at all and fails as one
+file, reported and skipped, with the rest of the relocation carrying on.
 
 The last row is the other one to say out loud: narrowing below a scheme's width
 costs a file its spare. The redundant policy has room for all three shards on
@@ -1629,6 +1687,7 @@ reveals only whether a vault exists.
 | POST | `/api/files/{id}/convert` | Move one out of it (§4.5) |
 | POST | `/api/files/{id}/stream` | Mint a stream ticket for one file (§9.5) |
 | GET | `/stream/{token}/{name}` | Play it — public, ranged; the token is the credential |
+| GET | `/api/degraded?offset=&limit=` | The files missing at least one shard, worst first and paged — what `Stats.Degraded` counts, as a list (§3.13). Read out of the index; no account is contacted |
 | GET | `/api/files/{id}/health` | Per-part reachability, without downloading |
 | POST | `/api/files/{id}/move` | Rename or move into another folder (index only, §5.6) |
 | DELETE | `/api/files/{id}` | Erase every part, drop the entry |

@@ -100,6 +100,19 @@ type FilePlan struct {
 	From   string `json:"from_scheme,omitempty"`
 	To     string `json:"to_scheme,omitempty"`
 
+	// Repair marks the other reason a file is rebuilt rather than carried: it
+	// never had a full set of shards to carry. A file uploaded while one of its
+	// accounts was refusing is short a part for good — the part does not exist
+	// on any account, so there is nothing to copy — and the only way to a full
+	// set is to gather what is there and cut it again. Recode is set with it,
+	// because that is the work; this says why, and it is what lets the estimate
+	// say "put a missing part back" instead of naming the same scheme twice.
+	Repair bool `json:"repair,omitempty"`
+
+	// Missing is how many of the file's shards were never stored, for the
+	// warning a repair carries. Zero on every other kind of plan.
+	Missing int `json:"missing,omitempty"`
+
 	// to is To as the scheme itself, carried so the recode cuts with exactly the
 	// code the plan was costed against rather than re-deriving one.
 	to archive.Scheme
@@ -312,7 +325,14 @@ func (v *Vault) planRelocation(scope Scope, target string, accounts []string, sc
 				"%s: shard %s will be erased — %d accounts have no room for %d shards under the %s policy",
 				fp.Path, joinParts(fp.Drop), len(targets), len(entry.Shards), policy))
 		}
-		if fp.Recode {
+		switch {
+		case fp.Repair:
+			plan.Warnings = append(plan.Warnings, fmt.Sprintf(
+				"%s is missing %d of its %d shards, so it has to be rebuilt rather than moved — "+
+					"the missing shard is on no account to copy from, and the whole file comes "+
+					"down and goes back up to make one",
+				fp.Path, fp.Missing, entry.Scheme().Total))
+		case fp.Recode:
 			plan.Warnings = append(plan.Warnings, fmt.Sprintf(
 				"%s is stored as %s and is to be cut as %s, so it has to be rebuilt rather than "+
 					"moved — the whole file comes down and goes back up",
@@ -461,8 +481,22 @@ func planFileRelocation(scope Scope, entry *Entry, targets []string, byID map[st
 		chunkCount: entry.ChunkCount,
 	}
 
-	if have := entry.Scheme(); have != want {
+	// Two reasons a file cannot simply have its shards carried across, and both
+	// come to the same work: gather it, cut it again, write the whole set out.
+	//
+	// The first is a change of code — three clouds to six — where no shard of
+	// the old file is a shard of the new one. The second is a file that never
+	// had all its shards: an upload with one account refusing stores two parts
+	// of three, and the third is not sitting anywhere to be copied from. Moving
+	// such a file part by part would land it on the chosen accounts still short
+	// of a part, which is not what "put this file on these clouds" means — and
+	// rebuilding is the only thing that ever puts a missing shard back.
+	have := entry.Scheme()
+	short := entry.Redundancy() < have.Total
+	if have != want || short {
 		plan.Recode = true
+		plan.Repair = short && have == want
+		plan.Missing = have.Total - entry.Redundancy()
 		plan.From = have.String()
 		plan.To = want.String()
 		plan.to = want
