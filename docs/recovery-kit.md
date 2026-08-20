@@ -333,13 +333,25 @@ K7QM4-9WXTB-2FGHN-5PRVD-8JC3S
   from *this is the wrong kit* — see below. It is not integrity; GCM is
   integrity.
 
+  It says *that* there is a typo and never *where*. Five bits over the whole
+  code catch essentially every single-symbol slip and every adjacent
+  transposition, and localise none of them; a message pointing at a group would
+  be guessing. A character that is not in the alphabet at all **is**
+  localisable, and is the one case that names what it found.
+
 Normalisation before anything else touches it: strip everything that is not an
 alphanumeric, upper-case, fold `I`/`L`/`O`, then verify the check symbol. That
 happens **before** the KDF runs, which is the point of having it: a typo is
-caught in microseconds and answered with *"that code has a typo in it — check
-the fourth group"*, instead of costing a second and a half of Argon2 and then
-producing *"wrong code"*, which is the message that makes a person conclude
-their backup is dead.
+caught in microseconds and answered with *"that code has a typo in it — check it
+against what you wrote down"*, instead of costing a second and a half of Argon2
+and then producing *"wrong code"*, which is the message that makes a person
+conclude their backup is dead.
+
+The browser does the same check in the field, from the same alphabet and the
+same five bits, so the border turns red as the last group is typed and the
+button never enables on a code that cannot be right. It is the one piece of
+this design deliberately implemented twice, and the duplication is the feature:
+a typo must never cost a round trip.
 
 #### The KDF stays expensive anyway
 
@@ -911,7 +923,8 @@ for somebody who took the other one.
 
 | What went wrong | What happens |
 |---|---|
-| Code with a typo | caught by the check symbol before the KDF runs — "that code has a typo in it", not "wrong code" |
+| Code with a typo | caught by the check symbol before the KDF runs — "that code has a typo in it", not "wrong code". It cannot say which group |
+| A character the alphabet does not use | named, with the character quoted — this one *is* localisable |
 | Code for a different kit | check symbol passes, GCM check block fails — "this code does not open this kit"; `fingerprint.txt` names which kit it is |
 | Code lost, vault alive | **Show code** / `sand vault kit code` reads it back out of the vault (§4.4) |
 | Code lost, vault gone | nothing opens the kit. The one unrecoverable state in this design, and the reason `verify` asks for the code |
@@ -986,9 +999,9 @@ against `local` providers in a temp dir:
   `crypto/rand`. Table-driven and cheap — this is the piece a person's whole
   vault hangs off, and it is the piece most likely to be quietly wrong.
 - **A single-character typo in every position** of a valid code is rejected by
-  the check symbol, as is every adjacent transposition. Both fail *before* the
-  KDF — assert that too, by timing or by a counter, since the fast rejection is
-  the feature.
+  the check symbol, as is every adjacent transposition. Five bits let one in
+  thirty-two through by construction, so the assertion is a rate rather than an
+  absolute — what it must never do is let through a lot more than that.
 - **Code retention.** Export, read the code back via `sand vault kit code`,
   import with it. Then assert the code is absent from every byte of the zip, of
   the filename, and of `fingerprint.txt`.

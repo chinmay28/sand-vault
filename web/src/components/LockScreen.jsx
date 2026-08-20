@@ -4,6 +4,7 @@ import { useIsMobile } from '../hooks'
 import { api } from '../api'
 import { Banner, Button, PasswordInput, Spinner } from './ui'
 import { Brand, DevMark } from './Brand'
+import ImportKit, { ImportKitDoor } from './ImportKit'
 
 /* The gate in front of everything: without the vault password the server
    cannot decrypt the index, so there is nothing to show and nothing to fetch. */
@@ -16,6 +17,9 @@ export default function LockScreen({ status, onUnlocked }) {
   const [policy, setPolicy] = useState('strict')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
+  /* The third door. Only ever offered on a machine with no vault, which is the
+     state a reinstalled one is in and the only state an import can run in. */
+  const [importing, setImporting] = useState(false)
 
   const submit = async (e) => {
     e.preventDefault()
@@ -197,6 +201,11 @@ export default function LockScreen({ status, onUnlocked }) {
           </Button>
         </div>
 
+        {/* Somebody reinstalling after a disaster has no reason to suspect a
+            route back exists, so the offer has to be on the screen they land
+            on rather than behind a menu they would have to know to open. */}
+        {creating && <ImportKitDoor onClick={() => setImporting(true)} />}
+
         {/* The crypto line wants the full width; the developer mark sits under
             it on its own row rather than squeezing the text into a wrap. */}
         <div style={{
@@ -216,6 +225,13 @@ export default function LockScreen({ status, onUnlocked }) {
           <DevMark bare />
         </div>
       </form>
+
+      {importing && (
+        <ImportKit
+          onClose={() => setImporting(false)}
+          onImported={(status) => { setImporting(false); onUnlocked(status) }}
+        />
+      )}
     </div>
   )
 }

@@ -31,6 +31,27 @@ func DefaultArgon2Params() Argon2Params {
 	}
 }
 
+// KitArgon2Params returns the parameters a recovery kit is sealed under.
+//
+// Deliberately eight times the memory of a vault password's. A vault password
+// is typed several times a day and 64 MB is what that cadence can afford; a kit
+// is opened once in several years, so a second and a half is a rounding error
+// at the only moment it is ever paid.
+//
+// Against the recovery code SAND generates this is belt and braces — 120 bits
+// of uniform randomness needs no stretching at all. It is here for the other
+// case: a kit sealed under a password the user chose, which goes through the
+// same envelope and needs every megabyte of it.
+func KitArgon2Params() Argon2Params {
+	return Argon2Params{
+		Time:    8,
+		Memory:  512 * 1024, // 512 MB
+		Threads: 4,
+		SaltLen: 16,
+		KeyLen:  32,
+	}
+}
+
 // GenerateSalt creates a cryptographically random salt.
 func GenerateSalt(size uint32) ([]byte, error) {
 	salt := make([]byte, size)

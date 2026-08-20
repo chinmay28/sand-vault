@@ -109,6 +109,12 @@ type Vault struct {
 	backupPending bool
 	backupForce   bool
 
+	// backupHold suspends scheduled pushes while an import is connecting the
+	// accounts, so a half-built index is never written and the foreign-backup
+	// guard is never met in the middle of the one operation that expects to
+	// find another vault's copy on every account. See holdBackups.
+	backupHold bool
+
 	// backupChecked remembers the accounts already known to hold this vault's
 	// own backup, so the guard against clobbering another vault's copy costs
 	// one read per account per unlock rather than one per push.
@@ -822,6 +828,116 @@ func (v *Vault) AddProvider(ctx context.Context, cfg provider.Config) (provider.
 	v.live[cfg.ID] = live
 	v.liveMu.Unlock()
 	return cfg.Redacted(), nil
+}
+
+// RestoreProvider connects an account under the id it already had.
+//
+// AddProvider with the two lines that mint a fresh identity taken out — and
+// that is the whole reason a recovery kit works the way it does. Reconnecting
+// an account normally gives it a new uuid, which is why Recover has to list
+// every account and re-point every shard record by object key. A kit restores
+// each account under its original id, so the manifest's shard records are
+// already correct the moment the index is installed, including the ones inside
+// sealed sub vaults that no password here could reach.
+//
+// It does not ping. An account whose sign-in expired while the machine was
+// gone is the expected case rather than the edge case, and a restore that
+// refused to finish because Dropbox wanted a fresh sign-in would be useless
+// precisely when it is needed. The caller checks each account afterwards and
+// records what it found; see ImportKit.
+//
+// The name-collision check AddProvider makes is also absent: a kit's accounts
+// are internally consistent by construction, and two of the same name in one
+// kit came from a vault that already had them.
+func (v *Vault) RestoreProvider(cfg provider.Config) error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	if v.dataKey == nil {
+		return ErrLocked
+	}
+	if cfg.ID == "" {
+		return fmt.Errorf("an account restored from a kit must carry the id it had")
+	}
+	for _, existing := range v.providers {
+		if existing.ID == cfg.ID {
+			return fmt.Errorf("account %s is already connected", cfg.ID)
+		}
+	}
+
+	cfg = provider.WithDefaults(cfg)
+	if cfg.AddedAt.IsZero() {
+		cfg.AddedAt = time.Now().UTC()
+	}
+
+	v.providers = append(v.providers, cfg)
+	if err := v.persistLocked(); err != nil {
+		v.providers = v.providers[:len(v.providers)-1]
+		return err
+	}
+	return nil
+}
+
+// RepointProvider changes one option on a connected account — the folder a
+// path-configured backend is pointed at — without disturbing anything else
+// about it, its id above all.
+//
+// This is what "find this folder" needs after a kit import onto a different
+// machine. A fresh install often means a different home directory or a
+// different operating system entirely, so the path a sync-folder account was
+// connected with may simply not exist here; re-pointing keeps the id, and
+// keeping the id is what keeps the index correct.
+func (v *Vault) RepointProvider(id, option, value string) (provider.Config, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	if v.dataKey == nil {
+		return provider.Config{}, ErrLocked
+	}
+
+	idx := -1
+	for i := range v.providers {
+		if v.providers[i].ID == id {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return provider.Config{}, fmt.Errorf("no connected account with id %s", id)
+	}
+
+	spec, ok := provider.SpecFor(v.providers[idx].Kind)
+	if !ok {
+		return provider.Config{}, fmt.Errorf("no backend of kind %s", v.providers[idx].Kind)
+	}
+	known := false
+	for _, f := range spec.Fields {
+		if f.Key == option {
+			known = true
+			break
+		}
+	}
+	if !known {
+		return provider.Config{}, fmt.Errorf("%s accounts have no %q setting", spec.Label, option)
+	}
+
+	before := v.providers[idx].Options[option]
+	if v.providers[idx].Options == nil {
+		v.providers[idx].Options = map[string]string{}
+	}
+	v.providers[idx].Options[option] = value
+
+	if err := v.persistLocked(); err != nil {
+		v.providers[idx].Options[option] = before
+		return provider.Config{}, err
+	}
+
+	// The cached live provider was built against the old setting.
+	v.liveMu.Lock()
+	delete(v.live, id)
+	v.liveMu.Unlock()
+
+	return v.providers[idx].Redacted(), nil
 }
 
 // ProviderEdit names what can be changed about an account after it is

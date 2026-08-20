@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/chinmay28/sand-vault/internal/archive"
 	"github.com/chinmay28/sand-vault/internal/crypto"
@@ -134,6 +135,19 @@ func (v *Vault) rotate(oldPassword, newPassword string) error {
 	// longer opens this vault, and carries a data key that is being retired.
 	// They have to be replaced, and the vault remembers that until they are.
 	sf.BackupNeedsForce = !sf.ManifestBackupDisabled
+
+	// What a recovery kit made before today can no longer do: open the copies
+	// of manifest.sand on the accounts, which have just moved onto a vault key
+	// derived from the new password. The kit still opens — its own secret is
+	// not this password — and it still restores the credentials and the tree,
+	// so this is a note for the settings panel rather than an invalidation.
+	// See §6.5 of docs/recovery-kit.md.
+	sf.LastKitExportAt = v.store.LastKitExportAt
+	sf.LastKitID = v.store.LastKitID
+	sf.LastKitSecret = v.store.LastKitSecret
+	sf.LastKitFileCount = v.store.LastKitFileCount
+	sf.LastKitAccounts = append([]string(nil), v.store.LastKitAccounts...)
+	sf.LastPasswordChangeAt = time.Now().UTC()
 
 	params, salt, err := sf.KDF.toArgon2()
 	if err != nil {

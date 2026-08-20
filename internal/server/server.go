@@ -188,6 +188,15 @@ func (s *Server) Handler() (http.Handler, error) {
 	mux.HandleFunc("POST /api/vault/unlock", s.handleVaultUnlock)
 	mux.HandleFunc("GET /api/providers/specs", s.handleProviderSpecs)
 
+	// Reading a recovery kit, and importing one. Outside the session in the
+	// same way and for the same reason /api/vault/init is: on the machine
+	// where they matter there is no vault to have a session with. What stands
+	// in front of them is possession of the file plus the secret that opens
+	// it, and the import's own refusal to run against a vault holding files.
+	// See handlers_kit.go.
+	mux.HandleFunc("POST /api/vault/kit/inspect", s.handleKitInspect)
+	mux.HandleFunc("POST /api/vault/kit/import", s.handleKitImport)
+
 	// A stream link carries its own credential in the path, which is the point
 	// of it: the player following one is not the browser and has no session to
 	// offer. Registered for GET, which the router answers HEAD on too — a
@@ -237,6 +246,18 @@ func (s *Server) Handler() (http.Handler, error) {
 		"GET /api/vault/orphans":           s.handleOrphanScan,
 		"POST /api/vault/orphans":          s.handleOrphanSweep,
 		"POST /api/vault/orphans/reattach": s.handleOrphanReattach,
+		// The recovery kit: one sealed file that reconnects every cloud on a
+		// fresh install, rather than only rebuilding the index. Exporting one
+		// and testing one both need the vault open; reading and importing one
+		// do not, and are above. See handlers_kit.go.
+		"GET /api/vault/kit":         s.handleKitStatus,
+		"POST /api/vault/kit":        s.handleKitExport,
+		"POST /api/vault/kit/verify": s.handleKitVerify,
+		// The code a kit was sealed under, for somebody who still has their
+		// working vault and has mislaid the slip of paper. Worthless to
+		// anybody who could not already export a fresh kit.
+		"GET /api/vault/kit/code/{id}":    s.handleKitCode,
+		"DELETE /api/vault/kit/code/{id}": s.handleKitForgetCode,
 
 		"GET /api/providers":            s.handleProvidersList,
 		"POST /api/providers":           s.handleProviderAdd,
@@ -261,6 +282,11 @@ func (s *Server) Handler() (http.Handler, error) {
 		// touches the backend holding it.
 		"PATCH /api/providers/{id}":  s.handleProviderUpdate,
 		"DELETE /api/providers/{id}": s.handleProviderRemove,
+		// Pointing a path-configured account at a folder that exists on *this*
+		// machine, keeping its id. What "find this folder" needs after a kit
+		// import onto a different computer, where a home directory the vault
+		// was connected with may simply not be here.
+		"POST /api/providers/{id}/repoint": s.handleProviderRepoint,
 
 		// Which accounts have been winning the race every read runs, over
 		// today, this month, this year or all of it. Counters the read path
