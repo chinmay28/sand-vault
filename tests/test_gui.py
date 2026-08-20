@@ -2995,8 +2995,12 @@ class TestMislaidShards:
 
     PASSWORD = "the-mislaid-test-passphrase"
 
-    def build_vault(self, sand_bin, tmp_path, name):
-        """A vault whose one file has lost a shard record to a disconnect."""
+    def build_vault(self, sand_bin, tmp_path, name, reconnect=True):
+        """A vault whose one file has lost a shard record to a disconnect.
+
+        With reconnect=False the cloud is left disconnected, so the app has to
+        discover the mislaid shard when it is wired back up in the browser.
+        """
         import subprocess
 
         vault_file = str(tmp_path / f"{name}.sand")
@@ -3024,7 +3028,8 @@ class TestMislaidShards:
         run("put", str(source), "--accounts", "ms-a,ms-b,ms-c")
 
         run("remote", "rm", "ms-a", "--force")
-        run("remote", "add", "local", "--name", "ms-a-again", "--set", f"path={clouds['ms-a']}")
+        if reconnect:
+            run("remote", "add", "local", "--name", "ms-a-again", "--set", f"path={clouds['ms-a']}")
         return clouds
 
     def parts_in(self, directory):
@@ -3063,3 +3068,34 @@ class TestMislaidShards:
         page.get_by_role("button", name="Done").click()
         page.wait_for_timeout(500)
         assert page.get_by_text(re.compile(r"nothing pointing at")).count() == 0
+
+    def test_connecting_the_cloud_back_is_what_finds_them(self, page, sand_bin, tmp_path, spawn_server):
+        """The scenario as it actually happens.
+
+        The cloud is gone and the app has nothing to say — the parts are on
+        storage it cannot reach. Wire that storage back up and it arrives as a
+        new account with a new id, which is exactly the moment the vault stops
+        being able to work out for itself that these are the parts it lost. So
+        the app looks, right then, without being asked.
+        """
+        clouds = self.build_vault(sand_bin, tmp_path, "mislaid-reconnect", reconnect=False)
+        self.unlock(page, spawn_server("mislaid-reconnect"))
+
+        # Nothing to report yet: the parts are on a cloud that is not connected.
+        page.wait_for_timeout(1500)
+        assert page.get_by_text(re.compile(r"nothing pointing at")).count() == 0
+
+        page.get_by_text("+ Connect a cloud").click()
+        page.wait_for_selector("text=Local folder", timeout=15000)
+        page.get_by_text("Local folder").click()
+        form = page.locator("form")
+        form.locator("input").nth(0).fill("ms-a-again")
+        form.locator("input").nth(1).fill(clouds["ms-a"])
+        form.locator("button[type=submit]").click()
+        page.wait_for_selector("text=ms-a-again", timeout=30000)
+
+        # Connecting it back is the trigger. Nobody asked for a scan.
+        expect(page.get_by_text(re.compile(r"nothing pointing at"))).to_be_visible(timeout=30000)
+        page.get_by_role("button", name="Put them back").click()
+        page.get_by_role("button", name=re.compile(r"^Put 1 shard back")).click()
+        expect(page.get_by_text(re.compile(r"1 shard recorded again"))).to_be_visible(timeout=30000)

@@ -182,11 +182,20 @@ export default function AccountsPanel({
     return () => window.removeEventListener('keydown', onKey)
   }, [mobile, open, onClose])
 
+  /* Disconnecting is not quite as final as it reads, and saying so is the
+     difference between somebody thinking they have lost redundancy and knowing
+     how to get it back. The records naming this account go — an index still
+     claiming them would be lying about what can be reached — but the parts
+     themselves stay put, and connecting the same storage again is enough to
+     re-record them without moving a byte. See the reattach panel. */
   const remove = async (provider) => {
     const confirmed = window.confirm(
       `Disconnect "${provider.name}"?\n\n` +
-      `SAND will stop using it and will forget the ${provider.shards} part(s) it holds. ` +
-      `The data itself stays on the account until you delete it there.`
+      `SAND will forget the ${provider.shards} part(s) it holds, so any file that had one ` +
+      `will show a missing spare part.\n\n` +
+      `The parts themselves stay on the account. Connect this same storage again and SAND ` +
+      `offers to put those records back — no data is moved. Delete them at the provider if ` +
+      `you want the room instead.`
     )
     if (!confirmed) return
 

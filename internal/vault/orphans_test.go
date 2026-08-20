@@ -1157,3 +1157,101 @@ func (v *Vault) entryByID(t *testing.T, id string) *Entry {
 	t.Fatalf("no entry with id %s", id)
 	return nil
 }
+
+func TestTwoDisconnectsLeaveEveryFileUnreadableAndReattachBringsThemBack(t *testing.T) {
+	ctx := context.Background()
+	v, _ := newTestVault(t, 3)
+
+	// The shape of the real thing: a handful of files spread over three clouds,
+	// and two of those clouds going away and coming back at different times.
+	// Each disconnect takes one record from every file with it.
+	payloads := map[string][]byte{}
+	ids := map[string]string{}
+	for _, name := range []string{"one.txt", "two.txt", "three.txt", "four.txt", "five.txt"} {
+		body := []byte("the contents of " + name)
+		entry, _, err := v.Upload(ctx, MainScope, "/", name, body, UploadOptions{})
+		if err != nil {
+			t.Fatalf("Upload %s: %v", name, err)
+		}
+		payloads[name] = body
+		ids[name] = entry.ID
+	}
+
+	cycle := func(label string) {
+		t.Helper()
+		accounts, err := v.Providers()
+		if err != nil {
+			t.Fatalf("Providers: %v", err)
+		}
+		// Whichever account is holding shards right now; the placement chose
+		// it, not the test.
+		victim := accounts[0]
+		if err := v.RemoveProvider(victim.ID, true); err != nil {
+			t.Fatalf("RemoveProvider: %v", err)
+		}
+		if _, err := v.AddProvider(ctx, provider.Config{
+			Kind:    provider.KindLocal,
+			Name:    label,
+			Options: victim.Options,
+		}); err != nil {
+			t.Fatalf("AddProvider: %v", err)
+		}
+	}
+	cycle("first-cloud-again")
+	cycle("second-cloud-again")
+
+	// Two records gone from every file leaves one, which is below what a
+	// 2-of-3 file needs: they are not merely short of a spare, they cannot be
+	// opened at all.
+	for name, id := range ids {
+		entry := v.entryByID(t, id)
+		if got := entry.Redundancy(); got != 1 {
+			t.Fatalf("%s has %d shard(s) recorded, want 1", name, got)
+		}
+		if entry.Recoverable() {
+			t.Fatalf("%s still claims to be recoverable on one shard", name)
+		}
+		if _, _, err := v.Fetch(ctx, id); err == nil {
+			t.Fatalf("%s read back despite having one shard", name)
+		}
+	}
+
+	scan := orphanScan(t, v)
+	if scan.Found {
+		t.Errorf("shards of files still in the tree were called abandoned: %+v", scan.Items)
+	}
+	if len(scan.Strays) != 10 || scan.Reattachable != 10 {
+		t.Fatalf("found %d mislaid shard(s), %d of them reattachable — want 10 and 10",
+			len(scan.Strays), scan.Reattachable)
+	}
+	if scan.StrayFiles != 5 {
+		t.Errorf("blamed %d file(s), want 5", scan.StrayFiles)
+	}
+
+	report, err := v.ReattachShards(ctx, false)
+	if err != nil {
+		t.Fatalf("ReattachShards: %v", err)
+	}
+	if report.Shards != 10 || report.Files != 5 {
+		t.Fatalf("recorded %d shard(s) across %d file(s), want 10 and 5: %+v",
+			report.Shards, report.Files, report)
+	}
+	if len(report.Restored) != 5 {
+		t.Errorf("reported %d file(s) back to full spread, want 5: %v", len(report.Restored), report.Restored)
+	}
+
+	// Every one of them is whole again, and — the part that matters — readable
+	// again, from parts that never went anywhere.
+	for name, id := range ids {
+		if got := v.entryByID(t, id).Redundancy(); got != 3 {
+			t.Errorf("%s has %d shard(s), want 3", name, got)
+		}
+		got, _, err := v.Fetch(ctx, id)
+		if err != nil {
+			t.Fatalf("Fetch %s after the repair: %v", name, err)
+		}
+		if string(got) != string(payloads[name]) {
+			t.Errorf("%s came back changed", name)
+		}
+	}
+}

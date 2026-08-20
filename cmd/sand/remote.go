@@ -435,7 +435,13 @@ func remoteRemoveCmd() *cobra.Command {
 			if err := v.RemoveProvider(cfg.ID, force); err != nil {
 				return err
 			}
-			fmt.Printf("Disconnected %s. The parts it held were left in place; delete them there if you want them gone.\n", cfg.Name)
+			// The records naming this account are gone, but the parts are
+			// not, and the way back is worth saying at the moment it stops
+			// being obvious.
+			fmt.Printf("Disconnected %s. The parts it held were left in place, "+
+				"and the index records naming them were dropped.\n", cfg.Name)
+			fmt.Println("Connect the same storage again and 'sand vault reattach' re-records them " +
+				"without moving any data; delete them at the provider if you want the room instead.")
 			return nil
 		},
 	}
