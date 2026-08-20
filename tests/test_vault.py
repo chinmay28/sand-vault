@@ -1202,3 +1202,109 @@ class TestDisasterRecovery:
         cli(sand_bin, new_root, "get", "/finance/ledger.bin", "-o", out,
             password="a-different-password")
         assert open(out, "rb").read() == payload
+
+
+class TestOrphanSweep:
+    """Parts a delete could not reach, and the tidy-up that finds them.
+
+    Erasing a file erases its parts from the accounts holding them — the ones
+    connected at the time. A cloud disconnected while files are deleted keeps
+    its share of them, and connecting it back gives that account a brand new
+    internal ID, so nothing ever goes looking again. Driven through the real
+    binary because the claim is about what is left on disk.
+    """
+
+    def parts_on(self, directory):
+        """The stored parts in an account folder, ignoring the index backup."""
+        if not os.path.isdir(directory):
+            return set()
+        return {n for n in os.listdir(directory)
+                if n.endswith(".sand") and n != "manifest.sand"}
+
+    def build(self, sand_bin, root):
+        """A vault with three accounts and two files, one of which is about to
+        be deleted while the first cloud is away."""
+        os.makedirs(root, exist_ok=True)
+        sub_cli(sand_bin, root, "vault", "init")
+        clouds = []
+        for name in ("sw-a", "sw-b", "sw-c"):
+            path = os.path.join(root, "sw-clouds", name)
+            sub_cli(sand_bin, root, "remote", "add", "local", "--name", name,
+                    "--set", f"path={path}")
+            clouds.append(path)
+
+        for name, body in (("doomed.txt", "deleted while a cloud was away"),
+                           ("kept.txt", "still very much stored")):
+            source = os.path.join(root, name)
+            with open(source, "w") as f:
+                f.write(body)
+            sub_cli(sand_bin, root, "put", source, "--accounts", "sw-a,sw-b,sw-c")
+        return clouds
+
+    def test_a_clean_vault_has_nothing_to_sweep(self, sand_bin, tmp_path):
+        root = str(tmp_path / "clean")
+        self.build(sand_bin, root)
+
+        result = sub_cli(sand_bin, root, "vault", "sweep")
+        assert "belongs to a file this vault still has" in result.stdout
+
+    def test_a_delete_a_cloud_missed_is_found_and_swept(self, sand_bin, tmp_path):
+        root = str(tmp_path / "sweep")
+        clouds = self.build(sand_bin, root)
+        away = clouds[0]
+
+        before = self.parts_on(away)
+        assert len(before) == 2, before
+
+        # The cloud goes away, the file is deleted without it, and the same
+        # storage comes back as a new account.
+        sub_cli(sand_bin, root, "remote", "rm", "sw-a", "--force")
+        sub_cli(sand_bin, root, "rm", "/doomed.txt")
+        assert self.parts_on(away) == before, "the delete somehow reached a disconnected cloud"
+
+        sub_cli(sand_bin, root, "remote", "add", "local", "--name", "sw-a-again",
+                "--set", f"path={away}")
+
+        listed = sub_cli(sand_bin, root, "vault", "sweep", "--verbose")
+        assert "pointed at by nothing" in listed.stdout, listed.stdout
+        assert "sw-a-again" in listed.stdout, listed.stdout
+        assert "Run again with --yes" in listed.stdout, listed.stdout
+        # Listing is not erasing.
+        assert self.parts_on(away) == before
+
+        swept = sub_cli(sand_bin, root, "vault", "sweep", "--yes")
+        assert "Erased 1 object(s) across 1 archive(s)" in swept.stdout, swept.stdout
+
+        # Exactly the abandoned part went, and the file that was never in
+        # question still reads back.
+        assert len(self.parts_on(away)) == len(before) - 1
+        out = str(tmp_path / "kept-back.txt")
+        sub_cli(sand_bin, root, "get", "/kept.txt", "-o", out)
+        assert open(out).read() == "still very much stored"
+
+        # Nothing is left to find.
+        again = sub_cli(sand_bin, root, "vault", "sweep")
+        assert "belongs to a file this vault still has" in again.stdout
+
+    def test_a_vault_waiting_to_be_recovered_is_not_swept(self, sand_bin, tmp_path):
+        """The state that would be a disaster: a reinstalled machine whose
+        clouds are full of a dead vault's parts, every one of them unaccounted
+        for and every one of them what a recovery needs."""
+        root = str(tmp_path / "lost")
+        clouds = self.build(sand_bin, root)
+        held = {cloud: self.parts_on(cloud) for cloud in clouds}
+        assert all(held.values())
+
+        fresh = str(tmp_path / "reinstalled")
+        os.makedirs(fresh)
+        sub_cli(sand_bin, fresh, "vault", "init", password="a-brand-new-password")
+        for i, cloud in enumerate(clouds):
+            sub_cli(sand_bin, fresh, "remote", "add", "local", "--name", f"back-{i}",
+                    "--set", f"path={cloud}", password="a-brand-new-password")
+
+        result = sub_cli(sand_bin, fresh, "vault", "sweep", "--yes",
+                         password="a-brand-new-password")
+        assert "Not offering to erase any of it" in result.stdout, result.stdout
+        assert "recovered" in result.stdout, result.stdout
+        for cloud, parts in held.items():
+            assert self.parts_on(cloud) == parts, f"{cloud} was swept"

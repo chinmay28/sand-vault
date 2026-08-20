@@ -8,6 +8,7 @@ import AccountsPanel from './components/AccountsPanel'
 import FileBrowser from './components/FileBrowser'
 import PreviewModal, { ShardInspector } from './components/PreviewModal'
 import RecoverVault from './components/RecoverVault'
+import CleanOrphans from './components/CleanOrphans'
 import FilmDetails from './components/FilmDetails'
 import { Brand, DevMark } from './components/Brand'
 import { Banner, Button } from './components/ui'
@@ -33,6 +34,13 @@ export default function App() {
   const [accountsOpen, setAccountsOpen] = useState(false)
   const [recovery, setRecovery] = useState(null)
   const [recovering, setRecovering] = useState(false)
+  const [orphans, setOrphans] = useState(null)
+  const [sweeping, setSweeping] = useState(false)
+  /* Which set of connected clouds the tidy-up notice has already been shown
+     for. Kept in state rather than in a ref because dismissing it has to redraw
+     — and unlike the recovery scan's ref, this cannot re-run anything: the scan
+     effect below does not read it. */
+  const [orphansDismissed, setOrphansDismissed] = useState('')
   const [unlockingSub, setUnlockingSub] = useState(null)
   /* Whether the sub vaults show up in the file list. A view preference, kept
      in this browser: it decides what is drawn and nothing else. A locked sub
@@ -180,6 +188,36 @@ export default function App() {
     return () => { cancelled = true }
   }, [unlocked, providerKey, fileCount, unresolved])
 
+  /* And the opposite question, asked at the same moment.
+
+     Recovery is about parts the index points at and cannot reach. This is about
+     parts the index has stopped pointing at at all: the ones a delete could not
+     erase because the cloud holding them was disconnected at the time. That
+     cloud comes back as a new account, and nothing ever goes looking again —
+     the room is simply gone. Both gaps open when the set of connected accounts
+     changes, so both are looked for then.
+
+     Never while a recovery is on the table: a vault waiting to be recovered has
+     every part on its accounts unaccounted for, and the last thing that state
+     needs is an offer to sweep them. The server refuses too (see orphanGuard);
+     this is about not putting the question in front of somebody at the worst
+     possible moment. */
+  useEffect(() => {
+    if (!unlocked || providerKey === '' || recovery?.available) {
+      setOrphans(null)
+      return
+    }
+    let cancelled = false
+    api.orphanScan().then((scan) => {
+      if (cancelled) return
+      setOrphans(scan.found ? scan : null)
+    }).catch(() => {
+      // An account that will not answer is the accounts panel's story, and a
+      // tidy-up nobody asked for has no business raising an error over it.
+    })
+    return () => { cancelled = true }
+  }, [unlocked, providerKey, recovery?.available])
+
   const lock = async () => {
     await api.lock().catch(() => {})
     setStatus((s) => ({ ...s, unlocked: false, stats: null }))
@@ -192,6 +230,9 @@ export default function App() {
     setRecovery(null)
     openRecovery(false)
     recoveryDismissed.current = false
+    setOrphans(null)
+    setSweeping(false)
+    setOrphansDismissed('')
     // The trail is a list of folder names, which is the file index — locking
     // the vault has to put that away with everything else.
     nav.reset()
@@ -317,6 +358,25 @@ export default function App() {
           </div>
         )}
 
+        {/* Room being paid for by nobody. Dismissible for good — it is a
+            housekeeping notice, not a warning, and it will be raised again the
+            next time the clouds change. */}
+        {orphans && !sweeping && orphansDismissed !== providerKey && (
+          <div style={{ padding: mobile ? '10px 10px 0' : '12px 20px 0', flexShrink: 0 }}>
+            <Banner
+              tone="info"
+              onDismiss={() => setOrphansDismissed(providerKey)}
+            >
+              <span style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                <span>{orphanNotice(orphans)}</span>
+                <Button size="sm" variant="ghost" onClick={() => setSweeping(true)}>
+                  Take a look
+                </Button>
+              </span>
+            </Banner>
+          </div>
+        )}
+
         <div style={{ flex: 1, display: 'flex', minHeight: 0, position: 'relative' }}>
           <AccountsPanel
             providers={providers}
@@ -392,6 +452,24 @@ export default function App() {
           onAccountsChanged={refreshProviders}
         />
       )}
+      {sweeping && orphans && (
+        <CleanOrphans
+          scan={orphans}
+          /* The rows go when the panel does, not when the sweep commits — the
+             dialog stays up afterwards to say what it erased, and clearing them
+             underneath it would take that away mid-sentence. Closing it counts
+             as having been told, so the banner does not come back until the
+             clouds change. */
+          onClose={() => {
+            setSweeping(false)
+            setOrphans(null)
+            setOrphansDismissed(providerKey)
+          }}
+          /* What was erased is room on somebody's cloud, which the accounts
+             panel draws. */
+          onSwept={refreshProviders}
+        />
+      )}
       {unlockingSub && (
         <UnlockSubVault
           sub={unlockingSub}
@@ -435,6 +513,18 @@ function recoveryNotice(scan) {
   }
   return `${scan.unresolved} part${scan.unresolved === 1 ? '' : 's'} of your files sit on clouds `
     + 'this vault is not connected to. Your files still open, with nothing to spare.'
+}
+
+/* What the tidy-up banner says. Two figures and no more: how much room is
+   being held and on how many clouds. What each abandoned archive used to be is
+   not knowable — that lived in the index that stopped mentioning it — so the
+   banner does not pretend otherwise, and the panel behind it says the same
+   thing at more length. */
+function orphanNotice(scan) {
+  const clouds = scan.accounts.filter((account) => account.orphans > 0).length
+  const where = clouds === 1 ? 'one of your clouds is' : `${clouds} of your clouds are`
+  return `${formatBytes(scan.bytes)} across ${scan.objects} part${scan.objects === 1 ? '' : 's'} `
+    + `on ${where} holding storage no file in this vault points at any more.`
 }
 
 function Shell({ children }) {

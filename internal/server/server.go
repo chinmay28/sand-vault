@@ -224,6 +224,14 @@ func (s *Server) Handler() (http.Handler, error) {
 		// on whichever accounts are named.
 		"POST /api/vault/reclaim": s.handleVaultReclaim,
 
+		// Parts on the accounts that no index points at any more, which is what
+		// deleting a file while one of its clouds was disconnected leaves
+		// behind — the account comes back with a new ID and nothing ever goes
+		// looking for them again. Looking is a GET and erasing is a POST, and
+		// the POST re-scans before it deletes anything. See handlers_orphans.go.
+		"GET /api/vault/orphans":  s.handleOrphanScan,
+		"POST /api/vault/orphans": s.handleOrphanSweep,
+
 		"GET /api/providers":            s.handleProvidersList,
 		"POST /api/providers":           s.handleProviderAdd,
 		"POST /api/providers/{id}/test": s.handleProviderTest,

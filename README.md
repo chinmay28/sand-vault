@@ -690,6 +690,75 @@ counted; connect those accounts and the files come back with them.
 
 ---
 
+## Parts left behind by a cloud that was away
+
+Deleting a file erases its parts from the accounts holding them — the ones
+connected at the time. A cloud that is disconnected while you delete keeps its
+share of them, and there is no second chance: connect that cloud back and it
+arrives as a **new account** with a new internal ID, because a credential is all
+a provider ever hands back and it says nothing about which account it was last
+time. The vault has no way of knowing this is the account those parts were
+erased from, so nothing ever goes looking for them again.
+
+They are not dangerous — encrypted, unreadable, referred to by nothing — but
+they are room you are paying for, and nothing else in SAND will ever reclaim it.
+
+So SAND looks. Whenever the set of connected accounts changes, the browser asks
+each one what it is holding and subtracts what the index accounts for. If
+anything is left over it says so, once, in a dismissible notice:
+
+> 41.6 MB across 12 parts on one of your clouds is holding storage no file in
+> this vault points at any more. **Take a look**
+
+The panel behind it breaks the total down per account and per abandoned archive,
+with everything ticked; untick anything you would rather keep and it stays.
+There is nothing to say about what each archive *was* — the file name, its
+folder and its date all lived in the index that stopped mentioning it — so the
+only honest figures are how big it is and where it sits, and those are what you
+get.
+
+From the command line:
+
+```bash
+./sand vault sweep              # what is out there, per account
+./sand vault sweep --verbose    # every abandoned archive, not just the totals
+./sand vault sweep --yes        # erase it
+```
+
+Nothing is erased without `--yes`, and the web sweep re-scans before it deletes,
+so an archive that has stopped being abandoned between being shown to you and
+being confirmed is skipped rather than erased.
+
+### What it will not touch
+
+"No file points at it" is not always the same thing as "nobody wants it", and
+the sweep refuses outright in every case where the two come apart:
+
+- **An account carrying an index this vault did not write.** Another vault has
+  been using it, and its parts look exactly like abandoned ones. Those rows are
+  shown greyed out with the reason beside them and are never swept.
+- **An account that would not answer.** A part is only abandoned if every
+  account agrees it is; one silent cloud is a hole in the arithmetic, and the
+  arithmetic is the only evidence there is.
+- **A vault holding no files of its own, on accounts it has never written an
+  index to.** That is what a reinstalled machine looks like before it has been
+  told the password of the vault that died — see
+  [Losing the vault file](#losing-the-vault-file) — and sweeping it would erase
+  precisely what the recovery needs. A vault that has simply deleted its last
+  file is not in this state: its own index backup is sitting on those accounts,
+  which is proof it owns them.
+- **Anything SAND did not write.** Only objects named exactly the way parts are
+  named (`<archive-id>-pN.sand`, or `<archive-id>-cNNNNNNN-pN.sand` for a
+  chunk) are counted at all. A folder you share with something else keeps its
+  own files.
+
+A part whose account has been reconnected is not abandoned either — the index
+still names its archive, just under an account ID that has since changed, and
+[finishing the recovery](#what-did-not-come-back) is what re-points it. Matching
+is done by archive rather than by account for exactly that reason.
+
+---
+
 ## Losing the vault file
 
 Parts are encrypted under a random 256-bit key that lives inside your vault
@@ -898,6 +967,7 @@ sand vault backup [--disable|--enable]        Write the encrypted index to every
 sand vault recover [--from ACCOUNT]           Rebuild a lost vault from an account's copy
 sand vault recover --resume                   Finish one, once the rest of the clouds are back
 sand vault reclaim [--account NAME]...        Re-encrypt recovered files under your own key
+sand vault sweep [--verbose] [--yes]          Find parts no file points at, and erase them
 ```
 
 ### Sub vaults

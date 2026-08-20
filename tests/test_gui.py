@@ -2856,3 +2856,128 @@ class TestFilesMissingAPart:
         expect(dialog.get_by_text("shortened26.txt")).to_be_visible()
         expect(dialog.get_by_text("shortened00.txt")).to_have_count(0)
         expect(dialog.get_by_role("button", name=re.compile("Older"))).to_be_disabled()
+
+
+class TestOrphanedParts:
+    """Parts a delete could not reach, noticed by the app on its own.
+
+    Its own server, port and vault file, because the scenario is a vault whose
+    accounts have been shuffled underneath it: a cloud disconnected, a file
+    deleted without it, and the same storage connected back as a new account
+    carrying parts that nothing will ever go looking for again. Nobody in that
+    position knows to go looking for a sweep command, which is the whole reason
+    the app says so first.
+    """
+
+    PASSWORD = "the-orphan-test-passphrase"
+
+    def build_vault(self, sand_bin, tmp_path, name):
+        """A vault with three clouds, one abandoned part, and the server not yet
+        started. Returns the cloud folders."""
+        import subprocess
+
+        vault_file = str(tmp_path / f"{name}.sand")
+
+        def run(*args):
+            env = dict(os.environ)
+            env["SAND_PASSWORD"] = self.PASSWORD
+            result = subprocess.run(
+                [sand_bin, "--vault", vault_file, *args],
+                capture_output=True, text=True, env=env,
+            )
+            assert result.returncode == 0, f"{args}\nstdout: {result.stdout}\nstderr: {result.stderr}"
+            return result
+
+        run("vault", "init", "--policy", "strict")
+        clouds = []
+        for cloud in ("orph-one", "orph-two", "orph-three"):
+            path = str(tmp_path / "orph-clouds" / cloud)
+            os.makedirs(path, exist_ok=True)
+            clouds.append(path)
+            run("remote", "add", "local", "--name", cloud, "--set", f"path={path}")
+
+        for filename, body in (("doomed.txt", b"deleted while a cloud was away"),
+                               ("kept.txt", b"still very much stored")):
+            source = tmp_path / filename
+            source.write_bytes(body)
+            run("put", str(source), "--accounts", "orph-one,orph-two,orph-three")
+
+        # The cloud goes away, the file is deleted without it, and the same
+        # folder is wired back up as a new account.
+        run("remote", "rm", "orph-one", "--force")
+        run("rm", "/doomed.txt")
+        run("remote", "add", "local", "--name", "orph-one-again", "--set", f"path={clouds[0]}")
+        return clouds
+
+    def parts_in(self, directory):
+        return {n for n in os.listdir(directory)
+                if n.endswith(".sand") and n != "manifest.sand"}
+
+    def unlock(self, page, base_url):
+        page.goto(base_url)
+        page.locator('input[type="password"]').first.fill(self.PASSWORD)
+        page.get_by_text("▶ Unlock").click()
+        page.wait_for_selector("text=Connected clouds", timeout=20000)
+
+    def test_the_app_says_so_without_being_asked(self, page, sand_bin, tmp_path, spawn_server):
+        self.build_vault(sand_bin, tmp_path, "orphans-notice")
+        self.unlock(page, spawn_server("orphans-notice"))
+
+        # Nobody asked for this. The scan runs because the set of connected
+        # clouds is what it is, and the banner names the room rather than the
+        # file — what each abandoned archive was is not knowable.
+        expect(page.get_by_text(re.compile(r"no file in this vault points at"))).to_be_visible(timeout=30000)
+
+    def test_the_panel_erases_what_it_offered(self, page, sand_bin, tmp_path, spawn_server):
+        clouds = self.build_vault(sand_bin, tmp_path, "orphans-sweep")
+        before = self.parts_in(clouds[0])
+        assert len(before) == 2, before
+
+        self.unlock(page, spawn_server("orphans-sweep"))
+        page.wait_for_selector("text=no file in this vault points at", timeout=30000)
+        page.get_by_role("button", name="Take a look").click()
+
+        expect(page.get_by_text("Parts nothing points at")).to_be_visible(timeout=15000)
+        # The account that was reconnected is the one named, and the button says
+        # what agreeing to it buys.
+        expect(page.get_by_text("orph-one-again").first).to_be_visible()
+        erase = page.get_by_role("button", name=re.compile(r"^Erase 1 object"))
+        expect(erase).to_be_visible()
+        erase.click()
+
+        expect(page.get_by_text(re.compile(r"1 object erased across 1 archive"))).to_be_visible(timeout=30000)
+        assert len(self.parts_in(clouds[0])) == len(before) - 1
+
+        # And the notice is gone once the panel is shut, because there is
+        # nothing left to notice.
+        page.get_by_role("button", name="Done").click()
+        page.wait_for_timeout(500)
+        assert page.get_by_text(re.compile(r"no file in this vault points at")).count() == 0
+
+    def test_a_vault_waiting_to_be_recovered_is_not_offered_a_sweep(
+        self, page, spawn_server, lost_vault,
+    ):
+        """The state where the offer would be a disaster: every part on the
+        accounts is unaccounted for, and every one of them is what a recovery
+        needs. The recovery prompt is what belongs here, not a tidy-up."""
+        clouds, _, _ = lost_vault
+        base_url = spawn_server("orphans-recovery")
+
+        page.goto(base_url)
+        page.wait_for_selector("text=Create your vault", timeout=20000)
+        boxes = page.locator('input[autocomplete="new-password"]')
+        boxes.nth(0).fill("a-brand-new-passphrase")
+        boxes.nth(1).fill("a-brand-new-passphrase")
+        page.get_by_text("▶ Create vault").click()
+        page.wait_for_selector("text=Connected clouds", timeout=20000)
+
+        page.get_by_text("+ Connect a cloud").click()
+        page.wait_for_selector("text=Local folder", timeout=15000)
+        page.get_by_text("Local folder").click()
+        form = page.locator("form")
+        form.locator("input").nth(0).fill("back-one")
+        form.locator("input").nth(1).fill(clouds[0])
+        form.locator("button[type=submit]").click()
+
+        expect(page.get_by_text("Sand files detected")).to_be_visible(timeout=30000)
+        assert page.get_by_text(re.compile(r"no file in this vault points at")).count() == 0

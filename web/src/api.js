@@ -98,6 +98,29 @@ export const api = {
   reclaim: (accounts = []) =>
     request('/api/vault/reclaim', { method: 'POST', body: { accounts } }),
 
+  /* Parts on the accounts that nothing in the index points at any more.
+
+     They pile up in one particular way. Erasing a file erases its parts from
+     the accounts holding them — the ones that are connected at the time. A
+     cloud that is disconnected while files are deleted keeps its share of them,
+     and reconnecting it gives that account a brand new internal ID, so nothing
+     ever goes back for what it kept. It is unreadable, unreferenced and still
+     counting against the quota.
+
+     The scan costs a listing and one small download per account — the same as
+     recoveryScan() — which is why the browser asks when the set of connected
+     accounts changes rather than on every render. Nothing is written by it. */
+  orphanScan: () => request('/api/vault/orphans'),
+  /* Erases them. `targets` are the {provider_id, archive_id} rows that were
+     ticked; an empty list means everything the scan called deletable.
+
+     The server re-scans before it deletes, so a target that has stopped being
+     abandoned in the meantime is skipped and reported rather than erased. Ask
+     with dryRun first: what it promises is measured against the accounts as
+     they are now, not as the scan left them. */
+  sweepOrphans: ({ targets = [], dryRun = false } = {}) =>
+    request('/api/vault/orphans', { method: 'POST', body: { targets, dry_run: dryRun } }),
+
   providerSpecs: () => request('/api/providers/specs'),
   providers: () => request('/api/providers'),
   addProvider: (kind, name, options) =>

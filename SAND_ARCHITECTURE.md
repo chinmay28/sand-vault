@@ -354,6 +354,64 @@ involved, because what was missing was never a secret. A shard whose account
 being dropped — one failed listing should not throw placement away; that is what
 the health check is for.
 
+### 3.7.1 The other half: parts the index stopped pointing at
+
+Reconnecting an account is what §3.7 is about from one side. This is the same
+event from the other.
+
+Every operation in the vault works outwards: the index says what exists and the
+accounts are told. Erasing a file is no different — it deletes that file's parts
+from the accounts holding them, **the ones connected at the time**. Disconnect a
+cloud, delete files without it, and its share of them stays exactly where it is.
+Nor can a later pass catch up: `AddProvider` mints a fresh `Config.ID` on every
+connection, because a credential is all a provider ever hands back and it says
+nothing about which account it was last time. The vault cannot tell that the
+returning account is the one those parts were erased from. `Reconcile` re-points
+the records for parts that are *still in use* — that is what makes the files
+readable again — and has nothing to say about parts no record names.
+
+So they stay: encrypted under a key the vault may no longer hold, unreadable by
+their owner and by everybody else, and counting against a quota forever.
+`Vault.ScanForOrphans` is the operation that works inwards instead. It asks each
+account what it holds and subtracts what the index accounts for.
+
+**Ownership is decided by archive, not by object key, and not by account.**
+Every part key begins with the archive's random ID (§5.5), so the owned set is
+the archive IDs the vault still points at — drawn from the main index, from
+every open sub vault's index, and from `SubVaultMeta.Inventory` for the ones
+that are shut, which is the same inventory `DeleteSubVault` erases a locked sub
+vault by. Three things follow from matching that way:
+
+- a chunked file's 768 objects are recognised from one record per shard, which
+  is all the index keeps (§7.1)
+- a part whose account has been reconnected is **not** an orphan — the index
+  still names its archive, under an account ID that has since changed, which is
+  precisely what `Reconcile` fixes
+- a locked sub vault's files are not orphans either, which they would appear to
+  be under any rule that needed a readable index to say otherwise
+
+`SweepOrphans` erases what a scan reported, grouped by archive because that is
+the unit somebody is being asked about. It **re-runs the scan itself** rather
+than trusting the caller's: between being shown a figure and agreeing to it, a
+file may have been uploaded, a sub vault opened, an account reconnected — and
+each of those changes the answer. A target that has stopped being abandoned is
+skipped and reported, never erased.
+
+**Where the sweep refuses.** "No index points at it" stops meaning "abandoned"
+in four states, each of which an ordinary user can be in, and `orphanGuard`
+names every one:
+
+| State | Why it is not the same thing |
+|---|---|
+| The account carries a `manifest.sand` this vault's key cannot open | Another vault is using it. Its parts are accounted for, just not here — the same test `guardForeignBackup` and the recovery scan apply |
+| The account could not be listed | A part is abandoned only if every account agrees; one silent cloud is a hole in the only evidence there is |
+| The vault holds no archives, on accounts carrying no index it wrote | This is §3.7's opening scene. Sweeping would erase what the recovery needs. A vault that merely deleted its last file is distinguishable: its *own* backup is on those accounts, which is proof it owns them |
+| The object is not named the way a part is named | Not SAND's. Only `<archive>-pN.sand` and `<archive>-cNNNNNNN-pN.sand` are counted at all; a shared folder keeps its own files |
+
+The first two are per account and greyed out in the answer with the reason
+attached; the third withholds the sweep across the board. Nothing here runs
+without being asked, and nothing deletes without a second call.
+
 ### 3.8 Searching is a property of the open vault
 
 Every store SAND writes to could answer "what do you hold?" with a list of
@@ -1702,6 +1760,8 @@ reveals only whether a vault exists.
 | POST | `/api/vault/recovery` | Adopt that index (`password` — the *lost* vault's, `provider_id`, `dry_run`) |
 | POST | `/api/vault/recovery/resume` | Re-point the index at accounts reconnected since (`dry_run`; no password) |
 | POST | `/api/vault/reclaim` | Fresh data key under this password, every file rebuilt onto it, onto `accounts` (§3.7) |
+| GET | `/api/vault/orphans` | What the accounts hold that no index points at, per account and per archive (§3.7.1) |
+| POST | `/api/vault/orphans` | Erase it (`targets` — `{provider_id, archive_id}` pairs, empty for all; `dry_run`). Re-scans before deleting |
 | GET | `/api/subvaults` | The vaults inside this one, and whether each is open (§3.8) |
 | POST | `/api/subvaults` | Make one, sealed under a password of its own |
 | POST | `/api/subvaults/{id}/unlock` | Open one — a second password on top of the session, never a way around it |
