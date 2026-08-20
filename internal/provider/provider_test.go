@@ -675,3 +675,106 @@ func TestS3MeasureUsageCountsTheWholeBucket(t *testing.T) {
 		t.Errorf("Usage went back to the bucket: %d listings", lists)
 	}
 }
+
+// Editing a connected account's settings is not the same shape as filling in a
+// connect form: the browser was never given the stored secrets, so a form that
+// hands one back is saying "leave it alone" rather than "make it this".
+func TestMergeOptionsKeepsASecretItWasNeverGiven(t *testing.T) {
+	stored := map[string]string{
+		"bucket":            "shards",
+		"access_key_id":     "AKIAEXAMPLE",
+		"secret_access_key": "super-secret-value",
+		"region":            "us-east-1",
+	}
+
+	// Exactly what a form generated from the redacted config sends back when
+	// only the key ID was retyped.
+	merged, err := MergeOptions(KindS3, stored, map[string]string{
+		"access_key_id":     "AKIAROTATED",
+		"secret_access_key": RedactedSecret,
+	})
+	if err != nil {
+		t.Fatalf("MergeOptions: %v", err)
+	}
+	if merged["secret_access_key"] != "super-secret-value" {
+		t.Errorf("secret_access_key = %q — the placeholder was stored as a credential",
+			merged["secret_access_key"])
+	}
+	if merged["access_key_id"] != "AKIAROTATED" {
+		t.Errorf("access_key_id = %q", merged["access_key_id"])
+	}
+	if merged["bucket"] != "shards" || merged["region"] != "us-east-1" {
+		t.Errorf("settings nobody mentioned were disturbed: %v", merged)
+	}
+	if stored["access_key_id"] != "AKIAEXAMPLE" {
+		t.Error("MergeOptions mutated the stored options")
+	}
+
+	// And a secret that really was retyped is stored, placeholder or not being
+	// the only thing that separates the two cases.
+	merged, err = MergeOptions(KindS3, stored, map[string]string{
+		"secret_access_key": "  rotated-secret  ",
+	})
+	if err != nil {
+		t.Fatalf("MergeOptions: %v", err)
+	}
+	if merged["secret_access_key"] != "rotated-secret" {
+		t.Errorf("secret_access_key = %q, want the retyped value, trimmed", merged["secret_access_key"])
+	}
+}
+
+func TestMergeOptionsRefusesSettingsThatWouldNotConnect(t *testing.T) {
+	stored := map[string]string{"path": "/mnt/backup/sand"}
+
+	// A required field cleared is not an edit anything could be connected
+	// with, and the message names the field the way the form labels it.
+	if _, err := MergeOptions(KindLocal, stored, map[string]string{"path": "  "}); err == nil {
+		t.Error("clearing a required setting was accepted")
+	} else if !strings.Contains(err.Error(), "Directory") {
+		t.Errorf("error does not name the field: %v", err)
+	}
+
+	// A key the backend does not declare is a typo, not a setting: storing it
+	// would leave something in the config that nothing ever reads.
+	if _, err := MergeOptions(KindLocal, stored, map[string]string{"paht": "/tmp"}); err == nil {
+		t.Error("an undeclared setting was accepted")
+	}
+}
+
+// An optional setting cleared goes back to whatever a fresh connection would
+// have started it at, rather than to nothing.
+func TestMergeOptionsClearsBackToTheDefault(t *testing.T) {
+	stored := map[string]string{
+		"bucket":            "shards",
+		"access_key_id":     "AKIAEXAMPLE",
+		"secret_access_key": "s",
+		"region":            "eu-central-1",
+	}
+	merged, err := MergeOptions(KindS3, stored, map[string]string{"region": ""})
+	if err != nil {
+		t.Fatalf("MergeOptions: %v", err)
+	}
+
+	var fallback string
+	spec, _ := SpecFor(KindS3)
+	for _, f := range spec.Fields {
+		if f.Key == "region" {
+			fallback = f.Default
+		}
+	}
+	if merged["region"] != fallback {
+		t.Errorf("region = %q after clearing it, want the default %q", merged["region"], fallback)
+	}
+}
+
+func TestSameOptions(t *testing.T) {
+	if !SameOptions(map[string]string{"a": "1"}, map[string]string{"a": "1", "b": ""}) {
+		t.Error("a missing key and an empty one should read as the same absence")
+	}
+	if SameOptions(map[string]string{"a": "1"}, map[string]string{"a": "2"}) {
+		t.Error("two different values compared equal")
+	}
+	if SameOptions(map[string]string{"a": "1"}, map[string]string{"a": "1", "b": "2"}) {
+		t.Error("an added setting compared equal")
+	}
+}

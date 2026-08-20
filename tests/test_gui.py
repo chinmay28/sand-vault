@@ -426,12 +426,17 @@ class TestConnectingAnAccount:
 
 
 class TestEditingAnAccount:
-    """What a cloud is called, and the colour it wears.
+    """The two halves of the edit dialog.
 
-    The colour is the same shade on the account's card and on every shard badge
-    for a file it holds, which is what makes "which clouds is this file on" a
-    question you answer by eye. Both are stored in the vault, so both survive a
-    reload — and neither reaches the account itself.
+    One is what a cloud is called and the colour it wears. The colour is the
+    same shade on the account's card and on every shard badge for a file it
+    holds, which is what makes "which clouds is this file on" a question you
+    answer by eye. Both are stored in the vault, so both survive a reload — and
+    neither reaches the account itself.
+
+    The other is how the account connects, which does reach it: an edit there is
+    checked against the backend before it is stored, so an account cannot be
+    edited into one that no longer answers.
     """
 
     def open_editor(self, app, name):
@@ -540,6 +545,48 @@ class TestEditingAnAccount:
         app.wait_for_selector("text=already connected", timeout=20000)
         # The dialog stays open on the failed edit rather than closing over it.
         assert app.get_by_text("Edit account").count() > 0
+        app.keyboard.press("Escape")
+
+    def test_the_settings_it_connects_with_can_be_changed(self, app, clouds):
+        """The other half of the dialog: what the account actually reaches.
+
+        For a folder backend the setting is the folder, which stands in here for
+        the rotated access key or re-pasted token a cloud account needs — the
+        same edit, checked the same way. What makes it different from a rename
+        is that it reaches the backend: settings SAND cannot connect with are
+        refused rather than stored, and the account is left on the ones that
+        still work.
+        """
+        connect_cloud(app, "ui-rewired", clouds)
+        moved = clouds("ui-rewired-moved")
+
+        self.open_editor(app, "ui-rewired")
+        app.get_by_role("tab", name="How it connects").click()
+        app.wait_for_selector("text=Save and reconnect", timeout=20000)
+
+        # Somewhere no folder can be made: the edit is refused, the account
+        # stays on the folder it has, and the dialog says why rather than
+        # closing over it.
+        app.get_by_label("Directory *").fill("/proc/1/sand-cannot-go-here")
+        app.get_by_role("button", name="Save and reconnect").click()
+        app.wait_for_selector("text=do not reach", timeout=30000)
+        assert app.get_by_text("Edit account").count() > 0
+
+        # And one that can. Saving connects with it before storing it, so the
+        # dialog closing is the account really answering on the new setting.
+        app.get_by_label("Directory *").fill(moved)
+        app.get_by_role("button", name="Save and reconnect").click()
+        app.wait_for_selector("text=Edit account", state="detached", timeout=30000)
+
+        # Stored in the vault, so it survives a reload — and it is the same
+        # account throughout, not a second one beside it.
+        app.reload()
+        app.wait_for_selector("text=ui-rewired", timeout=20000)
+        assert app.get_by_text("ui-rewired", exact=True).count() == 1
+
+        self.open_editor(app, "ui-rewired")
+        app.get_by_role("tab", name="How it connects").click()
+        expect(app.get_by_label("Directory *")).to_have_value(moved)
         app.keyboard.press("Escape")
 
 

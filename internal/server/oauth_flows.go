@@ -31,6 +31,13 @@ type oauthFlow struct {
 	ClientSecret string
 	RedirectURI  string
 
+	// ProviderID is the connected account this sign-in is replacing the
+	// credentials of, when it is a reauthorization rather than a new
+	// connection. It is what the app credentials were read from at the start,
+	// and what the finish is checked against — a flow opened against one
+	// account may not be spent on another.
+	ProviderID string
+
 	// Session is the browser session that started the flow. The redirect
 	// itself arrives without a cookie — it is a cross-site navigation, and the
 	// session cookie is SameSite=Strict — so the state parameter is what

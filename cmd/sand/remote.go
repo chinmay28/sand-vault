@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"text/tabwriter"
 
@@ -184,14 +185,15 @@ func remoteEditCmd() *cobra.Command {
 		name     string
 		color    string
 		capacity string
+		settings []string
 	)
 
 	cmd := &cobra.Command{
 		Use:     "edit <name-or-id>",
 		Aliases: []string{"rename", "set"},
-		Short:   "Change an account's name, its colour, or the capacity you declare for it",
-		Long: `Change what a connected account is called, the colour it wears, or how big
-you say it is.
+		Short:   "Change an account's name, colour, declared capacity, or settings",
+		Long: `Change what a connected account is called, the colour it wears, how big
+you say it is, or how it reaches the backend.
 
 The colour is the stripe down the account's card in the browser and the shade
 of every part badge for a file it holds, which is what makes "which clouds is
@@ -211,13 +213,32 @@ with 'sand remote measure', which counts what is actually in there.
   sand remote edit b2-cold --capacity '10 GB'
   sand remote edit b2-cold --capacity none
 
-None of them touches the credentials or the parts on the account: nothing is
-uploaded, downloaded or re-encrypted by renaming a cloud.`,
+None of those three touches the credentials or the parts on the account:
+nothing is uploaded, downloaded or re-encrypted by renaming a cloud.
+
+--set is the exception, and is the one edit that reaches the account: it
+changes the settings the connection is made from — a rotated access key, a
+re-pasted refresh token, a moved bucket. Name them the way 'sand remote kinds'
+lists them, once per setting, and SAND connects with the result before storing
+it, so credentials the provider will not accept are refused rather than saved
+over the ones that still work.
+
+  sand remote edit s3-cold --set secret_access_key=...
+  sand remote edit s3-cold --set endpoint=https://s3.eu-central-003.backblazeb2.com
+  sand remote edit gdrive --set refresh_token=1//0g...
+
+Changing where an account stores parts — its bucket, prefix, folder or path —
+does not move the parts already there. SAND will look for them in the new place
+and not find them; run 'sand check --all' after such a change.
+
+For an account you sign in to, the browser's Edit dialog can put it through the
+provider's consent screen again instead, which is easier than finding a refresh
+token by hand.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !cmd.Flags().Changed("name") && !cmd.Flags().Changed("color") &&
-				!cmd.Flags().Changed("capacity") {
-				return fmt.Errorf("nothing to change — pass --name, --color, or --capacity")
+				!cmd.Flags().Changed("capacity") && !cmd.Flags().Changed("set") {
+				return fmt.Errorf("nothing to change — pass --name, --color, --capacity, or --set")
 			}
 
 			v, err := openVault(cmd)
@@ -257,8 +278,13 @@ uploaded, downloaded or re-encrypted by renaming a cloud.`,
 				}
 				edit.Capacity = &bytes
 			}
+			if len(settings) > 0 {
+				if edit.Options, err = parseSettings(settings); err != nil {
+					return err
+				}
+			}
 
-			updated, err := v.UpdateProvider(cfg.ID, edit)
+			updated, err := v.UpdateProvider(cmd.Context(), cfg.ID, edit)
 			if err != nil {
 				return err
 			}
@@ -272,6 +298,18 @@ uploaded, downloaded or re-encrypted by renaming a cloud.`,
 				held = "holds " + formatBytes(updated.Capacity)
 			}
 			fmt.Printf("%s (%s) — colour %s, %s\n", updated.Name, updated.Kind, shade, held)
+
+			// The settings by name only. Half of them are credentials, and a
+			// command that echoes a freshly pasted secret back onto the screen
+			// puts it in a scrollback and a shell history.
+			if len(edit.Options) > 0 {
+				keys := make([]string, 0, len(edit.Options))
+				for key := range edit.Options {
+					keys = append(keys, key)
+				}
+				sort.Strings(keys)
+				fmt.Printf("reconnected — new %s\n", strings.Join(keys, ", "))
+			}
 			return nil
 		},
 	}
@@ -280,7 +318,27 @@ uploaded, downloaded or re-encrypted by renaming a cloud.`,
 	cmd.Flags().StringVar(&color, "color", "", "hex colour such as '#38bdf8', or 'auto' to let the browser pick")
 	cmd.Flags().StringVar(&capacity, "capacity", "",
 		"how big this account is, for backends that do not report it — '10 GB', or 'none' to clear it")
+	cmd.Flags().StringArrayVar(&settings, "set", nil,
+		"a connection setting as key=value, repeatable — see 'sand remote kinds' for the keys")
 	return cmd
+}
+
+// parseSettings reads repeated --set key=value flags into an option map.
+//
+// An empty value is kept rather than skipped: --set folder_id= is how you clear
+// an optional setting back to the backend's default, and is a different thing
+// from not passing the flag at all.
+func parseSettings(pairs []string) (map[string]string, error) {
+	out := make(map[string]string, len(pairs))
+	for _, pair := range pairs {
+		key, value, ok := strings.Cut(pair, "=")
+		key = strings.TrimSpace(key)
+		if !ok || key == "" {
+			return nil, fmt.Errorf("--set %q is not a setting — write it as key=value", pair)
+		}
+		out[key] = value
+	}
+	return out, nil
 }
 
 // remoteMeasureCmd counts what is on an account that cannot say.

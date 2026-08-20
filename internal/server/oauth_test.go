@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -40,6 +41,31 @@ func (s stubBackend) Account(context.Context) (string, error) {
 // returns its kind. The registry is process-wide, so the kind is named for
 // tests and simply re-registered by each one that needs it.
 func registerStubBackend(t *testing.T, tokenURL string) provider.Kind {
+	kind, _ := registerStubBackendWatching(t, tokenURL)
+	return kind
+}
+
+// registerStubBackendWatching is the same, plus a record of every config the
+// backend has been built from. Credentials are redacted on their way out of the
+// vault, so what an account is really connected with is only visible here — at
+// the point something constructs a backend from it.
+func registerStubBackendWatching(t *testing.T, tokenURL string) (provider.Kind, *[]provider.Config) {
+	t.Helper()
+
+	var (
+		mu    sync.Mutex
+		built []provider.Config
+	)
+	kind := registerStubBackendFactory(t, tokenURL, func(cfg provider.Config) (provider.Provider, error) {
+		mu.Lock()
+		built = append(built, cfg)
+		mu.Unlock()
+		return stubBackend{cfg: cfg}, nil
+	})
+	return kind, &built
+}
+
+func registerStubBackendFactory(t *testing.T, tokenURL string, factory func(provider.Config) (provider.Provider, error)) provider.Kind {
 	t.Helper()
 
 	kind := provider.Kind("stub-signin")
@@ -65,9 +91,7 @@ func registerStubBackend(t *testing.T, tokenURL string) provider.Kind {
 			ClientIDEnv:       "SAND_STUB_CLIENT_ID",
 			ClientSecretEnv:   "SAND_STUB_CLIENT_SECRET",
 		},
-	}, func(cfg provider.Config) (provider.Provider, error) {
-		return stubBackend{cfg: cfg}, nil
-	})
+	}, factory)
 	return kind
 }
 
@@ -542,5 +566,177 @@ func TestProviderSpecsDescribeTheSignInFlow(t *testing.T) {
 	// No spec may leak the token endpoint or app credentials to the browser.
 	if strings.Contains(w.Body.String(), "token") && strings.Contains(w.Body.String(), "oauth2.googleapis.com") {
 		t.Error("provider specs exposed a token endpoint to the browser")
+	}
+}
+
+// rotatingTokenEndpoint hands out a different refresh token every time, so a
+// second sign-in against the same account is distinguishable from the first.
+func rotatingTokenEndpoint(t *testing.T) *httptest.Server {
+	t.Helper()
+
+	var mu sync.Mutex
+	issued := 0
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		issued++
+		n := issued
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"access_token":"at-%d","refresh_token":"rt-%d","expires_in":3600}`, n, n)
+	}))
+	t.Cleanup(stub.Close)
+	return stub
+}
+
+// Signing an account that is already connected back in.
+//
+// This is the way out of a revoked consent, a deleted OAuth client or a refresh
+// token that has simply expired — the states an account card reports as "cannot
+// reach Google Drive" and, before this, could only be answered by disconnecting
+// the account and forgetting every part it holds. The account keeps its ID, its
+// name and its parts; only what it reaches the backend with changes.
+func TestSignInAgainReplacesTheCredentialsOfAConnectedAccount(t *testing.T) {
+	tokenStub := rotatingTokenEndpoint(t)
+	kind, built := registerStubBackendWatching(t, tokenStub.URL)
+
+	c := newTestClient(t)
+	c.setup("correct horse battery staple", 0)
+
+	// Connected the ordinary way first, with an OAuth app of the user's own.
+	_, start := c.json(http.MethodPost, "/api/providers/oauth/start", map[string]any{
+		"kind":          kind,
+		"client_id":     "client-abc",
+		"client_secret": "secret-abc",
+	})
+	authURL, _ := start["auth_url"].(string)
+	c.redirect(url.Values{"code": {"first"}, "state": {stateFrom(t, authURL)}}.Encode())
+	_, created := c.json(http.MethodPost, "/api/providers/oauth/complete", map[string]any{
+		"flow_id": start["flow_id"],
+		"options": map[string]string{"folder": "shards"},
+	})
+	account := created["provider"].(map[string]any)
+	id := account["id"].(string)
+
+	// The second sign-in names the account rather than a backend, and supplies
+	// no app credentials at all: the ones it was connected through are in the
+	// vault, and the browser was never given the secret to hand back.
+	w, again := c.json(http.MethodPost, "/api/providers/oauth/start", map[string]any{
+		"provider_id": id,
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("start a reauthorization: %d %v", w.Code, again)
+	}
+	authURL, _ = again["auth_url"].(string)
+	if !strings.Contains(authURL, "client_id=client-abc") {
+		t.Errorf("the account's own OAuth app was not reused: %s", authURL)
+	}
+
+	flowID := again["flow_id"].(string)
+	c.redirect(url.Values{"code": {"second"}, "state": {stateFrom(t, authURL)}}.Encode())
+
+	_, ready := c.json(http.MethodGet, "/api/providers/oauth/"+flowID, nil)
+	if ready["status"] != "ready" {
+		t.Fatalf("status after the second redirect = %v", ready)
+	}
+	if ready["provider_id"] != id {
+		t.Errorf("the flow does not say which account it belongs to: %v", ready["provider_id"])
+	}
+
+	w, done := c.json(http.MethodPost, "/api/providers/oauth/reauthorize", map[string]any{
+		"flow_id":     flowID,
+		"provider_id": id,
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("reauthorize: %d %v", w.Code, done)
+	}
+
+	// Same account, not a second one beside it.
+	after := done["provider"].(map[string]any)
+	if after["id"] != id {
+		t.Errorf("reauthorizing produced a different account: %v", after["id"])
+	}
+	if after["name"] != account["name"] {
+		t.Errorf("the account was renamed by signing in again: %v", after["name"])
+	}
+	if after["options"].(map[string]any)["folder"] != "shards" {
+		t.Errorf("a setting that is not a credential was disturbed: %v", after["options"])
+	}
+	_, list := c.json(http.MethodGet, "/api/providers", nil)
+	if accounts := list["providers"].([]any); len(accounts) != 1 {
+		t.Errorf("connected accounts = %d, want the same one", len(accounts))
+	}
+
+	// And it is really holding the newer token. Credentials never leave the
+	// vault unredacted, so the only place to see this is the config the vault
+	// built the account's backend from.
+	if len(*built) == 0 {
+		t.Fatal("the account was never built")
+	}
+	latest := (*built)[len(*built)-1]
+	if latest.Option("refresh_token") != "rt-2" {
+		t.Errorf("the account is still on %q, want the token the second sign-in produced",
+			latest.Option("refresh_token"))
+	}
+
+	// The flow is spent, exactly as a completed connection's is.
+	if w, _ := c.json(http.MethodGet, "/api/providers/oauth/"+flowID, nil); w.Code != http.StatusNotFound {
+		t.Errorf("a spent reauthorization is still readable: %d", w.Code)
+	}
+}
+
+// A sign-in opened against one account may not be spent on another, and a
+// backend nobody signs in to cannot start one at all.
+func TestReauthorizeIsBoundToTheAccountItWasStartedFor(t *testing.T) {
+	tokenStub := rotatingTokenEndpoint(t)
+	kind := registerStubBackend(t, tokenStub.URL)
+
+	c := newTestClient(t)
+	c.setup("correct horse battery staple", 1)
+	folder := c.providerIDs()[0]
+
+	_, start := c.json(http.MethodPost, "/api/providers/oauth/start", map[string]any{
+		"kind":          kind,
+		"client_id":     "client-abc",
+		"client_secret": "secret-abc",
+	})
+	authURL, _ := start["auth_url"].(string)
+	c.redirect(url.Values{"code": {"first"}, "state": {stateFrom(t, authURL)}}.Encode())
+	_, created := c.json(http.MethodPost, "/api/providers/oauth/complete", map[string]any{
+		"flow_id": start["flow_id"],
+	})
+	signedIn := created["provider"].(map[string]any)["id"].(string)
+
+	// A local folder has no sign-in to start.
+	w, _ := c.json(http.MethodPost, "/api/providers/oauth/start", map[string]any{"provider_id": folder})
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("starting a sign-in for a folder backend: %d", w.Code)
+	}
+
+	// A flow opened for the signed-in account, then offered up against the
+	// folder next to it.
+	_, again := c.json(http.MethodPost, "/api/providers/oauth/start", map[string]any{"provider_id": signedIn})
+	authURL, _ = again["auth_url"].(string)
+	c.redirect(url.Values{"code": {"second"}, "state": {stateFrom(t, authURL)}}.Encode())
+
+	w, body := c.json(http.MethodPost, "/api/providers/oauth/reauthorize", map[string]any{
+		"flow_id":     again["flow_id"],
+		"provider_id": folder,
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("a flow was spent on the account it was not started for: %d %v", w.Code, body)
+	}
+	if body["error"] == nil {
+		t.Error("refused without saying why")
+	}
+
+	// An unfinished sign-in is not a set of credentials yet.
+	_, third := c.json(http.MethodPost, "/api/providers/oauth/start", map[string]any{"provider_id": signedIn})
+	w, _ = c.json(http.MethodPost, "/api/providers/oauth/reauthorize", map[string]any{
+		"flow_id":     third["flow_id"],
+		"provider_id": signedIn,
+	})
+	if w.Code != http.StatusConflict {
+		t.Errorf("reauthorizing from an unfinished sign-in: %d, want 409", w.Code)
 	}
 }

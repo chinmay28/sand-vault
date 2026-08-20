@@ -164,6 +164,13 @@ func (c Config) Option(key string) string {
 	return c.Options[key]
 }
 
+// RedactedSecret is what a secret option looks like once it has left the
+// vault. It is a value in its own right rather than a blank, because the
+// browser has to be able to tell "this account has a client secret" from "this
+// account has none" — and because an edit that sends it back means "leave the
+// one you have alone" (see MergeOptions).
+const RedactedSecret = "••••••••"
+
 // Redacted returns a copy of the config with every secret option replaced by a
 // fixed placeholder, safe to hand to the API layer.
 func (c Config) Redacted() Config {
@@ -172,12 +179,86 @@ func (c Config) Redacted() Config {
 	secrets := secretKeys(c.Kind)
 	for k, v := range c.Options {
 		if v != "" && secrets[k] {
-			out.Options[k] = "••••••••"
+			out.Options[k] = RedactedSecret
 			continue
 		}
 		out.Options[k] = v
 	}
 	return out
+}
+
+// MergeOptions folds a set of edited settings into the ones an account is
+// already connected with, and reports what the account would then be
+// configured as.
+//
+// Editing a live account's settings is not the same shape as filling in a
+// connect form, and the difference is entirely about secrets. The browser is
+// never sent a stored one — it gets RedactedSecret — so a form generated from
+// the account's current settings can only ever hand a secret back as either
+// something newly typed or the placeholder it was given. The placeholder means
+// "unchanged", and is the one value a real secret can never be.
+//
+// Everything else is taken at face value, including the empty string: clearing
+// an optional field is how somebody says "no folder, use the root", and it has
+// to be distinguishable from not mentioning the field at all. A key the backend
+// does not declare is refused rather than stored, so a typo cannot quietly
+// become a setting nothing reads.
+func MergeOptions(kind Kind, stored, edits map[string]string) (map[string]string, error) {
+	spec, ok := SpecFor(kind)
+	if !ok {
+		return nil, fmt.Errorf("unknown provider kind %q", kind)
+	}
+	fields := make(map[string]FieldSpec, len(spec.Fields))
+	for _, f := range spec.Fields {
+		fields[f.Key] = f
+	}
+
+	out := make(map[string]string, len(stored)+len(edits))
+	for k, v := range stored {
+		out[k] = v
+	}
+	for key, value := range edits {
+		field, known := fields[key]
+		if !known {
+			return nil, fmt.Errorf("%s has no setting called %q", spec.Label, key)
+		}
+		value = strings.TrimSpace(value)
+		if field.Secret && value == RedactedSecret {
+			continue
+		}
+		out[key] = value
+	}
+
+	// Defaults fill the blanks the same way they do on a fresh connection, so
+	// a field cleared back to empty comes back as whatever the backend would
+	// have started it at rather than as nothing.
+	for _, f := range spec.Fields {
+		if out[f.Key] == "" && f.Default != "" {
+			out[f.Key] = f.Default
+		}
+	}
+	for _, f := range spec.Fields {
+		if f.Required && strings.TrimSpace(out[f.Key]) == "" {
+			return nil, fmt.Errorf("%s cannot be left blank", f.Label)
+		}
+	}
+	return out, nil
+}
+
+// SameOptions reports whether two option sets say the same thing, treating a
+// missing key and an empty one as the same absence.
+func SameOptions(a, b map[string]string) bool {
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	for k, v := range b {
+		if a[k] != v {
+			return false
+		}
+	}
+	return true
 }
 
 // ObjectInfo describes a stored object.

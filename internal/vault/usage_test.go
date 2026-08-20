@@ -192,7 +192,7 @@ func TestUpdateProviderStoresTheDeclaredCapacity(t *testing.T) {
 	id := statuses[0].ID
 
 	capacity := int64(10 << 30)
-	if _, err := v.UpdateProvider(id, ProviderEdit{Capacity: &capacity}); err != nil {
+	if _, err := v.UpdateProvider(t.Context(), id, ProviderEdit{Capacity: &capacity}); err != nil {
 		t.Fatalf("UpdateProvider: %v", err)
 	}
 
@@ -212,7 +212,7 @@ func TestUpdateProviderStoresTheDeclaredCapacity(t *testing.T) {
 	}
 
 	cleared := int64(0)
-	if _, err := fresh.UpdateProvider(id, ProviderEdit{Capacity: &cleared}); err != nil {
+	if _, err := fresh.UpdateProvider(t.Context(), id, ProviderEdit{Capacity: &cleared}); err != nil {
 		t.Fatalf("clearing the capacity: %v", err)
 	}
 	if again, _ := fresh.ProviderStatuses(t.Context()); again[0].Capacity != 0 {
@@ -220,7 +220,7 @@ func TestUpdateProviderStoresTheDeclaredCapacity(t *testing.T) {
 	}
 
 	negative := int64(-1)
-	if _, err := fresh.UpdateProvider(id, ProviderEdit{Capacity: &negative}); err == nil {
+	if _, err := fresh.UpdateProvider(t.Context(), id, ProviderEdit{Capacity: &negative}); err == nil {
 		t.Error("an account was allowed to hold a negative number of bytes")
 	}
 }

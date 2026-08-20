@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react'
 import { COLORS, FONT, KIND_ICONS, accountColor, formatBytes } from '../theme'
 import { api } from '../api'
+import { pendingOAuthFlow } from '../oauth'
 import { Banner, Button, IconButton, Spinner } from './ui'
 import CloudStats, { UsageBar, UsageLine, usageBreakdown } from './CloudStats'
-import ConnectCloud, { pendingOAuthFlow } from './ConnectCloud'
+import ConnectCloud from './ConnectCloud'
 import EditAccount from './EditAccount'
 import { DisconnectIcon, EditIcon, StatsIcon, TestIcon } from './Icons'
 import MissingParts from './MissingParts'
@@ -160,8 +161,12 @@ export default function AccountsPanel({
   onClose, onRefresh, onChanged,
 }) {
   // A sign-in that took over the tab is still in flight when the app reloads:
-  // reopen the dialog on it rather than making the user start again.
-  const [connecting, setConnecting] = useState(() => Boolean(pendingOAuthFlow()))
+  // reopen the dialog on it rather than making the user start again. Which
+  // dialog depends on what the sign-in was for — a new account goes back to the
+  // connect one, and an account signing back in goes back to its own edit
+  // dialog, where the tokens replace the ones it already has.
+  const [pending] = useState(pendingOAuthFlow)
+  const [connecting, setConnecting] = useState(() => Boolean(pending && !pending.provider_id))
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [readsOpen, setReadsOpen] = useState(false)
   const [missingOpen, setMissingOpen] = useState(false)
@@ -284,6 +289,7 @@ export default function AccountsPanel({
             provider={provider}
             providers={providers}
             isDefault={defaults.includes(provider.id)}
+            resuming={pending?.provider_id === provider.id}
             onRemove={() => remove(provider)}
             onChanged={onChanged}
           />
@@ -500,10 +506,12 @@ function PendingMigration({ count, onDone, onError }) {
   )
 }
 
-function AccountCard({ provider, providers, isDefault, onRemove, onChanged }) {
+function AccountCard({ provider, providers, isDefault, resuming, onRemove, onChanged }) {
   const [testing, setTesting] = useState(false)
   const [result, setResult] = useState(null)
-  const [editing, setEditing] = useState(false)
+  // `resuming` is a sign-in this account started that took the whole tab over.
+  // The dialog reopens on the connection tab, which is where it left off.
+  const [editing, setEditing] = useState(Boolean(resuming))
   const [showing, setShowing] = useState(false)
   const color = accountColor(provider.id)
 
@@ -672,6 +680,7 @@ function AccountCard({ provider, providers, isDefault, onRemove, onChanged }) {
         <EditAccount
           provider={provider}
           providers={providers}
+          initialTab={resuming ? 'connection' : 'look'}
           onClose={() => setEditing(false)}
           onChanged={onChanged}
         />

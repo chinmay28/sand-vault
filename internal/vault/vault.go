@@ -825,20 +825,38 @@ type ProviderEdit struct {
 	// for backends with no quota call of their own. Zero clears it and the
 	// account goes back to reporting no capacity at all.
 	Capacity *int64
+
+	// Options is how the account reaches the backend: its keys, its secrets,
+	// the bucket or folder it writes into. Unlike the three fields above this
+	// one does touch the account — an edit here is verified against the
+	// backend before it is stored, and a set of credentials the provider will
+	// not accept is refused rather than saved.
+	//
+	// Only the keys present are considered, and a secret handed back as
+	// provider.RedactedSecret is left alone: the browser is never given a
+	// stored secret to send back. See provider.MergeOptions.
+	Options map[string]string
 }
 
-// UpdateProvider changes a connected account's label, its colour, or the
-// capacity its holder declares for it. None of the three touches the
-// credentials, the backend or the parts sitting on it: this is what the account
-// is called, what colour it wears and how big its owner says it is, and nothing
-// is uploaded, downloaded or re-encrypted by changing any of them.
+// UpdateProvider changes a connected account: what it is called, what colour
+// it wears, how big its holder says it is, and how it reaches the backend.
+//
+// The first three are yours alone. None of them touches the credentials, the
+// backend or the parts sitting on it — nothing is uploaded, downloaded or
+// re-encrypted by renaming an account or recolouring it.
+//
+// Settings are the exception, and are treated like a connection rather than
+// like a label: rotated keys, a re-pasted refresh token or a moved bucket are
+// built into a live backend and pinged before anything is written down, so an
+// account cannot be edited into one that no longer answers. What was there
+// before stays in place if the new settings do not work.
 //
 // A rename is carried across the index as well. Every shard records the name of
 // the account holding it — that is what the file list and the health read-out
 // show, and what a recovery from a manifest backup matches accounts on — so
 // leaving those behind would make the vault answer with a name that no longer
 // exists.
-func (v *Vault) UpdateProvider(id string, edit ProviderEdit) (provider.Config, error) {
+func (v *Vault) UpdateProvider(ctx context.Context, id string, edit ProviderEdit) (provider.Config, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
@@ -888,8 +906,62 @@ func (v *Vault) UpdateProvider(id string, edit ProviderEdit) (provider.Config, e
 		after.Capacity = *edit.Capacity
 	}
 
-	if after.Name == before.Name && after.Color == before.Color && after.Capacity == before.Capacity {
+	reconnected := false
+	if len(edit.Options) > 0 {
+		merged, err := provider.MergeOptions(before.Kind, before.Options, edit.Options)
+		if err != nil {
+			return provider.Config{}, err
+		}
+		if !provider.SameOptions(before.Options, merged) {
+			after.Options = merged
+			reconnected = true
+		}
+	}
+
+	if after.Name == before.Name && after.Color == before.Color &&
+		after.Capacity == before.Capacity && !reconnected {
 		return after.Redacted(), nil
+	}
+
+	// Settings that do not work are settings that never get stored. Built and
+	// pinged before a byte is written, exactly as a fresh connection is, so the
+	// dialog can say "that key is wrong" while the account is still reachable
+	// on the key it already had.
+	//
+	// Deliberately not built with newLiveProvider: that wires a backend's
+	// rotated credentials straight back into the vault, and these are
+	// credentials the vault has not agreed to yet. A ping that spends a
+	// one-shot refresh token — Box and Microsoft both retire theirs as they are
+	// used — would otherwise write the replacement onto the account while the
+	// edit that produced it was still on its way to being refused, leaving a
+	// working account holding half of a rejected one's credentials. Anything
+	// rotated here is collected instead, and folded in only if the ping
+	// succeeded and the edit is going through.
+	if reconnected {
+		candidate, err := provider.New(after)
+		if err != nil {
+			return provider.Config{}, err
+		}
+		rotated := map[string]string{}
+		var rotatedMu sync.Mutex
+		if rotator, ok := candidate.(provider.CredentialRotator); ok {
+			rotator.OnCredentialChange(func(updates map[string]string) {
+				rotatedMu.Lock()
+				defer rotatedMu.Unlock()
+				for key, value := range updates {
+					rotated[key] = value
+				}
+			})
+		}
+		if err := candidate.Ping(ctx); err != nil {
+			return provider.Config{}, fmt.Errorf("those settings do not reach %s: %w", after.Name, err)
+		}
+
+		rotatedMu.Lock()
+		for key, value := range rotated {
+			after.Options[key] = value
+		}
+		rotatedMu.Unlock()
 	}
 
 	v.providers[idx] = after
@@ -899,14 +971,72 @@ func (v *Vault) UpdateProvider(id string, edit ProviderEdit) (provider.Config, e
 
 	if err := v.persistLocked(); err != nil {
 		// Put the in-memory state back the way the file on disk still has it,
-		// index included, rather than leaving the two disagreeing.
+		// index included, rather than leaving the two disagreeing. The cached
+		// backend is left alone for the same reason: it is still the one the
+		// stored settings describe.
 		v.providers[idx] = before
 		if after.Name != before.Name {
 			v.renameShardsLocked(id, before.Name)
 		}
 		return provider.Config{}, err
 	}
+
+	// The old backend is holding the old credentials, and every read and write
+	// from here should use the new ones. Built again rather than reusing the
+	// one that was pinged, so the account that goes into the cache is the one
+	// wired to write its rotated credentials back.
+	if reconnected {
+		v.forgetProvider(id)
+		if live, err := v.newLiveProvider(after); err == nil {
+			v.liveMu.Lock()
+			v.live[id] = live
+			v.liveMu.Unlock()
+		}
+		// A build that fails here cannot happen — the same config was built a
+		// moment ago — and if it somehow did, an empty cache slot is the safe
+		// answer: the next call constructs one from what is now on disk.
+	}
 	return after.Redacted(), nil
+}
+
+// ProviderSignIn is what a reauthorization needs to know about the account it
+// is about to replace the credentials of: which backend it is, and which OAuth
+// app it was connected with.
+//
+// The app credentials are the point. Signing an account back in should reuse
+// the app it was connected through — the one whose redirect URI is already
+// registered — and the browser cannot supply the secret because it was never
+// given it. So the server reads it back out of the vault, uses it to drive the
+// exchange, and never puts it in a response.
+type ProviderSignIn struct {
+	Kind         provider.Kind
+	Name         string
+	ClientID     string
+	ClientSecret string
+}
+
+// ProviderSignIn reports the OAuth app one connected account signs in with.
+func (v *Vault) ProviderSignIn(id string) (ProviderSignIn, error) {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+
+	if v.dataKey == nil {
+		return ProviderSignIn{}, ErrLocked
+	}
+	cfg, ok := v.configForLocked(id)
+	if !ok {
+		return ProviderSignIn{}, fmt.Errorf("no connected account with id %s", id)
+	}
+	spec, ok := provider.SpecFor(cfg.Kind)
+	if !ok || spec.OAuth == nil {
+		return ProviderSignIn{}, fmt.Errorf("%s is not connected by signing in", cfg.Name)
+	}
+	return ProviderSignIn{
+		Kind:         cfg.Kind,
+		Name:         cfg.Name,
+		ClientID:     cfg.Option(spec.OAuth.ClientIDField),
+		ClientSecret: cfg.Option(spec.OAuth.ClientSecretField),
+	}, nil
 }
 
 // renameShardsLocked writes a new account name onto every shard held by that
