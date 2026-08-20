@@ -132,28 +132,46 @@ export const api = {
      paying for it again. */
   measureProvider: (id) =>
     request(`/api/providers/${encodeURIComponent(id)}/measure`, { method: 'POST' }),
-  /* What an account is called, what colour it wears, and how big its holder
-     says it is. Only the fields passed change — an absent one is left alone —
-     and none of them touches the credentials or the parts sitting on the
-     account: nothing is uploaded, downloaded or re-encrypted by renaming a
-     cloud. A color of '' hands the choice back to the browser, and a capacity
-     of '' is nobody declaring one. */
-  updateProvider: (id, { name, color, capacity } = {}) =>
+  /* What an account is called, what colour it wears, how big its holder says it
+     is, and how it reaches the backend. Only the fields passed change — an
+     absent one is left alone. A color of '' hands the choice back to the
+     browser, and a capacity of '' is nobody declaring one.
+
+     The first three never leave the process: nothing is uploaded, downloaded or
+     re-encrypted by renaming a cloud. `options` is the exception and the only
+     part of this that touches the account — rotated keys, a re-pasted token, a
+     moved bucket — so the server connects with them before storing them, and a
+     PATCH carrying them takes as long as a Test does and fails the same way.
+
+     Only the settings named are changed, and a secret handed back as the
+     placeholder the server showed means "keep the one you have": the browser is
+     never given a stored secret to send back. */
+  updateProvider: (id, { name, color, capacity, options } = {}) =>
     request(`/api/providers/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       body: {
         ...(name === undefined ? null : { name }),
         ...(color === undefined ? null : { color }),
         ...(capacity === undefined ? null : { capacity }),
+        ...(options === undefined ? null : { options }),
       },
     }),
 
   /* Browser sign-in. The server holds the tokens; all the app ever sees is
      where to send the user and how far along the flow is. */
-  oauthStart: (kind, { clientId = '', clientSecret = '', redirectUri = '' } = {}) =>
+  oauthStart: (kind, { clientId = '', clientSecret = '', redirectUri = '', providerId = '' } = {}) =>
     request('/api/providers/oauth/start', {
       method: 'POST',
-      body: { kind, client_id: clientId, client_secret: clientSecret, redirect_uri: redirectUri },
+      body: {
+        kind,
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: redirectUri,
+        // Naming an account makes this a reauthorization: the backend and the
+        // OAuth app both come from the account itself, which is the only way
+        // the app's secret can be reused — the browser was never given it.
+        provider_id: providerId,
+      },
     }),
   oauthStatus: (flowId) => request(`/api/providers/oauth/${encodeURIComponent(flowId)}`),
   oauthExchange: (flowId, url) =>
@@ -162,6 +180,14 @@ export const api = {
     request('/api/providers/oauth/complete', {
       method: 'POST',
       body: { flow_id: flowId, name, options },
+    }),
+  /* The same finished sign-in, spent on an account that is already connected.
+     New credentials under the same ID: the account keeps its name, its colour
+     and every part it holds, and the index goes on pointing at it. */
+  oauthReauthorize: (flowId, providerId) =>
+    request('/api/providers/oauth/reauthorize', {
+      method: 'POST',
+      body: { flow_id: flowId, provider_id: providerId },
     }),
   /* Folders on the machine SAND runs on, for the backends configured with a
      path. Answers with folder names only — the vault's own files are the other

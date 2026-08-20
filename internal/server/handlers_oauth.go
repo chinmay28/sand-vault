@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/chinmay28/sand-vault/internal/provider"
+	"github.com/chinmay28/sand-vault/internal/vault"
 )
 
 // oauthCallbackPath is where providers send the browser back to. It is part of
@@ -32,10 +33,34 @@ func (s *Server) handleOAuthStart(w http.ResponseWriter, r *http.Request) {
 		ClientID     string        `json:"client_id"`
 		ClientSecret string        `json:"client_secret"`
 		RedirectURI  string        `json:"redirect_uri"`
+
+		// ProviderID turns this into a reauthorization: an account that is
+		// already connected signing back in, rather than a new one being
+		// added. The kind comes from the account itself, and so do the app
+		// credentials unless this request overrides them.
+		ProviderID string `json:"provider_id"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
 		return
+	}
+
+	// Signing an existing account back in reuses the OAuth app it was
+	// connected through — the one whose redirect URI the provider already
+	// knows. The browser could not supply its secret in any case: it was never
+	// given one to hand back.
+	var existing vault.ProviderSignIn
+	if req.ProviderID != "" {
+		v, err := s.Vault()
+		if err != nil {
+			vaultErrorResponse(w, err)
+			return
+		}
+		if existing, err = v.ProviderSignIn(req.ProviderID); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
+			return
+		}
+		req.Kind = existing.Kind
 	}
 
 	spec, ok := provider.SpecFor(req.Kind)
@@ -50,8 +75,13 @@ func (s *Server) handleOAuthStart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// What the user typed wins over what the deployment was started with, so a
-	// second Google account with its own OAuth app is still possible.
+	// second Google account with its own OAuth app is still possible. An
+	// account signing back in sits between the two: its own app beats the
+	// environment's, and anything freshly typed still beats both.
 	clientID, clientSecret := spec.OAuth.EnvClient()
+	if existing.ClientID != "" {
+		clientID, clientSecret = existing.ClientID, existing.ClientSecret
+	}
 	if v := strings.TrimSpace(req.ClientID); v != "" {
 		clientID, clientSecret = v, strings.TrimSpace(req.ClientSecret)
 	}
@@ -87,6 +117,7 @@ func (s *Server) handleOAuthStart(w http.ResponseWriter, r *http.Request) {
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
 		RedirectURI:  redirectURI,
+		ProviderID:   req.ProviderID,
 		Session:      sessionToken(r),
 	})
 	if err != nil {
@@ -304,6 +335,12 @@ func (s *Server) writeOAuthStatus(w http.ResponseWriter, id string) {
 		"status":  status,
 		"account": flow.Account,
 	}
+	// A sign-in that took over the tab is picked back up from a crumb in the
+	// browser's own storage; saying which account it belongs to here means the
+	// crumb does not have to be trusted about that.
+	if flow.ProviderID != "" {
+		payload["provider_id"] = flow.ProviderID
+	}
 	if flow.Err != "" {
 		payload["error"] = flow.Err
 	}
@@ -367,6 +404,78 @@ func (s *Server) handleOAuthComplete(w http.ResponseWriter, r *http.Request) {
 
 	s.oauthFlows.drop(flow.ID)
 	writeJSON(w, http.StatusCreated, map[string]any{"provider": cfg})
+}
+
+// handleOAuthReauthorize spends a finished sign-in on an account that is
+// already connected, replacing the credentials it reaches the backend with.
+//
+// This is the way back from a revoked consent, a deleted OAuth client or an
+// expired refresh token — the states an account card reports as "cannot reach
+// Google Drive" and, until now, could only be answered by disconnecting the
+// account and forgetting every part it holds. Nothing else about the account
+// moves: same ID, same name, same colour, same parts, and the index goes on
+// pointing at it.
+//
+// The account keeps whatever the sign-in did not produce. A settings field like
+// a folder is not a credential and is left exactly where it was.
+func (s *Server) handleOAuthReauthorize(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		FlowID     string `json:"flow_id"`
+		ProviderID string `json:"provider_id"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
+		return
+	}
+
+	flow, ok := s.oauthFlows.byID(req.FlowID)
+	if !ok || !sameSecret(flow.Session, sessionToken(r)) {
+		writeError(w, http.StatusNotFound, "that sign-in is no longer in progress", "NOT_FOUND")
+		return
+	}
+	if !flow.Done || flow.Err != "" {
+		writeError(w, http.StatusConflict, "that sign-in has not finished", "OAUTH_PENDING")
+		return
+	}
+	// A flow opened against one account may not be spent on another: the app
+	// credentials it was started with came out of that account, and the tokens
+	// it produced belong to it.
+	if flow.ProviderID != "" && flow.ProviderID != req.ProviderID {
+		writeError(w, http.StatusBadRequest,
+			"that sign-in was started for a different account", "BAD_REQUEST")
+		return
+	}
+
+	v, err := s.Vault()
+	if err != nil {
+		vaultErrorResponse(w, err)
+		return
+	}
+	// Signing a Dropbox account in with Google would store credentials nothing
+	// on the account can use, so the backend has to be the same one.
+	account, err := v.ProviderSignIn(req.ProviderID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
+		return
+	}
+	if account.Kind != flow.Kind {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf(
+			"%s is a %s account — that sign-in was with %s", account.Name, account.Kind, flow.Kind),
+			"BAD_REQUEST")
+		return
+	}
+
+	ctx, cancel := contextWithTimeout(r, 60*time.Second)
+	defer cancel()
+
+	cfg, err := v.UpdateProvider(ctx, req.ProviderID, vault.ProviderEdit{Options: flow.Options})
+	if err != nil {
+		vaultErrorResponse(w, err)
+		return
+	}
+
+	s.oauthFlows.drop(flow.ID)
+	writeJSON(w, http.StatusOK, map[string]any{"provider": cfg})
 }
 
 // suggestAccountName names a connection after the account it points at, and

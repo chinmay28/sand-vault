@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/chinmay28/sand-vault/internal/archive"
 	"github.com/chinmay28/sand-vault/internal/provider"
@@ -690,7 +691,7 @@ func TestUpdateProviderRenamesAndRecolours(t *testing.T) {
 	held := entry.Shards[0].ProviderID
 
 	name, colour := "the blue one", "#38BDF8"
-	updated, err := v.UpdateProvider(held, ProviderEdit{Name: &name, Color: &colour})
+	updated, err := v.UpdateProvider(t.Context(), held, ProviderEdit{Name: &name, Color: &colour})
 	if err != nil {
 		t.Fatalf("UpdateProvider: %v", err)
 	}
@@ -751,19 +752,19 @@ func TestUpdateProviderRejectsNonsense(t *testing.T) {
 	first, second := accounts[0], accounts[1]
 
 	blank := "   "
-	if _, err := v.UpdateProvider(first.ID, ProviderEdit{Name: &blank}); err == nil {
+	if _, err := v.UpdateProvider(t.Context(), first.ID, ProviderEdit{Name: &blank}); err == nil {
 		t.Error("a blank name should be refused")
 	}
 
 	// Two accounts answering to one name is what the connect path already
 	// refuses; renaming must not be the way around it.
 	taken := strings.ToUpper(second.Name)
-	if _, err := v.UpdateProvider(first.ID, ProviderEdit{Name: &taken}); err == nil {
+	if _, err := v.UpdateProvider(t.Context(), first.ID, ProviderEdit{Name: &taken}); err == nil {
 		t.Error("a name another account already answers to should be refused")
 	}
 
 	notAColour := "cerulean"
-	if _, err := v.UpdateProvider(first.ID, ProviderEdit{Name: &notAColour, Color: &notAColour}); err == nil {
+	if _, err := v.UpdateProvider(t.Context(), first.ID, ProviderEdit{Name: &notAColour, Color: &notAColour}); err == nil {
 		t.Error("a colour that is not a colour should be refused")
 	}
 	// Refused whole: the name in that same call must not have landed either.
@@ -777,18 +778,18 @@ func TestUpdateProviderRejectsNonsense(t *testing.T) {
 
 	// An account keeping its own name is not a clash with itself.
 	same := first.Name
-	if _, err := v.UpdateProvider(first.ID, ProviderEdit{Name: &same}); err != nil {
+	if _, err := v.UpdateProvider(t.Context(), first.ID, ProviderEdit{Name: &same}); err != nil {
 		t.Errorf("renaming an account to what it is already called: %v", err)
 	}
 
 	// And "" is a colour choice — the one that hands the pick back to the
 	// browser — rather than an invalid one.
 	auto := ""
-	if _, err := v.UpdateProvider(first.ID, ProviderEdit{Color: &auto}); err != nil {
+	if _, err := v.UpdateProvider(t.Context(), first.ID, ProviderEdit{Color: &auto}); err != nil {
 		t.Errorf("clearing a colour: %v", err)
 	}
 
-	if _, err := v.UpdateProvider("no-such-account", ProviderEdit{Name: &same}); err == nil {
+	if _, err := v.UpdateProvider(t.Context(), "no-such-account", ProviderEdit{Name: &same}); err == nil {
 		t.Error("editing an account that is not connected should be refused")
 	}
 }
@@ -800,12 +801,12 @@ func TestUpdateProviderLeavesTheOtherFieldAlone(t *testing.T) {
 	id, original := accounts[0].ID, accounts[0].Name
 
 	colour := "#abc"
-	if _, err := v.UpdateProvider(id, ProviderEdit{Color: &colour}); err != nil {
+	if _, err := v.UpdateProvider(t.Context(), id, ProviderEdit{Color: &colour}); err != nil {
 		t.Fatalf("UpdateProvider: %v", err)
 	}
 
 	renamed := "still coloured"
-	updated, err := v.UpdateProvider(id, ProviderEdit{Name: &renamed})
+	updated, err := v.UpdateProvider(t.Context(), id, ProviderEdit{Name: &renamed})
 	if err != nil {
 		t.Fatalf("UpdateProvider: %v", err)
 	}
@@ -816,5 +817,137 @@ func TestUpdateProviderLeavesTheOtherFieldAlone(t *testing.T) {
 	}
 	if updated.Name != renamed || original == renamed {
 		t.Errorf("Name = %q, want %q", updated.Name, renamed)
+	}
+}
+
+// rotatingBackend stands in for the clouds that retire a credential as it is
+// spent — Box and Microsoft both do — and does it on the one call an edit makes
+// before it is stored. It fails the ping on request, so the two cases that
+// matter can be told apart: a set of settings that works, and one that does not
+// but has already burnt a token on the way to being refused.
+type rotatingBackend struct {
+	cfg    provider.Config
+	notify func(map[string]string)
+}
+
+func (b *rotatingBackend) Config() provider.Config { return b.cfg }
+func (b *rotatingBackend) Put(context.Context, string, []byte) error {
+	return nil
+}
+func (b *rotatingBackend) Get(context.Context, string) ([]byte, error) {
+	return nil, provider.ErrNotFound
+}
+func (b *rotatingBackend) Stat(context.Context, string) (provider.ObjectInfo, error) {
+	return provider.ObjectInfo{}, provider.ErrNotFound
+}
+func (b *rotatingBackend) Delete(context.Context, string) error { return nil }
+func (b *rotatingBackend) List(context.Context, string) ([]provider.ObjectInfo, error) {
+	return nil, nil
+}
+func (b *rotatingBackend) OnCredentialChange(fn func(map[string]string)) { b.notify = fn }
+
+func (b *rotatingBackend) Ping(context.Context) error {
+	if b.notify != nil {
+		b.notify(map[string]string{"token": "rotated-by-" + b.cfg.Options["token"]})
+	}
+	if b.cfg.Options["refuse"] == "yes" {
+		return errors.New("the provider says no")
+	}
+	return nil
+}
+
+func registerRotatingBackend(t *testing.T) provider.Kind {
+	t.Helper()
+
+	kind := provider.Kind("rotating-on-ping")
+	provider.Register(provider.Spec{
+		Kind:        kind,
+		Label:       "Rotating Cloud",
+		Description: "A backend that retires its token as it is spent.",
+		Fields: []provider.FieldSpec{
+			{Key: "token", Label: "Token", Secret: true, Required: true},
+			{Key: "refuse", Label: "Refuse the ping"},
+		},
+	}, func(cfg provider.Config) (provider.Provider, error) {
+		return &rotatingBackend{cfg: cfg}, nil
+	})
+	return kind
+}
+
+// storedOption reads what an account is really connected with, past the
+// redaction every other route applies.
+func storedOption(t *testing.T, v *Vault, id, key string) string {
+	t.Helper()
+
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	cfg, ok := v.configForLocked(id)
+	if !ok {
+		t.Fatalf("no account %s", id)
+	}
+	return cfg.Options[key]
+}
+
+// A settings edit is checked against the backend before it is stored, and the
+// check itself can cost a credential. Whichever way it goes, the account must
+// end up holding one coherent set: the new settings if the ping worked, and the
+// ones it already had if it did not.
+func TestUpdateProviderDoesNotStrandACredentialSpentOnARefusedEdit(t *testing.T) {
+	v, _ := newTestVault(t, 1)
+	kind := registerRotatingBackend(t)
+	ctx := context.Background()
+
+	cfg, err := v.AddProvider(ctx, provider.Config{
+		Kind:    kind,
+		Name:    "rotating",
+		Options: map[string]string{"token": "first"},
+	})
+	if err != nil {
+		t.Fatalf("AddProvider: %v", err)
+	}
+
+	// Connecting spends a token too, and that replacement is written back — a
+	// live account rotating its own credentials is the mechanism working. Let
+	// it settle, and take what it settles on as what the account is working on.
+	working := ""
+	for i := 0; i < 100 && working != "rotated-by-first"; i++ {
+		working = storedOption(t, v, cfg.ID, "token")
+		time.Sleep(5 * time.Millisecond)
+	}
+	if working != "rotated-by-first" {
+		t.Fatalf("connecting did not store the token it rotated: %q", working)
+	}
+
+	// Settings the backend refuses — after its ping has already retired the
+	// token it was handed. Nothing about that may reach the stored account: it
+	// is still working on the credentials it has, and half of a rejected edit
+	// would break it.
+	refused := map[string]string{"token": "second", "refuse": "yes"}
+	if _, err := v.UpdateProvider(ctx, cfg.ID, ProviderEdit{Options: refused}); err == nil {
+		t.Fatal("a backend that refused the ping was stored anyway")
+	}
+
+	// The write that would have done the damage is asynchronous in the shape
+	// this guards against, so give it every chance to happen before saying it
+	// did not.
+	for i := 0; i < 20; i++ {
+		if got := storedOption(t, v, cfg.ID, "token"); got != working {
+			t.Fatalf("token = %q after a refused edit, want %q — the one it was working on",
+				got, working)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := storedOption(t, v, cfg.ID, "refuse"); got != "" {
+		t.Errorf("refuse = %q — a refused edit's settings were stored", got)
+	}
+
+	// And the other half: an edit that works keeps what the check rotated,
+	// rather than storing a token the backend has already retired.
+	accepted := map[string]string{"token": "third"}
+	if _, err := v.UpdateProvider(ctx, cfg.ID, ProviderEdit{Options: accepted}); err != nil {
+		t.Fatalf("UpdateProvider: %v", err)
+	}
+	if got := storedOption(t, v, cfg.ID, "token"); got != "rotated-by-third" {
+		t.Errorf("token = %q, want the one the check left behind", got)
 	}
 }

@@ -261,7 +261,12 @@ func (s *Server) Handler() (http.Handler, error) {
 		"POST /api/providers/oauth/start":    s.handleOAuthStart,
 		"POST /api/providers/oauth/exchange": s.handleOAuthExchange,
 		"POST /api/providers/oauth/complete": s.handleOAuthComplete,
-		"GET /api/providers/oauth/{id}":      s.handleOAuthStatus,
+		// The same finished sign-in, spent on an account that is already
+		// connected: new credentials for the same ID, the same name and the
+		// same parts. What answers a revoked consent or a deleted OAuth client
+		// without disconnecting the account.
+		"POST /api/providers/oauth/reauthorize": s.handleOAuthReauthorize,
+		"GET /api/providers/oauth/{id}":         s.handleOAuthStatus,
 
 		// The vaults inside the vault. Creating, opening and closing one all
 		// sit behind the session, so a sub vault's password is always a second

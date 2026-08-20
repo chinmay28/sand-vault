@@ -101,19 +101,27 @@ func (s *Server) handleProviderAdd(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"provider": cfg})
 }
 
-// editProviderRequest carries the fields of a connected account the edit menu
-// can change. All three are pointers so that an absent field means "leave it
-// alone" and a present empty one means something: "" is a colour cleared back
-// to the automatic one, "" is a capacity nobody is declaring any more, and a
-// name that is blank is a mistake the vault rejects.
+// editProviderRequest carries the fields of a connected account the edit dialog
+// can change. The first three are pointers so that an absent field means "leave
+// it alone" and a present empty one means something: "" is a colour cleared
+// back to the automatic one, "" is a capacity nobody is declaring any more, and
+// a name that is blank is a mistake the vault rejects.
 //
 // Capacity arrives as text rather than a number because it is typed rather than
 // picked — "10 GB" is what somebody reads off a bucket's console, and the form
 // should not make them count the zeroes.
+//
+// Options is the account's own settings — keys, secrets, the bucket or folder
+// it writes into. It is a partial map for the same reason the rest are
+// pointers: the dialog sends the fields somebody touched, and a secret it hands
+// back unchanged arrives as the placeholder it was shown rather than as a real
+// one. Editing these is the one PATCH that reaches the backend, since settings
+// SAND cannot connect with are settings it should refuse to store.
 type editProviderRequest struct {
-	Name     *string `json:"name"`
-	Color    *string `json:"color"`
-	Capacity *string `json:"capacity"`
+	Name     *string           `json:"name"`
+	Color    *string           `json:"color"`
+	Capacity *string           `json:"capacity"`
+	Options  map[string]string `json:"options"`
 }
 
 func (s *Server) handleProviderUpdate(w http.ResponseWriter, r *http.Request) {
@@ -123,7 +131,7 @@ func (s *Server) handleProviderUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	edit := vault.ProviderEdit{Name: req.Name, Color: req.Color}
+	edit := vault.ProviderEdit{Name: req.Name, Color: req.Color, Options: req.Options}
 	if req.Capacity != nil {
 		bytes, err := provider.ParseCapacity(*req.Capacity)
 		if err != nil {
@@ -133,8 +141,13 @@ func (s *Server) handleProviderUpdate(w http.ResponseWriter, r *http.Request) {
 		edit.Capacity = &bytes
 	}
 
+	// Long enough for the ping a settings change costs, and unused by an edit
+	// that only renames or recolours: that one never leaves the process.
+	ctx, cancel := contextWithTimeout(r, 60*time.Second)
+	defer cancel()
+
 	v, _ := s.Vault()
-	cfg, err := v.UpdateProvider(r.PathValue("id"), edit)
+	cfg, err := v.UpdateProvider(ctx, r.PathValue("id"), edit)
 	if err != nil {
 		vaultErrorResponse(w, err)
 		return

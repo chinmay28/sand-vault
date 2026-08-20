@@ -347,6 +347,54 @@ Two accounts may not share a name, whether it is set at connect time or later.
 
 ---
 
+## Repairing an account that has stopped answering
+
+Credentials do not last forever. An access key gets rotated, a refresh token
+expires, somebody deletes the OAuth client in a developer console, or a consent
+screen gets revoked from the account's security settings. The card goes red and
+says so — *cannot reach Google Drive: the OAuth client was deleted* — and until
+recently the only way out was **Disconnect**, which forgets every part that
+account is holding and hands you a new account with a new ID.
+
+**Edit → How it connects** is the way that does not cost you the account. It is
+the second tab of the same dialog, and the difference between the two halves is
+worth stating plainly: the first tab is yours alone and never reaches the cloud,
+this one is the connection itself.
+
+- **Sign in again** — for the clouds you sign in to, one button. It sends you
+  back through the provider's consent screen and replaces the tokens SAND holds
+  with the new ones. The OAuth app the account was connected through is reused,
+  including its client secret, which is read from the vault rather than asked
+  for — the browser has never been given it. If that app is itself gone, this is
+  where a new client ID goes in.
+- **The settings themselves** — the same generated form the connect dialog uses,
+  filled in from what the account is currently connected with. A rotated
+  `secret_access_key`, a moved bucket, a re-pasted refresh token. Secret fields
+  start empty and read *unchanged*, because a stored secret is never sent to the
+  browser: a box left alone keeps the credential it has, and only a box you type
+  into becomes a new one.
+
+Whatever you change is connected with before it is stored. SAND builds the
+account on the new settings and pings it, and a set of credentials the provider
+will not accept is refused — the account is left on whatever it had, which may
+be broken but is at least the truth. Everything else about it survives: same ID,
+same name, same colour, same parts, same rows in the index.
+
+```bash
+./sand remote edit s3-cold --set secret_access_key=…   # a rotated key
+./sand remote edit gdrive --set refresh_token=1//0g…   # a re-pasted token
+./sand remote edit s3-cold --set endpoint=https://…    # a bucket that moved
+./sand remote edit s3-cold --set prefix=              # back to the default
+```
+
+> Pointing an account somewhere else — another bucket, another folder, another
+> account entirely — does not carry the parts already on it across. SAND will
+> look in the new place and not find them. Run `sand check --all` after any change
+> to where an account writes, and treat *sign in again* and *change the folder* as
+> two quite different things: the first keeps the parts, the second may not.
+
+---
+
 ## Placement Policy
 
 Where parts go is a security decision: any two parts plus the key rebuild the
@@ -905,7 +953,8 @@ sand remote kinds                             List backends and their settings
 sand remote add <kind> --name N --set k=v …   Connect an account (pings first)
 sand remote list                              Status, parts held, bytes stored, room left, colour
 sand remote edit <name-or-id> [--name N] [--color '#38bdf8'|auto] [--capacity '10 GB'|none]
-                                              Rename it, recolour it, or say how big it is
+                              [--set k=v …]   Rename it, recolour it, say how big it is,
+                                              or change what it connects with
 sand remote test <name-or-id>                 Re-check reachability
 sand remote measure <name-or-id>              Count what is on it, for backends that cannot say
 sand remote remove <name-or-id> [--force]     Disconnect
@@ -913,9 +962,18 @@ sand remote remove <name-or-id> [--force]     Disconnect
 
 `sand remote edit` changes what an account is called, the colour it wears in the
 browser, and — for the backends that report no quota — how big you say it is.
-None of them reaches the cloud: no credential is touched and not one part moves.
-See [Naming an account and choosing its
+None of those three reaches the cloud: no credential is touched and not one part
+moves. See [Naming an account and choosing its
 colour](#naming-an-account-and-choosing-its-colour).
+
+`--set` is the exception, and the way to repair an account whose credentials
+have stopped working: it changes the settings the connection is made from, and
+SAND connects with the result before storing it, so keys the provider will not
+accept are refused rather than saved over the ones that still work. For an
+account you sign in to, the browser's **Edit → How it connects** can put it
+through the provider's consent screen again instead of asking you to find a
+refresh token by hand. See [Repairing an account that has stopped
+answering](#repairing-an-account-that-has-stopped-answering).
 
 `sand remote measure` is the other half of that, and the one call here that does
 reach the cloud: a bucket reports no quota and no total, so what is in it has to
@@ -1067,8 +1125,12 @@ pipe the password on stdin.
   looks there first and offers to widen to the whole vault
 - **Part badges** — `①②③` coloured per account; click for a live per-part
   health read-out
-- **Edit an account** — rename a cloud, or pick the colour it wears everywhere
-  in the app; neither touches its credentials or the parts on it
+- **Edit an account** — two tabs. *How it looks* renames a cloud, picks the
+  colour it wears everywhere in the app, and declares how big it is; none of
+  that touches its credentials or the parts on it. *How it connects* is the
+  other kind of edit — rotated keys, a moved bucket, or a one-button trip back
+  through the provider's consent screen — and repairs an account that has gone
+  red without disconnecting it and forgetting its parts
 - **Thumbnails** — images and PDFs show a picture rather than an icon, the PDF's
   being its first page. Made in the browser when the file is uploaded, then
   stored the way everything else is: split into three encrypted parts across
@@ -1360,7 +1422,10 @@ report which half.
 | GET | `/api/providers/specs` | Backend descriptions for the connect form |
 | GET · POST | `/api/providers` | List / connect accounts |
 | POST | `/api/providers/{id}/test` | Re-check an account |
-| PATCH | `/api/providers/{id}` | Rename it / set its colour (`name`, `color`; `""` for automatic) |
+| PATCH | `/api/providers/{id}` | Rename it / set its colour / declare its capacity (`name`, `color` — `""` for automatic — `capacity`), or change what it connects with (`options`, which is pinged before it is stored) |
+| POST | `/api/providers/oauth/start` | Begin a sign-in (`kind`), or a reauthorization of one already connected (`provider_id`) |
+| POST | `/api/providers/oauth/complete` | Turn a finished sign-in into a new account |
+| POST | `/api/providers/oauth/reauthorize` | Spend a finished sign-in on an account already connected: new credentials, same ID and parts |
 | DELETE | `/api/providers/{id}` | Disconnect (`?force=1`) |
 | GET | `/api/files?path=` | List a folder |
 | GET | `/api/search?q=` | Find files and folders by name (`&path=` to scope, `&type=file\|folder`, `&limit=`) |
@@ -1781,7 +1846,10 @@ sand/
 ├── web/src/                     # React file browser
 │   ├── api.js  theme.js  App.jsx
 │   ├── navigation.js  view.js   # the trail of folders walked; view + sort prefs
+│   ├── oauth.js                 # the browser's half of a sign-in, shared by the
+│   │                            #   connect dialog and the edit one
 │   └── components/              # LockScreen, AccountsPanel, ConnectCloud,
+│                                #   EditAccount, SpecFields,
 │                                #   FileBrowser, Toolbar, FileEntry, BulkActions,
 │                                #   MoveToFolder, Rename, FolderArt, PreviewModal,
 │                                #   PdfPreview, FilmDetails,

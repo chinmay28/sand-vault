@@ -124,7 +124,7 @@ under the **vault key**, derived from your password with Argon2id.
 | `data_key` | 32 random bytes | The key files are actually encrypted with |
 | `retired_keys` | Earlier data keys, while a password change is still re-encrypting (§3.3) | They open parts that have not moved yet |
 | `providers` | Account configs **including credentials** | A stolen vault file must not yield cloud access |
-| `manifest` | Filenames, folders, sizes, part placement, film details (§3.10) | Filenames and folder structure are themselves sensitive |
+| `manifest` | Filenames, folders, sizes, part placement, film details (§3.11) | Filenames and folder structure are themselves sensitive |
 | `settings` | The preferences that are secrets — today the film database key | It is a credential for a third-party service; absent entirely until one is set, and never copied into a manifest backup |
 | `sub_vaults[].section` | One sub vault's whole index (§3.8) | Sealed under **its own** password — the vault key does not open it |
 
@@ -238,7 +238,7 @@ Credentials are excluded deliberately. A copy of this file sits in every
 account, so including them would make one compromised account a master key to
 all the others. The film database key is excluded for the same reason and is
 not part of the manifest at all — it lives in the vault file's own `settings`
-section (§3.10). Film *details* do travel, because they are index: recovering
+section (§3.11). Film *details* do travel, because they are index: recovering
 from a backup gives back every title and asks for the key again.
 
 **What it costs.** Every copy is a password away from the data key, so a single
@@ -384,9 +384,9 @@ the same read lock a listing takes:
 `provider.Config` carries two fields the backend has no opinion about: `Name`,
 the label an account answers to, and `Color`, the shade it wears in the browser
 — the card's stripe, every part badge for a file it holds, and its row in the
-cloud picker. `Vault.UpdateProvider` is the only writer of either, and it is the
-one write against an account that never opens a connection to it: no credential
-changes, no object is read or written, and no part moves.
+cloud picker. `Vault.UpdateProvider` is the only writer of either, and editing
+them is the one write against an account that never opens a connection to it: no
+credential changes, no object is read or written, and no part moves.
 
 Two properties are worth stating.
 
@@ -406,11 +406,51 @@ accounts to the connected ones on kind and name. So the rename and the shards
 it touches are one write under one lock: the config, the index, and the vault
 file all move together or none of them do.
 
+### 3.10 Settings are the other kind of edit, and they do reach the account
+
+`ProviderEdit.Options` is the fourth thing `Vault.UpdateProvider` can change,
+and the one that breaks the promise the other three keep: it is what the account
+connects with — keys, secrets, the bucket or folder it writes into — so an edit
+here is checked against the backend before it is stored. The merged config is
+built into a live provider and pinged, and only a ping that succeeds gets as far
+as `persistLocked`; a failed one leaves the account on whatever it had. The
+cached live provider is then replaced, so the next read or write uses the new
+credentials rather than the ones in memory.
+
+This is what repairs an account whose credentials have expired. Without it the
+only cure for a revoked consent or a rotated access key was `RemoveProvider`
+followed by `AddProvider`, which is a new ID — and an ID change orphans every
+shard in the index that names the old one.
+
+**A secret is merged, not replaced wholesale.** `Config.Redacted` substitutes
+`provider.RedactedSecret` for every secret option on its way to the API layer,
+so the browser has never held a real one and cannot send one back.
+`provider.MergeOptions` reads that placeholder as *unchanged* and keeps the
+stored value; anything else is taken at face value, the empty string included,
+since clearing an optional setting is a real edit. Keys the backend does not
+declare are refused rather than stored, and required fields left blank are
+refused before anything is built.
+
+**Signing back in is the same write.** `POST /api/providers/oauth/reauthorize`
+spends a finished sign-in on an account that already exists: the same flow
+machinery as `complete`, ending in `UpdateProvider` with the exchanged
+credentials instead of `AddProvider`. Two guards make it safe to point at an
+existing account — a flow started with a `provider_id` may only be spent on that
+account, and the flow's kind must match the account's, so a Dropbox sign-in
+cannot be written over a Google Drive account. The app credentials come from the
+account's own config (`Vault.ProviderSignIn`), which is the only way the client
+secret can be reused: it has never left the vault.
+
+**Settings are not a move.** Nothing here relocates a part. An account pointed
+at a different bucket or folder keeps every row in the index that names it, and
+those rows now point at objects that are not there — which is a health-report
+problem, not a silent one, but it is the caller's to notice.
+
 Names stay unique, case-insensitively, whether they are set by `AddProvider` or
 changed here — two accounts answering to one name would make `--accounts a,b,c`
 and every CLI lookup ambiguous.
 
-### 3.10 Film details are index state too, and the one request that leaves
+### 3.11 Film details are index state too, and the one request that leaves
 
 A video file's name is a poor description of the film in it, so a folder can be
 told that its videos are films and matched against The Movie Database — the
@@ -472,7 +512,7 @@ records the query it was matched on, why a match can be corrected against a
 candidate list, and why a corrected match is marked `Manual` and never
 overwritten.
 
-### 3.11 A folder's picture is a pointer, and only ever a chosen one
+### 3.12 A folder's picture is a pointer, and only ever a chosen one
 
 A folder can be drawn with a picture of something inside it, and the way that is
 done is by not storing anything: `FolderArt` is the **ID of a file that already
@@ -500,7 +540,7 @@ folders that contains it, walking up from the file rather than down from the
 folder so that a film three levels deep still counts for the library above it.
 
 The stored half is the third map keyed by folder rather than by file — the other
-two are the thumbnail packs (§4.3) and the film-lookup settings (§3.10) — so it
+two are the thumbnail packs (§4.3) and the film-lookup settings (§3.11) — so it
 is rekeyed by `moveFolder` alongside them, and dropped when the folder or the
 file it names goes away. A choice outliving its file would be a folder pointing
 at nothing; instead the folder goes quietly back to its icon.
@@ -516,7 +556,7 @@ cheaper bargain in both directions.
 
 ---
 
-### 3.12 Organizing a folder: one read, then the writes that already existed
+### 3.13 Organizing a folder: one read, then the writes that already existed
 
 The organizer (`🗂`) does four things to a folder and everything under it —
 flatten it, remove the folders holding nothing, erase every file of a kind,
@@ -573,7 +613,7 @@ both are rewrites of the encrypted index — a folder of four hundred films
 flattens as fast as a rename. Deleting is the exception it always was, and both
 delete-shaped tools end in the same confirmation the delete button uses.
 
-### 3.13 The files that went out short, and the way back to whole
+### 3.14 The files that went out short, and the way back to whole
 
 An upload commits on two of three parts (§4.1). A cloud that is not answering at
 that moment therefore costs a file its spare shard and nothing else: the upload
@@ -1162,7 +1202,7 @@ anywhere to be copied. So `planFileRelocation` takes the rebuild branch whenever
 `entry.Redundancy() < entry.Scheme().Total`, even when the code asked for is the
 code the file already has, and marks the row `repair` so the estimate can say
 which of the two reasons applies. It is the only way a missing shard is ever put
-back, and it is what the browser's list of short files (§3.13) sends each row
+back, and it is what the browser's list of short files (§3.14) sends each row
 through. A file below its threshold cannot be gathered at all and fails as one
 file, reported and skipped, with the rest of the relocation carrying on.
 
@@ -1220,7 +1260,7 @@ a path in the index, so either one rewrites every entry beneath it — at any
 depth — in a single index write, with an in-memory rollback if that write fails. A loop over `Move`
 would have left a window where half a tree answered to its old name and half to
 its new one. Two maps keyed by folder come along in the same write: the
-thumbnail packs (§4.3) and the film-lookup settings (§3.10). Neither carries its
+thumbnail packs (§4.3) and the film-lookup settings (§3.11). Neither carries its
 folder's name inside it, so both travel for the price of rekeying a map, with no
 network work at all — which is exactly what a folder relocation cannot do, and
 why that one pays a gather and a scatter instead.
@@ -1682,8 +1722,9 @@ reveals only whether a vault exists.
 | GET | `/api/providers/oauth/{id}` | How far along a sign-in is |
 | POST | `/api/providers/oauth/exchange` | Finish a sign-in from a pasted redirect URL |
 | POST | `/api/providers/oauth/complete` | Turn a finished sign-in into an account |
+| POST | `/api/providers/oauth/reauthorize` | Spend a finished sign-in on an account already connected: new credentials, same ID, same parts (§3.10) |
 | POST | `/api/providers/{id}/test` | Re-check one account |
-| PATCH | `/api/providers/{id}` | Rename it / set its colour / declare its capacity — index only, the backend is never contacted (§3.9) |
+| PATCH | `/api/providers/{id}` | Rename it / set its colour / declare its capacity — index only, the backend is never contacted (§3.9). Also its `options`, which is the one field here that does reach the backend: it is pinged with the new settings before they are stored (§3.10) |
 | DELETE | `/api/providers/{id}` | Disconnect (`?force=1` to override the guard) |
 | GET | `/api/files?path=` | List a folder (`&vault=` for a sub vault; absent is the main one) |
 | GET | `/api/search?q=` | Find files and folders by name (`&path=` scopes to a subtree, `&vault=`, `&type=file\|folder`, `&limit=`) |
@@ -1694,19 +1735,19 @@ reveals only whether a vault exists.
 | POST | `/api/files/{id}/convert` | Move one out of it (§4.5) |
 | POST | `/api/files/{id}/stream` | Mint a stream ticket for one file (§9.5) |
 | GET | `/stream/{token}/{name}` | Play it — public, ranged; the token is the credential |
-| GET | `/api/degraded?offset=&limit=` | The files missing at least one shard, worst first and paged — what `Stats.Degraded` counts, as a list (§3.13). Read out of the index; no account is contacted |
+| GET | `/api/degraded?offset=&limit=` | The files missing at least one shard, worst first and paged — what `Stats.Degraded` counts, as a list (§3.14). Read out of the index; no account is contacted |
 | GET | `/api/files/{id}/health` | Per-part reachability, without downloading |
 | POST | `/api/files/{id}/move` | Rename or move into another folder (index only, §5.6) |
 | DELETE | `/api/files/{id}` | Erase every part, drop the entry |
 | GET | `/api/folders` | Every folder in the vault, root first — the whole tree in one answer, for a destination picker |
-| GET | `/api/folders/survey?path=` | Everything under a folder in one walk of the index: every file with its kind and depth, every folder with what it holds. Read-only — the organizer plans from it and then runs the move/delete endpoints per item (§3.12) |
-| GET | `/api/folders/art?path=` | Which file's thumbnail a folder is drawn with, if any, and every file under it that could be (§3.11) |
+| GET | `/api/folders/survey?path=` | Everything under a folder in one walk of the index: every file with its kind and depth, every folder with what it holds. Read-only — the organizer plans from it and then runs the move/delete endpoints per item (§3.13) |
+| GET | `/api/folders/art?path=` | Which file's thumbnail a folder is drawn with, if any, and every file under it that could be (§3.12) |
 | POST | `/api/folders/art` | Give it a picture (`path`, `id`), or take it away again with an empty `id` |
 | POST | `/api/folders` | Create a folder |
 | POST | `/api/folders/move` | Move a folder `from` one path `to` another, with everything under it (§5.6) |
 | DELETE | `/api/folders?path=&recursive=` | Delete a folder |
 | POST | `/api/relocate` | Move a file (`id`) or a folder (`path`) onto other `accounts` (§5.6); a different *count* of accounts changes the scheme and rebuilds the file; `"preview": true` prices it out of the index and moves nothing |
-| GET | `/api/movies` | Whether a film database key is stored, and which folders are opted in (§3.10) |
+| GET | `/api/movies` | Whether a film database key is stored, and which folders are opted in (§3.11) |
 | POST | `/api/movies/key` | Store the key — checked against the database before it is kept; `""` clears it |
 | POST | `/api/movies/lookup` | Turn film lookup on or off for a `path` and everything beneath it |
 | POST | `/api/movies/scan` | Match every unmatched video under a `path` (`"refresh": true` redoes the matched ones) |
@@ -1890,7 +1931,7 @@ The same endpoints back the API (`POST /api/archive`, `POST /api/restore`).
 | **Stored HTML/SVG executing in the app** | Risky types forced to `attachment`, `X-Content-Type-Options: nosniff`, restrictive CSP |
 | **Plaintext cached by a proxy** | `Cache-Control: private, no-store` on rebuilt content |
 | **Walking away from the machine** | Idle timeout re-locks the vault |
-| **A film database learning your library** | Off until a folder is opted in by name; one lookup per film, carrying a title guessed from the file name and nothing else about the file; the answer is stored so it is never asked twice (§3.10) |
+| **A film database learning your library** | Off until a folder is opted in by name; one lookup per film, carrying a title guessed from the file name and nothing else about the file; the answer is stored so it is never asked twice (§3.11) |
 | **Metadata leaking to a provider** | Object keys derived only from a random ID; filenames, hashes and sizes sealed inside the part since format v2 |
 | **Third-party tracking** | The UI loads no external fonts, scripts or styles — opening the vault makes zero third-party requests |
 
@@ -1915,7 +1956,7 @@ The same endpoints back the API (`POST /api/archive`, `POST /api/restore`).
 - **A film database knowing what it was asked.** Sealing the answer into the
   index is not the same as the question never having been asked: TMDB sees a
   title guessed from a file name, and the machine's address, once per film, for
-  the folders that were opted in (§3.10). Nothing about the file goes with it,
+  the folders that were opted in (§3.11). Nothing about the file goes with it,
   and nothing goes at all for a folder that never asked — but the request is a
   real disclosure and no amount of encryption at rest changes that.
 
@@ -1948,7 +1989,7 @@ sand/
 │   ├── sandfile/              # binary .sand part format
 │   ├── provider/              # provider.go, local, s3, webdav, gdrive, dropbox
 │   ├── movie/                 # file name → film, and the film database client;
-│   │                          #   the only package that speaks to a third party (§3.10)
+│   │                          #   the only package that speaks to a third party (§3.11)
 │   ├── vault/                 # store (encrypted file), manifest, placement, transfer,
 │   │                          #   relocate (moving parts between accounts), rekey,
 │   │                          #   backup (writing the index out), recovery (reading it
@@ -1959,7 +2000,10 @@ sand/
 │   ├── api.js  theme.js  App.jsx
 │   ├── navigation.js          # the trail walked — vault and path per step
 │   ├── view.js                # list or grid, sort key and direction (persisted)
+│   ├── oauth.js               # the browser's half of a sign-in, shared by the
+│   │                          #   connect dialog and the edit one
 │   └── components/            # LockScreen, AccountsPanel, FileBrowser, Toolbar,
+│                              #   ConnectCloud, EditAccount, SpecFields,
 │                              #   FileEntry (rows + tiles), BulkActions,
 │                              #   MoveToFolder, Rename, FolderArt, PreviewModal,
 │                              #   SubVaults, ImportVault,

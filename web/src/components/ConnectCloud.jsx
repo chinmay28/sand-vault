@@ -1,8 +1,11 @@
-import React, { useEffect, useId, useMemo, useRef, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { COLORS, FONT, KIND_ICONS } from '../theme'
 import { api } from '../api'
+import {
+  callbackURL, forgetFlow, openAuthWindow, pendingOAuthFlow, rememberFlow, useSignInResult,
+} from '../oauth'
 import { Banner, Button, CopyField, Input, Modal, PasswordInput, Spinner } from './ui'
-import DirectoryPicker from './DirectoryPicker'
+import SpecFields from './SpecFields'
 import CloudCatalog from './CloudCatalog'
 
 /* Connecting an account, without leaving the app.
@@ -10,37 +13,12 @@ import CloudCatalog from './CloudCatalog'
    Backends that speak OAuth are connected by signing in: SAND opens the
    provider's own consent page, the provider redirects back to this server, and
    the tokens are exchanged and stored server-side. The browser never handles a
-   credential — it only ever learns how far along the flow is.
+   credential — it only ever learns how far along the flow is. The mechanics of
+   that live in ../oauth.js, shared with the edit dialog, where the same sign-in
+   replaces the credentials of an account already connected.
 
    Everything else is still a form, generated from the backend's field specs,
    with presets for the services people actually name. */
-
-const PENDING_FLOW_KEY = 'sand.oauth.flow'
-
-/* A sign-in that took over the tab instead of opening a window leaves the app
-   entirely; this is the crumb that lets it pick the flow back up on return. */
-export function pendingOAuthFlow() {
-  try {
-    const raw = window.sessionStorage.getItem(PENDING_FLOW_KEY)
-    return raw ? JSON.parse(raw) : null
-  } catch {
-    return null
-  }
-}
-
-function rememberFlow(flow) {
-  try {
-    window.sessionStorage.setItem(PENDING_FLOW_KEY, JSON.stringify(flow))
-  } catch { /* private mode: the popup path still works */ }
-}
-
-function forgetFlow() {
-  try {
-    window.sessionStorage.removeItem(PENDING_FLOW_KEY)
-  } catch { /* nothing to clean up */ }
-}
-
-const callbackURL = () => `${window.location.origin}/api/providers/oauth/callback`
 
 export default function ConnectCloud({ onClose, onConnected }) {
   const [specs, setSpecs] = useState([])
@@ -66,7 +44,6 @@ export default function ConnectCloud({ onClose, onConnected }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
 
-  const popup = useRef(null)
   const spec = useMemo(() => specs.find((s) => s.kind === kind), [specs, kind])
 
   useEffect(() => {
@@ -75,10 +52,12 @@ export default function ConnectCloud({ onClose, onConnected }) {
       .catch((err) => setError(err.message))
   }, [])
 
-  /* A sign-in that was still running when the app was last unloaded. */
+  /* A sign-in that was still running when the app was last unloaded. One
+     belonging to an account that is already connected is not this dialog's —
+     the sidebar reopens that one in the account's edit dialog. */
   useEffect(() => {
     const pending = pendingOAuthFlow()
-    if (!pending || !specs.length || flow) return
+    if (!pending || pending.provider_id || !specs.length || flow) return
     setKind(pending.kind)
     setFlow(pending)
     setMode('signin')
@@ -127,18 +106,6 @@ export default function ConnectCloud({ onClose, onConnected }) {
 
   /* --- the sign-in itself ------------------------------------------------ */
 
-  const openAuthWindow = (authURL) => {
-    const win = window.open(authURL, 'sand-oauth', 'width=560,height=700')
-    if (!win || win.closed || typeof win.closed === 'undefined') {
-      // Blocked, or a phone browser that has no windows to speak of: give the
-      // whole tab over. The flow is remembered, so returning resumes it.
-      window.location.href = authURL
-      return
-    }
-    popup.current = win
-    win.focus?.()
-  }
-
   const beginSignIn = async () => {
     setBusy(true)
     setError(null)
@@ -160,57 +127,21 @@ export default function ConnectCloud({ onClose, onConnected }) {
     }
   }
 
-  /* While the provider's window is open, ask the server how it went. The
-     window posts a message back too, which just makes the next poll happen
-     immediately. */
-  useEffect(() => {
-    if (mode !== 'signin' || step !== 'waiting' || !flow?.id) return
-    let stopped = false
-
-    const check = async () => {
-      try {
-        const resp = await api.oauthStatus(flow.id)
-        if (stopped) return
-        if (resp.status === 'ready') {
-          forgetFlow()
-          setAccount(resp.account || '')
-          setName(resp.suggested_name || '')
-          setStep('ready')
-        } else if (resp.status === 'error') {
-          forgetFlow()
-          setError(resp.error || 'the provider refused the sign-in')
-          setStep('client')
-        }
-      } catch (err) {
-        if (stopped) return
-        // A flow the server has forgotten is not coming back, and neither is
-        // one whose vault locked underneath it. Either way, stop spinning.
-        if (err.status === 404) {
-          forgetFlow()
-          setError('That sign-in expired. Start it again.')
-          setStep('client')
-        } else if (err.status === 401) {
-          forgetFlow()
-          setError('The vault locked while you were signing in. Unlock it and start again.')
-          setStep('client')
-        }
-      }
-    }
-
-    check()
-    const timer = window.setInterval(check, 2000)
-    const onMessage = (event) => {
-      if (event.origin !== window.location.origin) return
-      if (event.data && event.data.source === 'sand-oauth') check()
-    }
-    window.addEventListener('message', onMessage)
-
-    return () => {
-      stopped = true
-      window.clearInterval(timer)
-      window.removeEventListener('message', onMessage)
-    }
-  }, [mode, step, flow])
+  /* While the provider's window is open, wait for the server to say how it
+     went. */
+  useSignInResult({
+    flowId: flow?.id,
+    active: mode === 'signin' && step === 'waiting',
+    onReady: (resp) => {
+      setAccount(resp.account || '')
+      setName(resp.suggested_name || '')
+      setStep('ready')
+    },
+    onFailed: (message) => {
+      setError(message)
+      setStep('client')
+    },
+  })
 
   const submitPasted = async () => {
     setBusy(true)
@@ -680,76 +611,6 @@ function SignInWaiting({ spec, flow, pasted, setPasted, showPaste, setShowPaste,
       <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
         <Button type="button" variant="ghost" onClick={onCancel}>Cancel</Button>
       </div>
-    </>
-  )
-}
-
-/* The generated part of a connect form. */
-function SpecFields({ fields, values, onChange }) {
-  return fields.map((field) => {
-    if (field.directory) {
-      return (
-        <DirectoryField
-          key={field.key}
-          field={field}
-          value={values[field.key] || ''}
-          onChange={(value) => onChange(field.key, value)}
-        />
-      )
-    }
-
-    const Control = field.secret ? PasswordInput : Input
-    return (
-      <Control
-        key={field.key}
-        label={field.label + (field.required ? ' *' : '')}
-        help={field.help}
-        placeholder={field.placeholder}
-        value={values[field.key] || ''}
-        onChange={(e) => onChange(field.key, e.target.value)}
-      />
-    )
-  })
-}
-
-/* A folder on the machine SAND runs on. Still a text field — a path pasted
-   from somewhere else is the fastest way in when you have one — with a browse
-   button for when you do not, which is most of the time on a phone. */
-function DirectoryField({ field, value, onChange }) {
-  const [picking, setPicking] = useState(false)
-
-  return (
-    <>
-      <Input
-        label={field.label + (field.required ? ' *' : '')}
-        help={field.help}
-        placeholder={field.placeholder}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        style={{ paddingRight: '74px' }}
-        trailing={
-          <button
-            type="button"
-            onClick={() => setPicking(true)}
-            style={{
-              position: 'absolute', top: 0, bottom: 0, right: '4px',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              width: '66px', background: 'none', border: 'none',
-              color: COLORS.accent, cursor: 'pointer',
-              fontFamily: FONT.mono, fontSize: '10px', letterSpacing: '1px', padding: 0,
-            }}
-          >BROWSE…</button>
-        }
-      />
-
-      {picking && (
-        <DirectoryPicker
-          value={value}
-          title={`Choose the ${field.label.toLowerCase()}`}
-          onPick={(path) => { onChange(path); setPicking(false) }}
-          onClose={() => setPicking(false)}
-        />
-      )}
     </>
   )
 }
