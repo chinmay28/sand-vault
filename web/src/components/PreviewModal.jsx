@@ -100,6 +100,11 @@ export default function PreviewModal({ file, hasThumb, film, onClose, onThumbSto
 
   const parts = storedParts(file.shards)
   const accounts = new Set(file.shards.map((s) => s.provider_id)).size
+  /* How many of those parts the rebuild actually needs. The count of parts and
+     the count of clouds both say how far the file is spread; neither says how
+     much of that spread has to answer for the file to come back, which is the
+     number that decides whether it is still readable. */
+  const needed = fileScheme(file).data
 
   /* A file uploaded before thumbnails existed — or from the command line —
      has no picture in the list. Opening it has just rebuilt and decoded the
@@ -134,8 +139,8 @@ export default function PreviewModal({ file, hasThumb, film, onClose, onThumbSto
       subtitle={[
         film ? file.name : null,
         mobile
-          ? `${formatBytes(file.size)} · ${parts} part${parts === 1 ? '' : 's'} · ${accounts} cloud${accounts === 1 ? '' : 's'}`
-          : `${formatBytes(file.size)} · ${schemeName(fileScheme(file))}, rebuilt from ${parts} shard${parts === 1 ? '' : 's'} across ${accounts} account(s)`,
+          ? `${formatBytes(file.size)} · ${parts} part${parts === 1 ? '' : 's'} · ${accounts} cloud${accounts === 1 ? '' : 's'} · any ${needed} rebuild it`
+          : `${formatBytes(file.size)} · ${schemeName(fileScheme(file))} — ${parts} shard${parts === 1 ? '' : 's'} across ${accounts} account${accounts === 1 ? '' : 's'}, any ${needed} of them rebuild it`,
       ].filter(Boolean).join(' · ')}
       onClose={onClose}
       width={920}
