@@ -41,11 +41,21 @@ type automationRequest struct {
 	Cadence string `json:"cadence"`
 	At      string `json:"at,omitempty"`
 	Weekday int    `json:"weekday,omitempty"`
-	Action  string `json:"action"`
 
+	// Task is which job the policy does. Empty is the storage one, which is
+	// what a client written before there was a choice sends.
+	Task   string `json:"task,omitempty"`
+	Action string `json:"action"`
+
+	// The knobs of each task. Only the ones belonging to the chosen task are
+	// read; the vault drops the rest.
 	Narrow       bool  `json:"narrow,omitempty"`
 	MaxRepairs   int   `json:"max_repairs,omitempty"`
 	RebuildLimit int64 `json:"rebuild_limit,omitempty"`
+
+	MaxRepos  int   `json:"max_repos,omitempty"`
+	SizeLimit int64 `json:"size_limit,omitempty"`
+	Prune     bool  `json:"prune,omitempty"`
 }
 
 // handleAutomationList answers with every policy the vault can currently see,
@@ -95,16 +105,28 @@ func (s *Server) handleAutomationSet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	v, _ := s.Vault()
-	auto, err := v.SetAutomation(vault.Scope(req.Vault), req.Path, vault.Automation{
-		Enabled:      req.Enabled,
-		Cadence:      vault.Cadence(req.Cadence),
-		At:           req.At,
-		Weekday:      time.Weekday(req.Weekday),
-		Action:       vault.AutomationAction(req.Action),
+	policy := vault.Automation{
+		Enabled: req.Enabled,
+		Cadence: vault.Cadence(req.Cadence),
+		At:      req.At,
+		Weekday: time.Weekday(req.Weekday),
+		Task:    vault.AutomationTask(req.Task),
+		Action:  vault.AutomationAction(req.Action),
+	}
+	// Both sets are filled in and the vault keeps the one its task reads. That
+	// is one place deciding which knobs belong to which job rather than two.
+	policy.Shards = &vault.ShardPolicy{
 		Narrow:       req.Narrow,
 		MaxRepairs:   req.MaxRepairs,
 		RebuildLimit: req.RebuildLimit,
-	})
+	}
+	policy.Git = &vault.GitPolicy{
+		MaxRepos:  req.MaxRepos,
+		SizeLimit: req.SizeLimit,
+		Prune:     req.Prune,
+	}
+
+	auto, err := v.SetAutomation(vault.Scope(req.Vault), req.Path, policy)
 	if err != nil {
 		vaultErrorResponse(w, err)
 		return
@@ -227,18 +249,51 @@ func logAutomationRun(run *vault.AutomationRun) {
 	if run.Vault != "" {
 		where = string(run.Vault) + ":" + where
 	}
-	switch {
-	case run.Error != "":
+	if run.Error != "" {
 		log.Printf("automation %s: %s", where, run.Error)
+		return
+	}
+
+	switch {
+	case run.Git != nil && run.Clean():
+		log.Printf("automation %s: %d repositor%s checked, %d up to date, %d updated",
+			where, run.Git.Checked, plural(run.Git.Checked, "y", "ies"),
+			run.Git.Current, run.Git.Updated)
+	case run.Git != nil:
+		log.Printf("automation %s: %d checked, %d up to date, %d updated, "+
+			"%d upstream gone, %d failed, %d left for later%s",
+			where, run.Git.Checked, run.Git.Current, run.Git.Updated,
+			run.Git.Gone, run.Git.Failed, run.Git.Deferred, offlineSuffix(run.Offline))
 	case run.Clean():
 		log.Printf("automation %s: %d file(s) checked, every part where it should be",
-			where, run.Checked)
+			where, shardCount(run))
 	default:
+		res := run.Shards
+		if res == nil {
+			res = &vault.ShardResult{}
+		}
 		log.Printf("automation %s: %d checked, %d short, %d past repairing, "+
 			"%d rebuilt, %d left for later%s",
-			where, run.Checked, run.Short, run.AtRisk, run.Repaired, run.Deferred,
+			where, res.Checked, res.Short, res.AtRisk, res.Repaired, res.Deferred,
 			offlineSuffix(run.Offline))
 	}
+}
+
+// shardCount is how many files a storage run looked at, for a run that may be
+// of another task entirely.
+func shardCount(run *vault.AutomationRun) int {
+	if run.Shards == nil {
+		return 0
+	}
+	return run.Shards.Checked
+}
+
+// plural picks the ending for a count, so a log line reads as English.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 // offlineSuffix names the accounts that did not answer, when any did not.

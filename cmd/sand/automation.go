@@ -82,10 +82,14 @@ func automationSetCmd() *cobra.Command {
 		hourly       bool
 		daily        string
 		weekly       string
+		task         string
 		action       string
 		narrow       bool
 		maxRepairs   int
 		rebuildLimit string
+		maxRepos     int
+		sizeLimit    string
+		prune        bool
 		disabled     bool
 	)
 
@@ -98,30 +102,36 @@ Exactly one of --hourly, --daily or --weekly says how often. --daily and
 --weekly take a wall-clock time in the local timezone of the machine running
 the server, and --weekly takes a day in front of it.
 
---action check looks and writes down what it found, moving nothing. --action
-rebalance also puts back what is missing, by rebuilding the files that came back
-short onto the clouds that answered.
+--task says which job. "shards" is the storage one: every cloud asked whether
+it is there, and every part of every file checked against the index that says
+where it went. "git" is the mirror one: every repository stored under the folder
+asked whether its upstream has moved (see "sand git").
+
+--action check looks and writes down what it found, changing nothing, and means
+that for either task. The fixing half is named after the work: --action
+rebalance rebuilds the files that came back short onto the clouds that answered,
+and --action pull fetches the repositories whose upstream has moved.
 
 A rebuild gathers the whole file into memory before it cuts it again, so an
 unattended one is capped: files larger than --rebuild-limit are counted, named,
 and left for you to repair by hand where you can watch it. --max-repairs bounds
 how many files one run will rebuild at all; what is left over is picked up by
-the next run, worst first.
+the next run, worst first. --max-repos and --size-limit are the same two bounds
+for the mirror task.
 
 Editing a policy keeps its history and its last-run time, so changing the hour
 does not make the folder immediately due.
 
   sand automation set /archive --daily 10:00 --action rebalance
   sand automation set /films --weekly sun,03:00 --action check
-  sand automation set /taxes --daily 02:00 --action rebalance --rebuild-limit 8G`,
+  sand automation set /taxes --daily 02:00 --action rebalance --rebuild-limit 8G
+  sand automation set /code --weekly sun,04:00 --task git --action pull`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			policy := vault.Automation{
 				Enabled: !disabled,
+				Task:    vault.AutomationTask(strings.TrimSpace(task)),
 				Action:  vault.AutomationAction(strings.TrimSpace(action)),
-				Narrow:  narrow,
-
-				MaxRepairs: maxRepairs,
 			}
 
 			named := 0
@@ -147,11 +157,26 @@ does not make the folder immediately due.
 				return fmt.Errorf("say how often with exactly one of --hourly, --daily or --weekly")
 			}
 
-			limit, err := parseRebuildLimit(rebuildLimit)
+			rebuild, err := parseSizeLimit(rebuildLimit, "--rebuild-limit")
 			if err != nil {
 				return err
 			}
-			policy.RebuildLimit = limit
+			bundle, err := parseSizeLimit(sizeLimit, "--size-limit")
+			if err != nil {
+				return err
+			}
+			// Both are filled in and the vault keeps whichever its task reads,
+			// so there is one place deciding which knobs belong to which job.
+			policy.Shards = &vault.ShardPolicy{
+				Narrow:       narrow,
+				MaxRepairs:   maxRepairs,
+				RebuildLimit: rebuild,
+			}
+			policy.Git = &vault.GitPolicy{
+				MaxRepos:  maxRepos,
+				SizeLimit: bundle,
+				Prune:     prune,
+			}
 
 			v, scope, err := openVaultIn(cmd)
 			if err != nil {
@@ -172,8 +197,10 @@ does not make the folder immediately due.
 	cmd.Flags().StringVar(&daily, "daily", "", "check every day at this local time, as HH:MM")
 	cmd.Flags().StringVar(&weekly, "weekly", "",
 		"check weekly, as day,HH:MM — for example sun,03:00")
+	cmd.Flags().StringVar(&task, "task", string(vault.TaskShards),
+		"which job: shards (parts of files) or git (mirrored repositories)")
 	cmd.Flags().StringVar(&action, "action", string(vault.ActionCheck),
-		"what to do about what it finds: check, or rebalance")
+		"what to do about what it finds: check, rebalance (shards) or pull (git)")
 	cmd.Flags().BoolVar(&narrow, "narrow", false,
 		"allow a repair to cut a file with a smaller code when there are not enough clouds "+
 			"answering to keep its own (off by default: narrowing cannot be undone without "+
@@ -183,6 +210,14 @@ does not make the folder immediately due.
 	cmd.Flags().StringVar(&rebuildLimit, "rebuild-limit", "",
 		"largest file an unattended repair will rebuild, such as 2G — 'none' for no ceiling "+
 			"(default 1G)")
+	cmd.Flags().IntVar(&maxRepos, "max-repos", 0,
+		"how many repositories one run may fetch, 0 for no bound (git)")
+	cmd.Flags().StringVar(&sizeLimit, "size-limit", "",
+		"largest stored bundle an unattended refresh will fetch, such as 4G — 'none' for no "+
+			"ceiling (default 2G, git)")
+	cmd.Flags().BoolVar(&prune, "prune", false,
+		"delete a stored repository whose upstream has gone (off by default: an outage and a "+
+			"deletion look the same from here, and the copy may be the last one)")
 	cmd.Flags().BoolVar(&disabled, "disabled", false,
 		"store the policy but do not run it on its schedule")
 	return cmd
@@ -237,8 +272,13 @@ a folder, there is no reason to check it again in an hour.`,
 			if run.Error != "" {
 				return fmt.Errorf("%s", run.Error)
 			}
-			if run.AtRisk > 0 {
-				return fmt.Errorf("%d file(s) cannot be rebuilt from what is reachable", run.AtRisk)
+			if run.Shards != nil && run.Shards.AtRisk > 0 {
+				return fmt.Errorf("%d file(s) cannot be rebuilt from what is reachable",
+					run.Shards.AtRisk)
+			}
+			if run.Git != nil && run.Git.Failed > 0 {
+				return fmt.Errorf("%d repositor%s could not be brought up to date",
+					run.Git.Failed, plural(run.Git.Failed, "y", "ies"))
 			}
 			return nil
 		},
@@ -256,15 +296,27 @@ func printAutomation(p vault.FolderAutomation) {
 		state = "off"
 	}
 
-	fmt.Printf("%-30s %-16s %-10s %s\n", where, describeCadence(p.Automation), p.Action, state)
+	fmt.Printf("%-30s %-16s %-6s %-10s %s\n",
+		where, describeCadence(p.Automation), p.Task, p.Action, state)
 	if p.NextRunAt != nil {
 		fmt.Printf("   next   %s\n", p.NextRunAt.Local().Format("Mon 2 Jan 15:04"))
 	}
-	if p.Narrow {
-		fmt.Println("   narrowing a file's code is allowed when there are too few clouds answering")
+	if p.Shards != nil {
+		if p.Shards.Narrow {
+			fmt.Println("   narrowing a file's code is allowed when there are too few clouds answering")
+		}
+		if p.Shards.MaxRepairs > 0 {
+			fmt.Printf("   at most %d file(s) rebuilt per run\n", p.Shards.MaxRepairs)
+		}
 	}
-	if p.MaxRepairs > 0 {
-		fmt.Printf("   at most %d file(s) rebuilt per run\n", p.MaxRepairs)
+	if p.Git != nil {
+		if p.Git.MaxRepos > 0 {
+			fmt.Printf("   at most %d repositor%s fetched per run\n",
+				p.Git.MaxRepos, plural(p.Git.MaxRepos, "y", "ies"))
+		}
+		if p.Git.Prune {
+			fmt.Println("   a repository whose upstream has gone is deleted")
+		}
 	}
 	if len(p.History) > 0 {
 		printAutomationRun(&p.History[0], "   last   ")
@@ -293,18 +345,46 @@ func printAutomationRun(run *vault.AutomationRun, prefix string) {
 		fmt.Printf("%s%s  %s\n", prefix, when, run.Error)
 		return
 	}
-	fmt.Printf("%s%s  %d checked, %d whole, %d short, %d past repairing\n",
-		prefix, when, run.Checked, run.Whole, run.Short, run.AtRisk)
-
 	pad := strings.Repeat(" ", len(prefix))
-	if run.Repaired > 0 || run.Failed > 0 || run.Deferred > 0 {
-		fmt.Printf("%s%*s  %d rebuilt (%s), %d failed, %d left for later\n",
-			pad, len(when), "", run.Repaired, formatBytes(run.Bytes), run.Failed, run.Deferred)
+
+	switch {
+	case run.Git != nil:
+		g := run.Git
+		fmt.Printf("%s%s  %d checked, %d up to date, %d updated\n",
+			prefix, when, g.Checked, g.Current, g.Updated)
+		if g.Updated > 0 && g.Commits > 0 {
+			fmt.Printf("%s%*s  %d new commit(s), %s stored\n",
+				pad, len(when), "", g.Commits, formatBytes(g.Bytes))
+		}
+		if g.Gone > 0 || g.Failed > 0 || g.Deferred > 0 || g.Pruned > 0 {
+			fmt.Printf("%s%*s  %d upstream gone, %d failed, %d left for later, %d pruned\n",
+				pad, len(when), "", g.Gone, g.Failed, g.Deferred, g.Pruned)
+		}
+	default:
+		res := run.Shards
+		if res == nil {
+			res = &vault.ShardResult{}
+		}
+		fmt.Printf("%s%s  %d checked, %d whole, %d short, %d past repairing\n",
+			prefix, when, res.Checked, res.Whole, res.Short, res.AtRisk)
+		if res.Repaired > 0 || res.Failed > 0 || res.Deferred > 0 {
+			fmt.Printf("%s%*s  %d rebuilt (%s), %d failed, %d left for later\n",
+				pad, len(when), "", res.Repaired, formatBytes(res.Bytes), res.Failed, res.Deferred)
+		}
 	}
+
 	if len(run.Offline) > 0 {
 		fmt.Printf("%s%*s  no answer from %s\n",
 			pad, len(when), "", strings.Join(run.Offline, ", "))
 	}
+}
+
+// plural picks the ending for a count, so a line reads as English.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 // parseWeekly reads "sun,03:00" into a day and a time.
@@ -324,9 +404,10 @@ func parseWeekly(spec string) (time.Weekday, string, error) {
 	return 0, "", fmt.Errorf("%q is not a day of the week", day)
 }
 
-// parseRebuildLimit reads a size written the way people write one — 512M, 8G —
-// or "none" for no ceiling at all. Empty leaves the default in place.
-func parseRebuildLimit(text string) (int64, error) {
+// parseSizeLimit reads a size written the way people write one — 512M, 8G — or
+// "none" for no ceiling at all. Empty leaves the default in place. flag names
+// the option it came from, so a typo is refused where it was typed.
+func parseSizeLimit(text, flag string) (int64, error) {
 	trimmed := strings.TrimSpace(strings.ToUpper(text))
 	switch trimmed {
 	case "":
@@ -355,8 +436,8 @@ func parseRebuildLimit(text string) (int64, error) {
 	var n int64
 	if _, err := fmt.Sscanf(digits, "%d", &n); err != nil || n <= 0 {
 		return 0, fmt.Errorf(
-			"%q is not a size — write one as a number with K, M, G or T, such as 2G, "+
-				"or 'none' for no ceiling", text)
+			"%s: %q is not a size — write one as a number with K, M, G or T, such as 2G, "+
+				"or 'none' for no ceiling", flag, text)
 	}
 	return n * unit, nil
 }

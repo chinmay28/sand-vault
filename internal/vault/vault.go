@@ -1433,6 +1433,13 @@ type Listing struct {
 	// somebody picked. A folder with nothing picturable under it is simply
 	// absent and keeps its icon (see folderart.go).
 	FolderArt map[string]FolderArt `json:"folder_art,omitempty"`
+
+	// Repos is how many stored git repositories are under this folder, counted
+	// rather than listed: the browser needs it on every folder it opens, only
+	// to decide whether to light a button, and the repositories themselves are
+	// a request of their own. Zero for the folders that hold none, which is
+	// almost all of them. See gitrepo.go.
+	Repos int `json:"repos,omitempty"`
 }
 
 // List returns the contents of a folder in one of the vaults inside the file.
@@ -1491,6 +1498,7 @@ func (v *Vault) List(scope Scope, dir string) (*Listing, error) {
 		MovieLookup: v.movieLookupLocked(m, dir),
 		Automation:  v.automationForLocked(scope, m, dir),
 		FolderArt:   v.folderArtForLocked(m, paths),
+		Repos:       countReposUnder(m, dir),
 	}, nil
 }
 

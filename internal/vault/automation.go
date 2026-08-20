@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/chinmay28/sand-vault/internal/archive"
+	"github.com/chinmay28/sand-vault/internal/git"
 	"github.com/chinmay28/sand-vault/internal/provider"
 )
 
@@ -80,25 +81,77 @@ func (c Cadence) Valid() bool {
 	return c == CadenceHourly || c == CadenceDaily || c == CadenceWeekly
 }
 
-// AutomationAction is what a policy does when it finds something wrong.
+// AutomationTask is which job a policy does when it comes round.
+//
+// A folder is not one kind of thing, and neither is looking after one. The
+// parts of a file going missing and a mirrored repository falling behind its
+// upstream are both "this folder has drifted from what it should be", and both
+// want the same schedule, the same history and the same button — but the work
+// in the middle has nothing in common. So the task is a choice made per policy,
+// the schedule around it is shared, and what each one does is behind its own
+// config and its own result.
+type AutomationTask string
+
+const (
+	// TaskShards is the storage job: every cloud answering, every part of every
+	// file where the index says it went, and what is missing put back.
+	TaskShards AutomationTask = "shards"
+
+	// TaskGit is the mirror job: every tracked repository under the folder
+	// asked whether its upstream has moved, and the ones that have re-fetched
+	// and re-stored. See gitrepo.go.
+	TaskGit AutomationTask = "git"
+)
+
+// Valid reports whether t is a task this build knows.
+func (t AutomationTask) Valid() bool {
+	return t == TaskShards || t == TaskGit
+}
+
+// AutomationAction is how far a policy goes: look, or look and fix.
+//
+// The looking half is shared — ActionCheck means the same thing whichever task
+// is doing it, which is why it is one type rather than one per task — and the
+// fixing half is named after the work, because "rebalance" and "pull" are
+// different enough that a single word for both would be a word for neither.
 type AutomationAction string
 
 const (
 	// ActionCheck looks and writes down what it found. Nothing moves, nothing
-	// is rebuilt, and no byte leaves any account. It is the honest starting
-	// point for a folder somebody is not yet ready to let a schedule rewrite.
+	// is rebuilt, nothing is fetched, and no byte leaves any account. It is the
+	// honest starting point for a folder somebody is not yet ready to let a
+	// schedule rewrite, and it is valid for every task.
 	ActionCheck AutomationAction = "check"
 
-	// ActionRebalance looks, and then puts back what is missing: the files that
-	// cannot be read whole are rebuilt onto the clouds that are answering,
-	// keeping each file's own erasure code where there are clouds enough for
-	// it. See the note at the top of this file for why this is a rebuild.
+	// ActionRebalance is the shard task's fixing half: the files that cannot be
+	// read whole are rebuilt onto the clouds that are answering, keeping each
+	// file's own erasure code where there are clouds enough for it. See the note
+	// at the top of this file for why this is a rebuild.
 	ActionRebalance AutomationAction = "rebalance"
+
+	// ActionPull is the git task's fixing half: a repository whose upstream has
+	// moved is fetched and stored again.
+	ActionPull AutomationAction = "pull"
 )
 
-// Valid reports whether a is an action this build knows.
+// Valid reports whether a is an action this build knows at all. Whether it is
+// one the chosen task can carry out is a separate question, asked by fits.
 func (a AutomationAction) Valid() bool {
-	return a == ActionCheck || a == ActionRebalance
+	return a == ActionCheck || a == ActionRebalance || a == ActionPull
+}
+
+// fits reports whether this action means anything for the given task.
+func (a AutomationAction) fits(task AutomationTask) bool {
+	if a == ActionCheck {
+		return true
+	}
+	switch task {
+	case TaskShards:
+		return a == ActionRebalance
+	case TaskGit:
+		return a == ActionPull
+	}
+	return false
 }
 
 // AutomationTrigger says what set a run going, which is the difference between
@@ -185,8 +238,39 @@ type Automation struct {
 	// the other two.
 	Weekday time.Weekday `json:"weekday,omitempty"`
 
+	// Task is the job this policy does. An empty task is read as TaskShards,
+	// which is what a client that has only ever heard of the storage job sends.
+	Task AutomationTask `json:"task,omitempty"`
+
+	// Action is how far it goes: look, or look and fix. Which fixing actions
+	// mean anything depends on the task — see AutomationAction.fits.
 	Action AutomationAction `json:"action"`
 
+	// Shards holds the knobs the storage task has and no other, Git those of
+	// the mirror task. The one named by Task is the one that is read; the other
+	// is nil, and a policy switched from one task to the other keeps neither.
+	//
+	// They are separate structs rather than a union of every field because the
+	// alternative is a policy with a dozen settings of which four apply, and no
+	// way for the browser or the CLI to tell which four.
+	Shards *ShardPolicy `json:"shards,omitempty"`
+	Git    *GitPolicy   `json:"git,omitempty"`
+
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
+
+	// LastRunAt is when the last run finished, and it is what the next one is
+	// counted from. A run that found nothing to do stamps it just the same, as
+	// does one that could not do anything at all — the schedule is a schedule,
+	// not a retry loop, and "run it now" is the answer to impatience.
+	LastRunAt time.Time `json:"last_run_at,omitempty"`
+
+	// History is the past runs, newest first, capped at automationHistory.
+	History []AutomationRun `json:"history,omitempty"`
+}
+
+// ShardPolicy is what the storage task is allowed to do about what it finds.
+type ShardPolicy struct {
 	// Narrow allows a repair to cut a file with a smaller code than it has,
 	// when there are not enough clouds answering to keep its own.
 	//
@@ -212,18 +296,33 @@ type Automation struct {
 	// which is a thing to choose deliberately on a machine with the memory for
 	// it. See DefaultRebuildLimit for what the ceiling is protecting.
 	RebuildLimit int64 `json:"rebuild_limit,omitempty"`
+}
 
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at,omitempty"`
+// GitPolicy is what the mirror task is allowed to do about what it finds.
+type GitPolicy struct {
+	// MaxRepos bounds how many repositories one run will re-fetch. Zero is no
+	// bound. Exactly ShardPolicy.MaxRepairs and for the same reason: the ones
+	// left over are counted, named, and picked up next time.
+	//
+	// Note that it bounds the *fetching*, not the asking. Every tracked
+	// repository is still asked whether it has moved, because that costs a few
+	// kilobytes; the bound is on the expensive half.
+	MaxRepos int `json:"max_repos,omitempty"`
 
-	// LastRunAt is when the last run finished, and it is what the next one is
-	// counted from. A run that found nothing to do stamps it just the same, as
-	// does one that could not do anything at all — the schedule is a schedule,
-	// not a retry loop, and "run it now" is the answer to impatience.
-	LastRunAt time.Time `json:"last_run_at,omitempty"`
+	// SizeLimit is the largest bundle this policy will re-fetch unattended.
+	// Zero means DefaultBundleLimit; a negative value means no ceiling.
+	//
+	// The ceiling is on the stored bundle rather than on the working tree,
+	// because that is the figure SAND already knows before it starts. See
+	// DefaultBundleLimit.
+	SizeLimit int64 `json:"size_limit,omitempty"`
 
-	// History is the past runs, newest first, capped at automationHistory.
-	History []AutomationRun `json:"history,omitempty"`
+	// Prune lets the task delete a stored bundle whose upstream has gone —
+	// answered 404, or had its access revoked. Off by default, emphatically:
+	// a repository that has been taken down is exactly the repository somebody
+	// is most glad to have a copy of, and a temporary outage must never be
+	// allowed to look like a reason to throw the last copy away.
+	Prune bool `json:"prune,omitempty"`
 }
 
 // clone takes a copy deep enough that the caller cannot reach back into the
@@ -234,19 +333,60 @@ func (a *Automation) clone() *Automation {
 	}
 	out := *a
 	out.History = append([]AutomationRun(nil), a.History...)
+	if a.Shards != nil {
+		shards := *a.Shards
+		out.Shards = &shards
+	}
+	if a.Git != nil {
+		g := *a.Git
+		out.Git = &g
+	}
 	return &out
+}
+
+// shards is the storage config with the zero value filled in, so that reading
+// it never has to test for nil. A policy of another task has none, and asking
+// for it is a bug rather than a default — the callers are all inside the shard
+// sweep, which does not run for another task.
+func (a *Automation) shards() ShardPolicy {
+	if a.Shards == nil {
+		return ShardPolicy{}
+	}
+	return *a.Shards
+}
+
+// git is the mirror config with the zero value filled in, on the same terms.
+func (a *Automation) git() GitPolicy {
+	if a.Git == nil {
+		return GitPolicy{}
+	}
+	return *a.Git
 }
 
 // rebuildCeiling is the largest file this policy will rebuild, with the zero
 // value resolved to the default and a negative value to no ceiling.
 func (a *Automation) rebuildCeiling() int64 {
+	limit := a.shards().RebuildLimit
 	switch {
-	case a.RebuildLimit < 0:
+	case limit < 0:
 		return 0
-	case a.RebuildLimit == 0:
+	case limit == 0:
 		return DefaultRebuildLimit
 	}
-	return a.RebuildLimit
+	return limit
+}
+
+// bundleCeiling is the largest stored bundle the mirror task will re-fetch, on
+// the same terms.
+func (a *Automation) bundleCeiling() int64 {
+	limit := a.git().SizeLimit
+	switch {
+	case limit < 0:
+		return 0
+	case limit == 0:
+		return DefaultBundleLimit
+	}
+	return limit
 }
 
 // FolderAutomation is a policy together with where it was made, which is what
@@ -279,10 +419,18 @@ type FolderAutomation struct {
 }
 
 // AutomationRun is what one sweep came to.
+//
+// The common half is the schedule's: which folder, which task, when, and which
+// accounts were answering. What the task itself found is behind Shards or Git,
+// because a count of files short of a part means nothing to the mirror job and
+// a count of repositories means nothing to the storage one — flattening both
+// into one struct would make every run a dozen fields of which half are always
+// zero, with nothing to say which half.
 type AutomationRun struct {
 	Folder     string            `json:"folder"`
 	Vault      Scope             `json:"vault,omitempty"`
 	Trigger    AutomationTrigger `json:"trigger"`
+	Task       AutomationTask    `json:"task"`
 	Action     AutomationAction  `json:"action"`
 	StartedAt  time.Time         `json:"started_at"`
 	FinishedAt time.Time         `json:"finished_at"`
@@ -293,6 +441,21 @@ type AutomationRun struct {
 	Accounts int      `json:"accounts"`
 	Offline  []string `json:"offline,omitempty"`
 
+	// Shards is what the storage task found, Git what the mirror task found.
+	// Exactly the one named by Task is set.
+	Shards *ShardResult `json:"shards,omitempty"`
+	Git    *GitResult   `json:"git,omitempty"`
+
+	Warnings []string `json:"warnings,omitempty"`
+
+	// Error is set when the sweep could not be carried out at all — the vault
+	// locked mid-run, no account answering, no git on the machine. Whichever
+	// result is set then holds whatever had been reached.
+	Error string `json:"error,omitempty"`
+}
+
+// ShardResult is what one sweep of the storage task came to.
+type ShardResult struct {
 	// Files is how many were under the folder, and Checked how many this run
 	// actually looked at — they differ when an inner folder's own policy had
 	// already looked at some of them in the same sweep.
@@ -323,18 +486,62 @@ type AutomationRun struct {
 	// to keep the file's code. Both are named in Warnings.
 	Failed   int `json:"failed"`
 	Deferred int `json:"deferred"`
+}
 
-	Warnings []string `json:"warnings,omitempty"`
+// clean reports whether the storage sweep found nothing worth saying.
+func (r *ShardResult) clean() bool {
+	return r == nil || (r.Short == 0 && r.AtRisk == 0 && r.Failed == 0 && r.Deferred == 0)
+}
 
-	// Error is set when the sweep could not be carried out at all — the vault
-	// locked mid-run, no account answering. The counts above are then whatever
-	// had been reached.
-	Error string `json:"error,omitempty"`
+// GitResult is what one sweep of the mirror task came to.
+type GitResult struct {
+	// Repos is how many tracked repositories were under the folder, and Checked
+	// how many were actually asked — they differ when an inner folder's own
+	// policy had already asked about some of them in the same tick.
+	Repos   int `json:"repos"`
+	Checked int `json:"checked"`
+
+	// Current is the good case and the common one: the upstream still holds
+	// exactly what the stored bundle holds, settled by one ref advertisement
+	// and no transfer at all. Updated is the ones that had moved and were
+	// fetched and stored again.
+	Current int `json:"current"`
+	Updated int `json:"updated"`
+
+	// Gone is repositories whose upstream did not answer at all — deleted,
+	// renamed, or access revoked. They are counted rather than acted on: see
+	// GitPolicy.Prune for why the stored copy stays.
+	Gone int `json:"gone,omitempty"`
+
+	// Pruned is the stored bundles deleted because their upstream is gone and
+	// the policy was told it may. Zero unless GitPolicy.Prune is on.
+	Pruned int `json:"pruned,omitempty"`
+
+	// Commits is how many new commits arrived across every repository updated,
+	// which is the one figure that says what a week of somebody's project
+	// actually amounted to.
+	Commits int `json:"commits,omitempty"`
+
+	// Failed is repositories a refresh was attempted on and did not finish.
+	// Deferred is ones that had moved and were not fetched this time: past the
+	// run's bound, or past the size ceiling. Both are named in Warnings.
+	Failed   int `json:"failed"`
+	Deferred int `json:"deferred"`
+
+	// Bytes is what the newly stored bundles came to.
+	Bytes int64 `json:"bytes"`
+}
+
+// clean reports whether the mirror sweep found nothing worth saying. An updated
+// repository is not trouble — it is the job working.
+func (r *GitResult) clean() bool {
+	return r == nil || (r.Failed == 0 && r.Deferred == 0 && r.Gone == 0)
 }
 
 // Clean reports whether the sweep found nothing to fix and nothing to say.
 func (r *AutomationRun) Clean() bool {
-	return r != nil && r.Error == "" && r.Short == 0 && r.AtRisk == 0 && len(r.Offline) == 0
+	return r != nil && r.Error == "" && len(r.Offline) == 0 &&
+		r.Shards.clean() && r.Git.clean()
 }
 
 // stored is the copy kept in the index: the same run with its warnings capped.
@@ -359,13 +566,26 @@ func (r *AutomationRun) stored() AutomationRun {
 // mistyped time is refused where it was typed rather than silently running at
 // midnight for a year.
 func (a *Automation) check() error {
+	// An unnamed task is the storage one, which is what a client that predates
+	// there being a choice sends, and what somebody setting a policy without
+	// saying which job means.
+	if a.Task == "" {
+		a.Task = TaskShards
+	}
+	if !a.Task.Valid() {
+		return fmt.Errorf("%q is not a task — choose %s or %s", a.Task, TaskShards, TaskGit)
+	}
 	if !a.Cadence.Valid() {
 		return fmt.Errorf("%q is not a cadence — choose %s, %s or %s",
 			a.Cadence, CadenceHourly, CadenceDaily, CadenceWeekly)
 	}
 	if !a.Action.Valid() {
-		return fmt.Errorf("%q is not an action — choose %s or %s",
-			a.Action, ActionCheck, ActionRebalance)
+		return fmt.Errorf("%q is not an action — choose %s, %s or %s",
+			a.Action, ActionCheck, ActionRebalance, ActionPull)
+	}
+	if !a.Action.fits(a.Task) {
+		return fmt.Errorf("the %s task cannot %s — choose %s or %s",
+			a.Task, a.Action, ActionCheck, fixFor(a.Task))
 	}
 	if a.Cadence != CadenceHourly {
 		if _, _, err := parseClock(a.At); err != nil {
@@ -375,11 +595,40 @@ func (a *Automation) check() error {
 	if a.Cadence == CadenceWeekly && (a.Weekday < time.Sunday || a.Weekday > time.Saturday) {
 		return fmt.Errorf("%d is not a day of the week — 0 is Sunday and 6 is Saturday", a.Weekday)
 	}
-	if a.MaxRepairs < 0 {
-		return fmt.Errorf("a repair bound of %d is not a number of files — use 0 for no bound",
-			a.MaxRepairs)
+
+	// Keep only the config the chosen task reads. A policy switched from one
+	// job to the other must not carry the settings of the job it no longer
+	// does, waiting to surprise somebody who switches it back.
+	switch a.Task {
+	case TaskShards:
+		a.Git = nil
+		if a.shards().MaxRepairs < 0 {
+			return fmt.Errorf("a repair bound of %d is not a number of files — use 0 for no bound",
+				a.shards().MaxRepairs)
+		}
+	case TaskGit:
+		a.Shards = nil
+		if a.git().MaxRepos < 0 {
+			return fmt.Errorf("a bound of %d is not a number of repositories — use 0 for no bound",
+				a.git().MaxRepos)
+		}
+		if a.Action == ActionPull && !git.Available() {
+			return fmt.Errorf(
+				"this machine has no git for SAND to borrow, so a policy that fetches would "+
+					"fail every time it came round — install git, or set the policy to %s",
+				ActionCheck)
+		}
 	}
 	return nil
+}
+
+// fixFor names the fixing action of a task, for the message that explains why
+// the one somebody chose is not it.
+func fixFor(task AutomationTask) AutomationAction {
+	if task == TaskGit {
+		return ActionPull
+	}
+	return ActionRebalance
 }
 
 // parseClock reads a wall-clock time written "10:00" or "9:30".
@@ -829,10 +1078,10 @@ func (v *Vault) runAutomation(ctx context.Context, scope Scope, dir string, trig
 		Folder:    dir,
 		Vault:     scope,
 		Trigger:   trigger,
+		Task:      policy.Task,
 		Action:    policy.Action,
 		StartedAt: time.Now().UTC(),
 		Accounts:  len(configs),
-		Files:     len(entries),
 	}
 
 	// Half the question is "are all the clouds accessible", and it is asked
@@ -862,21 +1111,47 @@ func (v *Vault) runAutomation(ctx context.Context, scope Scope, dir string, trig
 		dark[id] = true
 	}
 
-	// The other half: every part of every file under the folder, against the
-	// accounts the index says are holding them.
+	// Everything to here is the schedule's: which folder, which files, which
+	// accounts are answering. What to do with them is the task's.
+	switch policy.Task {
+	case TaskGit:
+		v.sweepGit(ctx, scope, policy, entries, run, seen)
+	default:
+		v.sweepShards(ctx, scope, policy, entries, run, online, byID, dark, seen)
+	}
+	return v.finishAutomation(scope, dir, run)
+}
+
+// sweepShards is the storage task: every part of every file under the folder,
+// against the accounts the index says are holding them, and what is missing put
+// back where the policy allows it.
+func (v *Vault) sweepShards(
+	ctx context.Context,
+	scope Scope,
+	policy *Automation,
+	entries []*Entry,
+	run *AutomationRun,
+	online map[string]bool,
+	byID map[string]provider.Config,
+	dark map[string]bool,
+	seen map[string]bool,
+) {
+	res := &ShardResult{Files: len(entries)}
+	run.Shards = res
+
 	states := v.checkEntries(ctx, entries, online, byID, seen)
-	run.Checked = len(states)
+	res.Checked = len(states)
 
 	needy := make([]fileState, 0, len(states))
 	for _, st := range states {
 		switch {
 		case st.reachable >= st.scheme.Total:
-			run.Whole++
+			res.Whole++
 			continue
 		case st.reachable >= st.scheme.Data:
-			run.Short++
+			res.Short++
 		default:
-			run.AtRisk++
+			res.AtRisk++
 		}
 		needy = append(needy, st)
 	}
@@ -907,11 +1182,9 @@ func (v *Vault) runAutomation(ctx context.Context, scope Scope, dir string, trig
 	}
 
 	if policy.Action != ActionRebalance {
-		return v.finishAutomation(scope, dir, run)
+		return
 	}
-
 	v.repairFiles(ctx, scope, policy, needy, online, dark, run)
-	return v.finishAutomation(scope, dir, run)
 }
 
 // fileState is one file as the check found it.
@@ -1063,6 +1336,8 @@ func (v *Vault) reachableParts(ctx context.Context, e *Entry, online map[string]
 func (v *Vault) repairFiles(ctx context.Context, scope Scope, policy *Automation, needy []fileState, online map[string]bool, dark map[string]bool, run *AutomationRun) {
 	answering := v.answeringAccounts(online)
 	ceiling := policy.rebuildCeiling()
+	cfg := policy.shards()
+	res := run.Shards
 
 	for _, st := range needy {
 		if err := ctx.Err(); err != nil {
@@ -1072,15 +1347,15 @@ func (v *Vault) repairFiles(ctx context.Context, scope Scope, policy *Automation
 		// Not enough parts to gather the file from is not something a repair
 		// can be attempted on: the rebuild would fail on the read.
 		if st.reachable < st.scheme.Data {
-			run.Deferred++
+			res.Deferred++
 			continue
 		}
-		if policy.MaxRepairs > 0 && run.Repaired+run.Failed >= policy.MaxRepairs {
-			run.Deferred++
+		if cfg.MaxRepairs > 0 && res.Repaired+res.Failed >= cfg.MaxRepairs {
+			res.Deferred++
 			continue
 		}
 		if ceiling > 0 && st.entry.Size > ceiling {
-			run.Deferred++
+			res.Deferred++
 			run.Warnings = append(run.Warnings, fmt.Sprintf(
 				"%s is %s, past this policy's %s rebuild ceiling — a repair rebuilds the whole "+
 					"file, so this one is left for somebody to start by hand and watch",
@@ -1088,9 +1363,9 @@ func (v *Vault) repairFiles(ctx context.Context, scope Scope, policy *Automation
 			continue
 		}
 
-		accounts, scheme, err := rebalanceTarget(st.entry, answering, policy.Narrow)
+		accounts, scheme, err := rebalanceTarget(st.entry, answering, cfg.Narrow)
 		if err != nil {
-			run.Deferred++
+			res.Deferred++
 			run.Warnings = append(run.Warnings, fmt.Sprintf("%s: %v", st.entry.Path(), err))
 			continue
 		}
@@ -1102,12 +1377,12 @@ func (v *Vault) repairFiles(ctx context.Context, scope Scope, policy *Automation
 			}, nil)
 		if report != nil {
 			run.Warnings = append(run.Warnings, report.Warnings...)
-			run.PartsWritten += report.PartsMoved
-			run.Bytes += report.Bytes
+			res.PartsWritten += report.PartsMoved
+			res.Bytes += report.Bytes
 		}
 		switch {
 		case err != nil:
-			run.Failed++
+			res.Failed++
 			run.Warnings = append(run.Warnings,
 				fmt.Sprintf("%s could not be rebuilt: %v", st.entry.Path(), err))
 			if errors.Is(err, ErrLocked) {
@@ -1115,9 +1390,9 @@ func (v *Vault) repairFiles(ctx context.Context, scope Scope, policy *Automation
 				return
 			}
 		case report.Relocated == 0:
-			run.Failed++
+			res.Failed++
 		default:
-			run.Repaired++
+			res.Repaired++
 		}
 	}
 }

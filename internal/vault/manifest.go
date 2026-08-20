@@ -176,6 +176,15 @@ type Manifest struct {
 	// automation.go.
 	Automations map[string]*Automation `json:"automations,omitempty"`
 
+	// Repos records which stored files are mirrors of git repositories, by file
+	// ID: the upstream they came from, and enough about what the bundle holds
+	// to tell whether that upstream has moved. Here rather than on the Entry
+	// for the same reason Movies is — most files are not this — and encrypted
+	// for the same reason as everything else in the index: which repositories
+	// somebody keeps a copy of is as revealing as which films they do. See
+	// gitrepo.go.
+	Repos map[string]*GitSource `json:"repos,omitempty"`
+
 	// FolderArt records the picture a folder was told to wear, by folder path
 	// and the ID of a file stored inside it. Only the choices made by hand are
 	// here: a folder nobody has chosen for picks one of the films inside it and

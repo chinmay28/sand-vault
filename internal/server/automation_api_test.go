@@ -136,6 +136,18 @@ func TestAutomationEndpointRemovesAPolicy(t *testing.T) {
 	}
 }
 
+// shardsOf is the storage half of a run's report. The counts live under the
+// task that produced them, because a repository count means nothing to the
+// storage job and a file count means nothing to the mirror one.
+func shardsOf(t *testing.T, run map[string]any) map[string]any {
+	t.Helper()
+	res, ok := run["shards"].(map[string]any)
+	if !ok {
+		t.Fatalf("run has no shards result: %v", run)
+	}
+	return res
+}
+
 func TestAutomationRunReportsAMissingPart(t *testing.T) {
 	c := newTestClient(t)
 	roots := c.setup("pw", 3)
@@ -155,13 +167,13 @@ func TestAutomationRunReportsAMissingPart(t *testing.T) {
 	if !ok {
 		t.Fatalf("no run in %v", body)
 	}
-	if got := number(t, run, "checked"); got != 1 {
+	if got := number(t, shardsOf(t, run), "checked"); got != 1 {
 		t.Errorf("checked = %d, want 1", got)
 	}
-	if got := number(t, run, "short"); got != 1 {
+	if got := number(t, shardsOf(t, run), "short"); got != 1 {
 		t.Errorf("short = %d, want the one file missing a part", got)
 	}
-	if got := number(t, run, "repaired"); got != 0 {
+	if got := number(t, shardsOf(t, run), "repaired"); got != 0 {
 		t.Errorf("repaired = %d, want none from a check-only policy", got)
 	}
 
@@ -199,20 +211,20 @@ func TestAutomationRunRebuildsOntoAnotherCloud(t *testing.T) {
 		t.Fatalf("POST /api/automation/run: %d %s", w.Code, w.Body.String())
 	}
 	run := body["run"].(map[string]any)
-	if got := number(t, run, "repaired"); got != 1 {
+	if got := number(t, shardsOf(t, run), "repaired"); got != 1 {
 		t.Fatalf("repaired = %d, want the one file put back: %v", got, run)
 	}
-	if got := number(t, run, "failed"); got != 0 {
+	if got := number(t, shardsOf(t, run), "failed"); got != 0 {
 		t.Errorf("failed = %d, want none: %v", got, run)
 	}
 
 	// A second sweep finds nothing left to do, which is what "put back" means.
 	_, body = c.json(http.MethodPost, "/api/automation/run", map[string]any{"path": "/"})
 	run = body["run"].(map[string]any)
-	if got := number(t, run, "whole"); got != 1 {
+	if got := number(t, shardsOf(t, run), "whole"); got != 1 {
 		t.Errorf("whole = %d after the repair, want 1: %v", got, run)
 	}
-	if got := number(t, run, "short"); got != 0 {
+	if got := number(t, shardsOf(t, run), "short"); got != 0 {
 		t.Errorf("short = %d after the repair, want 0: %v", got, run)
 	}
 

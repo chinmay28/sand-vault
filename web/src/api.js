@@ -376,6 +376,20 @@ export const api = {
   runAutomation: (path, vault = '', { signal } = {}) =>
     request('/api/automation/run', { method: 'POST', body: { path, vault }, signal }),
 
+  /* The repositories a vault is keeping a copy of, each stored as one git
+     bundle. Listing is index work and answers at once; tracking and refreshing
+     borrow the machine's git and talk to somebody else's server, so both can
+     take real time — the first copy of a repository is its whole history. */
+  repos: (path = '/', vault = '') =>
+    request(`/api/git?path=${encodeURIComponent(path)}${vaultParam(vault)}`),
+  trackRepo: (body, { signal } = {}) =>
+    request('/api/git/track', { method: 'POST', body, signal }),
+  refreshRepo: (id, vault = '', { signal } = {}) =>
+    request(`/api/git/${encodeURIComponent(id)}/refresh${vaultParam(vault, true)}`,
+      { method: 'POST', signal }),
+  untrackRepo: (id, vault = '') =>
+    request(`/api/git/${encodeURIComponent(id)}${vaultParam(vault, true)}`, { method: 'DELETE' }),
+
   /* The picture a folder is drawn with, and what else it could be drawn with:
      every file under it that has a thumbnail, films first. What comes back is a
      file id — the picture itself is that file's own thumbnail, drawn through
@@ -584,8 +598,12 @@ export const api = {
 /* The vault as an extra query parameter, for URLs that already carry one.
    Anything building a URL from scratch has to write `?vault=` itself — see
    upload(), which does. */
-function vaultParam(vault) {
-  return vault ? `&vault=${encodeURIComponent(vault)}` : ''
+/* The sub vault a call is about, as a query parameter. first says this is the
+   only parameter on the URL and so needs the "?" rather than the "&" — most
+   callers append it to a path that already has one. */
+function vaultParam(vault, first = false) {
+  if (!vault) return ''
+  return `${first ? '?' : '&'}vault=${encodeURIComponent(vault)}`
 }
 
 export function joinPath(dir, name) {

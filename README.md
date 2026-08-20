@@ -679,6 +679,79 @@ ones, because a log that says nothing when everything is fine cannot tell you
 automation /archive: 412 file(s) checked, every part where it should be
 ```
 
+## Keeping copies of git repositories
+
+A folder can hold repositories as well as files, and be told to keep them
+current.
+
+A repository is stored as **one file**: a git bundle holding its whole history,
+every branch and every tag. That is what makes it worth keeping. The copy needs
+SAND to be made and stored — encrypted, cut into parts, spread over your clouds
+like anything else — and needs nothing at all to be used again:
+
+```bash
+./sand git track https://github.com/chinmay28/sand-vault.git --into /code
+# Mirroring https://github.com/chinmay28/sand-vault.git — the first copy is the whole history.
+# Stored /code/sand-vault.bundle (14.2 MB, 47 refs, 1841 commits) in 12s.
+
+./sand get /code/sand-vault.bundle -o ./recovered.bundle
+git clone ./recovered.bundle            # a repository again, with no SAND involved
+```
+
+That last line is the point. An archive whose format needs the tool that wrote
+it is an archive with a deadline.
+
+### The weekly check is nearly free
+
+Fetching a repository is expensive; asking whether it has changed is not. SAND
+asks first — one short conversation with the server, a few kilobytes of ref
+advertisement, no history at all — and only fetches when the answer has actually
+moved. Even then it fetches the difference rather than the history, because the
+stored bundle becomes the local mirror before the fetch starts.
+
+So a standing instruction over a shelf of projects costs almost nothing on the
+weeks nothing was pushed:
+
+```bash
+./sand automation set /code --weekly sun,04:00 --task git --action pull
+./sand automation run /code
+#   20 Aug 21:27  9 checked, 8 up to date, 1 updated
+#                 11 new commit(s), 4.2 MB stored
+```
+
+`--action check` looks and fetches nothing, exactly as it does for the storage
+task. `--max-repos` bounds how many are fetched in one run — every repository is
+still *asked*, since that is the cheap half — and `--size-limit` leaves the
+enormous ones for you to refresh by hand.
+
+### It uses the git you already have
+
+SAND shells out to the git on the machine rather than carrying its own. That is
+what makes private repositories work at all: your SSH keys, your credential
+helper, your `~/.ssh/config` host aliases, your corporate CA. The rule needs no
+documentation — **a repository SAND can reach is one you can reach from the same
+machine**.
+
+The cost is that this one feature needs git installed, and SAND says so rather
+than discovering it at four in the morning: a machine without git is told when
+the policy is set, not when it runs.
+
+Two things it deliberately will not do. It never checks anything out and never
+follows a repository's submodules — a submodule is somebody else's URL arriving
+from inside the repository, and SAND stores what you pointed it at. And a
+repository URL is treated as hostile input, because git's `ext::` transport runs
+its argument as a command; only `https://`, `http://`, `ssh://` and
+`git@host:path` are accepted, and a local path is refused outright.
+
+### A repository that disappears is kept, not deleted
+
+If an upstream stops answering — taken down, renamed, made private, or just a
+bad afternoon for somebody's DNS — the stored copy stays exactly where it is and
+the run says the upstream has gone. All four look identical from here and only
+one of them is a reason to throw away what may be the last copy in the world.
+
+Deleting it is a thing you turn on (`--prune`), never a thing that happens.
+
 ## Moving something to another folder
 
 The other kind of move, and the cheap one. Which folder a file is in is a field
@@ -1282,19 +1355,42 @@ sand check [path] [--all]          Verify parts are still there; non-zero if not
 ```
 sand automation list                       Every folder with a policy, and what its last run found
 sand automation set <folder> --hourly | --daily HH:MM | --weekly day,HH:MM
-                    [--action check|rebalance] [--narrow]
-                    [--max-repairs N] [--rebuild-limit 8G|none] [--disabled]
+                    [--task shards|git] [--action check|rebalance|pull] [--disabled]
+                    [--narrow] [--max-repairs N] [--rebuild-limit 8G|none]   # shards
+                    [--max-repos N] [--size-limit 4G|none] [--prune]         # git
 sand automation run <folder>               Carry it out now, without waiting for its slot
 sand automation remove <folder>            Forget the schedule and its history
 ```
 
-A policy covers the folder and everything under it. `--action check` looks and
-writes down what it found, moving nothing; `--action rebalance` also rebuilds
-whatever came back short onto the clouds that answered, keeping each file's own
-erasure code. `sand automation run` exits non-zero when a file is past repairing.
+A policy covers the folder and everything under it. `--task shards` checks the
+parts of every file under it; `--task git` asks every repository stored under it
+whether its upstream has moved.
+
+`--action check` looks and writes down what it found, changing nothing, and means
+that for either task. The fixing half is named after the work: `--action
+rebalance` rebuilds whatever came back short onto the clouds that answered,
+keeping each file's own erasure code, and `--action pull` fetches the
+repositories that have moved. `sand automation run` exits non-zero when a file is
+past repairing or a repository could not be fetched.
 
 The schedules themselves are kept by `sand serve` while the vault is unlocked.
 See [A folder that looks after itself](#a-folder-that-looks-after-itself).
+
+### Repositories
+
+```
+sand git track <url> [--into /code] [--accounts a,b,c] [--scheme k-of-n]
+sand git list [folder]                     What is kept, and when it was last fetched
+sand git refresh <path> | <folder> --all   Ask the upstream, and fetch if it has moved
+sand git untrack <path>                    Stop following it; the bundle stays
+```
+
+A repository is stored as a single git bundle that `git clone` reads directly.
+Refreshing is cheap when nothing has changed — the upstream is asked what refs it
+has, which is a few kilobytes and no objects. Needs git on the machine; SAND
+borrows yours rather than carrying its own, so it reaches exactly the
+repositories you can. See [Keeping copies of git
+repositories](#keeping-copies-of-git-repositories).
 
 `sand relocate` moves only the parts that have to move: anything already on one
 of the accounts you named stays where it is, and what travels is copied across
@@ -1447,13 +1543,21 @@ pipe the password on stdin.
   marker apart. Each counts what it would do before it does any of it — see
   [Organizing a folder](#organizing-a-folder)
 - **Look after a folder** — `⏱` beside `🗂`: on a schedule of your choosing,
-  every cloud is asked whether it is there and every shard of every file under
-  the folder is checked against the index that says where it went — and, if you
-  say so, whatever came back short is rebuilt onto the clouds that answered. The
+  either every cloud is asked whether it is there and every shard of every file
+  under the folder is checked against the index that says where it went — and,
+  if you say so, whatever came back short is rebuilt onto the clouds that
+  answered — or every repository stored under the folder is asked whether its
+  upstream has moved, and brought up to date where it has. The
   dialog leads with what the last runs found, and *Run it now* does not wait for
   the next slot. The button is lit on a folder that is looked after and amber
   when the last run found something — see
   [A folder that looks after itself](#a-folder-that-looks-after-itself)
+- **Repositories** — `⑂` beside `⏱`: keep a copy of a git repository in this
+  folder as a single bundle holding its whole history, and see what is kept,
+  when each was last fetched, and whether any upstream has stopped answering.
+  *Refresh* asks the upstream whether it has moved and usually finds it has not,
+  which costs almost nothing — see
+  [Keeping copies of git repositories](#keeping-copies-of-git-repositories)
 - **Preview** — images, video, audio, PDF and text render inline, rebuilt on
   demand; anything else downloads. A matched film opens on its poster and
   summary rather than an unplayed black rectangle

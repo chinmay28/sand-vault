@@ -54,9 +54,7 @@ export function AutomationButton({ automation, mobile, onOpen }) {
     ? 'Off. Have this folder checked on a schedule, and repaired'
     : !on
       ? 'This folder has a policy, switched off'
-      : `${describeCadence(automation)} — ${automation.action === 'rebalance'
-        ? 'anything missing is put back'
-        : 'findings are written down, nothing is moved'}${trouble ? '. The last run found something.' : ''}`
+      : `${describeCadence(automation)} — ${describeAction(automation)}${trouble ? '. The last run found something.' : ''}`
 
   return (
     <button
@@ -132,10 +130,14 @@ export function AutomationSettings({ path, vault = '', onClose, onChanged }) {
         cadence: next.cadence,
         at: next.at,
         weekday: Number(next.weekday) || 0,
+        task: next.task || 'shards',
         action: next.action,
         narrow: !!next.narrow,
         max_repairs: Number(next.max_repairs) || 0,
         rebuild_limit: Number(next.rebuild_limit) || 0,
+        max_repos: Number(next.max_repos) || 0,
+        size_limit: Number(next.size_limit) || 0,
+        prune: !!next.prune,
       })
       setPolicy(resp.automation)
       onChanged?.()
@@ -241,16 +243,24 @@ function blankPolicy() {
     cadence: 'daily',
     at: '10:00',
     weekday: 0,
+    task: 'shards',
     action: 'check',
     narrow: false,
     max_repairs: 0,
     rebuild_limit: 0,
+    max_repos: 0,
+    size_limit: 0,
+    prune: false,
   }
 }
 
 /* The schedule and what to do about what it finds. */
 function PolicyForm({ policy, stored, busy, onChange }) {
   const set = (patch) => onChange({ ...policy, ...patch })
+  /* An empty task is the storage one — that is what a policy written before
+     there was a choice means, and what the server reads it as. */
+  const task = policy.task || 'shards'
+  const fix = task === 'git' ? 'pull' : 'rebalance'
 
   return (
     <div style={{ marginTop: stored ? '18px' : 0 }}>
@@ -290,24 +300,45 @@ function PolicyForm({ policy, stored, busy, onChange }) {
         />
       )}
 
+      <Label>What to look at</Label>
+      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '10px' }}>
+        <Choice
+          on={task === 'shards'}
+          disabled={busy}
+          onClick={() => set({ task: 'shards', action: 'check' })}
+        >The parts of every file</Choice>
+        <Choice
+          on={task === 'git'}
+          disabled={busy}
+          onClick={() => set({ task: 'git', action: 'check' })}
+        >Repositories stored here</Choice>
+      </div>
+      <Note>
+        {task === 'git'
+          ? 'Every repository kept under this folder is asked whether its upstream has moved. Asking is a few kilobytes and no history at all, so a week where nothing changed costs almost nothing.'
+          : 'Every cloud is asked whether it is there, and every part of every file is checked against the index that says where it went.'}
+      </Note>
+
       <Label>What to do about what it finds</Label>
       <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '10px' }}>
         <Choice on={policy.action === 'check'} disabled={busy} onClick={() => set({ action: 'check' })}>
           Just tell me
         </Choice>
         <Choice
-          on={policy.action === 'rebalance'}
+          on={policy.action === fix}
           disabled={busy}
-          onClick={() => set({ action: 'rebalance' })}
-        >Put it back</Choice>
+          onClick={() => set({ action: fix })}
+        >{task === 'git' ? 'Bring them up to date' : 'Put it back'}</Choice>
       </div>
       <Note>
-        {policy.action === 'rebalance'
-          ? 'Files that cannot be read whole are rebuilt onto the clouds that answered, keeping each file cut exactly as it is now.'
-          : 'Nothing is moved and no byte leaves any account. The run is written down and shown here.'}
+        {policy.action === 'check'
+          ? 'Nothing is moved and no byte leaves any account. The run is written down and shown here.'
+          : task === 'git'
+            ? 'A repository whose upstream has moved is fetched and stored again. Only the difference comes down, not the history.'
+            : 'Files that cannot be read whole are rebuilt onto the clouds that answered, keeping each file cut exactly as it is now.'}
       </Note>
 
-      {policy.action === 'rebalance' && (
+      {task === 'shards' && policy.action === 'rebalance' && (
         <div style={{ marginTop: '12px' }}>
           <Toggle
             on={!!policy.narrow}
@@ -333,6 +364,36 @@ function PolicyForm({ policy, stored, busy, onChange }) {
             disabled={busy}
             onChange={(e) => set({ rebuild_limit: Number(e.target.value) * 1024 * 1024 })}
             help={`0 keeps the default of ${formatBytes(1024 * 1024 * 1024)}. A rebuild holds the whole file in memory, so a film left to a schedule at three in the morning is how a small machine stops answering.`}
+          />
+        </div>
+      )}
+
+      {task === 'git' && policy.action === 'pull' && (
+        <div style={{ marginTop: '12px' }}>
+          <Input
+            label="Fetch at most"
+            type="number"
+            min="0"
+            value={policy.max_repos || 0}
+            disabled={busy}
+            onChange={(e) => set({ max_repos: e.target.value })}
+            help="Repositories per run, 0 for no bound. Every repository is still asked whether it has moved — the bound is on the fetching, which is the expensive half."
+          />
+          <Input
+            label="Largest repository to fetch unattended, in MB"
+            type="number"
+            min="0"
+            value={Math.round((Number(policy.size_limit) || 0) / (1024 * 1024))}
+            disabled={busy}
+            onChange={(e) => set({ size_limit: Number(e.target.value) * 1024 * 1024 })}
+            help={`0 keeps the default of ${formatBytes(2 * 1024 * 1024 * 1024)}. A refresh puts a mirror and a new bundle on local disk before anything is uploaded.`}
+          />
+          <Toggle
+            on={!!policy.prune}
+            disabled={busy}
+            onClick={() => set({ prune: !policy.prune })}
+            label="Delete a repository whose upstream has gone"
+            hint="Off by default, and worth leaving off. A repository that has been taken down is the one you are most glad to have kept — and an outage, a rename and a revoked token all look exactly like a deletion from here."
           />
         </div>
       )}
@@ -368,17 +429,7 @@ function RunReport({ run }) {
       {run.error
         ? <div style={{ fontFamily: FONT.sans, fontSize: '12.5px', color: COLORS.error }}>{run.error}</div>
         : (
-          <div style={{ display: 'flex', gap: '18px', flexWrap: 'wrap' }}>
-            <Figure label="checked" value={run.checked} />
-            <Figure label="whole" value={run.whole} tone={run.whole ? COLORS.success : undefined} />
-            <Figure label="short" value={run.short} tone={run.short ? COLORS.warn : undefined} />
-            <Figure label="past repairing" value={run.at_risk} tone={run.at_risk ? COLORS.error : undefined} />
-            {run.action === 'rebalance' && (
-              <Figure label="rebuilt" value={run.repaired} tone={run.repaired ? COLORS.accent : undefined} />
-            )}
-            {run.action === 'rebalance' && !!run.deferred && <Figure label="left for later" value={run.deferred} />}
-            {!!run.bytes && <Figure label="moved" value={formatBytes(run.bytes)} />}
-          </div>
+          <RunFigures run={run} />
         )}
 
       {!!(run.offline || []).length && (
@@ -529,8 +580,54 @@ function Toggle({ on, disabled, onClick, label, hint }) {
   )
 }
 
+/* What a run came to, in the counters of whichever job produced it. The two
+   tasks have nothing to count in common — a repository count means nothing to
+   the storage job and a file count means nothing to the mirror one — so the
+   figures come from the result the run actually carries. */
+function RunFigures({ run }) {
+  if (run.git) {
+    const g = run.git
+    return (
+      <div style={{ display: 'flex', gap: '18px', flexWrap: 'wrap' }}>
+        <Figure label="checked" value={g.checked} />
+        <Figure label="up to date" value={g.current} tone={g.current ? COLORS.success : undefined} />
+        <Figure label="updated" value={g.updated} tone={g.updated ? COLORS.accent : undefined} />
+        {!!g.commits && <Figure label="new commits" value={g.commits} />}
+        {!!g.gone && <Figure label="upstream gone" value={g.gone} tone={COLORS.warn} />}
+        {!!g.failed && <Figure label="failed" value={g.failed} tone={COLORS.error} />}
+        {!!g.deferred && <Figure label="left for later" value={g.deferred} />}
+        {!!g.pruned && <Figure label="deleted" value={g.pruned} tone={COLORS.error} />}
+        {!!g.bytes && <Figure label="stored" value={formatBytes(g.bytes)} />}
+      </div>
+    )
+  }
+
+  const s = run.shards || {}
+  return (
+    <div style={{ display: 'flex', gap: '18px', flexWrap: 'wrap' }}>
+      <Figure label="checked" value={s.checked || 0} />
+      <Figure label="whole" value={s.whole || 0} tone={s.whole ? COLORS.success : undefined} />
+      <Figure label="short" value={s.short || 0} tone={s.short ? COLORS.warn : undefined} />
+      <Figure label="past repairing" value={s.at_risk || 0} tone={s.at_risk ? COLORS.error : undefined} />
+      {run.action === 'rebalance' && (
+        <Figure label="rebuilt" value={s.repaired || 0} tone={s.repaired ? COLORS.accent : undefined} />
+      )}
+      {run.action === 'rebalance' && !!s.deferred && <Figure label="left for later" value={s.deferred} />}
+      {!!s.bytes && <Figure label="moved" value={formatBytes(s.bytes)} />}
+    </div>
+  )
+}
+
 /* The two things that cost something, said once, at the bottom, where somebody
    who has already decided will still read them. */
+function describeAction(automation) {
+  switch (automation.action) {
+    case 'rebalance': return 'anything missing is put back'
+    case 'pull': return 'repositories are kept up to date'
+    default: return 'findings are written down, nothing is moved'
+  }
+}
+
 function Footnotes({ action }) {
   return (
     <div style={{
@@ -543,6 +640,14 @@ function Footnotes({ action }) {
           Putting a part back is always a rebuild, never a copy: a part on a cloud
           that is not answering cannot be read off it, so the file is gathered
           from what can be read and cut again. That is the whole file down and up.
+        </p>
+      )}
+      {action === 'pull' && (
+        <p style={{ margin: '0 0 8px' }}>
+          SAND borrows the git already on this machine, so a repository it can
+          reach is exactly one you can reach from here. A repository is stored as
+          a single bundle that <code>git clone</code> reads directly — the copy
+          needs SAND to be made, and nothing at all to be used again.
         </p>
       )}
       <p style={{ margin: 0 }}>

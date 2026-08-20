@@ -140,7 +140,12 @@ func TestSetAutomationRefusesWhatItCannotRun(t *testing.T) {
 		{"time with no colon", Automation{Cadence: CadenceDaily, At: "1000", Action: ActionCheck}},
 		{"hour past midnight", Automation{Cadence: CadenceDaily, At: "25:00", Action: ActionCheck}},
 		{"minute past sixty", Automation{Cadence: CadenceDaily, At: "10:75", Action: ActionCheck}},
-		{"negative bound", Automation{Cadence: CadenceHourly, Action: ActionCheck, MaxRepairs: -1}},
+		{"negative bound", Automation{Cadence: CadenceHourly, Action: ActionCheck,
+			Shards: &ShardPolicy{MaxRepairs: -1}}},
+		{"unknown task", Automation{Cadence: CadenceHourly, Action: ActionCheck, Task: "tidying"}},
+		{"an action the task cannot do", Automation{Cadence: CadenceHourly, Action: ActionPull}},
+		{"rebalancing repositories", Automation{Cadence: CadenceHourly, Task: TaskGit,
+			Action: ActionRebalance}},
 	} {
 		if _, err := v.SetAutomation(MainScope, "/", tc.want); err == nil {
 			t.Errorf("%s: accepted", tc.name)
@@ -167,7 +172,7 @@ func TestEditingAPolicyKeepsWhatItHasBeenThrough(t *testing.T) {
 	v.mu.Lock()
 	auto := v.manifest.Automations["/"]
 	auto.LastRunAt = ran
-	auto.History = []AutomationRun{{Folder: "/", Whole: 7}}
+	auto.History = []AutomationRun{{Folder: "/", Shards: &ShardResult{Whole: 7}}}
 	created := auto.CreatedAt
 	v.mu.Unlock()
 
@@ -178,7 +183,7 @@ func TestEditingAPolicyKeepsWhatItHasBeenThrough(t *testing.T) {
 	if !edited.LastRunAt.Equal(ran) {
 		t.Errorf("LastRunAt = %s, want the run that already happened at %s", edited.LastRunAt, ran)
 	}
-	if len(edited.History) != 1 || edited.History[0].Whole != 7 {
+	if len(edited.History) != 1 || edited.History[0].Shards.Whole != 7 {
 		t.Errorf("history = %+v, want the one run carried across", edited.History)
 	}
 	if !edited.CreatedAt.Equal(created) {
@@ -359,10 +364,10 @@ func TestCheckOnlyReportsAMissingPartAndMovesNothing(t *testing.T) {
 		t.Fatalf("RunAutomation: %v", err)
 	}
 
-	if run.Checked != 1 || run.Short != 1 || run.Whole != 0 || run.AtRisk != 0 {
+	if run.Shards.Checked != 1 || run.Shards.Short != 1 || run.Shards.Whole != 0 || run.Shards.AtRisk != 0 {
 		t.Errorf("run = %+v, want one file short", run)
 	}
-	if run.Repaired != 0 || run.Bytes != 0 {
+	if run.Shards.Repaired != 0 || run.Shards.Bytes != 0 {
 		t.Errorf("a check-only policy moved something: %+v", run)
 	}
 	if len(run.Warnings) == 0 {
@@ -417,10 +422,10 @@ func TestRebalanceRebuildsOntoTheCloudsThatAnswer(t *testing.T) {
 	if len(run.Offline) != 1 {
 		t.Errorf("offline = %v, want the one cloud that was taken out", run.Offline)
 	}
-	if run.Short != 1 {
+	if run.Shards.Short != 1 {
 		t.Errorf("run = %+v, want one file short of a full set", run)
 	}
-	if run.Repaired != 1 || run.Failed != 0 {
+	if run.Shards.Repaired != 1 || run.Shards.Failed != 0 {
 		t.Fatalf("run = %+v, want the file rebuilt", run)
 	}
 
@@ -460,7 +465,7 @@ func TestRebalanceLeavesAFilePastTheRebuildCeiling(t *testing.T) {
 	emptyCloud(t, roots[3])
 
 	policy := dailyAt("10:00", ActionRebalance)
-	policy.RebuildLimit = 1 // one byte: everything is past it
+	policy.Shards = &ShardPolicy{RebuildLimit: 1} // one byte: everything is past it
 	if _, err := v.SetAutomation(MainScope, "/", policy); err != nil {
 		t.Fatalf("SetAutomation: %v", err)
 	}
@@ -469,11 +474,11 @@ func TestRebalanceLeavesAFilePastTheRebuildCeiling(t *testing.T) {
 		t.Fatalf("RunAutomation: %v", err)
 	}
 
-	if run.Repaired != 0 {
+	if run.Shards.Repaired != 0 {
 		t.Errorf("run = %+v, want nothing rebuilt", run)
 	}
-	if run.Deferred != 1 {
-		t.Errorf("Deferred = %d, want the one file left for somebody to do by hand", run.Deferred)
+	if run.Shards.Deferred != 1 {
+		t.Errorf("Deferred = %d, want the one file left for somebody to do by hand", run.Shards.Deferred)
 	}
 }
 
@@ -495,10 +500,10 @@ func TestAFileTooFarGoneIsSaidSoRatherThanAttempted(t *testing.T) {
 		t.Fatalf("RunAutomation: %v", err)
 	}
 
-	if run.AtRisk != 1 {
+	if run.Shards.AtRisk != 1 {
 		t.Errorf("run = %+v, want the file counted as past repairing", run)
 	}
-	if run.Repaired != 0 || run.Failed != 0 {
+	if run.Shards.Repaired != 0 || run.Shards.Failed != 0 {
 		t.Errorf("run = %+v, want no rebuild even attempted", run)
 	}
 }
@@ -605,10 +610,10 @@ func TestASweepChecksEachFileOnceAcrossOverlappingPolicies(t *testing.T) {
 	// The inner folder ran first and took its two files with it; the outer one
 	// saw all three under it and had one left to check.
 	inner, outer := runs[0], runs[1]
-	if inner.Folder != "/archive" || inner.Checked != 2 {
+	if inner.Folder != "/archive" || inner.Shards.Checked != 2 {
 		t.Errorf("inner run = %+v, want /archive with 2 checked", inner)
 	}
-	if outer.Folder != "/" || outer.Files != 3 || outer.Checked != 1 {
+	if outer.Folder != "/" || outer.Shards.Files != 3 || outer.Shards.Checked != 1 {
 		t.Errorf("outer run = %+v, want / with 3 files and 1 checked", outer)
 	}
 }
@@ -699,7 +704,7 @@ func TestRebalancePutsBackAPartLostFromACloudThatIsAnswering(t *testing.T) {
 	if len(run.Offline) != 0 {
 		t.Errorf("offline = %v, want none — every cloud answered", run.Offline)
 	}
-	if run.Short != 1 || run.Repaired != 1 || run.Failed != 0 {
+	if run.Shards.Short != 1 || run.Shards.Repaired != 1 || run.Shards.Failed != 0 {
 		t.Fatalf("run = %+v, want the file found short and rebuilt", run)
 	}
 
@@ -708,7 +713,7 @@ func TestRebalancePutsBackAPartLostFromACloudThatIsAnswering(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunAutomation again: %v", err)
 	}
-	if again.Whole != 1 || again.Short != 0 {
+	if again.Shards.Whole != 1 || again.Shards.Short != 0 {
 		t.Errorf("second run = %+v, want the file whole", again)
 	}
 

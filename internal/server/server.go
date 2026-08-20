@@ -378,6 +378,15 @@ func (s *Server) Handler() (http.Handler, error) {
 		"POST /api/automation":     s.handleAutomationSet,
 		"DELETE /api/automation":   s.handleAutomationRemove,
 		"POST /api/automation/run": s.handleAutomationRun,
+
+		// The repositories a vault is keeping a copy of, each stored as one
+		// git bundle. Listing is index work; tracking and refreshing borrow the
+		// machine's git and talk to somebody else's server, so they have
+		// deadlines of their own. See handlers_git.go.
+		"GET /api/git":               s.handleGitList,
+		"POST /api/git/track":        s.handleGitTrack,
+		"POST /api/git/{id}/refresh": s.handleGitRefresh,
+		"DELETE /api/git/{id}":       s.handleGitUntrack,
 	}
 	for pattern, handler := range protected {
 		mux.HandleFunc(pattern, s.requireSession(handler))

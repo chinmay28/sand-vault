@@ -15,6 +15,7 @@ import MoveToFolder from './MoveToFolder'
 import { FilmButton, FilmLookupSettings } from './FilmDetails'
 import { OrganizerButton, OrganizerMenu, OrganizerTool } from './Organizer'
 import { AutomationButton, AutomationSettings } from './FolderAutomation'
+import { FolderRepos, ReposButton } from './FolderRepos'
 
 /* How long to sit on a keystroke before asking the server. Long enough that
    typing a word is one query rather than six, short enough to feel live. */
@@ -57,6 +58,7 @@ export default function FileBrowser({
   /* The folder's standing instruction: its schedule, what the last few runs
      found, and the button that starts one now. */
   const [automating, setAutomating] = useState(false)
+  const [repos, setRepos] = useState(false)
   /* Files the organizer picked from below this folder, which have no row here
      to be ticked. They join the selection as items in their own right — see
      `chosen` — so the selection bar can move, download, scatter or erase a
@@ -223,6 +225,7 @@ export default function FileBrowser({
      the listing so that opening a folder does not cost a second request to be
      told the usual answer, which is that it has none. */
   const automation = listing?.automation
+  const repoCount = listing?.repos || 0
 
   /* A selection is about the things in front of you, so walking somewhere else
      — or asking a different question of the index — ends it rather than
@@ -466,6 +469,9 @@ export default function FileBrowser({
                 {/* Third of the three folder-level buttons, and the only one
                     that keeps working when nobody is looking. */}
                 <AutomationButton automation={automation} mobile onOpen={() => setAutomating(true)} />
+                {/* Lit only where repositories are actually kept, which is a
+                    handful of folders in a vault rather than all of them. */}
+                <ReposButton count={repoCount} mobile onOpen={() => setRepos(true)} />
               </>
             )}
             /* Handed to the heading rather than put in its place: the field
@@ -502,6 +508,7 @@ export default function FileBrowser({
                 mobile={false}
                 onOpen={() => setAutomating(true)}
               />
+              <ReposButton count={repoCount} mobile={false} onOpen={() => setRepos(true)} />
               <ViewControls
                 mobile={false}
                 prefs={prefs}
@@ -709,6 +716,18 @@ export default function FileBrowser({
           /* A sweep can rebuild files, which changes which clouds their badges
              name; and the button above is drawn from the listing's copy of the
              policy. Both are the listing. */
+          onChanged={onRefresh}
+        />
+      )}
+
+      {repos && (
+        <FolderRepos
+          path={path}
+          vault={vault}
+          onClose={() => setRepos(false)}
+          /* Storing or refreshing a repository writes a file into this folder,
+             so the listing under the dialog is out of date the moment it
+             finishes. */
           onChanged={onRefresh}
         />
       )}

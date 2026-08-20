@@ -860,8 +860,24 @@ lives in the manifest keyed by folder path, beside `MovieFolders` and
 `FolderArt` and for the same reason: which folders somebody keeps and what they
 are called is index, so it is encrypted at rest, it travels with a rename
 (`Manifest.moveFolder`) and it is dropped with a delete (`dropAutomations`). It
-holds a cadence (`hourly` / `daily` / `weekly` with a local wall-clock time), an
-action (`check` / `rebalance`), three bounds, and the last eight runs.
+holds a cadence (`hourly` / `daily` / `weekly` with a local wall-clock time), a
+*task*, an action, that task's bounds, and the last eight runs.
+
+**The task is a choice, and the schedule around it is not.** A folder drifting
+from what it should be is one problem with more than one shape: shards going
+missing is one, a mirrored repository falling behind its upstream is another
+(§3.16). Both want the same cadence, the same history, the same "run it now"
+button and the same one-at-a-time rule; the work in the middle has nothing in
+common. So `Automation.Task` names the job — `shards` or `git` — the schedule
+and `Action` sit above it, and each task's knobs live behind its own struct
+(`ShardPolicy`, `GitPolicy`) with `check()` dropping whichever one the chosen
+task does not read. `AutomationRun` splits the same way: the common half is the
+schedule's (folder, task, when, which accounts answered) and the counters are
+under `Shards` or `Git`, because a count of repositories means nothing to the
+storage job and a count of files means nothing to the mirror one. `ActionCheck`
+is shared and means the same thing for both — look, change nothing; the fixing
+verb is named after the work (`rebalance`, `pull`) and `Action.fits` refuses the
+combinations that do not exist.
 
 **Per folder, not per vault.** A vault is not one thing — the films are
 replaceable and the passports are not — and the folder is the only place that
@@ -958,6 +974,93 @@ this goes into the vault file and onto every account as a backup (§3.6). The
 `FolderAutomation` a folder listing carries is the same record with the history
 stripped and one `Trouble` boolean in its place, so the browser can draw a
 folder's state without fetching eight runs' worth of warnings per folder.
+
+---
+
+### 3.16 Repositories kept as bundles
+
+A git repository in a vault is **one file**: a bundle holding its whole history.
+
+That is forced by the storage model rather than chosen for tidiness. SAND stores
+files and cuts each one into encrypted parts spread over several accounts, so a
+repository kept as a directory would be thousands of loose objects, each becoming
+several cloud objects of its own — and a fetch that repacked them would
+re-scatter most of that every week for a handful of commits. A bundle goes
+through the ordinary upload path (`UploadStreamAt`), gets the ordinary erasure
+code, and lands on the ordinary accounts, with `gitrepo.go` needing to know none
+of it.
+
+It is also the shape that outlives SAND. `git clone repo.bundle` is a complete
+repository — every branch, every tag, the right default branch — with nothing to
+reimplement. An archive whose format needs the tool that wrote it is an archive
+with a deadline.
+
+**The weekly check is nearly free, and that is the whole design.** Fetching is
+the expensive part and almost every week almost every repository has not moved,
+so the question is asked before the work is done. `git ls-remote` is one short
+conversation with the server — a few kilobytes of ref advertisement, no objects
+— and its answer is reduced by `git.Digest` and compared with the digest stored
+beside the bundle. Equal means done: nothing downloaded, nothing uploaded,
+nothing re-encrypted. Only a repository whose digest moved costs anything, and
+even then not a full clone: the stored bundle is turned back into a mirror
+(`git.FromBundle`), `origin` is repointed at the real remote, and the fetch
+brings down the difference.
+
+`LsRemote` drops the advertised `HEAD` as well as the peeled `^{}` entries. A
+local repository never reports `HEAD` — it is a symref to a branch already in the
+list — so keeping it would make every stored repository differ from its own
+upstream for ever, turning the cheap weekly check into a weekly full fetch.
+
+The digest is stored rather than the refs themselves for size. A repository with
+four thousand tags has four thousand refs; keeping them would put a quarter of a
+megabyte per repository into an index that is encrypted, held in memory, written
+on every change and replicated to every account (§3.6). Sixteen bytes answers the
+only question the schedule asks. `GitSource` also separates `FetchedAt` from
+`CheckedAt`, and the gap between them is the good news: checked every Sunday,
+fetched in March.
+
+**SAND borrows the machine's git.** `internal/git` shells out rather than
+speaking the protocol, because the hard part of reaching somebody's repositories
+is not the wire format but the credentials — an agent-held SSH key, a credential
+helper, a host alias in `~/.ssh/config`, a corporate CA. A second implementation
+would either reimplement all of that badly or be unable to reach a single private
+repository. The rule that needs no documentation is: a repository SAND can see is
+one you can see from the same machine. The cost is a runtime dependency, paid
+honestly — `git.Available()` gates the task, and `check()` refuses a fetching
+policy on a machine without git rather than letting it fail at four in the
+morning.
+
+**A repository URL is hostile input.** git's `ext::` transport hands its argument
+to a shell, so `ext::sh -c …` in a URL is arbitrary code execution as whoever runs
+the server; a URL beginning with `-` is an argument rather than an address. Both
+are shut off twice: `ParseRemote` is allow-list — https, http, ssh, and the
+scp-like `git@host:path`, nothing else — and every invocation carries
+`-c protocol.ext.allow=never` besides. `ParseRemote` is also not a check a call
+site can skip: it is the only way to construct the `git.Remote` that every
+network-reaching function insists on. A **local path is refused**, deliberately:
+vault access must not become arbitrary local file read. Submodules are never
+recursed (they are somebody else's URLs, arriving from inside the repository),
+nothing is ever checked out, and `GIT_TERMINAL_PROMPT=0` plus `ssh -o
+BatchMode=yes` turn a credential SAND does not have into an immediate failure
+rather than a background job hanging until its context expires.
+
+**A vanished upstream is not a deletion.** An outage, a rename, a revoked token
+and a real deletion look identical from here, and only one of them is a reason to
+throw away what may be the last copy of somebody's repository. So a non-answering
+upstream sets `GitSource.Gone` with the reason, the run counts it, and the bundle
+stays. `GitPolicy.Prune` exists and is off by default.
+
+The sweep bounds the fetching and not the asking. Every tracked repository is
+still asked whether it has moved, because that is the cheap half and the half
+that makes the report honest; `MaxRepos` and `SizeLimit` govern only what is
+actually fetched, and what is left over is counted, named, and picked up next
+time.
+
+A refresh stores the new bundle with `Overwrite`, which files a new entry over
+the old one rather than editing it — so the file gets a **new ID**, and
+`refreshRepo` returns the repository as it now stands rather than a bare boolean.
+A caller left holding the ID it started with would be holding one that names
+nothing.
 
 ---
 
@@ -2053,9 +2156,13 @@ reveals only whether a vault exists.
 | DELETE | `/api/folders?path=&recursive=` | Delete a folder |
 | POST | `/api/relocate` | Move a file (`id`) or a folder (`path`) onto other `accounts` (§5.6); a different *count* of accounts changes the scheme and rebuilds the file; `"preview": true` prices it out of the index and moves nothing |
 | GET | `/api/automation` | Every folder policy this vault can see, and whether a sweep is running. `?path=` answers for one folder — `null`, not a 404, when it has none (§3.15) |
-| POST | `/api/automation` | Put a policy on a `path`: `cadence`, `at`, `weekday`, `action`, `narrow`, `max_repairs`, `rebuild_limit`, `enabled`. Creating and editing are the same call; an edit keeps the history and the last-run time |
+| POST | `/api/automation` | Put a policy on a `path`: `cadence`, `at`, `weekday`, `task`, `action`, `enabled`, plus that task's bounds — `narrow`, `max_repairs`, `rebuild_limit` for `shards`; `max_repos`, `size_limit`, `prune` for `git`. Creating and editing are the same call; an edit keeps the history and the last-run time |
 | DELETE | `/api/automation?path=` | Take it off, history and all |
 | POST | `/api/automation/run` | Carry a folder's policy out now, due or not, on or off. Contacts every account and may rebuild files, so it has relocation's deadline; `409 AUTOMATION_BUSY` when one is already running |
+| GET | `/api/git` | The repositories stored under `?path=`, and whether this machine has a git to borrow at all (§3.16) |
+| POST | `/api/git/track` | Mirror `url` and store it as a bundle in `path`. The first copy is the whole history, so it carries a long deadline |
+| POST | `/api/git/{id}/refresh` | Ask one repository's upstream whether it has moved, and fetch it if it has. Answers `updated: false` for the common case, which cost one ref advertisement. The reply carries the repository's **new** id — an overwrite is a new entry |
+| DELETE | `/api/git/{id}` | Stop following the upstream. The bundle stays: it is a complete repository and a perfectly good file |
 | GET | `/api/movies` | Whether a film database key is stored, and which folders are opted in (§3.11) |
 | POST | `/api/movies/key` | Store the key — checked against the database before it is kept; `""` clears it |
 | POST | `/api/movies/lookup` | Turn film lookup on or off for a `path` and everything beneath it |
