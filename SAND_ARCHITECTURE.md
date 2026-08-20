@@ -334,6 +334,13 @@ so a placement that cannot hold a file fails with the vault untouched.
 Interruptible on the same terms as a password change: the rotation is one write,
 each file commits on its own, and `sand vault migrate` finishes whatever is left.
 
+**What none of these routes carries is the credentials.** Every route above
+begins with the accounts already reconnected by hand, because `manifest.sand`
+sits on those accounts and a credential inside it would let one compromised
+account unlock all the others. A recovery kit — a single sealed file the vault
+exports and no cloud ever sees — is where they can live instead, and is
+designed in [`docs/recovery-kit.md`](./docs/recovery-kit.md). Not built.
+
 **Finishing later is a separate operation.** A partial recovery leaves a
 complete index, part of it out of reach: `Stats.Unresolved` counts the shard
 records naming accounts the vault is not connected to, and `Stats.Stranded` the
