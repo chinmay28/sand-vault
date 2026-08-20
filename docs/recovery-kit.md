@@ -61,11 +61,14 @@ one file, and the rest of this document is what follows from it.
 
 ## 2. The shape of the answer
 
-> `sand vault kit export` produces `sand-recovery-kit-<date>.zip`. On a fresh
-> install, dropping that zip on the lock screen and typing its passphrase gives
-> you back the vault you had: every cloud connected, the tree exactly as it
-> was, the films, the thumbnails, the sub vaults still shut, the read history
-> still counting from where it stopped.
+> `sand vault kit export` produces `sand-recovery-kit-<date>.zip` and shows you
+> a 25-character **recovery code**. On a fresh install, dropping that zip on the
+> lock screen and typing that code gives you back the vault you had: every cloud
+> connected, the tree exactly as it was, the films, the thumbnails, the sub
+> vaults still shut, the read history still counting from where it stopped.
+>
+> The code is not in the zip. The zip is not the vault; the zip *and* the code
+> are the vault.
 
 Two properties make it work, and they are worth stating before the format:
 
@@ -127,11 +130,16 @@ SAND recovery kit
 Kit id      3f2b9c1e-...
 Created     2026-08-19T14:02:11Z
 Built by    sand 0.9.4
+Opened by   a 25-character recovery code (not in this file)
 Accounts    4
 Files       12,481 (2.31 TB)
 Sub vaults  2
 kit.sand    sha256:8a1f...  (1,904,332 bytes)
 ```
+
+The kit id is there so that somebody holding three kits and two slips of paper
+can tell which opens which — the code is stored against that id (§4.4), and
+the export flow prints it beside the code.
 
 Account *names* are not in it. "4 accounts" is what a person needs to know
 whether they are holding the right kit; "Google Drive (personal), Dropbox
@@ -143,8 +151,14 @@ that losing control of it is as bad as losing control of every cloud account
 at once. It is written for a person who found a zip on a drive in a drawer in
 2031 and has no idea what SAND is.
 
+It is also the one place that states the arrangement plainly, because the
+person reading it is by definition working out what they are holding: *this
+archive is opened by a 25-character recovery code that was shown to you when
+it was made. The code is deliberately not in here. Without it this file cannot
+be opened by anyone, including you.*
+
 The zip itself is not encrypted. Zip encryption is weak, non-portable and
-would add a second passphrase for no gain — everything that matters is already
+would add a second secret for no gain — everything that matters is already
 sealed. `README.txt` says so, so that a reader who can list the archive does
 not conclude that their secrets are lying in the open.
 
@@ -156,7 +170,7 @@ not conclude that their secrets are lying in the open.
 
 Deliberately the same shape as `Backup`, for the same reason it has that
 shape: the KDF parameters have to travel with the ciphertext, because a reader
-who has lost everything has nothing but a passphrase.
+who has lost everything has nothing but the secret in their hand.
 
 ```go
 // KitMagic identifies the envelope. A reader can tell a kit from a manifest
@@ -172,16 +186,23 @@ type KitEnvelope struct {
     KDF     kdfParams `json:"kdf"`
     Check   sealed    `json:"check"`      // seals "SAND-KIT-OK"
     Payload sealed    `json:"payload"`    // the Kit below
+
+    // Secret says what opens this kit: "code" for a generated recovery code,
+    // "password" for the vault password the exporter chose instead. It is in
+    // the clear because it is not a secret and because an import that has to
+    // guess asks the wrong question — "Recovery code" and "Vault password"
+    // are different fields with different validation and different help text,
+    // and the person typing into one of them is having a bad day. See §4.4.
+    Secret string `json:"secret"`
 }
 ```
 
 `Check` gives the same distinction `OpenBackup` gives: a failed GCM tag on a
-16-byte constant is a wrong passphrase, a failure on the payload is a corrupt
-file. Those two need different words in front of a frightened user.
+16-byte constant is a wrong code, a failure on the payload is a corrupt file. Those two need different words in front of a frightened user.
 
 **The KDF is deliberately heavier than the vault's.** A vault password is
 typed several times a day and Argon2id at 64 MB is the cost that buys. A kit
-passphrase is typed once every few years, so the kit uses **t=8, m=512 MB,
+kit secret is typed once every few years, so the kit uses **t=8, m=512 MB,
 p=4** — call it `crypto.KitArgon2Params()`. Roughly a second and a half on a
 laptop, versus a hundred milliseconds; a rounding error at the only moment it
 is ever paid, and a factor of forty against somebody grinding a stolen kit
@@ -253,15 +274,16 @@ here that is not simply "a field the store already had", and §4.3 is why.
 
 ### 4.3 Why the kit carries the vault key
 
-The kit's passphrase need not be the vault password. It should not have to be:
-a vault password gets typed in cafés, and a kit sits offsite for years. But
-the copies of `manifest.sand` on the accounts — the copies that are *newer
-than the kit*, and are the only reason the August files come back from a March
-kit — are sealed under the vault key, which comes from the vault password.
+The kit is opened by a code that has nothing to do with the vault password
+(§4.4). But the copies of `manifest.sand` on the accounts — the copies that are
+*newer than the kit*, and are the only reason the August files come back from a
+March kit — are sealed under the vault key, which comes from the vault
+password.
 
-So either the kit passphrase is forced to equal the vault password, or the
-import asks for the vault password on top of the kit passphrase, or the kit
-carries the derived key. The third is the only one that stays true after a
+So either the kit's secret is forced to equal the vault password, or the import
+asks for the vault password on top of the code, or the kit carries the derived
+key. The first is the option §4.4 exists to reject and the second asks a person
+mid-disaster for the one secret most likely to be gone. The third is the only one that stays true after a
 password change nobody remembered to re-export for, and it gives away nothing
 new: the kit already carries the data key, which opens the file contents. The
 vault key only opens an index the kit already contains a copy of.
@@ -274,6 +296,102 @@ If the vault password was changed *after* the kit was made, the carried vault
 key no longer opens the copies on the accounts. That is a recognised state,
 not an error: §6.5.
 
+### 4.4 The secret that opens it
+
+**By default it is a code SAND generates, not a password the user chooses.**
+
+A vault password is typed several times a day, which is what makes it
+memorable. A kit secret is typed once in three years — the profile of a secret
+people forget — and the event that destroys the machine is often the same
+event that destroys the password manager. Worse, a kit sealed under "the vault
+password" is sealed under *the vault password as it was on the day of the
+export*, so a kit made in 2026 and a password changed in 2027 leave somebody
+guessing which of their last four passwords was current in March.
+
+A generated code fixes all three. It cannot be forgotten separately from the
+password because it was never the password. It is pinned to the kit rather
+than to a moment in a password history. And it has real entropy, which changes
+what the KDF is for.
+
+#### The code
+
+```
+K7QM4-9WXTB-2FGHN-5PRVD-8JC3S
+```
+
+- **Crockford base32** — `0123456789ABCDEFGHJKMNPQRSTVWXYZ`. `I`, `L`, `O` and
+  `U` are absent: the first three because a code gets handwritten and read back
+  months later by someone who did not write it, and `U` because an alphabet of
+  32 symbols in five-character groups will eventually produce a word nobody
+  wants printed in their safe. Decoding folds case and maps `I`/`l` → `1` and
+  `O` → `0`, so a transcription that "corrects" them still opens the kit.
+- **24 symbols of entropy = 120 bits**, drawn from `crypto/rand`. Grouped five
+  and five with hyphens purely for the hand and the eye; the hyphens are not
+  part of the value.
+- **One check symbol**, the 25th, is the first five bits of
+  `SHA-256(the 120 bits)`. Its only job is to tell *you have mistyped this*
+  from *this is the wrong kit* — see below. It is not integrity; GCM is
+  integrity.
+
+Normalisation before anything else touches it: strip everything that is not an
+alphanumeric, upper-case, fold `I`/`L`/`O`, then verify the check symbol. That
+happens **before** the KDF runs, which is the point of having it: a typo is
+caught in microseconds and answered with *"that code has a typo in it — check
+the fourth group"*, instead of costing a second and a half of Argon2 and then
+producing *"wrong code"*, which is the message that makes a person conclude
+their backup is dead.
+
+#### The KDF stays expensive anyway
+
+120 bits does not need stretching. A single HKDF would be sound, and Argon2id
+at 512 MB is, against a real code, security theatre with a cost.
+
+It stays for two reasons. The opt-out below puts a human-chosen password
+through the same envelope, and *that* case needs every bit of the 512 MB. And
+one code path that cannot be configured wrong is worth more than 1.4 seconds
+paid once every few years. `Secret` records which kind it was, for the prompt;
+it does not select a weaker derivation.
+
+#### Where the code lives
+
+**Never in the zip, and never in its filename.** A code inside the artefact it
+opens is not a secret, and a filename travels with the file through every copy,
+sync and mail attachment it will ever see. The export flow shows it once, in a
+panel the user must acknowledge, offers it as a separate small `.txt` to save
+somewhere else, and says in one line what the arrangement means: *the kit and
+the code in the same place are the vault in one place.*
+
+**But it is not shown only once.** The generated code is stored in the vault's
+own `Settings` section — sealed, beside `MovieAPIKey`, and pointedly *not* in
+the manifest, so it is never replicated to an account. While the vault is
+alive, **Settings → Recovery kit → Show code** displays it again.
+
+That looks like it gives something away and does not. Reading it requires an
+unlocked vault, and anybody with an unlocked vault can export a fresh kit with
+a fresh code in ten seconds. What it buys is the ordinary case: a person who
+still has their working machine, has mislaid the slip of paper, and would
+otherwise be holding a zip that nothing on earth opens. The code is stored per
+kit id, so a vault that has exported three kits can still say which code
+belongs to which.
+
+The one arrangement SAND cannot help with is the one that matters most —
+machine gone, slip of paper gone. `verify` (§7) exists partly as the forcing
+function for that: it asks for the code, so running the fire drill twice a year
+is also a check that you can still find it.
+
+#### The opt-out
+
+**Use my vault password instead** is a checkbox on the export dialog and
+`--use-vault-password` on the CLI. It is offered without discouragement,
+because for somebody who keeps a long generated password in a password manager
+that is itself backed up, it is a real answer and one fewer secret to file.
+
+It sets `Secret: "password"`, stores nothing in `Settings`, and changes what
+the import asks for. It does not change the KDF, the envelope or anything else
+in this document. What the dialog says about it is one sentence: *the kit will
+open with the password you are using today, not with whatever you change it to
+later.*
+
 ---
 
 ## 5. Export
@@ -283,14 +401,23 @@ sand vault kit export --out ~/sand-recovery-kit.zip
 POST /api/vault/kit    →  application/zip
 ```
 
-`Vault.ExportKit(ctx, passphrase string, w io.Writer) (*KitFingerprint, error)`
+`Vault.ExportKit(ctx, opts ExportOptions, w io.Writer) (*KitFingerprint, error)`
 
+where `ExportOptions` carries only `UseVaultPassword bool` and, when it is set,
+the password to check against — so the ordinary call passes nothing and gets a
+generated code back in the fingerprint.
+
+0. Unless `UseVaultPassword`, mint the recovery code: 120 bits from
+   `crypto/rand`, encoded Crockford, check symbol appended. It is returned to
+   the caller and written into `Settings.KitCodes[kitID]`; it is not written
+   into the zip, the filename, the log, or the fingerprint file.
 1. Refuse if locked. The kit is built from the decrypted store.
 2. Build `Kit`: `snapshotLocked()` for the snapshot, `v.providers` verbatim for
    the accounts, `v.vaultKey` for `VaultKey`, the store's preference fields,
    and `openReadHistory` for the sidecar.
-3. Derive under `KitArgon2Params()` with a fresh 16-byte salt. Seal the check
-   block, seal the payload, marshal the envelope.
+3. Derive under `KitArgon2Params()` with a fresh 16-byte salt, from the
+   normalised code or from the vault password, and set `Secret` to say which.
+   Seal the check block, seal the payload, marshal the envelope.
 4. Seal a `manifest.sand` from the same snapshot under the vault key — the
    same bytes `SyncManifestBackup` would write this second.
 5. Compute the fingerprint over the finished `kit.sand`.
@@ -301,7 +428,8 @@ POST /api/vault/kit    →  application/zip
 8. Zero the derived key and the copy of the vault key. Nothing is written to
    a temporary file at any point: the zip is assembled straight into the
    response writer, so a kit never exists on disk anywhere but where the user
-   put it.
+   put it. The code itself is returned out-of-band — in the JSON of a
+   companion request, never in the zip stream — for the reason in §4.4.
 
 **One refusal.** Writing the kit into a folder that is the root of a connected
 `local`, `icloud` or sync-folder account is refused outright. It is the exact
@@ -318,12 +446,20 @@ last export:
 {
   "exported_at": "2026-03-02T09:14:00Z",
   "kit_id": "3f2b9c1e-...",
+  "secret": "code",
+  "code_retained": true,
   "age_days": 170,
   "files_added": 312,
   "accounts_changed": true,
   "password_changed_since": false
 }
 ```
+
+`code_retained` says whether this vault can still show you the code for that
+kit. It is false for a kit sealed under the vault password, which is a fact the
+settings panel has to state rather than imply: for those, `password_changed_since`
+being true means the kit opens under a password the user may no longer know,
+and there is no **Show code** to fall back on.
 
 `accounts_changed` and `password_changed_since` are the two that matter, and
 they are the two the UI leads with, because a kit that is merely old still
@@ -337,14 +473,24 @@ password change recovers less. A vault that has never exported one answers
 
 ```
 sand vault kit import ~/sand-recovery-kit.zip
-POST /api/vault/kit/import   (multipart: file + passphrase + new_password?)
+POST /api/vault/kit/import   (multipart: file + secret + new_password?)
 ```
 
 `Vault.ImportKit(ctx, kit *Kit, opts ImportOptions) (*KitImportReport, error)`
 
 Unauthenticated at the HTTP layer, in the same way and for the same reason
 `POST /api/vault/init` is: on a fresh install there is no session to have, and
-what stands in front of it is possession of the file plus its passphrase.
+what stands in front of it is possession of the file plus the secret that
+opens it.
+
+**What it asks for is read off the envelope, not guessed.** `inspect` parses
+the header without any secret at all, so the import screen knows before the
+user types whether this kit wants a recovery code or a vault password, and
+labels the field accordingly. A code field normalises and check-sums as you
+type — the last group completing turns the border green before anything is
+submitted — and rejects a typo without a round trip. A password field does
+neither, because there is nothing to check a password against until the KDF
+has run.
 
 ### 6.1 The phases
 
@@ -355,7 +501,8 @@ over a vault that holds files, unless `replace: true` was given explicitly.
 adopting a data key when files depend on the current one destroys them.
 
 **Phase 1 — mint the vault.** `Init` under the new password, which defaults to
-the kit's own passphrase but need not be it. Then adopt, in one write: the
+the vault password the kit was sealed under, when it was sealed under one, and
+otherwise must be chosen — a recovery code is not a password to run a vault on. Then adopt, in one write: the
 data key and its id, every retired generation, the policy, the default
 accounts and scheme, the film key, the manifest-backup preference, and the
 sub-vault records verbatim.
@@ -525,7 +672,15 @@ it never knew about.**
 
 ### 6.5 The kit that predates a password change
 
-The carried `VaultKey` no longer opens the copies on the accounts. Phase 4
+**The kit itself still opens.** This is the case a generated code exists for:
+the code is not the vault password and a password change does not touch it, so
+the credentials, the tree and every file the kit describes come back exactly as
+they would have. Under the §4.4 opt-out the same event is far worse — the kit
+opens under a password that was retired eighteen months ago and the user is
+guessing.
+
+What is affected is only phase 4. The carried `VaultKey` no longer opens the
+copies on the accounts. Phase 4
 detects it — the check block in each `manifest.sand` fails, uniformly, on
 every account — and distinguishes it from corruption by its uniformity.
 
@@ -536,9 +691,13 @@ The import does not fail. It reports:
 > machine died and the newer index comes back too; skip, and you get the
 > {date} index from the kit.
 
-Skipping is a real option and is offered as one. The kit's index is older but
-complete for what it describes, and every account is already connected —
-which is nearly all of the value.
+Skipping is a real option and is offered as one — and it is the *default* on a
+code-sealed kit, because the person in front of this dialog has already proved
+they hold the code and is now being asked for a second, older secret they may
+never have had. The kit's index is older but complete for what it describes,
+and every account is already connected, which is nearly all of the value. What
+skipping costs is named exactly: the files added between the export and the
+password change, which the report counts.
 
 ### 6.6 Rejected: shipping the vault file verbatim
 
@@ -549,10 +708,10 @@ and the defaults. Import would be `cp`. Zero new crypto.
 
 It was rejected for three reasons, in order of weight:
 
-1. **It welds the kit passphrase to the vault password.** The kit cannot be
-   sealed under a long offsite phrase while the vault keeps a typeable one,
-   and a password change silently invalidates nothing while quietly making the
-   kit open under a phrase the user has stopped using.
+1. **It welds the kit's secret to the vault password**, which forecloses §4.4
+   entirely: there is no room for a generated code, so the kit can only ever
+   open under a password the user chose, and a password change quietly leaves
+   the kit answering to one they have stopped using.
 2. **It cannot be inspected.** `fingerprint.txt` and
    `POST /api/vault/kit/inspect` both need structure the store file does not
    expose without full decryption, and "what is in this zip" is a question
@@ -586,6 +745,19 @@ nothing anywhere:
 It runs against the vault the user still has, and it answers the question the
 export dialog cannot: *if I needed this today, what would I get back?*
 
+**It asks for the code, and that is half of why it exists.** The drill could
+open the kit from the live vault's own key material and skip the prompt
+entirely. It does not, because the failure this design cannot otherwise catch
+is the slip of paper that went missing in a house move two years ago, and the
+only way to catch it is to make somebody find the paper. A drill that passes
+proves the credentials still work *and* that the secret is still in the
+world — and the day it fails on the second, the vault is still alive and a
+fresh kit is ten seconds away.
+
+For a kit whose code is still retained (§4.4) the drill can offer **use the
+stored code** as a second button, which turns it back into a one-click check
+of the credentials alone. It is the weaker drill and is labelled as one.
+
 This is the single highest-value item in the design after the import itself.
 It is the difference between a kit somebody made once and a kit somebody
 trusts, and it costs one ping and one listing per account.
@@ -595,12 +767,31 @@ trusts, and it costs one ping and one listing per account.
 ## 8. Security
 
 **One file, everything.** The kit holds every credential, the data key, the
-vault key and the whole index. Somebody who has the kit and the passphrase has
-the vault; somebody who has the kit alone has an Argon2id-at-512-MB problem.
-This is not a weakening of the model — the same person with the vault file and
-the vault password has exactly the same thing — but it is a *concentration* of
-it, in an artefact designed to be copied and stored elsewhere, and the design
-handles it by saying so loudly rather than by pretending otherwise.
+vault key and the whole index. Somebody who has the kit and the code has the
+vault. This is not a weakening of the model — the same person with the vault
+file and the vault password has exactly the same thing — but it is a
+*concentration* of it, in an artefact designed to be copied and stored
+elsewhere, and the design handles it by saying so loudly rather than by
+pretending otherwise.
+
+**Somebody who has the kit alone has nothing.** 120 bits, uniformly random,
+behind Argon2id at 512 MB. There is no dictionary, no reuse from another
+breach, no birthday, no shoulder to surf: the arithmetic is not close enough
+to be worth writing out. This is the real reason to prefer a code over a
+password, and it is worth being blunt about which way round the benefit runs —
+the code is not chosen to make the kit harder to crack, since a stolen kit was
+never the likely loss. It is chosen because it cannot be forgotten *alongside*
+the password, and the security is a side effect of fixing that.
+
+**The two failure directions are not symmetric, and the design is not neutral
+between them.** Losing the code loses everything the kit could have restored;
+someone else finding the code, without also finding the kit, gains nothing at
+all. So every choice above leans toward retrievability: the code is stored in
+the live vault, `verify` drags it into daylight twice a year, and the export
+panel nags about a kit whose code was never confirmed as written down. The
+lean is deliberate and it is the right one — but it does mean an unlocked
+vault is a path to the code, which is stated here rather than left to be
+discovered.
 
 **The refusals, and the one that is deliberately absent.** The manifest backup
 refuses to be written under redundant placement with fewer than three
@@ -612,9 +803,10 @@ enforced is §5's refusal to write a kit into a synced folder, which is the
 same hazard arriving by a different road.
 
 **Handling.** The export path never touches a temporary file. The derived key,
-the vault key copy and the marshalled plaintext are zeroed. The passphrase is
-never logged, never in a URL, and never a GET parameter — which is why export
-is a POST that returns a body.
+the vault key copy and the marshalled plaintext are zeroed. The code and the
+password are never logged, never in a URL, and never a GET parameter — which is
+why export is a POST that returns a body. The code is never inside the zip,
+never in its filename, and never in `fingerprint.txt`.
 
 **A kit you have lost control of** is the one case with no automatic remedy,
 and the docs say what to do: change the vault password (which rotates the data
@@ -622,6 +814,12 @@ key), run `sand vault migrate` to re-encrypt every file onto the new
 generation, and rotate the credentials of every account at the provider. The
 old kit then opens a vault whose key opens nothing that is still stored. Note
 the order — the credentials are the part SAND cannot rotate for you.
+
+Destroying the code is *not* a substitute for any of that. It is a value the
+vault has been holding for you, and the person who took the kit may have taken
+it from a screenshot, a note app or the `.txt` beside the zip. Deleting the
+retained copy is offered as tidying up after the rotation, never instead of
+it, and the UI does not present it as revocation.
 
 ---
 
@@ -633,6 +831,7 @@ the order — the credentials are the part SAND cannot rotate for you.
 |---|---|---|
 | `GET /api/vault/kit` | yes | staleness: last export, drift since |
 | `POST /api/vault/kit` | yes | build and stream the zip |
+| `GET /api/vault/kit/code/{kit_id}` | yes | show the retained code again (§4.4) |
 | `POST /api/vault/kit/verify` | yes | the fire drill |
 | `POST /api/vault/kit/inspect` | no | what is in this zip; changes nothing |
 | `POST /api/vault/kit/import` | no | the import; starts a session on success |
@@ -645,31 +844,61 @@ told otherwise, which is the guard that matters.
 ### CLI
 
 ```
-sand vault kit export  [--out FILE] [--passphrase-file FILE]
+sand vault kit export  [--out FILE] [--use-vault-password]
 sand vault kit inspect FILE
-sand vault kit verify  FILE
-sand vault kit import  FILE [--vault PATH] [--replace] [--password-file FILE]
+sand vault kit verify  FILE [--code-file FILE]
+sand vault kit import  FILE [--vault PATH] [--replace] [--code-file FILE]
+sand vault kit code    [KIT_ID]
 ```
 
+`export` prints the code to the terminal and to nothing else, on its own, with
+the kit id beside it — so `sand vault kit export --out /mnt/usb/kit.zip` in a
+script still puts the one thing that must not be in the file in front of a
+human. `--use-vault-password` seals under the vault password instead and prints
+nothing.
+
 `inspect` and `import` are the only vault commands that work with no vault at
-all — `import` creates one. Passphrases come from a prompt or a file, never
-from an argument, so they stay out of shell history and out of `ps`.
+all — `import` creates one, and `inspect` also reports whether the kit wants a
+code or a password, which is what lets `import` prompt with the right word.
+`sand vault kit code` reads a retained code back out of a live vault.
+
+Codes and passwords come from a prompt or a file, never from an argument, so
+they stay out of shell history and out of `ps`. A `--code-file` is read,
+normalised and check-summed before the KDF runs, so a mangled file fails
+instantly and legibly.
 
 ### Browser
 
-**Export** lives in `VaultSettings.jsx`, under a heading of its own with the
-staleness line above the button ("Exported 170 days ago · 312 files added
-since"), a passphrase field that defaults to the vault password with one
-checkbox to use a different one, the sentence about not saving it into a
-synced folder, and a **Test this kit** link running `verify`.
+**Export** lives in `VaultSettings.jsx`, under a heading of its own: the
+staleness line ("Exported 170 days ago · 312 files added since"), the button,
+one checkbox for *use my vault password instead*, and the sentence about not
+saving the kit into a synced folder. Afterwards, a **Test this kit** link
+running `verify`, and — for a kit whose code is retained — **Show code**.
+
+The code panel is the one screen in SAND that must not be skimmed past, so it
+is the one screen that behaves like a modal with a job: the code in the
+project's mono face, big, grouped, with a copy button and a **Save as a text
+file** button; the kit id beside it; one line saying it is not inside the zip
+and cannot be recovered from it; and a checkbox — *I have written this down or
+saved it somewhere else* — that the dismiss button waits on. Not because a
+checkbox proves anything, but because the alternative is a panel people close
+by reflex, and this is the reflex that costs them the vault.
+
+It is a deliberately soft gate: **Show code** in settings is right there
+underneath, and the panel says so. A user who clicks the checkbox without
+reading has lost nothing, because the vault still holds the code. The gate
+exists for the person who would otherwise never have registered that a second
+artefact exists at all.
 
 **Import** is a third door on `LockScreen.jsx`, beside "create a vault", shown
-only when no vault exists: *I have a recovery kit*. Drop zone or file picker,
-passphrase, and then a live progress list built from the phases — one row per
-account as it connects, then the index, then the tally. The report screen is
-where the four account states become buttons, and it is reachable again from
-the accounts panel afterwards, because "sign in to Dropbox again" is not
-something to lose by closing a dialog.
+only when no vault exists: *I have a recovery kit*. Drop zone or file picker;
+then `inspect` runs and the field that appears is labelled **Recovery code**
+or **Vault password** according to `Secret`, with the code field grouping,
+folding and check-summing as it is typed. Then a live progress list built from
+the phases — one row per account as it connects, then the index, then the
+tally. The report screen is where the four account states become buttons, and
+it is reachable again from the accounts panel afterwards, because "sign in to
+Dropbox again" is not something to lose by closing a dialog.
 
 The existing `RecoverVault.jsx` prompt is untouched and stays the answer for
 somebody with no kit. It gains one line — *Have a recovery kit? Import it
@@ -682,7 +911,11 @@ for somebody who took the other one.
 
 | What went wrong | What happens |
 |---|---|
-| Wrong passphrase | `ErrWrongPassword`, from the check block, before anything is touched |
+| Code with a typo | caught by the check symbol before the KDF runs — "that code has a typo in it", not "wrong code" |
+| Code for a different kit | check symbol passes, GCM check block fails — "this code does not open this kit"; `fingerprint.txt` names which kit it is |
+| Code lost, vault alive | **Show code** / `sand vault kit code` reads it back out of the vault (§4.4) |
+| Code lost, vault gone | nothing opens the kit. The one unrecoverable state in this design, and the reason `verify` asks for the code |
+| Wrong vault password (opt-out kits) | `ErrWrongPassword`, from the check block, before anything is touched |
 | Truncated or edited `kit.sand` | "this kit is damaged" — a GCM failure on the payload after the check passed |
 | Kit from a newer SAND | refuses on `KitVersion`, naming the version that wrote it |
 | Vault already holds files | refuses unless `replace` — `Recover`'s existing rule |
@@ -702,20 +935,24 @@ for somebody who took the other one.
 | Order | File | What |
 |---|---|---|
 | 1 | `internal/crypto/argon2.go` | `KitArgon2Params()` |
+| 1b | `internal/vault/kitcode.go` | Crockford encode/decode, check symbol, `NewKitCode`, `NormalizeKitCode` |
 | 2 | `internal/vault/kit.go` | `Kit`, `KitEnvelope`, `SealKit`, `OpenKit`, `ExportKit` |
 | 3 | `internal/vault/kitzip.go` | zip assembly, `README.txt`, `fingerprint.txt` |
 | 4 | `internal/vault/vault.go` | `RestoreProvider` — `AddProvider` keeping id and `AddedAt` |
 | 5 | `internal/vault/kitimport.go` | `ImportKit`, the seven phases, `KitImportReport` |
 | 6 | `internal/vault/kitverify.go` | `VerifyKit` |
-| 7 | `internal/vault/store.go` | `LastKitExportAt`, `LastKitFileCount` |
+| 7 | `internal/vault/store.go` | `LastKitExportAt`, `LastKitFileCount`, `Settings.KitCodes` |
 | 8 | `internal/server/handlers_kit.go` | the five routes |
 | 9 | `cmd/sand/kit.go` | the four commands |
-| 10 | `web/src/components/RecoveryKit.jsx` | export panel, staleness, verify |
-| 11 | `web/src/components/ImportKit.jsx` | the third door and the report |
+| 10 | `web/src/components/RecoveryKit.jsx` | export panel, staleness, verify, the code panel and **Show code** |
+| 11 | `web/src/components/ImportKit.jsx` | the third door, the code field, the report |
 | 12 | `tests/`, `internal/vault/kit_test.go` | §12 |
 
-Phases 1–3 of the import (mint, reconnect, install) are the deliverable that
-stands alone: a kit that connects the clouds and restores the tree is the
+`kitcode.go` is first because it is forty lines with no dependencies and the
+export signature is shaped around it; getting the alphabet and the check symbol
+settled before anything seals against them avoids a format change after kits
+exist in the world. Phases 1–3 of the import (mint, reconnect, install) are the
+deliverable that stands alone: a kit that connects the clouds and restores the tree is the
 whole of the user's ask. Phases 4–5 (the newer index, the discovery pass) are
 what make an *old* kit as good as a fresh one, and are worth doing second
 rather than never. `verify` is worth doing third and before any polish,
@@ -742,13 +979,30 @@ against `local` providers in a temp dir:
   `Reconcile` finishes the job.
 - **Moved path.** Import with an account's directory moved — `needs_path`, and
   the re-point plus a discovery pass recovers it.
-- **Wrong passphrase**, **truncated kit**, **future `KitVersion`**: three
-  distinct errors with three distinct messages.
+- **The code, on its own.** Round-trip every value through encode/decode;
+  reject a bad check symbol; accept `i`/`l`/`o` folded to `1`/`1`/`0`, lower
+  case, missing hyphens, stray spaces; confirm the alphabet contains no `I`,
+  `L`, `O` or `U`; confirm 10,000 generated codes are distinct and drawn from
+  `crypto/rand`. Table-driven and cheap — this is the piece a person's whole
+  vault hangs off, and it is the piece most likely to be quietly wrong.
+- **A single-character typo in every position** of a valid code is rejected by
+  the check symbol, as is every adjacent transposition. Both fail *before* the
+  KDF — assert that too, by timing or by a counter, since the fast rejection is
+  the feature.
+- **Code retention.** Export, read the code back via `sand vault kit code`,
+  import with it. Then assert the code is absent from every byte of the zip, of
+  the filename, and of `fingerprint.txt`.
+- **The opt-out.** A kit sealed with `--use-vault-password` sets
+  `Secret: "password"`, retains nothing in `Settings`, and opens with the
+  password rather than a code.
+- **Wrong code for the right kit**, **wrong vault password**, **truncated
+  kit**, **future `KitVersion`**: four distinct errors with four distinct
+  messages.
 - **Import over a live vault** refuses without `replace`.
 - **Password changed after export**: cloud manifests do not open, the old
   password is offered, skipping still yields the kit's index.
 - **Export into a synced folder** is refused.
 - **No plaintext leaks**: grep the finished zip for a known credential string,
-  a known filename, and a known account name. Only `fingerprint.txt`,
-  `README.txt` and the envelope's headers may be readable, and none of them
-  may contain any of the three.
+  a known filename, a known account name and the recovery code. Only
+  `fingerprint.txt`, `README.txt` and the envelope's headers may be readable,
+  and none of them may contain any of the four.
