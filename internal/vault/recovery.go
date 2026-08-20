@@ -832,8 +832,25 @@ func snapshotRetiredKeys(snapshot *Snapshot) (map[string][]byte, error) {
 // locateShards asks every connected account for a listing and returns a map of
 // object key to the account holding it.
 func (v *Vault) locateShards(ctx context.Context, configs []provider.Config) (map[string]provider.Config, []string) {
+	holders, _, warnings := v.locateShardsAnswered(ctx, configs)
+	return holders, warnings
+}
+
+// locateShardsAnswered is locateShards plus the set of accounts that actually
+// answered the listing.
+//
+// The distinction only matters where every account the index names is
+// *connected* — which is what a recovery kit leaves behind, since it restores
+// each account's credentials whether or not the account is reachable. There,
+// "connected" can no longer stand in for "reachable", and a shard on an account
+// that did not answer has to be counted as out of reach rather than assumed
+// present. See discoverKitShards.
+func (v *Vault) locateShardsAnswered(
+	ctx context.Context, configs []provider.Config,
+) (map[string]provider.Config, map[string]bool, []string) {
 	var mu sync.Mutex
 	holders := map[string]provider.Config{}
+	answered := map[string]bool{}
 	var warnings []string
 	var wg sync.WaitGroup
 
@@ -856,6 +873,7 @@ func (v *Vault) locateShards(ctx context.Context, configs []provider.Config) (ma
 			}
 
 			mu.Lock()
+			answered[cfg.ID] = true
 			for _, obj := range objects {
 				if obj.Key != BackupKey {
 					holders[obj.Key] = cfg
@@ -867,7 +885,7 @@ func (v *Vault) locateShards(ctx context.Context, configs []provider.Config) (ma
 	wg.Wait()
 
 	sort.Strings(warnings)
-	return holders, warnings
+	return holders, answered, warnings
 }
 
 // remapForSealedSubVaults works out which account each sealed sub vault's parts

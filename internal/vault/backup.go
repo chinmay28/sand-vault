@@ -519,6 +519,40 @@ func (b *Backup) opensWith(key []byte) bool {
 	return err == nil && subtle.ConstantTimeCompare(plain, []byte(backupCheckPlaintext)) == 1
 }
 
+// openBackupWithKey opens a manifest backup with the vault key itself rather
+// than with the password that derives it.
+//
+// A recovery kit carries that key (Kit.VaultKey), which is what lets an import
+// read the copies of the index sitting on the accounts — copies newer than the
+// kit, and the reason an old kit still comes back current — without asking for
+// the old vault password. See §4.3 of docs/recovery-kit.md.
+func openBackupWithKey(data, vaultKey []byte) (*Snapshot, error) {
+	var b Backup
+	if err := json.Unmarshal(data, &b); err != nil {
+		return nil, fmt.Errorf("this does not look like a manifest backup: %w", err)
+	}
+	if b.Magic != backupMagic {
+		return nil, fmt.Errorf("this does not look like a manifest backup (magic %q)", b.Magic)
+	}
+	if b.Version != backupVersion {
+		return nil, fmt.Errorf("unsupported manifest backup version %d (this build understands %d)",
+			b.Version, backupVersion)
+	}
+	if !b.opensWith(vaultKey) {
+		return nil, ErrWrongPassword
+	}
+
+	snapshot := &Snapshot{}
+	if err := openJSON(vaultKey, b.Payload, snapshot); err != nil {
+		return nil, fmt.Errorf("decrypting the manifest backup: %w", err)
+	}
+	if snapshot.Manifest == nil {
+		snapshot.Manifest = newManifest()
+	}
+	snapshot.Manifest.normalize()
+	return snapshot, nil
+}
+
 // ForgetBackups deletes the manifest backup from every connected account.
 func (v *Vault) ForgetBackups(ctx context.Context) ([]string, error) {
 	v.mu.RLock()
@@ -572,12 +606,46 @@ func (v *Vault) scheduleBackup(force bool) {
 	defer v.backupMu.Unlock()
 
 	v.backupForce = v.backupForce || force
+	if v.backupHold {
+		// An import is part-way through connecting the accounts. Pushing now
+		// would write an index that is missing most of them, and would meet
+		// the foreign-backup guard on every account not yet reached — which
+		// says "another vault's backup is here" in the middle of the one
+		// operation where that is both true and entirely expected. The release
+		// runs one forced push over the finished state instead.
+		v.backupPending = true
+		return
+	}
 	if v.backupRunning {
 		v.backupPending = true
 		return
 	}
 	v.backupRunning = true
 	go v.runBackupSync()
+}
+
+// holdBackups stops scheduled pushes until releaseBackups, collapsing whatever
+// was asked for in between into one push over the finished state.
+//
+// For an import, which connects the accounts one at a time and would otherwise
+// push a half-built index at each of them. Not a general-purpose lock: nothing
+// waits on it, and a caller that forgets to release leaves the vault pushing
+// only when something else asks.
+func (v *Vault) holdBackups() {
+	v.backupMu.Lock()
+	v.backupHold = true
+	v.backupMu.Unlock()
+}
+
+// releaseBackups lifts the hold and reports whether anything was asked for
+// while it was on.
+func (v *Vault) releaseBackups() bool {
+	v.backupMu.Lock()
+	defer v.backupMu.Unlock()
+	v.backupHold = false
+	pending := v.backupPending
+	v.backupPending = false
+	return pending
 }
 
 // runBackupSync pushes until no further change has been requested.

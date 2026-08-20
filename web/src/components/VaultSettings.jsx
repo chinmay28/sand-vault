@@ -6,6 +6,7 @@ import ChangePassword from './ChangePassword'
 import MountDrive from './MountDrive'
 import { FilmKeySettings } from './FilmDetails'
 import SubVaults from './SubVaults'
+import RecoveryKit from './RecoveryKit'
 import {
   DefaultClouds, PARTS_PER_FILE, defaultSchemeFor, parseScheme, schemeName,
 } from './CloudSelect'
@@ -39,6 +40,7 @@ export default function VaultSettings({
 }) {
   const [open, setOpen] = useState(null)
   const [filmKey, setFilmKey] = useState(null)
+  const [kit, setKit] = useState(null)
 
   const defaults = (stats?.default_accounts || []).filter(
     (id) => providers.some((p) => p.id === id))
@@ -53,6 +55,11 @@ export default function VaultSettings({
       .catch(() => {})
     return () => { cancelled = true }
   }, [])
+
+  /* Only so the line can say how stale the kit is, which is the one thing
+     about it worth reading without opening anything. */
+  const loadKit = () => api.kitStatus().then(setKit).catch(() => {})
+  useEffect(() => { loadKit() }, [])
 
   const close = () => setOpen(null)
 
@@ -90,6 +97,23 @@ export default function VaultSettings({
             : null}
           tone={COLORS.warn}
           onClick={() => setOpen('password')}
+        />
+
+        {/* The one artefact that brings the clouds back too. A recovery from
+            an account's manifest.sand rebuilds the index and leaves every
+            sign-in to be done by hand; this is what carries them.
+
+            Its standing is the two facts that reduce what it can do — a new
+            account, a changed password — rather than its age, because a merely
+            old kit still recovers everything through the newer index sitting
+            on the clouds. */}
+        <Setting
+          icon="🧰"
+          label="Recovery kit"
+          hint="One sealed file that brings the clouds back too"
+          status={kitStatusLine(kit)}
+          tone={kitStatusTone(kit)}
+          onClick={() => setOpen('kit')}
         />
 
         {/* A sub vault is a vault inside this one, with a password of its own.
@@ -160,6 +184,13 @@ export default function VaultSettings({
         />
       )}
 
+      {open === 'kit' && (
+        <RecoveryKit
+          zIndex={CHILD_Z}
+          onClose={() => { setOpen(null); loadKit() }}
+        />
+      )}
+
       {open === 'film' && (
         <FilmKeySettings
           zIndex={CHILD_Z}
@@ -174,6 +205,31 @@ export default function VaultSettings({
       )}
     </Modal>
   )
+}
+
+/* What the recovery kit's line says on the right.
+
+   It reports the worst true thing rather than the newest: an account the kit
+   has never heard of is a credential nobody can restore, and it outranks any
+   number of files, which the index on the clouds brings back anyway. */
+function kitStatusLine(kit) {
+  if (!kit) return null
+  if (!kit.exported) return 'None'
+  if (kit.accounts_changed) return 'Missing an account'
+  if (kit.password_changed_since) return 'Predates your password'
+  if (kit.files_added > 0) return `${kit.files_added.toLocaleString()} files newer`
+  if (kit.age_days > 0) return `${kit.age_days} days old`
+  return 'Current'
+}
+
+function kitStatusTone(kit) {
+  if (!kit) return undefined
+  // A vault with nothing connected has nothing a kit could carry, so "None"
+  // there is a fact rather than a warning.
+  if (!kit.exported) return kit.accounts > 0 ? COLORS.warn : COLORS.textMuted
+  if (kit.accounts_changed || kit.password_changed_since) return COLORS.warn
+  if (kit.files_added > 0) return COLORS.textDim
+  return COLORS.success
 }
 
 /* One line of the list: what it is, what it is for, and where it stands.

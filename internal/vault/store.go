@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/chinmay28/sand-vault/internal/crypto"
 	"github.com/chinmay28/sand-vault/internal/provider"
@@ -182,6 +183,31 @@ type storeFile struct {
 	// from someone holding the main password as it is from someone holding
 	// nothing.
 	SubVaults []subVaultRecord `json:"sub_vaults,omitempty"`
+
+	// What the last recovery kit was, so the settings panel can say how stale
+	// it has become. All of it is in the clear beside the policy, and for the
+	// same reason: a date, two counts and a uuid say nothing the encrypted
+	// sections do not already imply, and the thing that would be a secret —
+	// the kit's recovery code — lives in the sealed settings section instead.
+	//
+	// The counts are what "312 files added since" is a subtraction of, and
+	// LastPasswordChangeAt is what tells a kit that predates a password change
+	// from one that merely predates some uploads. Those are different problems
+	// (see §6.5 of docs/recovery-kit.md) and the panel has to name the right
+	// one.
+	LastKitExportAt  time.Time `json:"last_kit_export_at,omitzero"`
+	LastKitID        string    `json:"last_kit_id,omitempty"`
+	LastKitSecret    string    `json:"last_kit_secret,omitempty"`
+	LastKitFileCount int       `json:"last_kit_file_count,omitempty"`
+
+	// LastKitAccounts are the ids the kit carries credentials for, not merely
+	// how many. A count would call "removed one, connected another" no change
+	// at all, which is precisely the state where the kit has stopped being able
+	// to restore an account — and the ids are already in the clear beside the
+	// policy, so this reveals nothing the file did not.
+	LastKitAccounts []string `json:"last_kit_accounts,omitempty"`
+
+	LastPasswordChangeAt time.Time `json:"last_password_change_at,omitzero"`
 }
 
 // vaultSettings is the plaintext of the settings section.
@@ -189,12 +215,22 @@ type vaultSettings struct {
 	// MovieAPIKey is the user's own key for the film database. Empty — which is
 	// how every vault starts — means no film lookup can happen at all.
 	MovieAPIKey string `json:"movie_api_key,omitempty"`
+
+	// KitCodes are the recovery codes for the kits this vault has exported, by
+	// kit id, so that Settings → Recovery kit → Show code can answer.
+	//
+	// Here rather than in the manifest, and for the reason the film key is
+	// here: the manifest is replicated to every connected account, and the code
+	// that opens a kit carrying every credential has no business being copied
+	// onto three cloud providers. Nothing about the arrangement is weakened by
+	// keeping it — see Vault.KitCode.
+	KitCodes map[string]string `json:"kit_codes,omitempty"`
 }
 
 // empty reports whether anything is set, so that a vault which has never
 // touched these writes no section rather than an encrypted empty object.
 func (s *vaultSettings) empty() bool {
-	return s == nil || *s == vaultSettings{}
+	return s == nil || (s.MovieAPIKey == "" && len(s.KitCodes) == 0)
 }
 
 // subVaultRecord is one sub vault as it sits on disk: its own KDF salt, its own

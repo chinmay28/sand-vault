@@ -270,6 +270,7 @@ Three routes back, in increasing order of how much has survived:
 | The accounts + password | `sand vault recover`, or the browser's own prompt | The whole vault, files openable again |
 | The accounts you were missing | `sand vault recover --resume` | The parts that were out of reach, no password needed |
 | A recovered vault | `sand vault reclaim` | The same files on a key of your own, on clouds you pick |
+| A recovery kit + its code | `sand vault kit import`, or the lock screen's third door | The whole vault, **including every cloud reconnected**, on a machine that has never seen it |
 
 `sand vault recover` runs against a fresh vault with the accounts reconnected.
 Reconnecting gives every account a new internal id, so rather than trusting the
@@ -337,9 +338,19 @@ each file commits on its own, and `sand vault migrate` finishes whatever is left
 **What none of these routes carries is the credentials.** Every route above
 begins with the accounts already reconnected by hand, because `manifest.sand`
 sits on those accounts and a credential inside it would let one compromised
-account unlock all the others. A recovery kit — a single sealed file the vault
-exports and no cloud ever sees — is where they can live instead, and is
-designed in [`docs/recovery-kit.md`](./docs/recovery-kit.md). Not built.
+account unlock all the others. That refusal is right, and it is what leaves the
+afternoon of signing back in to five services as the part that actually costs
+somebody.
+
+A **recovery kit** is where they can live instead: the manifest backup that
+never touches a cloud, and can therefore carry them. `sand vault kit export`
+writes one sealed zip and prints a 25-character recovery code; importing it on a
+fresh install reconnects every account *under the id it already had* — which
+leaves the manifest's shard records correct on arrival, sealed sub vaults
+included — and then reads the newer `manifest.sand` off the clouds so an old kit
+still comes back current. An account that will not connect never stops the
+import; it becomes a button on the report. Designed and specified in
+[`docs/recovery-kit.md`](./docs/recovery-kit.md).
 
 **Finishing later is a separate operation.** A partial recovery leaves a
 complete index, part of it out of reach: `Stats.Unresolved` counts the shard

@@ -136,6 +136,88 @@ export const api = {
      can only come out of it with more shards than it went in with. */
   reattachShards: ({ dryRun = false } = {}) =>
     request('/api/vault/orphans/reattach', { method: 'POST', body: { dry_run: dryRun } }),
+  /* The recovery kit: one sealed file that reconnects every cloud on a fresh
+     install rather than only rebuilding the index.
+
+     The difference from recover() above is the credentials. A copy of the index
+     sits on every account, so it cannot carry them — one compromised account
+     would unlock the rest — which leaves somebody reinstalling with an
+     afternoon of signing back in before the password they still remember does
+     anything. A kit never touches a cloud, so it can. */
+  kitStatus: () => request('/api/vault/kit'),
+  /* Builds a kit and hands back the archive with the code that opens it.
+
+     Not request(), because the body is a zip and the code rides in a header:
+     it must not be in the archive, in its filename, or in anything that could
+     end up in a log or a browser history. */
+  exportKit: async ({ useVaultPassword = false, password = '' } = {}) => {
+    const resp = await fetch('/api/vault/kit', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ use_vault_password: useVaultPassword, password }),
+    })
+    if (!resp.ok) {
+      const payload = await resp.json().catch(() => ({}))
+      throw new ApiError(payload.error || 'the kit could not be built', payload.code, resp.status)
+    }
+    return {
+      blob: await resp.blob(),
+      kitId: resp.headers.get('X-Sand-Kit-Id') || '',
+      secret: resp.headers.get('X-Sand-Kit-Secret') || 'code',
+      code: resp.headers.get('X-Sand-Kit-Code') || '',
+      sha256: resp.headers.get('X-Sand-Kit-Sha256') || '',
+    }
+  },
+  /* The code a kit was sealed under, for somebody who still has their working
+     vault and has mislaid the slip of paper. It gives nothing away that an
+     unlocked vault does not already give: anybody who can ask this could
+     export a fresh kit with a fresh code instead. */
+  kitCode: (kitId) => request(`/api/vault/kit/code/${encodeURIComponent(kitId)}`),
+  forgetKitCode: (kitId) =>
+    request(`/api/vault/kit/code/${encodeURIComponent(kitId)}`, { method: 'DELETE' }),
+  /* What a kit is, without opening it — which is what lets the import screen
+     label its field "Recovery code" or "Vault password" rather than guessing.
+     Needs no secret and no vault. */
+  inspectKit: (file) => {
+    const form = new FormData()
+    form.append('kit', file)
+    return request('/api/vault/kit/inspect', { method: 'POST', formData: form })
+  },
+  /* Rebuilds this machine from a kit and signs in. `password` is what the
+     recovered vault will use from now on and need not be the one the lost
+     vault used; `secret` is the kit's own.
+
+     An account that will not connect never stops this: it comes back in the
+     report as a button rather than as an error. */
+  importKit: ({ file, secret, password, replace = false, oldPassword = '', skipCloudIndex = false }) => {
+    const form = new FormData()
+    form.append('kit', file)
+    form.append('secret', secret)
+    form.append('password', password)
+    if (replace) form.append('replace', 'true')
+    if (oldPassword) form.append('old_password', oldPassword)
+    if (skipCloudIndex) form.append('skip_cloud_index', 'true')
+    return request('/api/vault/kit/import', { method: 'POST', formData: form })
+  },
+  /* The fire drill: every credential in the kit pinged, its index checked
+     against what the accounts really hold, and nothing written anywhere. It
+     asks for the code on purpose — the failure nothing else catches is the
+     slip of paper that went missing. */
+  verifyKit: ({ file, secret }) => {
+    const form = new FormData()
+    form.append('kit', file)
+    form.append('secret', secret)
+    return request('/api/vault/kit/verify', { method: 'POST', formData: form })
+  },
+  /* Points a path-configured account at a folder that exists on *this*
+     machine, keeping its id — which is what keeps the index correct. What
+     "find this folder" needs after a kit lands on a different computer. */
+  repointProvider: (id, option, value) =>
+    request(`/api/providers/${encodeURIComponent(id)}/repoint`, {
+      method: 'POST',
+      body: { option, value },
+    }),
 
   providerSpecs: () => request('/api/providers/specs'),
   providers: () => request('/api/providers'),
