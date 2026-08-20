@@ -333,3 +333,188 @@ func TestOrphanScanIgnoresWhatSandDidNotWrite(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Shards a disconnect mislaid
+// ---------------------------------------------------------------------------
+
+// degradeByDisconnect disconnects the account holding one of a file's shards
+// and connects the same folder back under a new name, which is what leaves the
+// index a record short while the object stays put.
+func (c *testClient) degradeByDisconnect(file map[string]any, roots []string, name string) string {
+	c.t.Helper()
+
+	shards, _ := file["shards"].([]any)
+	if len(shards) == 0 {
+		c.t.Fatalf("the file records no shards: %v", file)
+	}
+	away := shards[0].(map[string]any)["provider_id"].(string)
+
+	root := ""
+	_, body := c.json(http.MethodGet, "/api/providers", nil)
+	for _, raw := range body["providers"].([]any) {
+		p := raw.(map[string]any)
+		if p["id"] != away {
+			continue
+		}
+		if options, _ := p["options"].(map[string]any); options != nil {
+			root, _ = options["path"].(string)
+		}
+	}
+	if root == "" {
+		c.t.Fatalf("could not find the folder behind account %s", away)
+	}
+
+	w := c.do(http.MethodDelete, "/api/providers/"+away+"?force=true", nil, "")
+	if w.Code != http.StatusOK {
+		c.t.Fatalf("disconnect: %d %s", w.Code, w.Body.String())
+	}
+	w, added := c.json(http.MethodPost, "/api/providers", map[string]any{
+		"kind":    "local",
+		"name":    name,
+		"options": map[string]string{"path": root},
+	})
+	if w.Code != http.StatusCreated {
+		c.t.Fatalf("reconnect: %d %v", w.Code, added)
+	}
+	return added["provider"].(map[string]any)["id"].(string)
+}
+
+// degraded is how many files the vault reports as short of a shard.
+func (c *testClient) degraded() int {
+	c.t.Helper()
+
+	_, body := c.json(http.MethodGet, "/api/vault", nil)
+	stats, _ := body["stats"].(map[string]any)
+	if stats == nil {
+		c.t.Fatalf("no stats in the vault status: %v", body)
+	}
+	count, _ := stats["degraded"].(float64)
+	return int(count)
+}
+
+func TestOrphanScanReportsAShardTheDisconnectMislaid(t *testing.T) {
+	c := newTestClient(t)
+	roots := c.setup("the vault password", 3)
+
+	file := c.upload("important.txt", "/", []byte("the file that lost a spare"))
+	back := c.degradeByDisconnect(file, roots, "drive-personal-again")
+
+	if c.degraded() != 1 {
+		t.Fatalf("the vault reports %d degraded file(s), want 1", c.degraded())
+	}
+
+	body := c.orphanScan()
+	// Emphatically not an orphan: the file is still in the tree, so the sweep
+	// must never see it.
+	if found, _ := body["found"].(bool); found {
+		t.Errorf("a mislaid shard was reported as abandoned: %v", body["items"])
+	}
+	if deletable, _ := body["deletable"].(float64); deletable != 0 {
+		t.Errorf("%v object(s) of a stored file were offered for deletion", deletable)
+	}
+
+	strays, _ := body["strays"].([]any)
+	if len(strays) != 1 {
+		t.Fatalf("found %d mislaid shard(s), want 1: %v", len(strays), strays)
+	}
+	stray := strays[0].(map[string]any)
+	if stray["provider_id"] != back {
+		t.Errorf("blamed account %v, want the reconnected %s", stray["provider_id"], back)
+	}
+	if stray["file_id"] != file["id"] {
+		t.Errorf("pointed at file %v, want %v", stray["file_id"], file["id"])
+	}
+	if stray["path"] != "/important.txt" {
+		t.Errorf("named the file %v", stray["path"])
+	}
+	if ok, _ := stray["reattachable"].(bool); !ok {
+		t.Errorf("the shard is not offered for reattachment: %v", stray["reason"])
+	}
+	if have, _ := stray["have"].(float64); have != 2 {
+		t.Errorf("said the file has %v shards, want 2", stray["have"])
+	}
+	if n, _ := body["reattachable"].(float64); n != 1 {
+		t.Errorf("the totals say %v reattachable, want 1", body["reattachable"])
+	}
+}
+
+func TestOrphanReattachRestoresTheSpareWithoutMovingAByte(t *testing.T) {
+	c := newTestClient(t)
+	roots := c.setup("the vault password", 3)
+
+	file := c.upload("important.txt", "/", []byte("the file that lost a spare"))
+	c.degradeByDisconnect(file, roots, "drive-personal-again")
+
+	before := 0
+	for _, root := range roots {
+		before += sandFilesIn(t, root)
+	}
+
+	w, preview := c.json(http.MethodPost, "/api/vault/orphans/reattach", map[string]any{"dry_run": true})
+	if w.Code != http.StatusOK {
+		t.Fatalf("dry run: %d %s", w.Code, w.Body.String())
+	}
+	if shards, _ := preview["shards"].(float64); shards != 1 {
+		t.Fatalf("the dry run promised %v shard(s), want 1", preview["shards"])
+	}
+	if c.degraded() != 1 {
+		t.Fatal("a dry run changed the index")
+	}
+
+	w, report := c.json(http.MethodPost, "/api/vault/orphans/reattach", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("reattach: %d %s", w.Code, w.Body.String())
+	}
+	if report["shards"] != preview["shards"] || report["bytes"] != preview["bytes"] {
+		t.Fatalf("the repair did not do what the dry run said: %v vs %v", report, preview)
+	}
+	restored, _ := report["restored"].([]any)
+	if len(restored) != 1 || restored[0] != "/important.txt" {
+		t.Errorf("the file was not reported as restored: %v", report["restored"])
+	}
+
+	// The claim that matters: the index changed and the clouds did not.
+	if c.degraded() != 0 {
+		t.Errorf("the vault still reports %d degraded file(s)", c.degraded())
+	}
+	after := 0
+	for _, root := range roots {
+		after += sandFilesIn(t, root)
+	}
+	if after != before {
+		t.Errorf("the repair wrote to the accounts: %d object(s), was %d", after, before)
+	}
+
+	// Three shards recorded again, and the file still reads.
+	_, meta := c.json(http.MethodGet, "/api/files/"+file["id"].(string), nil)
+	stored, _ := meta["file"].(map[string]any)
+	shards, _ := stored["shards"].([]any)
+	if len(shards) != 3 {
+		t.Errorf("the file records %d shard(s), want 3", len(shards))
+	}
+	w = c.do(http.MethodGet, "/api/files/"+file["id"].(string)+"/content", nil, "")
+	if w.Code != http.StatusOK || w.Body.String() != "the file that lost a spare" {
+		t.Fatalf("reading it back: %d %s", w.Code, w.Body.String())
+	}
+
+	// Nothing left mislaid, and a second run is a no-op.
+	if strays, _ := c.orphanScan()["strays"].([]any); len(strays) != 0 {
+		t.Errorf("%d shard(s) still reported as mislaid", len(strays))
+	}
+	_, again := c.json(http.MethodPost, "/api/vault/orphans/reattach", nil)
+	if shards, _ := again["shards"].(float64); shards != 0 {
+		t.Errorf("the repair ran twice over the same shard: %v", again)
+	}
+}
+
+func TestOrphanReattachNeedsASession(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("the vault password", 3)
+	c.cookies = nil
+
+	w, _ := c.json(http.MethodPost, "/api/vault/orphans/reattach", map[string]any{"dry_run": true})
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("POST /api/vault/orphans/reattach without a session: %d, want 401", w.Code)
+	}
+}

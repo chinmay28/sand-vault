@@ -54,6 +54,41 @@ type orphanSweepRequest struct {
 	DryRun bool `json:"dry_run"`
 }
 
+// reattachRequest asks for the mislaid shards to be written back.
+type reattachRequest struct {
+	// DryRun asks how many would go back without the index being touched.
+	DryRun bool `json:"dry_run"`
+}
+
+// handleOrphanReattach writes back the index records for shards sitting on a
+// connected account with nothing pointing at them.
+//
+// The repair for a disconnect, which drops those records deliberately and
+// leaves the objects where they are. It transfers nothing — a part's object key
+// is derived from the archive ID and the shard number, so the bytes are already
+// exactly where a record would say they are — and it is purely additive, which
+// is why it carries none of the sweep's refusals. See ReattachShards.
+func (s *Server) handleOrphanReattach(w http.ResponseWriter, r *http.Request) {
+	var req reattachRequest
+	if err := decodeJSON(r, &req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
+		return
+	}
+
+	// A listing of every account plus one index write. Long enough for the
+	// first on a slow cloud; the write itself is local.
+	ctx, cancel := contextWithTimeout(r, 5*time.Minute)
+	defer cancel()
+
+	v, _ := s.Vault()
+	report, err := v.ReattachShards(ctx, req.DryRun)
+	if err != nil {
+		vaultErrorResponse(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, report)
+}
+
 // handleOrphanSweep erases the parts nothing points at.
 //
 // The sweep re-scans before it deletes, so a target that has stopped being

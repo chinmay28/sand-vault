@@ -120,6 +120,22 @@ export const api = {
      they are now, not as the scan left them. */
   sweepOrphans: ({ targets = [], dryRun = false } = {}) =>
     request('/api/vault/orphans', { method: 'POST', body: { targets, dry_run: dryRun } }),
+  /* The other half of the same listing, and the opposite of a sweep.
+
+     A part with no record is not always rubbish. Disconnecting a cloud drops
+     the index records naming it — an index that still claimed them would be
+     lying about what can be retrieved — while the objects stay where they are.
+     Reconnect and the two never meet again on their own: the account arrives
+     with a new id, and resumeRecovery() re-points records rather than inventing
+     them. The file goes on saying it is missing a spare part while the part
+     sits on a cloud you are connected to.
+
+     This records them again. Not a byte moves — a part's object key is derived
+     from the archive id and the shard number, so the object is already exactly
+     where the record says it is. Purely additive: nothing is erased, and a file
+     can only come out of it with more shards than it went in with. */
+  reattachShards: ({ dryRun = false } = {}) =>
+    request('/api/vault/orphans/reattach', { method: 'POST', body: { dry_run: dryRun } }),
 
   providerSpecs: () => request('/api/providers/specs'),
   providers: () => request('/api/providers'),

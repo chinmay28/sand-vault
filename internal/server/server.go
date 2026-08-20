@@ -229,8 +229,14 @@ func (s *Server) Handler() (http.Handler, error) {
 		// behind — the account comes back with a new ID and nothing ever goes
 		// looking for them again. Looking is a GET and erasing is a POST, and
 		// the POST re-scans before it deletes anything. See handlers_orphans.go.
-		"GET /api/vault/orphans":  s.handleOrphanScan,
-		"POST /api/vault/orphans": s.handleOrphanSweep,
+		// The same listing answers two questions, and only one of them is
+		// about deleting: a part with no record can belong to a file that is
+		// still in the tree — a disconnect drops the records naming the
+		// account it removes — in which case the repair is to write the record
+		// back, which moves nothing.
+		"GET /api/vault/orphans":           s.handleOrphanScan,
+		"POST /api/vault/orphans":          s.handleOrphanSweep,
+		"POST /api/vault/orphans/reattach": s.handleOrphanReattach,
 
 		"GET /api/providers":            s.handleProvidersList,
 		"POST /api/providers":           s.handleProviderAdd,

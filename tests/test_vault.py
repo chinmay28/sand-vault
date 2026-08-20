@@ -1308,3 +1308,93 @@ class TestOrphanSweep:
         assert "recovered" in result.stdout, result.stdout
         for cloud, parts in held.items():
             assert self.parts_on(cloud) == parts, f"{cloud} was swept"
+
+
+class TestReattachMislaidShards:
+    """A disconnect takes the index records with it and leaves the parts.
+
+    The screenshot case: a cloud whose OAuth client is gone has to be
+    disconnected and connected back, which drops every record naming it. The
+    files it held go on reporting a missing spare part while the part sits on a
+    connected cloud, and nothing in the vault goes back for it — recovery
+    re-points records rather than inventing them, and there is no record left.
+    """
+
+    PASSWORD = "sv-passphrase"
+
+    def build(self, sand_bin, root):
+        """A vault with three clouds and one file spread over all of them."""
+        os.makedirs(root, exist_ok=True)
+        sub_cli(sand_bin, root, "vault", "init")
+        clouds = {}
+        for name in ("ra-a", "ra-b", "ra-c"):
+            path = os.path.join(root, "ra-clouds", name)
+            sub_cli(sand_bin, root, "remote", "add", "local", "--name", name, "--set", f"path={path}")
+            clouds[name] = path
+
+        source = os.path.join(root, "important.txt")
+        with open(source, "w") as f:
+            f.write("the file that lost a spare")
+        sub_cli(sand_bin, root, "put", source, "--accounts", "ra-a,ra-b,ra-c")
+        return clouds
+
+    def parts_in(self, directory):
+        if not os.path.isdir(directory):
+            return set()
+        return {n for n in os.listdir(directory)
+                if n.endswith(".sand") and n != "manifest.sand"}
+
+    def test_a_disconnect_loses_the_record_and_reattach_finds_it(self, sand_bin, tmp_path):
+        root = str(tmp_path / "reattach")
+        clouds = self.build(sand_bin, root)
+
+        listed = sub_cli(sand_bin, root, "ls").stdout
+        assert "important.txt" in listed
+
+        before = {name: self.parts_in(path) for name, path in clouds.items()}
+        assert all(before.values()), before
+
+        # The cloud is disconnected and the same storage comes back as a new
+        # account, which is what a dead OAuth client forces.
+        sub_cli(sand_bin, root, "remote", "rm", "ra-a", "--force")
+        sub_cli(sand_bin, root, "remote", "add", "local", "--name", "ra-a-again",
+                "--set", f"path={clouds['ra-a']}")
+
+        # The object never went anywhere; only the record did.
+        assert self.parts_in(clouds["ra-a"]) == before["ra-a"]
+        degraded = sub_cli(sand_bin, root, "vault", "status").stdout
+        assert "degraded" in degraded.lower() or "spare" in degraded.lower(), degraded
+
+        # Not rubbish — the sweep must say so and touch nothing.
+        swept = sub_cli(sand_bin, root, "vault", "sweep")
+        assert "reattach" in swept.stdout, swept.stdout
+        assert "belongs to a file this vault still has" in swept.stdout, swept.stdout
+
+        listing = sub_cli(sand_bin, root, "vault", "reattach")
+        assert "nothing pointing at them" in listing.stdout, listing.stdout
+        assert "Run again with --yes" in listing.stdout, listing.stdout
+        # Listing is not writing.
+        assert "1 shard(s)" in sub_cli(sand_bin, root, "vault", "reattach").stdout
+
+        done = sub_cli(sand_bin, root, "vault", "reattach", "--yes")
+        assert "Recorded 1 shard(s) across 1 file(s)" in done.stdout, done.stdout
+        assert "No data was transferred" in done.stdout
+        assert "/important.txt" in done.stdout
+
+        # Not a byte was written to any cloud...
+        for name, path in clouds.items():
+            assert self.parts_in(path) == before[name], f"{name} changed"
+
+        # ...the file is whole again on the index's own telling...
+        row = sub_cli(sand_bin, root, "ls").stdout
+        assert "important.txt" in row
+        assert "ok" in sub_cli(sand_bin, root, "check", "/important.txt").stdout
+
+        # ...and it still reads.
+        out = str(tmp_path / "back.txt")
+        sub_cli(sand_bin, root, "get", "/important.txt", "-o", out)
+        assert open(out).read() == "the file that lost a spare"
+
+        # Nothing left to do.
+        again = sub_cli(sand_bin, root, "vault", "reattach")
+        assert "already has a record pointing at it" in again.stdout, again.stdout

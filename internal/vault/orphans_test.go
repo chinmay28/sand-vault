@@ -465,7 +465,7 @@ func TestOrphanScanWithholdsTheSweepWhenAnAccountWillNotAnswer(t *testing.T) {
 }
 
 func TestOrphanGuardNamesEveryReasonToHoldOff(t *testing.T) {
-	owned := map[string]struct{}{"6f1b8c2a3d4e5f60718293a4b5c6d7e8": {}}
+	owned := map[string]*ownedArchive{"6f1b8c2a3d4e5f60718293a4b5c6d7e8": {}}
 	healthy := []OrphanAccount{{Name: "drive", Orphans: 2}, {Name: "bucket"}}
 
 	if blocked := orphanGuard(owned, healthy); len(blocked) != 0 {
@@ -575,4 +575,585 @@ func holdsArchive(objects map[string]bool, archiveID string) bool {
 		}
 	}
 	return false
+}
+
+// ---------------------------------------------------------------------------
+// Shards a disconnect mislaid, and putting them back
+// ---------------------------------------------------------------------------
+
+// degradedByDisconnect plays out the case this repair exists for: a cloud is
+// disconnected, which drops the index records naming it, and the same storage
+// is connected back as a new account still holding the objects. Returns the
+// file, the folder, and the ID of the account it came back as.
+func degradedByDisconnect(t *testing.T, v *Vault, roots []string, payload []byte) (*Entry, Shard, string, string) {
+	t.Helper()
+	ctx := context.Background()
+
+	entry, _, err := v.Upload(ctx, MainScope, "/", "important.txt", payload, UploadOptions{})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if entry.Redundancy() != 3 {
+		t.Fatalf("the file went up on %d shard(s), want 3", entry.Redundancy())
+	}
+
+	// Which account actually holds shard 1 is the placement's choice, so ask
+	// rather than assume.
+	dropped := entry.Shards[0]
+	away := dropped.ProviderID
+	root := ""
+	accounts, err := v.Providers()
+	if err != nil {
+		t.Fatalf("Providers: %v", err)
+	}
+	for _, cfg := range accounts {
+		if cfg.ID == away {
+			root = cfg.Options["path"]
+		}
+	}
+	if root == "" {
+		t.Fatal("could not find the folder behind the account holding a shard")
+	}
+
+	if err := v.RemoveProvider(away, true); err != nil {
+		t.Fatalf("RemoveProvider: %v", err)
+	}
+	back, err := v.AddProvider(ctx, provider.Config{
+		Kind:    provider.KindLocal,
+		Name:    "reconnected",
+		Options: map[string]string{"path": root},
+	})
+	if err != nil {
+		t.Fatalf("AddProvider: %v", err)
+	}
+	return entry, dropped, root, back.ID
+}
+
+func TestADisconnectMislaysAShardAndTheScanFindsIt(t *testing.T) {
+	v, roots := newTestVault(t, 3)
+	entry, _, root, back := degradedByDisconnect(t, v, roots, []byte("the file that lost a spare"))
+
+	// The state the app reports as "missing a spare part": the record is gone,
+	// and the object it named is sitting on a connected account.
+	if got := entry.Redundancy(); got != 2 {
+		t.Fatalf("the file has %d shard(s) recorded after the disconnect, want 2", got)
+	}
+	if len(storedObjects(t, []string{root})) == 0 {
+		t.Fatal("the disconnect erased the object as well as the record")
+	}
+
+	scan := orphanScan(t, v)
+
+	// It is emphatically not an orphan — the file is right there in the tree —
+	// so the sweep must never see it.
+	if scan.Found {
+		t.Errorf("a mislaid shard was reported as abandoned: %+v", scan.Items)
+	}
+	if scan.Deletable != 0 {
+		t.Errorf("%d object(s) of a stored file were offered for deletion", scan.Deletable)
+	}
+
+	if len(scan.Strays) != 1 {
+		t.Fatalf("found %d mislaid shard(s), want 1: %+v", len(scan.Strays), scan.Strays)
+	}
+	stray := scan.Strays[0]
+	switch {
+	case stray.ArchiveID != entry.ArchiveID:
+		t.Errorf("blamed archive %s, want the file's %s", stray.ArchiveID, entry.ArchiveID)
+	case stray.ProviderID != back:
+		t.Errorf("blamed account %s, want the reconnected %s", stray.ProviderID, back)
+	case stray.FileID != entry.ID:
+		t.Errorf("pointed at file %s, want %s", stray.FileID, entry.ID)
+	case stray.Path != "/important.txt":
+		t.Errorf("named the file %q", stray.Path)
+	case stray.Have != 2 || stray.Want != 3:
+		t.Errorf("said the file has %d of %d shards, want 2 of 3", stray.Have, stray.Want)
+	case !stray.Reattachable:
+		t.Errorf("the shard is not offered for reattachment: %s", stray.Reason)
+	}
+	if scan.Reattachable != 1 || scan.StrayFiles != 1 || scan.StrayBytes == 0 {
+		t.Errorf("totals do not agree with the row: %d reattachable, %d file(s), %d byte(s)",
+			scan.Reattachable, scan.StrayFiles, scan.StrayBytes)
+	}
+}
+
+func TestReattachPutsTheShardBackWithoutMovingAByte(t *testing.T) {
+	ctx := context.Background()
+	v, roots := newTestVault(t, 3)
+	payload := []byte("the file that lost a spare")
+	entry, dropped, _, back := degradedByDisconnect(t, v, roots, payload)
+
+	before := storedObjects(t, roots)
+
+	preview, err := v.ReattachShards(ctx, true)
+	if err != nil {
+		t.Fatalf("ReattachShards dry run: %v", err)
+	}
+	if preview.Shards != 1 || preview.Files != 1 {
+		t.Fatalf("the dry run promised %d shard(s) across %d file(s), want 1 and 1", preview.Shards, preview.Files)
+	}
+	if got := v.entryByID(t, entry.ID).Redundancy(); got != 2 {
+		t.Fatalf("a dry run changed the index: %d shard(s)", got)
+	}
+
+	report, err := v.ReattachShards(ctx, false)
+	if err != nil {
+		t.Fatalf("ReattachShards: %v", err)
+	}
+	if report.Shards != preview.Shards || report.Bytes != preview.Bytes {
+		t.Fatalf("the repair did not do what the dry run said: %+v vs %+v", report, preview)
+	}
+	if len(report.Restored) != 1 || report.Restored[0] != "/important.txt" {
+		t.Errorf("the file was not reported as restored: %+v", report.Restored)
+	}
+	if len(report.Skipped) > 0 || len(report.Warnings) > 0 {
+		t.Errorf("the repair complained: %v %v", report.Skipped, report.Warnings)
+	}
+
+	// The whole point: not a byte was written to any account.
+	if after := storedObjects(t, roots); len(after) != len(before) {
+		t.Errorf("the repair changed the accounts: %d object(s), was %d", len(after), len(before))
+	}
+
+	// The file is back to full spread, on the account that was holding it all
+	// along, and still reads.
+	fixed := v.entryByID(t, entry.ID)
+	if got := fixed.Redundancy(); got != 3 {
+		t.Fatalf("the file has %d shard(s), want 3", got)
+	}
+	found := false
+	for _, sh := range fixed.Shards {
+		if sh.ProviderID == back {
+			found = true
+			// The very key the dropped record carried, which is the whole
+			// claim: nothing was re-derived differently, and nothing moved.
+			if sh.Key != dropped.Key {
+				t.Errorf("recorded key %q, want the one it had, %q", sh.Key, dropped.Key)
+			}
+			if sh.Part != dropped.Part {
+				t.Errorf("recorded shard %d, want %d", sh.Part, dropped.Part)
+			}
+			if sh.ProviderName != "reconnected" {
+				t.Errorf("recorded the account as %q", sh.ProviderName)
+			}
+		}
+	}
+	if !found {
+		t.Error("no shard was recorded on the reconnected account")
+	}
+
+	got, _, err := v.Fetch(ctx, entry.ID)
+	if err != nil {
+		t.Fatalf("Fetch after the repair: %v", err)
+	}
+	if string(got) != string(payload) {
+		t.Error("the file came back changed")
+	}
+
+	// And a second run has nothing left to do.
+	again, err := v.ReattachShards(ctx, false)
+	if err != nil {
+		t.Fatalf("ReattachShards again: %v", err)
+	}
+	if again.Shards != 0 {
+		t.Errorf("the repair ran twice over the same shard: %+v", again)
+	}
+	if scan := orphanScan(t, v); len(scan.Strays) != 0 {
+		t.Errorf("%d shard(s) still reported as mislaid", len(scan.Strays))
+	}
+}
+
+func TestReattachRefusesAShardStrictPlacementWouldNotHaveMade(t *testing.T) {
+	ctx := context.Background()
+	v, _ := newTestVault(t, 3)
+
+	entry, _, err := v.Upload(ctx, MainScope, "/", "crowded.txt", []byte("two shards, one cloud"), UploadOptions{})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+
+	// A second shard's object copied onto an account that already holds one of
+	// this file's — what an interrupted relocation leaves. The bytes being
+	// there is not the question; recording them would have the vault act on a
+	// placement the strict policy promises never to make.
+	host, other := entry.Shards[0], entry.Shards[1]
+	hostRoot := ""
+	accounts, err := v.Providers()
+	if err != nil {
+		t.Fatalf("Providers: %v", err)
+	}
+	for _, cfg := range accounts {
+		if cfg.ID == host.ProviderID {
+			hostRoot = cfg.Options["path"]
+		}
+	}
+	otherRoot := ""
+	for _, cfg := range accounts {
+		if cfg.ID == other.ProviderID {
+			otherRoot = cfg.Options["path"]
+		}
+	}
+	blob, err := os.ReadFile(filepath.Join(otherRoot, other.Key))
+	if err != nil {
+		t.Fatalf("reading a part: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(hostRoot, other.Key), blob, 0o600); err != nil {
+		t.Fatalf("planting a copy: %v", err)
+	}
+
+	// Recorded on its own account already, so it is not mislaid at all.
+	scan := orphanScan(t, v)
+	if len(scan.Strays) != 0 || scan.Found {
+		t.Fatalf("a spare copy of a recorded shard was reported: strays %+v, orphans %+v",
+			scan.Strays, scan.Items)
+	}
+
+	// Now drop the real record, so the copy becomes the only candidate — and
+	// the one the policy will not have.
+	v.mu.Lock()
+	for _, e := range v.manifest.Entries {
+		if e.ID != entry.ID {
+			continue
+		}
+		kept := e.Shards[:0]
+		for _, sh := range e.Shards {
+			if sh.ProviderID != other.ProviderID {
+				kept = append(kept, sh)
+			}
+		}
+		e.Shards = kept
+	}
+	v.mu.Unlock()
+
+	// Two candidates for the same missing shard now: the copy on the account
+	// that already holds shard 1, which strict placement will not have, and the
+	// original on the account whose record was just dropped, which it will.
+	scan = orphanScan(t, v)
+	if len(scan.Strays) != 2 {
+		t.Fatalf("found %d candidate(s), want 2: %+v", len(scan.Strays), scan.Strays)
+	}
+	crowded, roomy := (*StrayShard)(nil), (*StrayShard)(nil)
+	for i := range scan.Strays {
+		switch scan.Strays[i].ProviderID {
+		case host.ProviderID:
+			crowded = &scan.Strays[i]
+		case other.ProviderID:
+			roomy = &scan.Strays[i]
+		}
+	}
+	if crowded == nil || roomy == nil {
+		t.Fatalf("the candidates are not the two accounts expected: %+v", scan.Strays)
+	}
+	if crowded.Reattachable {
+		t.Errorf("a shard strict placement forbids was offered: %+v", crowded)
+	}
+	if !strings.Contains(crowded.Reason, "strict placement") {
+		t.Errorf("the refusal does not say why: %q", crowded.Reason)
+	}
+	if !roomy.Reattachable {
+		t.Errorf("the shard on the account that has room was refused: %s", roomy.Reason)
+	}
+
+	report, err := v.ReattachShards(ctx, false)
+	if err != nil {
+		t.Fatalf("ReattachShards: %v", err)
+	}
+	if report.Shards != 1 {
+		t.Fatalf("reattached %d shard(s), want the one with room: %+v", report.Shards, report)
+	}
+	if len(report.Skipped) != 1 || !strings.Contains(report.Skipped[0], "strict placement") {
+		t.Errorf("the refusal was not reported: %+v", report.Skipped)
+	}
+	fixed := v.entryByID(t, entry.ID)
+	for _, sh := range fixed.Shards {
+		if sh.ProviderID == host.ProviderID && sh.Part == other.Part {
+			t.Errorf("the crowded copy was recorded after all: %+v", sh)
+		}
+	}
+	if got := fixed.Redundancy(); got != 3 {
+		t.Errorf("the file has %d distinct shard(s), want 3", got)
+	}
+}
+
+func TestReattachLeavesAThumbnailPackAlone(t *testing.T) {
+	ctx := context.Background()
+	v, roots := newTestVault(t, 3)
+
+	entry, _, err := v.Upload(ctx, MainScope, "/", "picture.jpg", []byte("a picture of something"), UploadOptions{})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if err := v.SetThumb(ctx, entry.ID, []byte("a small jpeg standing in for one")); err != nil {
+		t.Fatalf("SetThumb: %v", err)
+	}
+
+	// A pack's shard record dropped the way a disconnect drops one. A pack is
+	// derived from a file that is still stored, so it is drawn again rather
+	// than mended — and its objects must not read as abandoned either.
+	v.mu.Lock()
+	var packArchive string
+	for _, pack := range v.manifest.Thumbs {
+		if pack == nil || len(pack.Shards) == 0 {
+			continue
+		}
+		packArchive, _, _ = partOfKey(pack.Shards[0].Key)
+		pack.Shards = pack.Shards[1:]
+	}
+	v.mu.Unlock()
+	if packArchive == "" {
+		t.Fatal("no thumbnail pack was stored")
+	}
+
+	scan := orphanScan(t, v)
+	for _, stray := range scan.Strays {
+		if stray.ArchiveID == packArchive {
+			t.Errorf("a thumbnail pack's shard was offered for reattachment: %+v", stray)
+		}
+	}
+	for _, item := range scan.Items {
+		if item.ArchiveID == packArchive {
+			t.Errorf("a thumbnail pack's shard was reported as abandoned: %+v", item)
+		}
+	}
+
+	if report, err := v.ReattachShards(ctx, false); err != nil {
+		t.Fatalf("ReattachShards: %v", err)
+	} else if report.Shards != 0 {
+		t.Errorf("it reattached %d pack shard(s)", report.Shards)
+	}
+	if _, err := v.SweepOrphans(ctx, nil, false); err != nil {
+		t.Fatalf("SweepOrphans: %v", err)
+	}
+	if !holdsArchive(storedObjects(t, roots), packArchive) {
+		t.Error("the sweep erased a live thumbnail pack")
+	}
+}
+
+func TestReattachSkipsAChunkedShardThatIsOnlyPartlyThere(t *testing.T) {
+	ctx := context.Background()
+	v, _ := newTestVault(t, 3)
+
+	// Big enough to be cut into several chunks, so a shard is several objects
+	// and half of it can go missing.
+	payload := make([]byte, 3*int(v.uploadChunkSize()))
+	for i := range payload {
+		payload[i] = byte(i * 7)
+	}
+	entry, _, err := v.Upload(ctx, MainScope, "/", "film.bin", payload, UploadOptions{})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if entry.ChunkCount < 2 {
+		t.Fatalf("the file went up in %d chunk(s), want several", entry.ChunkCount)
+	}
+
+	victim := entry.Shards[0]
+	root := ""
+	accounts, err := v.Providers()
+	if err != nil {
+		t.Fatalf("Providers: %v", err)
+	}
+	for _, cfg := range accounts {
+		if cfg.ID == victim.ProviderID {
+			root = cfg.Options["path"]
+		}
+	}
+
+	// The record goes, and so does one of the shard's chunks — a half-finished
+	// erase, or an account that lost an object. What is left cannot stand in
+	// for the shard, and saying it can would tell the file it has a spare.
+	if err := os.Remove(filepath.Join(root, ChunkShardKey(entry.ArchiveID, 1, victim.Part))); err != nil {
+		t.Fatalf("removing a chunk: %v", err)
+	}
+	v.mu.Lock()
+	for _, e := range v.manifest.Entries {
+		if e.ID != entry.ID {
+			continue
+		}
+		kept := e.Shards[:0]
+		for _, sh := range e.Shards {
+			if sh.ProviderID != victim.ProviderID {
+				kept = append(kept, sh)
+			}
+		}
+		e.Shards = kept
+	}
+	v.mu.Unlock()
+
+	scan := orphanScan(t, v)
+	if len(scan.Strays) != 1 {
+		t.Fatalf("found %d mislaid shard(s), want 1: %+v", len(scan.Strays), scan.Strays)
+	}
+	if scan.Strays[0].Reattachable {
+		t.Fatalf("a shard missing a chunk was offered: %+v", scan.Strays[0])
+	}
+	if !strings.Contains(scan.Strays[0].Reason, "chunks") {
+		t.Errorf("the refusal does not say why: %q", scan.Strays[0].Reason)
+	}
+	if report, err := v.ReattachShards(ctx, false); err != nil {
+		t.Fatalf("ReattachShards: %v", err)
+	} else if report.Shards != 0 {
+		t.Errorf("it was reattached anyway: %+v", report)
+	}
+}
+
+func TestAChunkedShardComesBackWholeWithTheRightKeyAndSize(t *testing.T) {
+	ctx := context.Background()
+	v, _ := newTestVault(t, 3)
+
+	payload := make([]byte, 3*int(v.uploadChunkSize()))
+	for i := range payload {
+		payload[i] = byte(i * 11)
+	}
+	entry, _, err := v.Upload(ctx, MainScope, "/", "film.bin", payload, UploadOptions{})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	victim := entry.Shards[0]
+
+	v.mu.Lock()
+	for _, e := range v.manifest.Entries {
+		if e.ID != entry.ID {
+			continue
+		}
+		kept := e.Shards[:0]
+		for _, sh := range e.Shards {
+			if sh.ProviderID != victim.ProviderID {
+				kept = append(kept, sh)
+			}
+		}
+		e.Shards = kept
+	}
+	v.mu.Unlock()
+
+	report, err := v.ReattachShards(ctx, false)
+	if err != nil {
+		t.Fatalf("ReattachShards: %v", err)
+	}
+	if report.Shards != 1 {
+		t.Fatalf("reattached %d shard(s), want 1: %+v", report.Shards, report)
+	}
+
+	fixed := v.entryByID(t, entry.ID)
+	for _, sh := range fixed.Shards {
+		if sh.ProviderID != victim.ProviderID {
+			continue
+		}
+		// One record describes the whole shard: chunk zero's key, and the
+		// weight of every chunk together. See putChunkParts.
+		if want := ChunkShardKey(entry.ArchiveID, 0, sh.Part); sh.Key != want {
+			t.Errorf("recorded key %q, want chunk zero's %q", sh.Key, want)
+		}
+		if sh.Size != victim.Size {
+			t.Errorf("recorded %d byte(s), want the shard's %d", sh.Size, victim.Size)
+		}
+	}
+
+	// The proof it is a usable record and not just a plausible one.
+	got, _, err := v.Fetch(ctx, entry.ID)
+	if err != nil {
+		t.Fatalf("Fetch after the repair: %v", err)
+	}
+	if string(got) != string(payload) {
+		t.Error("the file came back changed")
+	}
+}
+
+func TestReattachTakesOneCopyOfAShardAndSaysSoAboutTheOther(t *testing.T) {
+	ctx := context.Background()
+	v, _ := newTestVault(t, 3)
+
+	entry, _, err := v.Upload(ctx, MainScope, "/", "twice.txt", []byte("copied and forgotten"), UploadOptions{})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	victim := entry.Shards[0]
+	accounts, err := v.Providers()
+	if err != nil {
+		t.Fatalf("Providers: %v", err)
+	}
+	roots := map[string]string{}
+	for _, cfg := range accounts {
+		roots[cfg.ID] = cfg.Options["path"]
+	}
+
+	// The same shard sitting on two accounts, which is what an interrupted
+	// relocation leaves behind, with the record for neither.
+	blob, err := os.ReadFile(filepath.Join(roots[victim.ProviderID], victim.Key))
+	if err != nil {
+		t.Fatalf("reading a part: %v", err)
+	}
+	spare := ""
+	for _, cfg := range accounts {
+		used := false
+		for _, sh := range entry.Shards {
+			if sh.ProviderID == cfg.ID {
+				used = true
+			}
+		}
+		if !used {
+			spare = cfg.ID
+		}
+	}
+	if spare == "" {
+		// Every account holds a shard, so plant the copy on the one holding
+		// the shard we are about to un-record — still two copies, one record.
+		t.Skip("no account free of this file's shards")
+	}
+	if err := os.WriteFile(filepath.Join(roots[spare], victim.Key), blob, 0o600); err != nil {
+		t.Fatalf("planting a copy: %v", err)
+	}
+
+	v.mu.Lock()
+	for _, e := range v.manifest.Entries {
+		if e.ID != entry.ID {
+			continue
+		}
+		kept := e.Shards[:0]
+		for _, sh := range e.Shards {
+			if sh.ProviderID != victim.ProviderID {
+				kept = append(kept, sh)
+			}
+		}
+		e.Shards = kept
+	}
+	v.mu.Unlock()
+
+	scan := orphanScan(t, v)
+	if len(scan.Strays) != 2 {
+		t.Fatalf("found %d copies, want 2: %+v", len(scan.Strays), scan.Strays)
+	}
+	if scan.Reattachable != 1 {
+		t.Fatalf("%d copies were offered, want exactly one — recording a shard twice is not "+
+			"redundancy: %+v", scan.Reattachable, scan.Strays)
+	}
+
+	report, err := v.ReattachShards(ctx, false)
+	if err != nil {
+		t.Fatalf("ReattachShards: %v", err)
+	}
+	if report.Shards != 1 {
+		t.Fatalf("reattached %d, want 1: %+v", report.Shards, report)
+	}
+	if len(report.Skipped) != 1 || !strings.Contains(report.Skipped[0], "same shard") {
+		t.Errorf("the second copy was not explained: %+v", report.Skipped)
+	}
+	if got := v.entryByID(t, entry.ID).Redundancy(); got != 3 {
+		t.Errorf("the file has %d distinct shard(s), want 3", got)
+	}
+}
+
+// entryByID reads one entry back out of the live index.
+func (v *Vault) entryByID(t *testing.T, id string) *Entry {
+	t.Helper()
+
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	for _, e := range v.manifest.Entries {
+		if e.ID == id {
+			return e
+		}
+	}
+	t.Fatalf("no entry with id %s", id)
+	return nil
 }

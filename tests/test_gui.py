@@ -2981,3 +2981,85 @@ class TestOrphanedParts:
 
         expect(page.get_by_text("Sand files detected")).to_be_visible(timeout=30000)
         assert page.get_by_text(re.compile(r"no file in this vault points at")).count() == 0
+
+
+class TestMislaidShards:
+    """The repair for a disconnect, offered by the app on its own.
+
+    A cloud is disconnected — the case in the wild is an OAuth client that no
+    longer exists — which drops every index record naming it while the parts
+    stay on the account. Connect the storage back and the file still says it is
+    missing a spare part, with the spare sitting on a connected cloud. Nobody
+    would think to go looking for that, which is why the app says so first.
+    """
+
+    PASSWORD = "the-mislaid-test-passphrase"
+
+    def build_vault(self, sand_bin, tmp_path, name):
+        """A vault whose one file has lost a shard record to a disconnect."""
+        import subprocess
+
+        vault_file = str(tmp_path / f"{name}.sand")
+
+        def run(*args):
+            env = dict(os.environ)
+            env["SAND_PASSWORD"] = self.PASSWORD
+            result = subprocess.run(
+                [sand_bin, "--vault", vault_file, *args],
+                capture_output=True, text=True, env=env,
+            )
+            assert result.returncode == 0, f"{args}\nstdout: {result.stdout}\nstderr: {result.stderr}"
+            return result
+
+        run("vault", "init", "--policy", "strict")
+        clouds = {}
+        for cloud in ("ms-a", "ms-b", "ms-c"):
+            path = str(tmp_path / "ms-clouds" / cloud)
+            os.makedirs(path, exist_ok=True)
+            clouds[cloud] = path
+            run("remote", "add", "local", "--name", cloud, "--set", f"path={path}")
+
+        source = tmp_path / "important.txt"
+        source.write_bytes(b"the file that lost a spare")
+        run("put", str(source), "--accounts", "ms-a,ms-b,ms-c")
+
+        run("remote", "rm", "ms-a", "--force")
+        run("remote", "add", "local", "--name", "ms-a-again", "--set", f"path={clouds['ms-a']}")
+        return clouds
+
+    def parts_in(self, directory):
+        return {n for n in os.listdir(directory)
+                if n.endswith(".sand") and n != "manifest.sand"}
+
+    def unlock(self, page, base_url):
+        page.goto(base_url)
+        page.locator('input[type="password"]').first.fill(self.PASSWORD)
+        page.get_by_text("▶ Unlock").click()
+        page.wait_for_selector("text=Connected clouds", timeout=20000)
+
+    def test_the_app_offers_to_put_them_back(self, page, sand_bin, tmp_path, spawn_server):
+        clouds = self.build_vault(sand_bin, tmp_path, "mislaid-notice")
+        before = {name: self.parts_in(path) for name, path in clouds.items()}
+
+        self.unlock(page, spawn_server("mislaid-notice"))
+
+        # Nobody asked. The banner leads on the thing that got worse, and on
+        # the fact that fixing it is free.
+        expect(page.get_by_text(re.compile(r"nothing pointing at"))).to_be_visible(timeout=30000)
+        expect(page.get_by_text(re.compile(r"moves no data"))).to_be_visible()
+
+        page.get_by_role("button", name="Put them back").click()
+        expect(page.get_by_text("Parts your files have lost track of")).to_be_visible(timeout=15000)
+        expect(page.get_by_text("/important.txt").first).to_be_visible()
+
+        page.get_by_role("button", name=re.compile(r"^Put 1 shard back")).click()
+        expect(page.get_by_text(re.compile(r"1 shard recorded again"))).to_be_visible(timeout=30000)
+        expect(page.get_by_text(re.compile(r"No data was transferred"))).to_be_visible()
+
+        # The index changed and the clouds did not.
+        for name, path in clouds.items():
+            assert self.parts_in(path) == before[name], f"{name} was written to"
+
+        page.get_by_role("button", name="Done").click()
+        page.wait_for_timeout(500)
+        assert page.get_by_text(re.compile(r"nothing pointing at")).count() == 0

@@ -62,7 +62,7 @@ func vaultCmd() *cobra.Command {
 	}
 	cmd.AddCommand(vaultInitCmd(), vaultStatusCmd(), vaultPasswdCmd(), vaultMigrateCmd(), vaultConvertCmd(),
 		vaultPolicyCmd(), vaultDefaultsCmd(), vaultBackupCmd(), vaultRecoverCmd(),
-		vaultReclaimCmd(), vaultSweepCmd())
+		vaultReclaimCmd(), vaultSweepCmd(), vaultReattachCmd())
 	return cmd
 }
 

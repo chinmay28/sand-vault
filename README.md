@@ -690,7 +690,61 @@ counted; connect those accounts and the files come back with them.
 
 ---
 
-## Parts left behind by a cloud that was away
+## Parts your clouds hold that the index has lost track of
+
+Two different things end up in this state, and only one of them is rubbish. SAND
+asks every account what it is holding whenever the set of connected clouds
+changes, subtracts what the index accounts for, and sorts the remainder into the
+two cases below.
+
+### A shard a disconnect mislaid — put it back
+
+Disconnecting a cloud **drops the index records that named it**. That is
+deliberate: an index still claiming parts on an account you have told SAND to
+stop using would be lying about what can be retrieved. The parts themselves stay
+where they are, equally deliberately — SAND does not delete from an account it
+is being shown the door on.
+
+Connect that same storage back and those two facts never meet again on their
+own. The account arrives with a **new internal ID**, and finishing a recovery
+re-points records rather than inventing them, so there is nothing left to
+re-point. The result is a file reporting a missing spare part while the spare
+sits on a cloud you are connected to — visible in the sidebar as
+`4 files missing a spare part`.
+
+The repair costs nothing at all:
+
+```bash
+./sand vault reattach          # which shards, and which files are short
+./sand vault reattach --yes    # record them again
+```
+
+**Not a byte is transferred.** A part is stored under a name derived from the
+file's random archive ID and the shard number, so the object is already exactly
+where a record would say it is; putting the record back is a single index write.
+The browser offers the same thing unprompted, leading with it rather than with
+the sweep — a file short of a spare is worth more attention than wasted room,
+and this is the cheaper fix of the two.
+
+It is purely additive. Nothing is erased, no key is touched, and a file can only
+come out of it with more shards than it went in with — which is why it carries
+none of the refusals the sweep does. Two things it will not do:
+
+- **Record a shard the placement policy would not have made.** Under `strict`,
+  no account may hold two shards of one file. If a copy turns up on an account
+  already holding one, the bytes being there is not the question — recording
+  them would have SAND act on a placement it promises never to make. It is
+  reported and left.
+- **Record a chunked shard that is only partly there.** A large file is one
+  object per chunk per shard; a shard missing chunks is not a shard, and saying
+  it is would tell the file it has a spare it has not got.
+
+It does not check what the parts contain, any more than finishing a recovery
+does — an object key is derived from a random 128-bit archive ID, so a name that
+matches is that archive's. Run `sand vault check` afterwards to have the
+accounts asked whether the parts are really there.
+
+### A part no file wants any more — sweep it
 
 Deleting a file erases its parts from the accounts holding them — the ones
 connected at the time. A cloud that is disconnected while you delete keeps its
@@ -755,7 +809,10 @@ the sweep refuses outright in every case where the two come apart:
 A part whose account has been reconnected is not abandoned either — the index
 still names its archive, just under an account ID that has since changed, and
 [finishing the recovery](#what-did-not-come-back) is what re-points it. Matching
-is done by archive rather than by account for exactly that reason.
+is done by archive rather than by account for exactly that reason. Nor is a
+shard whose *record* was dropped by a disconnect: that is the case above, and
+the sweep will tell you to run `sand vault reattach` rather than offering to
+erase it.
 
 ---
 
@@ -968,6 +1025,7 @@ sand vault recover [--from ACCOUNT]           Rebuild a lost vault from an accou
 sand vault recover --resume                   Finish one, once the rest of the clouds are back
 sand vault reclaim [--account NAME]...        Re-encrypt recovered files under your own key
 sand vault sweep [--verbose] [--yes]          Find parts no file points at, and erase them
+sand vault reattach [--yes]                   Re-record shards your clouds still hold
 ```
 
 ### Sub vaults

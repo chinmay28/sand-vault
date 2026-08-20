@@ -9,6 +9,7 @@ import FileBrowser from './components/FileBrowser'
 import PreviewModal, { ShardInspector } from './components/PreviewModal'
 import RecoverVault from './components/RecoverVault'
 import CleanOrphans from './components/CleanOrphans'
+import ReattachShards from './components/ReattachShards'
 import FilmDetails from './components/FilmDetails'
 import { Brand, DevMark } from './components/Brand'
 import { Banner, Button } from './components/ui'
@@ -36,6 +37,7 @@ export default function App() {
   const [recovering, setRecovering] = useState(false)
   const [orphans, setOrphans] = useState(null)
   const [sweeping, setSweeping] = useState(false)
+  const [reattaching, setReattaching] = useState(false)
   /* Which set of connected clouds the tidy-up notice has already been shown
      for. Kept in state rather than in a ref because dismissing it has to redraw
      — and unlike the recovery scan's ref, this cannot re-run anything: the scan
@@ -210,7 +212,7 @@ export default function App() {
     let cancelled = false
     api.orphanScan().then((scan) => {
       if (cancelled) return
-      setOrphans(scan.found ? scan : null)
+      setOrphans(scan.found || scan.reattachable > 0 ? scan : null)
     }).catch(() => {
       // An account that will not answer is the accounts panel's story, and a
       // tidy-up nobody asked for has no business raising an error over it.
@@ -232,6 +234,7 @@ export default function App() {
     recoveryDismissed.current = false
     setOrphans(null)
     setSweeping(false)
+    setReattaching(false)
     setOrphansDismissed('')
     // The trail is a list of folder names, which is the file index — locking
     // the vault has to put that away with everything else.
@@ -358,22 +361,33 @@ export default function App() {
           </div>
         )}
 
-        {/* Room being paid for by nobody. Dismissible for good — it is a
-            housekeeping notice, not a warning, and it will be raised again the
-            next time the clouds change. */}
-        {orphans && !sweeping && orphansDismissed !== providerKey && (
+        {/* Two different pieces of news out of one listing, and the repair
+            leads — a file short of a spare part is worth more attention than
+            room being wasted, and putting it right costs nothing at all. Both
+            are dismissible for good: housekeeping notices, not warnings, raised
+            again the next time the clouds change. */}
+        {orphans && orphansDismissed !== providerKey && (
           <div style={{ padding: mobile ? '10px 10px 0' : '12px 20px 0', flexShrink: 0 }}>
-            <Banner
-              tone="info"
-              onDismiss={() => setOrphansDismissed(providerKey)}
-            >
-              <span style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-                <span>{orphanNotice(orphans)}</span>
-                <Button size="sm" variant="ghost" onClick={() => setSweeping(true)}>
-                  Take a look
-                </Button>
-              </span>
-            </Banner>
+            {orphans.reattachable > 0 && !reattaching && (
+              <Banner tone="warn" onDismiss={() => setOrphansDismissed(providerKey)}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                  <span>{reattachNotice(orphans)}</span>
+                  <Button size="sm" variant="ghost" onClick={() => setReattaching(true)}>
+                    Put them back
+                  </Button>
+                </span>
+              </Banner>
+            )}
+            {orphans.found && !sweeping && (
+              <Banner tone="info" onDismiss={() => setOrphansDismissed(providerKey)}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                  <span>{orphanNotice(orphans)}</span>
+                  <Button size="sm" variant="ghost" onClick={() => setSweeping(true)}>
+                    Take a look
+                  </Button>
+                </span>
+              </Banner>
+            )}
           </div>
         )}
 
@@ -452,6 +466,22 @@ export default function App() {
           onAccountsChanged={refreshProviders}
         />
       )}
+      {reattaching && orphans && (
+        <ReattachShards
+          scan={orphans}
+          /* The rows go when the panel does, not when the write commits: the
+             dialog stays up afterwards to say what it recorded, and clearing
+             them underneath it would take that away mid-sentence. */
+          onClose={() => {
+            setReattaching(false)
+            setOrphans(null)
+            setOrphansDismissed(providerKey)
+          }}
+          /* The index changed, so the file list and every part badge in it are
+             stale. */
+          onDone={refreshAll}
+        />
+      )}
       {sweeping && orphans && (
         <CleanOrphans
           scan={orphans}
@@ -525,6 +555,17 @@ function orphanNotice(scan) {
   const where = clouds === 1 ? 'one of your clouds is' : `${clouds} of your clouds are`
   return `${formatBytes(scan.bytes)} across ${scan.objects} part${scan.objects === 1 ? '' : 's'} `
     + `on ${where} holding storage no file in this vault points at any more.`
+}
+
+/* What the repair banner says. It leads on the files rather than on the room,
+   because that is the thing that got worse: they are short of a spare part and
+   the spare is sitting on a cloud that is connected. */
+function reattachNotice(scan) {
+  const shards = scan.reattachable
+  const files = scan.stray_files
+  return `${shards} part${shards === 1 ? '' : 's'} of ${files} file${files === 1 ? '' : 's'} `
+    + `${shards === 1 ? 'is' : 'are'} on your clouds with nothing pointing at ${shards === 1 ? 'it' : 'them'} `
+    + '— a disconnected cloud takes its records with it. Putting them back moves no data.'
 }
 
 function Shell({ children }) {

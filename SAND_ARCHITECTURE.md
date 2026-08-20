@@ -354,7 +354,7 @@ involved, because what was missing was never a secret. A shard whose account
 being dropped — one failed listing should not throw placement away; that is what
 the health check is for.
 
-### 3.7.1 The other half: parts the index stopped pointing at
+### 3.7.1 Parts the index stopped pointing at
 
 Reconnecting an account is what §3.7 is about from one side. This is the same
 event from the other.
@@ -411,6 +411,73 @@ names every one:
 The first two are per account and greyed out in the answer with the reason
 attached; the third withholds the sweep across the board. Nothing here runs
 without being asked, and nothing deletes without a second call.
+
+### 3.7.2 Shards a disconnect mislaid, and putting them back
+
+The subtraction above has three outcomes, not two, and only one of them is
+rubbish. An object the index does not name is either a part of a file that is
+still in the tree — in which case the repair is to write the record back — or it
+belongs to no file at all, which is the only kind worth erasing.
+
+The second case is what `RemoveProvider` creates, and it does so on purpose:
+
+```go
+// Drop shard records pointing at the disconnected account so the index
+// keeps telling the truth about what is actually retrievable.
+```
+
+That is right — an index still claiming parts on an account SAND has been told
+to stop using would be lying — and the objects are deliberately left alone,
+because deleting from that account is not SAND's call to make. The two never
+meet again on their own. Reconnecting mints a fresh `Config.ID`, and `Reconcile`
+walks `entry.Shards` to re-point records rather than to invent them, so a record
+that was **dropped** rather than left stale has nothing to re-point. The file
+goes on reporting `Stats.Degraded` while the spare sits on a connected cloud.
+
+`Vault.ReattachShards` closes it. The classification needs one more fact than
+the sweep does — the shard *number*, parsed out of the key alongside the archive
+ID — after which every object falls into exactly one bucket:
+
+| The index… | Then it is |
+|---|---|
+| does not know the archive | an orphan; sweep candidate (§3.7.1) |
+| knows the archive and has a record for that shard number | accounted for; the record's own object, or a spare copy of it |
+| knows the archive, has no record for that shard, and can be written to | **mislaid**; reattach candidate |
+| knows the archive but cannot be written to — a thumbnail pack, a locked sub vault's inventory | left alone; a pack is redrawn rather than mended |
+
+Writing the record back transfers nothing. `ShardKey` derives an object key from
+the archive ID and the shard number alone (§5.5), so the bytes are already
+exactly where a record would say they are and the repair is one index write.
+That is also why it carries none of `orphanGuard`'s refusals: those exist to
+stop a deletion of something wanted, and there is no symmetric risk in recording
+bytes that are demonstrably there. A file can only leave this with more shards
+than it entered with.
+
+Four things it will not record, each because doing so would make the index claim
+something false:
+
+- **A shard number the file's own code has no room for** — a 2-of-3 file has no
+  part 4, so an object named as one is not that file's shard whatever its key
+  says. Checked against `Scheme`, not against the records, since the records are
+  precisely what is missing.
+- **A chunked shard that is only partly present.** One object per chunk per
+  shard (§7.1); a partial set would still win the odd per-chunk race, but
+  recording it says the file has a spare it has not got.
+- **A shard on an account already holding one of that file's, under `strict`.**
+  The bytes are there either way; recording them would have the vault act on a
+  placement `BuildPlan` promises never to make.
+- **A second copy of a shard already being taken.** Two accounts holding the
+  same shard is what an interrupted relocation leaves; recording both is not
+  redundancy, it is one file claiming a spare it does not have. One is taken,
+  deterministically, and the other is reported.
+
+Contents are not verified, exactly as `Reconcile` does not verify them: an
+object key is derived from a random 128-bit archive ID, so a name that matches
+is that archive's, and a part that is present but corrupt is what the health
+check is for. `entryForReattachLocked` re-checks under the write lock that the
+file still exists, still carries that archive, and is still short of that shard
+— the scan ran without the lock, and an upload, a relocation or a sub vault
+being shut in between each makes a row stale.
 
 ### 3.8 Searching is a property of the open vault
 
@@ -1762,6 +1829,7 @@ reveals only whether a vault exists.
 | POST | `/api/vault/reclaim` | Fresh data key under this password, every file rebuilt onto it, onto `accounts` (§3.7) |
 | GET | `/api/vault/orphans` | What the accounts hold that no index points at, per account and per archive (§3.7.1) |
 | POST | `/api/vault/orphans` | Erase it (`targets` — `{provider_id, archive_id}` pairs, empty for all; `dry_run`). Re-scans before deleting |
+| POST | `/api/vault/orphans/reattach` | Record back the shards a disconnect mislaid (`dry_run`). Moves no bytes (§3.7.2) |
 | GET | `/api/subvaults` | The vaults inside this one, and whether each is open (§3.8) |
 | POST | `/api/subvaults` | Make one, sealed under a password of its own |
 | POST | `/api/subvaults/{id}/unlock` | Open one — a second password on top of the session, never a way around it |
