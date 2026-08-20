@@ -1272,8 +1272,9 @@ pipe the password on stdin.
   [Film details](#film-details)
 - **Organize a folder** — `🗂` beside `🎬` in the toolbar: flatten everything
   below into this folder, remove the folders holding nothing, erase every file
-  of a kind, or select every file of a kind and hand it to the selection bar.
-  Each counts what it would do before it does any of it — see
+  of a kind, select every file of a kind and hand it to the selection bar, or
+  find the copies of things — the same bytes, the same size, or a name a copy
+  marker apart. Each counts what it would do before it does any of it — see
   [Organizing a folder](#organizing-a-folder)
 - **Preview** — images, video, audio, PDF and text render inline, rebuilt on
   demand; anything else downloads. A matched film opens on its poster and
@@ -1485,7 +1486,7 @@ those folders, paid where they are listed instead.
 ## Organizing a folder
 
 `🗂` in the toolbar, beside `🎬`, acts on the folder you are standing in and
-everything under it. Four jobs, all of them the kind nobody does one row at a
+everything under it. Five jobs, all of them the kind nobody does one row at a
 time — which is why they never get done:
 
 - **Flatten into this folder** — every file below comes up to here, and the
@@ -1512,8 +1513,10 @@ time — which is why they never get done:
   the selection bar's Download, Folder, Clouds, sub vault and Delete all work
   on the lot. Selecting every `.srt` under a films folder and moving it to
   `/Subtitles` is two clicks and a folder pick.
+- **Find duplicates** — the copies of things, which never show in a listing
+  because they are never side by side. See below.
 
-Each of the four counts what it would do before there is a button to do it
+Each of the five counts what it would do before there is a button to do it
 with, because none of them acts on something you picked row by row — the count
 is the whole of what stands between a button and a tree.
 
@@ -1523,13 +1526,80 @@ so flattening four hundred films is a rewrite of the encrypted index and as
 fast as a rename; removing an empty folder is the same. Deleting is the
 exception and always was.
 
-The tools read the folder once — `GET /api/folders/survey` walks the index and
-contacts nothing — and then run over the endpoints that already existed, one
+The first four read the folder once — `GET /api/folders/survey` walks the index
+and contacts nothing — and then run over the endpoints that already existed, one
 item at a time, from the browser. So a run that stalls on the fortieth of two
 hundred has moved thirty-nine things and says exactly which one refused; what
 did not move is still where it was, and organizing again picks up precisely
 what is left. There is no flatten endpoint to half-succeed with no way to
 report which half.
+
+### Finding duplicates
+
+A vault fills up the way a drawer does. The same photograph arrives from the
+phone and again from a camera-roll export; a folder is copied "just in case"
+before something is tried on it; a download that stalled is fetched again and
+the browser calls the second one `report (1).pdf`. None of it shows in a
+listing, because the copies are never side by side — which is exactly why they
+survived.
+
+**Find duplicates** asks the question three ways, and puts all three on screen
+at once, because they are three degrees of certainty about the same thing:
+
+- **Identical** — one SHA-256, which is one file. The vault has hashed every
+  file it stores since it stored it, so this is proof rather than a
+  resemblance: two files with one hash are one file, whatever they are called
+  and wherever they sit.
+- **Same size** — the same number of bytes. It is the question people actually
+  ask out loud, and it catches the pair whose hash was never recorded. It is
+  also the weakest of the three, and every group says whether the hashes back
+  it up.
+- **Similar names** — names a copy marker, a separator or a typo apart. This is
+  the one that finds `IMG_0001.jpg` beside `IMG_0001 (1).jpg`, and the one that
+  can be wrong.
+
+Name matching reduces a name to what a copy of it would share and insists on
+the rest:
+
+- The marks a copy is made with come off the end — `(1)`, `[2]`, `- Copy`,
+  `copy 2` — repeatedly, since a file copied twice is `report (1) (2).pdf`. A
+  file actually called `copy.txt` keeps its name rather than being reduced to
+  nothing.
+- Case and separators go, so `Vacation Photo.jpg`, `vacation-photo.jpg` and
+  `VACATION_PHOTO.jpg` are one name and not three.
+- **The numbers have to match exactly.** `IMG_0001.jpg` and `IMG_0002.jpg` are
+  one character apart and are not copies of anything — they are the two
+  photographs a folder of photographs is made of, and `Holiday 2023.mkv` beside
+  `Holiday 2024.mkv` is the same trap. So the letters may drift by an edit or
+  two and the digits may not.
+- The extension is never crossed, so a film is never grouped with its
+  subtitles.
+- A run of names that turns out to be alike *in bulk* rather than in pairs —
+  eight machine-made letters where every name is one edit from a dozen others —
+  is a naming scheme rather than a set of copies. It is broken back into the
+  names that matched exactly, and the dialog says it happened rather than
+  offering the folder as one group of nine thousand duplicates.
+
+Each group opens with the copy it suggests keeping already spared: the
+shallowest one with the plainest name, so `report.pdf` in the folder you are
+standing in beats `report (2).pdf` three folders down. It is a suggestion — every
+row is a tick of its own, **Keep one** puts a group back the way it started, and
+**Skip** drops a group entirely. A group where every copy ends up ticked is
+allowed and is called out in as many words, because it is the one way this
+dialog could take the last copy of something.
+
+What is ticked goes one of two ways: **Delete** hands it to the same
+confirmation the delete button uses, or **Select** ticks it in the file browser
+and hands it to the selection bar — usually the better answer, since a copy you
+are not sure about belongs in a folder called something else rather than in no
+folder at all. Ticks are kept across all three questions, so a file ticked under
+*Similar names* is still ticked when you switch to *Identical*.
+
+It takes a read of its own — `GET /api/folders/duplicates` — rather than the
+survey, because hashes are the whole of what it needs and none of the other four
+tools wants one per file. Like the survey it walks the index in memory,
+decrypts nothing and contacts no account; all three answers come back from that
+one walk, so comparing them costs nothing.
 
 ---
 
@@ -1576,6 +1646,7 @@ report which half.
 | DELETE | `/api/files/{id}` | Erase every part |
 | GET | `/api/folders` | Every folder in the vault, for a destination picker |
 | GET | `/api/folders/survey?path=` | Everything under a folder in one walk of the index — every file with its kind and depth, every folder with what it holds. What the organizer plans from |
+| GET | `/api/folders/duplicates?path=` | Which files under a folder are copies of each other, asked three ways in one walk: the same bytes, the same size, or names a copy marker apart |
 | GET · POST | `/api/folders/art?path=` | Which file's thumbnail a folder is drawn with, and what else it could be (`id` to pick one, `""` for none) |
 | POST · DELETE | `/api/folders` | Create / delete folders |
 | POST | `/api/folders/move` | Move a folder, and everything under it, `from` one path `to` another |

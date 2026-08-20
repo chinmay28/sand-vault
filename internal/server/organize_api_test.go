@@ -219,3 +219,152 @@ func TestSurveyNeedsASession(t *testing.T) {
 		t.Errorf("survey without a session answered %d, want 401", w.Code)
 	}
 }
+
+/* --- Duplicates ------------------------------------------------------- */
+
+// The copies under a folder, decoded into what the dialog reads off them.
+type duplicatesBody struct {
+	Path    string       `json:"path"`
+	Scanned int          `json:"scanned"`
+	Content duplicateSet `json:"content"`
+	Size    duplicateSet `json:"size"`
+	Name    duplicateSet `json:"name"`
+}
+
+type duplicateSet struct {
+	Groups  []duplicateGroup `json:"groups"`
+	Files   int              `json:"files"`
+	Extra   int              `json:"extra"`
+	Waste   int64            `json:"waste"`
+	Partial bool             `json:"partial"`
+	Crowded int              `json:"crowded"`
+}
+
+type duplicateGroup struct {
+	Key     string         `json:"key"`
+	Files   []duplicateRow `json:"files"`
+	Bytes   int64          `json:"bytes"`
+	Waste   int64          `json:"waste"`
+	Certain bool           `json:"certain"`
+}
+
+type duplicateRow struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Dir   string `json:"dir"`
+	Size  int64  `json:"size"`
+	Ext   string `json:"ext"`
+	Depth int    `json:"depth"`
+	Hash  string `json:"hash"`
+	Keep  bool   `json:"keep"`
+}
+
+func (c *testClient) duplicates(t *testing.T, dir string) duplicatesBody {
+	t.Helper()
+
+	w := c.do(http.MethodGet, "/api/folders/duplicates?path="+url.QueryEscape(dir), nil, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("duplicates %s: %d %s", dir, w.Code, w.Body.String())
+	}
+	var out duplicatesBody
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatalf("duplicates %s: %v", dir, err)
+	}
+	return out
+}
+
+// One walk, three answers — and each of the three has to reach the browser
+// whole, because switching between them is the whole of using the dialog.
+func TestDuplicatesAnswersAllThreeWaysAtOnce(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("pw", 3)
+	if w, body := c.json(http.MethodPost, "/api/folders", map[string]any{"path": "/photos/2023"}); w.Code != http.StatusCreated {
+		t.Fatalf("create /photos/2023: %d %v", w.Code, body)
+	}
+
+	same := []byte("one photograph, stored twice")
+	c.upload("corfu.jpg", "/photos", same)
+	c.upload("DSC_9912.jpg", "/photos/2023", same)
+	// The same length as each other but not as the pair above, and named the
+	// way a second download is named.
+	c.upload("notes.txt", "/photos", []byte("aaaaaaaa"))
+	c.upload("notes (1).txt", "/photos", []byte("bbbbbbbb"))
+
+	d := c.duplicates(t, "/photos")
+	if d.Path != "/photos" || d.Scanned != 4 {
+		t.Fatalf("duplicates of /photos scanned %d files at %q, want 4 at /photos", d.Scanned, d.Path)
+	}
+
+	// By content: the pair that really is one file, and it says so.
+	if len(d.Content.Groups) != 1 || len(d.Content.Groups[0].Files) != 2 {
+		t.Fatalf("content found %+v, want the one identical pair", d.Content.Groups)
+	}
+	if !d.Content.Groups[0].Certain {
+		t.Error("a pair sharing one hash is not reported as certain")
+	}
+	if d.Content.Groups[0].Files[0].Hash == "" {
+		t.Error("a duplicate row carries no hash, so the dialog cannot say what it knows")
+	}
+	if !d.Content.Groups[0].Files[0].Keep || d.Content.Groups[0].Files[1].Keep {
+		t.Error("the group does not mark exactly one copy to keep")
+	}
+
+	// By size: both pairs, since each pair weighs the same within itself.
+	if len(d.Size.Groups) != 2 {
+		t.Fatalf("size found %d groups, want 2", len(d.Size.Groups))
+	}
+	// By name: only the pair a copy marker separates.
+	if len(d.Name.Groups) != 1 || len(d.Name.Groups[0].Files) != 2 {
+		t.Fatalf("name found %+v, want just notes.txt and notes (1).txt", d.Name.Groups)
+	}
+	if d.Name.Groups[0].Certain {
+		t.Error("two different files with alike names are reported as certainly identical")
+	}
+	if d.Name.Extra != 1 || d.Name.Files != 2 {
+		t.Errorf("name counts %d files of which %d spare, want 2 and 1", d.Name.Files, d.Name.Extra)
+	}
+}
+
+// A vault with nothing doubled answers with three empty sets rather than with
+// nulls the dialog would have to guard against.
+func TestDuplicatesAnswersEmptySetsWhenThereAreNone(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("pw", 3)
+	if w, body := c.json(http.MethodPost, "/api/folders", map[string]any{"path": "/tidy"}); w.Code != http.StatusCreated {
+		t.Fatalf("create /tidy: %d %v", w.Code, body)
+	}
+	c.upload("one.txt", "/tidy", []byte("a"))
+	c.upload("two.txt", "/tidy", []byte("bb"))
+
+	d := c.duplicates(t, "/tidy")
+	for name, set := range map[string]duplicateSet{"content": d.Content, "size": d.Size, "name": d.Name} {
+		if set.Groups == nil {
+			t.Errorf("%s came back as null rather than as an empty list", name)
+		}
+		if len(set.Groups) != 0 || set.Extra != 0 || set.Waste != 0 {
+			t.Errorf("%s found %+v in a folder with no duplicates", name, set)
+		}
+	}
+}
+
+func TestDuplicatesRefusesAFolderThatIsNotThere(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("pw", 3)
+
+	if w := c.do(http.MethodGet, "/api/folders/duplicates?path=/nowhere", nil, ""); w.Code == http.StatusOK {
+		t.Fatalf("looking under a folder that does not exist answered %d", w.Code)
+	}
+}
+
+// It reads the index, so it is behind the session like everything else that
+// does.
+func TestDuplicatesNeedASession(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("pw", 3)
+	c.grow(t, "/private/one.txt")
+	c.cookies = nil
+
+	if w := c.do(http.MethodGet, "/api/folders/duplicates?path=/private", nil, ""); w.Code != http.StatusUnauthorized {
+		t.Errorf("duplicates without a session answered %d, want 401", w.Code)
+	}
+}
