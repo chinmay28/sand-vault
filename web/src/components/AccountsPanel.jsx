@@ -393,7 +393,10 @@ export default function AccountsPanel({
           <ActionTile
             icon="⚙️"
             label="Vault settings"
-            hint="password · clouds · film key"
+            /* Three of the list's items, and the recovery kit is one of them
+               because it is the one somebody has to be told exists. Nobody
+               goes looking for a backup they have never heard of. */
+            hint="password · clouds · recovery kit"
             onClick={() => setSettingsOpen(true)}
           />
           <ActionTile
