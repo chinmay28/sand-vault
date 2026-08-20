@@ -697,6 +697,7 @@ func (v *Vault) Rmdir(ctx context.Context, scope Scope, dir string, recursive bo
 	m.forgetFolderArt(ids...)
 	m.removeFolders(dir)
 	m.dropMovieFolders(dir)
+	m.dropAutomations(dir)
 	m.dropFolderArt(dir)
 	err = v.persistLocked()
 	v.mu.Unlock()

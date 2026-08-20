@@ -350,6 +350,32 @@ export const api = {
   duplicates: (path, vault = '') =>
     request(`/api/folders/duplicates?path=${encodeURIComponent(path)}${vaultParam(vault)}`),
 
+  /* The standing instruction a folder has been given: on this schedule, check
+     that every cloud is answering and every part of every file under it is
+     where the index says it went — and, if it says so, put back what is
+     missing.
+
+     A folder's own policy rides along with its listing already, minus the
+     history; this is the full record, which is what the dialog shows. The
+     no-argument form lists every policy the vault can see and says whether a
+     sweep is running right now. */
+  automations: () => request('/api/automation'),
+  automation: (path, vault = '') =>
+    request(`/api/automation?path=${encodeURIComponent(path)}${vaultParam(vault)}`),
+  /* One call for creating and editing, because a folder has at most one policy.
+     Editing keeps the history and the last-run time, so changing the hour does
+     not make the folder immediately due. */
+  setAutomation: (policy) => request('/api/automation', { method: 'POST', body: policy }),
+  removeAutomation: (path, vault = '') =>
+    request(`/api/automation?path=${encodeURIComponent(path)}${vaultParam(vault)}`,
+      { method: 'DELETE' }),
+  /* Run it now, whether or not it is due and whether or not it is switched on.
+     This one contacts every account and can rebuild files, so it is the only
+     call here that takes real time — minutes on a large folder, longer if it
+     is putting parts back. */
+  runAutomation: (path, vault = '', { signal } = {}) =>
+    request('/api/automation/run', { method: 'POST', body: { path, vault }, signal }),
+
   /* The picture a folder is drawn with, and what else it could be drawn with:
      every file under it that has a thumbnail, films first. What comes back is a
      file id — the picture itself is that file's own thumbnail, drawn through

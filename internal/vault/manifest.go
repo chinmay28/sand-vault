@@ -168,6 +168,14 @@ type Manifest struct {
 	MovieFolders map[string]*MovieFolder `json:"movie_folders,omitempty"`
 	Movies       map[string]*movie.Info  `json:"movies,omitempty"`
 
+	// Automations holds the standing instructions a folder was given, by folder
+	// path: check what is under it on a schedule, and put back what is missing.
+	// Here rather than beside the policy on disk because a policy names a
+	// folder, and which folders somebody keeps and what they are called is the
+	// index's business — the same reason the film-lookup switch is here. See
+	// automation.go.
+	Automations map[string]*Automation `json:"automations,omitempty"`
+
 	// FolderArt records the picture a folder was told to wear, by folder path
 	// and the ID of a file stored inside it. Only the choices made by hand are
 	// here: a folder nobody has chosen for picks one of the films inside it and
@@ -623,7 +631,19 @@ func (m *Manifest) moveFolder(oldDir, newDir string) func() {
 		m.MovieFolders = rekeyed
 	}
 
-	// And so is the picture a folder was told to wear — the third map keyed by
+	// A folder's standing instructions are keyed by folder in the same way, and
+	// renaming a folder must not quietly stop it being looked after.
+	previousAutomations := m.Automations
+	if len(m.Automations) > 0 {
+		rekeyed := make(map[string]*Automation, len(m.Automations))
+		for dir, auto := range m.Automations {
+			to, _ := underFolder(dir, oldDir, newDir)
+			rekeyed[to] = auto
+		}
+		m.Automations = rekeyed
+	}
+
+	// And so is the picture a folder was told to wear — the fourth map keyed by
 	// folder rather than by file. Its values are file IDs, which a move never
 	// changes, so only the keys need rewriting.
 	previousFolderArt := m.FolderArt
@@ -643,6 +663,7 @@ func (m *Manifest) moveFolder(oldDir, newDir string) func() {
 		m.Folders = previousFolders
 		m.Thumbs = previousThumbs
 		m.MovieFolders = previousMovieFolders
+		m.Automations = previousAutomations
 		m.FolderArt = previousFolderArt
 	}
 }

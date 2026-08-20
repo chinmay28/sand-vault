@@ -671,6 +671,9 @@ func (v *Vault) Assign(ctx context.Context, from Scope, target string, to Scope,
 	}
 	if folder {
 		src.removeFolders(dir)
+		// The folder is not in this vault any more, so a standing instruction
+		// naming it would be a schedule sweeping a tree that is not there.
+		src.dropAutomations(dir)
 	}
 
 	err = v.persistLocked()

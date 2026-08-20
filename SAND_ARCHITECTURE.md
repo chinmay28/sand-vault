@@ -843,6 +843,124 @@ arrangement of clouds recreates a shard that was never written.
 
 ---
 
+### 3.15 A folder that looks after itself
+
+§3.14 gives somebody a list to click. This is the case where nobody clicks
+anything for eight months.
+
+Every repair path above waits to be asked, and the failure worth designing for
+is the silent one: an account whose token expired in March, a bucket that
+stopped answering, a shard that was never written because its cloud was refusing
+for an afternoon. None of them makes anything look wrong. A file at `n−1` shards
+reads back at full speed and keeps doing so right up to the read that needs the
+shard that is not there.
+
+So a folder can carry a standing instruction. `Automation` (`automation.go`)
+lives in the manifest keyed by folder path, beside `MovieFolders` and
+`FolderArt` and for the same reason: which folders somebody keeps and what they
+are called is index, so it is encrypted at rest, it travels with a rename
+(`Manifest.moveFolder`) and it is dropped with a delete (`dropAutomations`). It
+holds a cadence (`hourly` / `daily` / `weekly` with a local wall-clock time), an
+action (`check` / `rebalance`), three bounds, and the last eight runs.
+
+**Per folder, not per vault.** A vault is not one thing — the films are
+replaceable and the passports are not — and the folder is the only place that
+distinction is already written down. A policy covers its folder and everything
+under it, so `/` is a whole-vault policy. Where policies overlap, `DueAutomations`
+orders them deepest-first and one `seen` set is carried across the tick, so a
+file under both `/archive/2019` and `/archive` is checked once, by the more
+specific one.
+
+**A sweep is two questions, and the first one makes the second cheap.**
+`probeAccounts` pings every connected account once, concurrently, twenty seconds
+each. Only then is each file walked, and a shard on an account that failed the
+probe — or on one no longer connected — is known unreachable without a request.
+Without that, a folder of ten thousand files on a dead cloud would wait out ten
+thousand timeouts. What is left is a `Stat` per shard per sampled chunk, the same
+sampling `Vault.Health` uses (§3.14), over a window of four files.
+
+Every checked file lands in exactly one of three states, against its own scheme:
+`whole` (every recorded shard found), `short` (at least one missing, at least `k`
+present) and `at_risk` (fewer than `k` — unreadable now, and unrepairable until
+whatever holds the rest comes back). Only `short` is actionable, and the repair
+list is ordered by spare shards ascending so that a bounded run spends its budget
+on the files closest to being lost.
+
+#### A repair is always a rebuild
+
+This is not a design choice; it is forced. Relocation's cheap path (§5.6) copies
+a shard from the account holding it to another — and every case that reaches here
+is one where there is nothing to copy *from*. The only repair that works is
+relocation's other branch: gather what can be read, cut again, write a full set.
+
+Reaching that branch needed one thing the planner did not have.
+`planFileRelocation` decides `short` from `entry.Redundancy()`, which counts
+index rows — and the index is exactly what is wrong. An account can answer
+perfectly and not hold what the index says it holds. So `relocationOptions`
+carries two facts a caller who has actually looked can supply: `unreachable`
+(accounts that did not answer) and `absent` (shards looked for and not found, by
+file and part). `countReachable` subtracts both, which turns a file whose shard
+has quietly gone into the repair case it really is. The zero value is what every
+hand-driven relocation passes, so `PlanRelocation` and `Relocate` behave exactly
+as before: somebody who points a move at a dead cloud should watch the copy fail
+and be told, not have their file silently rebuilt underneath them.
+
+The rebuild is `migrateFile`, unchanged — commit ordering and all (§3.3). Old
+shards on the dead account cannot be erased and become orphans, which §3.7.1
+already knows how to find and sweep.
+
+#### The three bounds, and why an unattended job needs them
+
+`migrateFile` gathers the file into memory. That is an accepted cost for a
+password change somebody started and is watching; it is a different thing at
+three in the morning on a Raspberry Pi. So:
+
+- **`RebuildLimit`** (default `DefaultRebuildLimit`, 1 GiB) is the largest file
+  an unattended repair will rebuild. Past it the file is counted `Deferred` and
+  named, for somebody to repair by hand where they can watch it. Negative means
+  no ceiling, which is a thing to choose rather than a thing to inherit.
+- **`MaxRepairs`** bounds files rebuilt per run; the remainder is deferred and
+  picked up next run, worst first.
+- **`Narrow`** is off by default, and the default is the load-bearing half.
+  `rebalanceTarget` puts a file back over as many answering clouds as its own
+  scheme has shards, cut exactly as it is now — same storage, same tolerance,
+  same `k`. When there are fewer answering clouds than that, an unattended job
+  must not decide to make a file permanently less durable and less secret because
+  a cloud was down for an hour; narrowing costs another full rebuild to undo. Left
+  off, the file is untouched and reported. Turned on, `narrowScheme` scales `k`
+  with the width (rounded, so 4-of-6 on four clouds is 3-of-4 rather than 2-of-4)
+  and never permits `k = n`.
+
+#### The schedule, and what it cannot promise
+
+`Automation.Due` is a comparison, not a timer: `now >= nextAfter(lastRun or
+createdAt)`. That makes catch-up free and idempotent — a machine off for three
+days comes back owing one sweep, not three — and it makes a new policy wait for
+its first real slot rather than firing the moment it is saved. Wall-clock times
+are read in `time.Local`, because "every day at 10 am" is a claim about
+somebody's morning rather than about UTC.
+
+`Server.automationLoop` ticks every minute, does arithmetic over a handful of
+records, and contacts nothing unless something is due. It runs **only while the
+vault is unlocked**, which is not an oversight but the shape of the system: the
+schedules are in the encrypted index and the files need the keys that open it. A
+sweep in flight calls `noteExternalActivity` so the idle timer cannot lock the
+vault halfway through a rebuild; keeping the vault open across the night is the
+operator's decision, spelled `--idle-timeout`, and it is the security tradeoff it
+looks like.
+
+One sweep runs at a time, vault-wide (`Vault.autoActive`, `ErrAutomationBusy`) —
+two would be two gathers in memory and two sets of uploads racing for the same
+accounts. Every run is written back onto the policy, including the failures: a
+fortnight of "no account answered" is precisely what somebody needs to be able to
+see. Warnings are capped at 20 per stored run and the history at 8 runs, because
+this goes into the vault file and onto every account as a backup (§3.6). The
+`FolderAutomation` a folder listing carries is the same record with the history
+stripped and one `Trouble` boolean in its place, so the browser can draw a
+folder's state without fetching eight runs' worth of warnings per folder.
+
+---
+
 ### 3.8 Sub vaults
 
 A sub vault is a vault inside the vault, with a password of its own. It exists
@@ -1934,6 +2052,10 @@ reveals only whether a vault exists.
 | POST | `/api/folders/move` | Move a folder `from` one path `to` another, with everything under it (§5.6) |
 | DELETE | `/api/folders?path=&recursive=` | Delete a folder |
 | POST | `/api/relocate` | Move a file (`id`) or a folder (`path`) onto other `accounts` (§5.6); a different *count* of accounts changes the scheme and rebuilds the file; `"preview": true` prices it out of the index and moves nothing |
+| GET | `/api/automation` | Every folder policy this vault can see, and whether a sweep is running. `?path=` answers for one folder — `null`, not a 404, when it has none (§3.15) |
+| POST | `/api/automation` | Put a policy on a `path`: `cadence`, `at`, `weekday`, `action`, `narrow`, `max_repairs`, `rebuild_limit`, `enabled`. Creating and editing are the same call; an edit keeps the history and the last-run time |
+| DELETE | `/api/automation?path=` | Take it off, history and all |
+| POST | `/api/automation/run` | Carry a folder's policy out now, due or not, on or off. Contacts every account and may rebuild files, so it has relocation's deadline; `409 AUTOMATION_BUSY` when one is already running |
 | GET | `/api/movies` | Whether a film database key is stored, and which folders are opted in (§3.11) |
 | POST | `/api/movies/key` | Store the key — checked against the database before it is kept; `""` clears it |
 | POST | `/api/movies/lookup` | Turn film lookup on or off for a `path` and everything beneath it |

@@ -528,6 +528,157 @@ clouds brings back a shard that was never written. `sand check` and the file's
 own **Where the shards live** say the same thing per file; this is the vault-wide
 answer to "which ones, and can I fix them from here".
 
+## A folder that looks after itself
+
+Everything above waits to be asked. Somebody clicks the count of short files;
+somebody notices an account has gone red in the sidebar. That works exactly as
+long as somebody is looking, and the failure worth worrying about is the one
+nobody is looking at — an account whose token quietly expired in March, a bucket
+that stopped answering, a shard that never landed because the cloud holding it
+was refusing for the afternoon.
+
+None of those makes anything look broken. A file missing one of its three shards
+reads back perfectly, at full speed, right up until the day a second cloud is
+unavailable and it does not read back at all.
+
+So a folder can be given a standing instruction instead: **on this schedule,
+check that every cloud is answering and every shard of every file under here is
+where the index says it went — and put back whatever is missing.**
+
+```bash
+./sand automation set /archive --daily 10:00 --action rebalance
+```
+
+That is the whole feature. Every morning at ten, every account is pinged, every
+file under `/archive` is checked shard by shard against the accounts holding it,
+and anything that came back short is rebuilt onto the clouds that answered.
+
+In the browser it is the **⏱** button beside the film and organizer ones, on the
+folder you are standing in. The dialog leads with what the last few runs found,
+because a schedule nobody ever reads the results of is a schedule that is not
+doing anything; the settings are underneath.
+
+### Per folder, because a vault is not one thing
+
+The films are replaceable and the scans of the passports are not, and the folder
+is the only place that distinction is ever written down. A policy covers the
+folder it was made on and everything under it, so `/` looks after the whole
+vault and `/archive` looks after `/archive/2019` too. Where both exist, the
+deeper one runs first and the outer one skips the files it already checked, so
+nothing is checked twice in a sweep.
+
+The schedule travels with the folder: rename it and the policy follows, delete it
+and the policy goes with it.
+
+### It keeps the recovery model, not the placement
+
+A 4-of-6 file whose sixth cloud died goes back out as 4-of-6 over six clouds that
+answer. Same storage cost, same number of losses survived, same number of
+accounts an attacker would have to hold together — see
+[The scheme](#a-wider-spread-when-you-have-the-clouds-for-it) for why those three
+numbers are the whole of what a code is.
+
+Only when there are not enough clouds answering to cut a file as it is cut now is
+there a decision to make, and it is not one an unattended job should make on its
+own. Left alone, such a file is **not touched** and is named in the report:
+
+```
+/holiday.mov: it is cut 4-of-6 and only 4 cloud(s) are answering, so it cannot
+go back out as it is — leaving it alone rather than narrowing it, which this
+policy has not been told to do
+```
+
+`--narrow` turns that into permission to re-cut it — 4-of-6 on four clouds
+becomes 3-of-4, holding the storage ratio as closely as the width allows and
+never leaving a file without a spare shard. It is off by default because
+narrowing cannot be undone without another full rebuild.
+
+### A repair is always a rebuild, and that is why there is a ceiling
+
+This one is worth understanding before switching `--action rebalance` on.
+
+Moving a shard from one cloud to another means reading it off the first one, and
+every case that gets here is a case where there is nothing to read: the cloud is
+dark, the account was disconnected, the shard was never written. So the only
+repair that works is the one a short file already gets — gather the shards that
+can be read, cut the file again, write a full set out. The whole file comes down
+and goes back up, and it goes through memory on the way.
+
+Which is why an unattended repair will not rebuild a file larger than **1 GB**
+unless you raise the ceiling. SAND is meant to run on a Raspberry Pi, and a
+scheduled job that decides at three in the morning to hold a 40 GB film in RAM is
+a machine that stops answering ssh. Files past the ceiling are counted, named in
+the report, and left for you to repair by hand from the browser where you can
+watch it happen:
+
+```bash
+./sand automation set /films --daily 03:00 --action rebalance --rebuild-limit 8G
+./sand automation set /films --daily 03:00 --action rebalance --rebuild-limit none
+```
+
+`--max-repairs` bounds the other direction: how many files one run will rebuild
+at all. What is left over is picked up by the next run, worst first — a vault
+that comes back from a bad week with four thousand short files should spend four
+thousand files' worth of nights on them rather than a fortnight of bandwidth in
+one go.
+
+### What a run says
+
+```bash
+./sand automation run /archive     # now, without waiting for its slot
+#   20 Aug 20:01  412 checked, 409 whole, 3 short, 0 past repairing
+#                 3 rebuilt (1.4 GB), 0 failed, 0 left for later
+```
+
+Three states, and between them they account for every file checked:
+
+| | |
+|---|---|
+| **whole** | every shard the index records was found where it records it |
+| **short** | at least one was not, and enough were to rebuild the file |
+| **past repairing** | not even enough to rebuild — the file cannot be read at all right now, and no arrangement of clouds changes that until whatever is holding the rest comes back |
+
+The last eight runs are kept on the folder, which is what makes a schedule
+trustworthy: a fortnight of *every shard where it should be* is the only evidence
+that it is working.
+
+```bash
+./sand automation list
+#   /archive                       daily 10:00      rebalance  on
+#      next   Fri 21 Aug 10:00
+#      last   20 Aug 20:01  412 checked, 409 whole, 3 short, 0 past repairing
+#                           3 rebuilt (1.4 GB), 0 failed, 0 left for later
+```
+
+### The schedules are kept while the vault is unlocked
+
+`sand serve` runs them, and it can only run them while the vault is open — a
+locked vault has no index to read the schedules out of and no keys to read the
+files with. Nothing is lost when it locks: "due" is a comparison against the last
+run rather than a timer that has to be running, so a slot missed overnight comes
+round the moment the vault is next opened, and a machine that was off for three
+days comes back owing one sweep rather than three.
+
+A machine meant to keep these wants a long idle timeout, so that the vault stays
+open once you have opened it:
+
+```bash
+./sand serve --idle-timeout 720h
+```
+
+That is a real decision and not a formality — it is what the idle lock exists to
+prevent, and it means the keys stay in memory. Weigh it against what the folder
+holds. A check-only policy on a machine you unlock every morning anyway is the
+setting that asks nothing of you.
+
+Each run is one line in the server log, on the quiet nights as much as the loud
+ones, because a log that says nothing when everything is fine cannot tell you
+"it is working" from "it never ran":
+
+```
+automation /archive: 412 file(s) checked, every part where it should be
+```
+
 ## Moving something to another folder
 
 The other kind of move, and the cheap one. Which folder a file is in is a field
@@ -1126,6 +1277,25 @@ sand rm <path> [-r]                Erases every part from every account
 sand check [path] [--all]          Verify parts are still there; non-zero if not
 ```
 
+### Automation
+
+```
+sand automation list                       Every folder with a policy, and what its last run found
+sand automation set <folder> --hourly | --daily HH:MM | --weekly day,HH:MM
+                    [--action check|rebalance] [--narrow]
+                    [--max-repairs N] [--rebuild-limit 8G|none] [--disabled]
+sand automation run <folder>               Carry it out now, without waiting for its slot
+sand automation remove <folder>            Forget the schedule and its history
+```
+
+A policy covers the folder and everything under it. `--action check` looks and
+writes down what it found, moving nothing; `--action rebalance` also rebuilds
+whatever came back short onto the clouds that answered, keeping each file's own
+erasure code. `sand automation run` exits non-zero when a file is past repairing.
+
+The schedules themselves are kept by `sand serve` while the vault is unlocked.
+See [A folder that looks after itself](#a-folder-that-looks-after-itself).
+
 `sand relocate` moves only the parts that have to move: anything already on one
 of the accounts you named stays where it is, and what travels is copied across
 still encrypted rather than rebuilt. A folder takes everything under it. See
@@ -1276,6 +1446,14 @@ pipe the password on stdin.
   find the copies of things — the same bytes, the same size, or a name a copy
   marker apart. Each counts what it would do before it does any of it — see
   [Organizing a folder](#organizing-a-folder)
+- **Look after a folder** — `⏱` beside `🗂`: on a schedule of your choosing,
+  every cloud is asked whether it is there and every shard of every file under
+  the folder is checked against the index that says where it went — and, if you
+  say so, whatever came back short is rebuilt onto the clouds that answered. The
+  dialog leads with what the last runs found, and *Run it now* does not wait for
+  the next slot. The button is lit on a folder that is looked after and amber
+  when the last run found something — see
+  [A folder that looks after itself](#a-folder-that-looks-after-itself)
 - **Preview** — images, video, audio, PDF and text render inline, rebuilt on
   demand; anything else downloads. A matched film opens on its poster and
   summary rather than an unplayed black rectangle

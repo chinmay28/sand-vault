@@ -368,6 +368,16 @@ func (s *Server) Handler() (http.Handler, error) {
 		// because it is one operation over a set of files and the only
 		// difference is how the set was named.
 		"POST /api/relocate": s.handleRelocate,
+
+		// The standing instructions a folder has been given: check what is
+		// under it on a schedule, and put back what is missing. Reading and
+		// writing one is index work; running one contacts every account and can
+		// rebuild files, which is why it is a route of its own with a deadline
+		// of its own. See handlers_automation.go.
+		"GET /api/automation":      s.handleAutomationList,
+		"POST /api/automation":     s.handleAutomationSet,
+		"DELETE /api/automation":   s.handleAutomationRemove,
+		"POST /api/automation/run": s.handleAutomationRun,
 	}
 	for pattern, handler := range protected {
 		mux.HandleFunc(pattern, s.requireSession(handler))
@@ -471,6 +481,9 @@ func (s *Server) Start() error {
 	}
 
 	go s.autoLockLoop()
+	// The folder policies. Nothing happens on a tick with nothing due, and
+	// nothing happens at all while the vault is locked — see automationLoop.
+	go s.automationLoop()
 
 	addr := net.JoinHostPort(s.Bind, fmt.Sprint(s.Port))
 	v, _ := s.Vault()
@@ -659,6 +672,12 @@ func vaultErrorResponse(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusUnauthorized, err.Error(), "SUB_VAULT_LOCKED")
 	case errors.Is(err, vault.ErrNoSubVault):
 		writeError(w, http.StatusNotFound, err.Error(), "NOT_FOUND")
+	case errors.Is(err, vault.ErrNoAutomation):
+		writeError(w, http.StatusNotFound, err.Error(), "NO_AUTOMATION")
+	case errors.Is(err, vault.ErrAutomationBusy):
+		// 409 rather than 429: nothing is rate limiting this, there is simply
+		// one sweep at a time and one is already going.
+		writeError(w, http.StatusConflict, err.Error(), "AUTOMATION_BUSY")
 	case errors.Is(err, vault.ErrNeedsConversion):
 		// 409 rather than 400: nothing about the request is wrong, the file is
 		// simply in a state that has to change before it can be answered for.

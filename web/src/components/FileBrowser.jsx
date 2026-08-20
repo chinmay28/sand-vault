@@ -14,6 +14,7 @@ import { BulkAssign, BulkDelete, BulkDownload } from './BulkActions'
 import MoveToFolder from './MoveToFolder'
 import { FilmButton, FilmLookupSettings } from './FilmDetails'
 import { OrganizerButton, OrganizerMenu, OrganizerTool } from './Organizer'
+import { AutomationButton, AutomationSettings } from './FolderAutomation'
 
 /* How long to sit on a keystroke before asking the server. Long enough that
    typing a word is one query rather than six, short enough to feel live. */
@@ -53,6 +54,9 @@ export default function FileBrowser({
      land on the tool it had just opened. */
   const [organizing, setOrganizing] = useState(false)
   const [tool, setTool] = useState(null)
+  /* The folder's standing instruction: its schedule, what the last few runs
+     found, and the button that starts one now. */
+  const [automating, setAutomating] = useState(false)
   /* Files the organizer picked from below this folder, which have no row here
      to be ticked. They join the selection as items in their own right — see
      `chosen` — so the selection bar can move, download, scatter or erase a
@@ -215,6 +219,10 @@ export default function FileBrowser({
      the whole vault, so it answers for the folder it was started from — which
      is the folder whose switch the toolbar button changes. */
   const lookup = listing?.movie_lookup
+  /* The folder's standing instruction, minus its history — it rides along with
+     the listing so that opening a folder does not cost a second request to be
+     told the usual answer, which is that it has none. */
+  const automation = listing?.automation
 
   /* A selection is about the things in front of you, so walking somewhere else
      — or asking a different question of the index — ends it rather than
@@ -452,7 +460,14 @@ export default function FileBrowser({
             film={<FilmButton lookup={lookup} mobile onOpen={() => setFilms(true)} />}
             /* Beside it, because both are things done to the folder rather
                than to a row in it. */
-            organizer={<OrganizerButton mobile onOpen={() => setOrganizing(true)} />}
+            organizer={(
+              <>
+                <OrganizerButton mobile onOpen={() => setOrganizing(true)} />
+                {/* Third of the three folder-level buttons, and the only one
+                    that keeps working when nobody is looking. */}
+                <AutomationButton automation={automation} mobile onOpen={() => setAutomating(true)} />
+              </>
+            )}
             /* Handed to the heading rather than put in its place: the field
                takes over the strip of icons underneath and the folder stays
                named above it, so a screen of results still says what was being
@@ -482,6 +497,11 @@ export default function FileBrowser({
               <Breadcrumbs path={path} vault={vaultLabel} mobile={false} onNavigate={nav.navigate} />
               <FilmButton lookup={lookup} mobile={false} onOpen={() => setFilms(true)} />
               <OrganizerButton mobile={false} onOpen={() => setOrganizing(true)} />
+              <AutomationButton
+                automation={automation}
+                mobile={false}
+                onOpen={() => setAutomating(true)}
+              />
               <ViewControls
                 mobile={false}
                 prefs={prefs}
@@ -678,6 +698,18 @@ export default function FileBrowser({
              with it — half of what was ticked may have moved or gone. */
           onDone={() => { setSelected(new Set()); setDeeper([]); onRefresh() }}
           onSelect={pickFiles}
+        />
+      )}
+
+      {automating && (
+        <AutomationSettings
+          path={path}
+          vault={vault}
+          onClose={() => setAutomating(false)}
+          /* A sweep can rebuild files, which changes which clouds their badges
+             name; and the button above is drawn from the listing's copy of the
+             policy. Both are the listing. */
+          onChanged={onRefresh}
         />
       )}
 

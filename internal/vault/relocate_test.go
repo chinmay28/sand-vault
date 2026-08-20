@@ -762,7 +762,7 @@ func TestRelocatePlanIsIndependentOfShardOrder(t *testing.T) {
 	}
 	entry := &Entry{ID: "x", Name: "x.txt", Dir: "/", ArchiveID: "ff", Shards: shards}
 
-	plan := planFileRelocation(MainScope, entry, []string{"a", "b", "d"}, byID, 1, archive.SchemeDefault)
+	plan := planFileRelocation(MainScope, entry, []string{"a", "b", "d"}, byID, 1, archive.SchemeDefault, relocationOptions{})
 	if len(plan.Moves) != 1 || plan.Moves[0].Part != 3 || plan.Moves[0].To != "d" {
 		t.Fatalf("plan = %+v, want part 3 to d", plan.Moves)
 	}

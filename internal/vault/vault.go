@@ -74,6 +74,16 @@ type Vault struct {
 	// push tens of megabytes to get them.
 	chunkSize uint32
 
+	// autoMu guards the automation runner and autoActive names the folder whose
+	// sweep is in flight, empty when none is. A leaf lock, taken on its own and
+	// never while holding mu: it is claimed before the sweep reads anything, so
+	// that two scheduler ticks landing together cannot both start one. One
+	// sweep at a time vault-wide rather than one per folder, because a sweep
+	// can rebuild files and two of those at once is two of everything — two
+	// gathers in memory, two sets of uploads racing for the same accounts.
+	autoMu     sync.Mutex
+	autoActive string
+
 	// liveMu guards the cache of constructed providers. It is a leaf lock,
 	// always taken last, so cache warming can happen while mu is held.
 	liveMu sync.Mutex
@@ -1410,6 +1420,14 @@ type Listing struct {
 	// is the only thing in SAND that talks to a third party.
 	MovieLookup MovieLookup `json:"movie_lookup"`
 
+	// Automation is the standing instruction this folder has been given, or nil
+	// when it has none — which is every folder until somebody gives one. It
+	// rides along with the listing for the same reason the film switch does:
+	// the browser needs it on every folder it opens, to say whether the folder
+	// is looking after itself, and a second request per folder to answer "no"
+	// would be a request per folder to answer "no".
+	Automation *FolderAutomation `json:"automation,omitempty"`
+
 	// FolderArt names, per subfolder path, the file whose thumbnail that folder
 	// is drawn with — a poster from the films inside it, or whatever picture
 	// somebody picked. A folder with nothing picturable under it is simply
@@ -1471,6 +1489,7 @@ func (v *Vault) List(scope Scope, dir string) (*Listing, error) {
 		Thumbs:      thumbs,
 		Movies:      v.movieBriefsForLocked(m, files),
 		MovieLookup: v.movieLookupLocked(m, dir),
+		Automation:  v.automationForLocked(scope, m, dir),
 		FolderArt:   v.folderArtForLocked(m, paths),
 	}, nil
 }

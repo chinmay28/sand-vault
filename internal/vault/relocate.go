@@ -54,6 +54,66 @@ const relocateWindow = 4
 // megabyte of JSON.
 const relocationPreviewLimit = 200
 
+// relocationOptions is what a relocation is told to assume beyond the accounts
+// it is aimed at.
+//
+// There is one thing to assume and it has one caller. A part sitting on an
+// account that is connected but not answering cannot be copied anywhere: the
+// copy reads from that account, and that account is the problem. Planning such
+// a file as a move produces a move that must fail, and running it leaves the
+// file exactly as short as it was. The only repair that works is the one a file
+// missing a part already gets — gather what can be read, cut it again, write a
+// full set onto the accounts that are answering — and marking the account
+// unreachable is what makes the planner reach that conclusion.
+//
+// Empty is the default and is what every hand-driven relocation passes: the
+// browser and the CLI point a move at accounts a person picked, and a person
+// picking a dead cloud should see the copy fail and be told so, not have the
+// file quietly rebuilt underneath them. The folder automations (automation.go)
+// are the caller that has already pinged every account and knows.
+type relocationOptions struct {
+	// unreachable names accounts, by ID, whose parts are to be treated as
+	// though they were never written. They stay recorded — nothing here erases
+	// an index row — but they are not counted towards the file having a full
+	// set, and they are never copied from.
+	unreachable map[string]bool
+
+	// absent names parts that have been looked for and are not there, by file
+	// ID and then by part number.
+	//
+	// This is the other half of the same fact and it cannot be inferred from
+	// the first. An account can be answering perfectly and still not be holding
+	// what the index says it is — a part deleted out from under SAND, an upload
+	// that failed after its row was written, a bucket restored from a backup
+	// taken last week. The index is the only record of what should be there and
+	// it has no way to know, so somebody who has actually gone and looked has
+	// to say.
+	absent map[string]map[int]bool
+}
+
+// reachable reports whether a shard recorded in the index can really be read.
+func (o relocationOptions) reachable(entryID string, s Shard) bool {
+	if o.unreachable[s.ProviderID] {
+		return false
+	}
+	return !o.absent[entryID][s.Part]
+}
+
+// countReachable is how many of a file's distinct parts can actually be read,
+// which is entry.Redundancy() once what is not there is taken out of it.
+func (o relocationOptions) countReachable(e *Entry) int {
+	if len(o.unreachable) == 0 && len(o.absent) == 0 {
+		return e.Redundancy()
+	}
+	seen := map[int]bool{}
+	for _, s := range e.Shards {
+		if o.reachable(e.ID, s) {
+			seen[s.Part] = true
+		}
+	}
+	return len(seen)
+}
+
 // PartMove is one copy of one part of one file changing accounts.
 type PartMove struct {
 	Part     int    `json:"part"`
@@ -224,7 +284,7 @@ func (r *RelocationReport) Done() bool {
 // clouds possible at all — five names no scheme of its own — and what lets a
 // move be a deliberate change of tradeoff rather than only a change of address.
 func (v *Vault) PlanRelocation(scope Scope, target string, accounts []string, scheme archive.Scheme) (*RelocationPlan, error) {
-	plan, err := v.planRelocation(scope, target, accounts, scheme)
+	plan, err := v.planRelocation(scope, target, accounts, scheme, relocationOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -237,7 +297,7 @@ func (v *Vault) PlanRelocation(scope Scope, target string, accounts []string, sc
 
 // planRelocation is PlanRelocation with every file's row kept, which is what
 // the relocation itself walks.
-func (v *Vault) planRelocation(scope Scope, target string, accounts []string, scheme archive.Scheme) (*RelocationPlan, error) {
+func (v *Vault) planRelocation(scope Scope, target string, accounts []string, scheme archive.Scheme, opts relocationOptions) (*RelocationPlan, error) {
 	entries, dir, folder, err := v.relocationScope(scope, target)
 	if err != nil {
 		return nil, err
@@ -300,7 +360,7 @@ func (v *Vault) planRelocation(scope Scope, target string, accounts []string, sc
 	}
 
 	for _, entry := range entries {
-		fp := planFileRelocation(scope, entry, targets, byID, capacity, want)
+		fp := planFileRelocation(scope, entry, targets, byID, capacity, want, opts)
 		if !fp.Changed() {
 			plan.Unchanged++
 		}
@@ -357,7 +417,12 @@ func (v *Vault) planRelocation(scope Scope, target string, accounts []string, sc
 // A file whose account is offline is reported and left alone rather than holding
 // up the rest. progress may be nil.
 func (v *Vault) Relocate(ctx context.Context, scope Scope, target string, accounts []string, scheme archive.Scheme, progress ProgressFunc) (*RelocationReport, error) {
-	plan, err := v.planRelocation(scope, target, accounts, scheme)
+	return v.relocate(ctx, scope, target, accounts, scheme, relocationOptions{}, progress)
+}
+
+// relocate is Relocate with the assumptions spelled out — see relocationOptions.
+func (v *Vault) relocate(ctx context.Context, scope Scope, target string, accounts []string, scheme archive.Scheme, opts relocationOptions, progress ProgressFunc) (*RelocationReport, error) {
+	plan, err := v.planRelocation(scope, target, accounts, scheme, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -471,7 +536,7 @@ func relocationCapacity(policy Policy, targets int) (int, error) {
 // That is expensive and is reported as its own thing rather than hidden among
 // the moves, because a person deciding whether to widen a vault should see the
 // bill before agreeing to it.
-func planFileRelocation(scope Scope, entry *Entry, targets []string, byID map[string]provider.Config, capacity int, want archive.Scheme) FilePlan {
+func planFileRelocation(scope Scope, entry *Entry, targets []string, byID map[string]provider.Config, capacity int, want archive.Scheme, opts relocationOptions) FilePlan {
 	plan := FilePlan{
 		vault:      scope,
 		ID:         entry.ID,
@@ -492,11 +557,12 @@ func planFileRelocation(scope Scope, entry *Entry, targets []string, byID map[st
 	// of a part, which is not what "put this file on these clouds" means — and
 	// rebuilding is the only thing that ever puts a missing shard back.
 	have := entry.Scheme()
-	short := entry.Redundancy() < have.Total
+	reachable := opts.countReachable(entry)
+	short := reachable < have.Total
 	if have != want || short {
 		plan.Recode = true
 		plan.Repair = short && have == want
-		plan.Missing = have.Total - entry.Redundancy()
+		plan.Missing = have.Total - reachable
 		plan.From = have.String()
 		plan.To = want.String()
 		plan.to = want
@@ -532,7 +598,7 @@ func planFileRelocation(scope Scope, entry *Entry, targets []string, byID map[st
 		if settled[s.Part] {
 			continue
 		}
-		if _, connected := byID[s.ProviderID]; !connected {
+		if _, connected := byID[s.ProviderID]; !connected || !opts.reachable(entry.ID, s) {
 			plan.Stranded = append(plan.Stranded, s.Part)
 			continue
 		}
