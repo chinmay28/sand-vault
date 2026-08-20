@@ -992,3 +992,117 @@ func TestRelocateRejectsACountThatNamesNoScheme(t *testing.T) {
 		t.Fatal("expected a relocation onto four accounts to be refused")
 	}
 }
+
+func TestRelocateRebuildsAFileThatIsShortAPart(t *testing.T) {
+	// A file uploaded while one of its accounts was refusing is short a shard
+	// for good: the shard is on no account, so there is nothing to copy from
+	// and moving the ones that did land would leave the file just as short on
+	// the new clouds. It has to be cut again — which is the whole point of the
+	// "files missing a spare part" list being able to send one somewhere.
+	v, _ := newTestVault(t, 4)
+	ctx := context.Background()
+	ids := accountIDs(t, v)
+
+	payload := []byte("two parts of three ever landed")
+	entry, _, err := v.Upload(ctx, MainScope, "/", "short.txt", payload, UploadOptions{
+		Accounts: ids[:3],
+	})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+
+	// Forget the third part the way a forced disconnect does.
+	v.mu.Lock()
+	live := v.manifest.ByID(entry.ID)
+	live.Shards = live.Shards[:2]
+	err = v.persistLocked()
+	v.mu.Unlock()
+	if err != nil {
+		t.Fatalf("persist: %v", err)
+	}
+
+	// Same width, same code, and still not a shard-by-shard move.
+	plan, err := v.PlanRelocation(MainScope, entry.ID, ids[1:], archive.Scheme{})
+	if err != nil {
+		t.Fatalf("PlanRelocation: %v", err)
+	}
+	row := plan.Files[0]
+	if !row.Recode || !row.Repair {
+		t.Fatalf("plan is recode=%v repair=%v, want both — the file is short a shard",
+			row.Recode, row.Repair)
+	}
+	if row.Missing != 1 {
+		t.Errorf("Missing = %d, want 1", row.Missing)
+	}
+	if plan.Recoded != 1 || plan.Moves != 0 {
+		t.Errorf("plan says %d rebuilt and %d shards moved, want 1 and 0", plan.Recoded, plan.Moves)
+	}
+	if len(plan.Warnings) == 0 {
+		t.Error("a rebuild costs the whole file and should be said out loud")
+	}
+
+	report, err := v.Relocate(ctx, MainScope, entry.ID, ids[1:], archive.Scheme{}, nil)
+	if err != nil {
+		t.Fatalf("Relocate: %v", err)
+	}
+	if report.Recoded != 1 {
+		t.Errorf("Recoded = %d, want 1", report.Recoded)
+	}
+
+	after, err := v.Entry(entry.ID)
+	if err != nil {
+		t.Fatalf("Entry: %v", err)
+	}
+	if after.Redundancy() != after.Scheme().Total {
+		t.Errorf("still %d of %d shards after the rebuild",
+			after.Redundancy(), after.Scheme().Total)
+	}
+	for _, s := range after.Shards {
+		if s.ProviderID == ids[0] {
+			t.Errorf("shard %d stayed on the account it was moved off", s.Part)
+		}
+	}
+
+	// And it is still the same file.
+	data, _, err := v.Fetch(ctx, entry.ID)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if !bytes.Equal(data, payload) {
+		t.Errorf("rebuilt file reads back as %q, want %q", data, payload)
+	}
+
+	// Nothing is left in the list the accounts panel counts.
+	page, err := v.Degraded(0, 0)
+	if err != nil {
+		t.Fatalf("Degraded: %v", err)
+	}
+	if page.Total != 0 {
+		t.Errorf("%d file(s) still short after the repair", page.Total)
+	}
+}
+
+func TestRelocateLeavesAWholeFileAlone(t *testing.T) {
+	// The other half of the rule above: a file with all its shards, asked for
+	// the accounts it is already on, is still not rebuilt. Repairing must not
+	// turn every relocation into a re-upload.
+	v, _ := newTestVault(t, 3)
+	ctx := context.Background()
+	ids := accountIDs(t, v)
+
+	entry, _, err := v.Upload(ctx, MainScope, "/", "whole.txt", []byte("all present"), UploadOptions{
+		Accounts: ids,
+	})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+
+	plan, err := v.PlanRelocation(MainScope, entry.ID, ids, archive.Scheme{})
+	if err != nil {
+		t.Fatalf("PlanRelocation: %v", err)
+	}
+	if plan.Recoded != 0 || plan.Moves != 0 || plan.Unchanged != 1 {
+		t.Errorf("plan says %d rebuilt, %d moved, %d unchanged; want 0, 0 and 1",
+			plan.Recoded, plan.Moves, plan.Unchanged)
+	}
+}

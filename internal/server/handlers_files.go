@@ -739,3 +739,49 @@ func (s *Server) handleFolderDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "warnings": warnings})
 }
+
+// handleDegradedList answers with the files missing at least one part.
+//
+// The count in the accounts panel is Stats.Degraded; this is what that number
+// is counting, so that a figure somebody reads there can be clicked rather than
+// only worried about. Paged, because the thing that leaves files short — an
+// account refusing for an afternoon — leaves as many of them as were uploaded
+// in that afternoon.
+//
+// A read of the index and nothing more: no account is contacted, which is what
+// makes it safe for a dialog to ask again after every repair.
+func (s *Server) handleDegradedList(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+
+	offset, err := intParam(query.Get("offset"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "offset must be a whole number", "BAD_REQUEST")
+		return
+	}
+	limit, err := intParam(query.Get("limit"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "limit must be a whole number", "BAD_REQUEST")
+		return
+	}
+
+	v, _ := s.Vault()
+	page, err := v.Degraded(offset, limit)
+	if err != nil {
+		vaultErrorResponse(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
+}
+
+// intParam reads an optional non-negative whole number from the query string.
+// An absent one is zero, which every caller here reads as "no preference".
+func intParam(raw string) (int, error) {
+	if raw == "" {
+		return 0, nil
+	}
+	parsed, err := strconv.Atoi(raw)
+	if err != nil || parsed < 0 {
+		return 0, fmt.Errorf("not a whole number: %q", raw)
+	}
+	return parsed, nil
+}

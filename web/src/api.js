@@ -191,6 +191,28 @@ export const api = {
   },
   fileMeta: (id) => request(`/api/files/${encodeURIComponent(id)}`),
 
+  /* The files behind the "missing a spare part" line in the accounts panel:
+     every one whose index records fewer parts than its own scheme calls for.
+
+     Worst first — a file down to its last usable part leads, whatever it is
+     called — and paged, because what leaves files short is an account refusing
+     for an afternoon rather than one file going wrong: a vault can come back
+     from a bad day with thousands of them. The answer carries the whole list's
+     count and weight alongside the page, so a dialog showing twenty-five of
+     four hundred can say so.
+
+     Read out of the index with no account contacted, which is what makes it
+     cheap to ask again after every repair. The repair itself is relocate()
+     above — a short file re-spread over clouds that are answering comes back
+     whole. */
+  degradedFiles: ({ offset = 0, limit = 0 } = {}) => {
+    const params = new URLSearchParams()
+    if (offset) params.set('offset', String(offset))
+    if (limit) params.set('limit', String(limit))
+    const query = params.toString()
+    return request(`/api/degraded${query ? `?${query}` : ''}`)
+  },
+
   /* Files still stored in the format SAND used before chunking. Such a file
      cannot be read at an offset — the whole thing would have to be rebuilt to
      answer for any of it — so nothing streams one until it has been converted. */

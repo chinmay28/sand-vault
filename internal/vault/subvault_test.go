@@ -40,7 +40,12 @@ func reopen(t *testing.T, v *Vault) *Vault {
 	if err := fresh.Unlock(testPassword); err != nil {
 		t.Fatalf("Unlock: %v", err)
 	}
+	// The read history saves itself on a goroutine, into the directory the vault
+	// file is in — which here is a t.TempDir the cleanup is about to remove. A
+	// reopened vault that reads a file has one of those in flight, so it is
+	// awaited alongside the backup sync exactly as newTestVault does.
 	t.Cleanup(fresh.AwaitBackupSync)
+	t.Cleanup(fresh.AwaitReadHistory)
 	return fresh
 }
 

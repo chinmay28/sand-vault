@@ -14,6 +14,7 @@ import os
 import re
 
 import pytest
+import requests
 from playwright.sync_api import expect
 
 pytestmark = pytest.mark.gui
@@ -2654,3 +2655,157 @@ class TestWiderSchemes:
         app.locator('button[title="Open"]', has_text="widened.txt").click()
         app.wait_for_selector("text=three clouds, then six", timeout=60000)
         app.keyboard.press("Escape")
+
+
+# ---------------------------------------------------------------------------
+# The files that went out short
+# ---------------------------------------------------------------------------
+
+def _shorten(page, base, password, tmp_path, files):
+    """Fill a fresh vault with `files` files that are each one part short.
+
+    Set up over HTTP behind the open app rather than through the UI: what is
+    being tested is the line at the foot of the accounts panel and the dialog
+    behind it, and uploading a file and then disconnecting one of the clouds it
+    went to is scaffolding. A forced disconnect forgets the shard records
+    pointing at the account, which leaves exactly the state an upload lands in
+    when one cloud was not answering — the file is there, still readable, one
+    part short of the spread it asked for.
+
+    Four accounts, uploads onto the first three, and the first disconnected: a
+    part goes off every file, and the fourth cloud is left free to move onto.
+    """
+    session = requests.Session()
+    headers = {"Origin": base}
+    r = session.post(f"{base}/api/vault/unlock", json={"password": password},
+                     headers=headers, timeout=60)
+    assert r.status_code == 200, r.text
+
+    ids = []
+    for i in range(4):
+        path = tmp_path / "short-clouds" / f"cloud-{i}"
+        path.mkdir(parents=True, exist_ok=True)
+        r = session.post(f"{base}/api/providers",
+                         json={"kind": "local", "name": f"short-{i}",
+                               "options": {"path": str(path)}},
+                         headers=headers, timeout=60)
+        assert r.status_code == 201, r.text
+        ids.append(r.json()["provider"]["id"])
+
+    names = []
+    for i in range(files):
+        name = f"shortened{i:02d}.txt"
+        names.append(name)
+        r = session.post(
+            f"{base}/api/files",
+            files={"files[]": (name, b"one of its parts never landed")},
+            data=[("path", "/"), ("accounts", ids[0]), ("accounts", ids[1]), ("accounts", ids[2])],
+            headers=headers, timeout=120,
+        )
+        assert r.status_code == 201, r.text
+
+    r = session.delete(f"{base}/api/providers/{ids[0]}?force=1", headers=headers, timeout=60)
+    assert r.status_code == 200, r.text
+
+    # All of it happened while the page was looking away.
+    page.reload()
+    page.wait_for_selector("text=Connected clouds", timeout=20000)
+    return names
+
+
+class TestFilesMissingAPart:
+    """The count at the foot of the accounts panel, and the way into it.
+
+    A part goes missing when the cloud meant to hold it was not answering as
+    the file was scattered. Nothing fails: the upload succeeds, the file reads
+    back, and it is one cloud worse off than it asked to be for good, because
+    nothing ever goes back to finish it. The panel has always counted those.
+    These tests are about the count being a door — which files, and the choice
+    of other clouds for each of them, without leaving the panel.
+
+    Own server and own vault per test, because making a file short means
+    disconnecting an account and the shared session vault is what every other
+    test in this file stands on.
+    """
+
+    PASSWORD = "one-part-short-passphrase"
+
+    def new_vault(self, page, base):
+        """Create the vault through the first-run screen, which is also what
+        gives the browser a session."""
+        page.goto(base)
+        page.wait_for_selector("text=Create your vault", timeout=20000)
+        boxes = page.locator('input[autocomplete="new-password"]')
+        boxes.nth(0).fill(self.PASSWORD)
+        boxes.nth(1).fill(self.PASSWORD)
+        page.get_by_text("▶ Create vault").click()
+        page.wait_for_selector("text=Connected clouds", timeout=20000)
+
+    def test_the_count_is_a_button_that_lists_the_files(self, page, spawn_server, tmp_path):
+        base = spawn_server("short-one")
+        self.new_vault(page, base)
+        names = _shorten(page, base, self.PASSWORD, tmp_path, files=1)
+
+        link = page.get_by_role("button", name=re.compile(r"^1 file missing a spare part"))
+        expect(link).to_be_visible(timeout=30000)
+        link.click()
+
+        dialog = page.get_by_role("dialog", name="Files missing a part")
+        dialog.wait_for(timeout=20000)
+        expect(dialog.get_by_text(names[0])).to_be_visible(timeout=20000)
+        # What is wrong with it, on the row: the count, and the empty square
+        # where the part that never landed should be.
+        expect(dialog.get_by_text("1 part missing")).to_be_visible()
+        expect(dialog.get_by_title(re.compile(r"^Part \d was never stored$"))).to_have_count(1)
+
+    def test_a_row_opens_the_picker_on_the_spread_the_file_asked_for(
+        self, page, spawn_server, tmp_path
+    ):
+        base = spawn_server("short-move")
+        self.new_vault(page, base)
+        names = _shorten(page, base, self.PASSWORD, tmp_path, files=1)
+
+        page.get_by_role("button", name=re.compile(r"missing a spare part")).click()
+        dialog = page.get_by_role("dialog", name="Files missing a part")
+        dialog.wait_for(timeout=20000)
+        dialog.get_by_role("button", name=re.compile("Clouds")).first.click()
+
+        # The relocation dialog, opened on the two clouds the file still has
+        # plus one it does not — three, which is the spread it was uploaded
+        # with. Opening on the two would open on 2-of-2, which is a narrower
+        # file than the one being repaired.
+        move = page.get_by_role("dialog", name=re.compile(rf"^Move {names[0]}"))
+        move.wait_for(timeout=20000)
+        expect(page.get_by_role("checkbox", checked=True)).to_have_count(3, timeout=20000)
+
+        # A file short a part cannot be carried across into a full one — the
+        # missing part is on no account to copy from — so it is rebuilt.
+        page.wait_for_selector("text=1 file to rebuild", timeout=20000)
+        button = move.get_by_role("button", name=re.compile("Move the shards"))
+        expect(button).to_be_enabled(timeout=20000)
+        button.click()
+        page.wait_for_selector("text=Rebuilt 1 file", timeout=120000)
+        page.get_by_role("button", name="Done").click()
+
+        # Whole again, so the count at the foot of the panel is gone with it.
+        expect(page.get_by_text("missing a spare part")).to_have_count(0, timeout=30000)
+
+    def test_a_long_list_is_paged(self, page, spawn_server, tmp_path):
+        base = spawn_server("short-many")
+        self.new_vault(page, base)
+        _shorten(page, base, self.PASSWORD, tmp_path, files=27)
+
+        page.get_by_role("button", name=re.compile(r"^27 files missing a spare part")).click()
+        dialog = page.get_by_role("dialog", name="Files missing a part")
+        dialog.wait_for(timeout=20000)
+
+        expect(dialog.get_by_text("1–25 of 27")).to_be_visible(timeout=20000)
+        expect(dialog.get_by_text("shortened00.txt")).to_be_visible()
+        expect(dialog.get_by_text("shortened26.txt")).to_have_count(0)
+        expect(dialog.get_by_role("button", name=re.compile("Newer"))).to_be_disabled()
+
+        dialog.get_by_role("button", name=re.compile("Older")).click()
+        expect(dialog.get_by_text("26–27 of 27")).to_be_visible(timeout=20000)
+        expect(dialog.get_by_text("shortened26.txt")).to_be_visible()
+        expect(dialog.get_by_text("shortened00.txt")).to_have_count(0)
+        expect(dialog.get_by_role("button", name=re.compile("Older"))).to_be_disabled()
