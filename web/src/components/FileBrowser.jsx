@@ -47,7 +47,7 @@ export default function FileBrowser({
   const [selected, setSelected] = useState(() => new Set())
   const [bulk, setBulk] = useState(null)
   const [films, setFilms] = useState(false)
-  /* Choosing between the folder's four tools, and then whichever was chosen.
+  /* Choosing between the folder's five tools, and then whichever was chosen.
      Two states rather than one: picking closes the sheet and opens the tool in
      the same click, and a single state would have the sheet's own dismissal
      land on the tool it had just opened. */
@@ -672,10 +672,10 @@ export default function FileBrowser({
           path={path}
           vault={vault}
           onClose={() => setTool(null)}
-          /* A flatten moves files out of folders and a prune removes the
-             folders; either way what is on screen is no longer what is there.
-             The selection goes with it — half of what was ticked may have
-             moved. */
+          /* A flatten moves files out of folders, a prune removes the
+             folders, and clearing duplicates erases files; whichever it was,
+             what is on screen is no longer what is there. The selection goes
+             with it — half of what was ticked may have moved or gone. */
           onDone={() => { setSelected(new Set()); setDeeper([]); onRefresh() }}
           onSelect={pickFiles}
         />

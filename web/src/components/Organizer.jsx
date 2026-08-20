@@ -4,11 +4,12 @@ import { api } from '../api'
 import { useIsMobile } from '../hooks'
 import { ActionSheet, Banner, Button, IconButton, Modal, Spinner } from './ui'
 import { BulkDelete, Progress, useRun } from './BulkActions'
+import { DuplicatesTool } from './Duplicates'
 
 /* Tidying a folder up.
 
    Everything else in this app is about one file: upload it, move it, give it a
-   poster, spread it over other clouds. These four are about the shape of the
+   poster, spread it over other clouds. These five are about the shape of the
    tree instead — the jobs nobody does one row at a time because doing them one
    row at a time is the reason they never get done.
 
@@ -16,20 +17,25 @@ import { BulkDelete, Progress, useRun } from './BulkActions'
      · Empty folders — remove the ones holding nothing, however deep.
      · Remove by type — erase every .txt, or every .nfo, under this folder.
      · Select by type — pick them all instead, and use the selection bar.
+     · Duplicates  — the copies of things, by their bytes, their size or their
+                     names. See Duplicates.jsx.
 
-   All four are planned from one read (api.survey) and then run over endpoints
-   that already existed — move a file, delete a file, remove a folder — one item
-   at a time, from here. That is the same bargain the bulk actions make: a run
-   that stalls on the fortieth of two hundred has moved thirty-nine things and
-   says so, and there is no new endpoint that could half-succeed with no way to
-   report which half. It is also why every one of these dialogs shows what it is
-   about to do, counted, before there is a button to do it with.
+   All five are planned from one read — api.survey for the first four, and the
+   duplicate question's own walk for the last, since hashes are the whole of
+   what it needs and none of the other four wants them per file — and then run
+   over endpoints that already existed: move a file, delete a file, remove a
+   folder, one item at a time, from here. That is the same bargain the bulk
+   actions make: a run that stalls on the fortieth of two hundred has moved
+   thirty-nine things and says so, and there is no new endpoint that could
+   half-succeed with no way to report which half. It is also why every one of
+   these dialogs shows what it is about to do, counted, before there is a button
+   to do it with.
 
    Nothing here touches a cloud account. Moving a file between folders and
    removing an empty folder are both rewrites of the encrypted index, so a
    flatten of four hundred films is as fast as a rename. Deleting is the
    exception and always was: erasing a file erases its parts from every account
-   holding them, which is why the two tools that delete hand over to the same
+   holding them, which is why the three tools that delete hand over to the same
    confirmation the delete button uses. */
 
 /* The button, beside the film one, because both are things done to the folder
@@ -39,7 +45,7 @@ export function OrganizerButton({ mobile, onOpen }) {
     <IconButton
       glyph="🗂"
       label="Organize this folder"
-      title="Flatten it, clear out the empty folders, or act on every file of a kind"
+      title="Flatten it, clear out the empty folders, find the duplicates, or act on every file of a kind"
       size={mobile ? 44 : 32}
       onClick={onOpen}
       style={{ fontSize: mobile ? '15px' : '13px' }}
@@ -47,7 +53,7 @@ export function OrganizerButton({ mobile, onOpen }) {
   )
 }
 
-/* Which of the four. A sheet rather than a menu: they are four separate jobs
+/* Which of the five. A sheet rather than a menu: they are five separate jobs
    with nothing to configure at this level, and on a phone the sheet is already
    how everything else in the toolbar asks a question. */
 export function OrganizerMenu({ path, onClose, onPick }) {
@@ -56,7 +62,7 @@ export function OrganizerMenu({ path, onClose, onPick }) {
   return (
     <ActionSheet
       title="Organize"
-      subtitle={`Four ways to tidy ${here} and everything under it. Each one counts what it would do before it does any of it.`}
+      subtitle={`Five ways to tidy ${here} and everything under it. Each one counts what it would do before it does any of it.`}
       onClose={onClose}
       items={[
         {
@@ -87,6 +93,13 @@ export function OrganizerMenu({ path, onClose, onPick }) {
           hint: 'Tick them all instead, and move, download or scatter them from the selection bar',
           onSelect: () => onPick('pick'),
         },
+        {
+          key: 'dupes',
+          glyph: '⧉',
+          label: 'Find duplicates',
+          hint: 'The same file twice — by its bytes, by its size, or by a name a copy marker apart',
+          onSelect: () => onPick('dupes'),
+        },
       ]}
     />
   )
@@ -94,14 +107,23 @@ export function OrganizerMenu({ path, onClose, onPick }) {
 
 /* Whatever was chosen, over one reading of the folder.
 
-   The survey is taken here rather than in each tool so that all four are the
-   same request and the same failure, and so that opening one is a spinner in a
-   dialog rather than a dialog that appears already wrong. */
+   The survey is taken here rather than in each of the four tools that plan from
+   it, so that all four are the same request and the same failure, and so that
+   opening one is a spinner in a dialog rather than a dialog that appears
+   already wrong. The duplicate finder is handed over whole: it reads a
+   different question and draws its own spinner over it. */
 export function OrganizerTool({ tool, path, vault, onClose, onDone, onSelect }) {
   const [survey, setSurvey] = useState(null)
   const [error, setError] = useState(null)
 
+  /* The duplicate finder asks a different question of the index — which files
+     carry the same hash — and takes its own read rather than a survey carrying
+     a hash per file that only it would ever look at. Everything downstream of
+     it is shared: the same delete confirmation, the same selection bar. */
+  const dupes = tool === 'dupes'
+
   useEffect(() => {
+    if (dupes) return undefined
     let live = true
     setSurvey(null)
     setError(null)
@@ -109,7 +131,19 @@ export function OrganizerTool({ tool, path, vault, onClose, onDone, onSelect }) 
       .then((resp) => { if (live) setSurvey(resp) })
       .catch((err) => { if (live) setError(err.message) })
     return () => { live = false }
-  }, [path, vault, tool])
+  }, [path, vault, tool, dupes])
+
+  if (dupes) {
+    return (
+      <DuplicatesTool
+        path={path}
+        vault={vault}
+        onClose={onClose}
+        onDone={onDone}
+        onSelect={onSelect}
+      />
+    )
+  }
 
   if (error || !survey) {
     return (

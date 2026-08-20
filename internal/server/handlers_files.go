@@ -652,6 +652,29 @@ func (s *Server) handleFolderSurvey(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, survey)
 }
 
+// handleFolderDuplicates answers which files under a folder are copies of each
+// other — by content, by size, and by name, all three from one walk.
+//
+// Three answers to one request because they are three readings of the same
+// question and switching between them is the whole of using it: a pair that is
+// only a size match is worth a second look, and finding that out should not
+// cost another walk of the index. It reads and nothing else; erasing a copy is
+// the DELETE endpoint every other delete goes through. See vault.Duplicates.
+func (s *Server) handleFolderDuplicates(w http.ResponseWriter, r *http.Request) {
+	dir := r.URL.Query().Get("path")
+	if dir == "" {
+		dir = "/"
+	}
+
+	v, _ := s.Vault()
+	dupes, err := v.Duplicates(requestScope(r), dir)
+	if err != nil {
+		vaultErrorResponse(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, dupes)
+}
+
 // handleFolderArtSet records the picture somebody picked for a folder, or drops
 // it so the folder goes back to its icon.
 func (s *Server) handleFolderArtSet(w http.ResponseWriter, r *http.Request) {

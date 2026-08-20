@@ -683,10 +683,11 @@ cheaper bargain in both directions.
 
 ### 3.13 Organizing a folder: one read, then the writes that already existed
 
-The organizer (`🗂`) does four things to a folder and everything under it —
+The organizer (`🗂`) does five things to a folder and everything under it —
 flatten it, remove the folders holding nothing, erase every file of a kind,
-select every file of a kind. All four are the same shape: **one read to plan
-from, then the per-item endpoints the app already had.**
+select every file of a kind, find the copies of things. All five are the same
+shape: **one read to plan from, then the per-item endpoints the app already
+had.**
 
 The read is `Vault.Survey` (`organize.go`), answered by
 `GET /api/folders/survey`. It walks the index once and hands back every file at
@@ -700,7 +701,8 @@ has ever put a file in are in the answer too — `Manifest.AllFolders` includes
 them — since a folder created and never used is precisely what the empty-folder
 tool is looking for.
 
-Nothing else was added on the server. A flatten is a `POST /api/files/{id}/move`
+The fifth takes a read of its own, for a reason given below. Nothing else was
+added on the server. A flatten is a `POST /api/files/{id}/move`
 per file followed by a `DELETE /api/folders` per emptied folder; a purge is a
 `DELETE /api/files/{id}` per match. The loop runs **in the browser, one item at
 a time**, which is the same bargain the bulk actions make (§9): a run that
@@ -735,8 +737,64 @@ organizer exists:
 Flattening and pruning move no bytes at all. A file records the folder it is in
 and its parts are named after the file rather than after the folder (§4.1), so
 both are rewrites of the encrypted index — a folder of four hundred films
-flattens as fast as a rename. Deleting is the exception it always was, and both
-delete-shaped tools end in the same confirmation the delete button uses.
+flattens as fast as a rename. Deleting is the exception it always was, and every
+delete-shaped tool ends in the same confirmation the delete button uses.
+
+#### Duplicates: three degrees of certainty, one walk
+
+`Vault.Duplicates` (`duplicates.go`), answered by
+`GET /api/folders/duplicates`, is the fifth tool's read. It is a second endpoint
+rather than a field on the survey because it needs the per-file SHA-256 and none
+of the other four wants one — putting a 64-character hash on every row of a
+ten-thousand-file survey would have cost every tool something only this one
+reads.
+
+It answers three questions at once, weakest evidence to strongest, and hands
+back all three:
+
+- **By content** — files sharing a SHA-256. The vault has hashed every file it
+  stores since it stored it (§4.1), so this is not a heuristic: two files with
+  one hash are one file. A file with no recorded hash is left out rather than
+  grouped with the other files that have none — *"we do not know what either of
+  these is"* is not a reason to put them together.
+- **By size** — files of the same length, empty ones excluded. It is the
+  question people ask out loud, and it is the only one that can catch a pair the
+  vault never hashed. Every group reports whether the hashes agree, so a size
+  match that is really a content match says so.
+- **By name** — names reduced to what a copy of them would share. Copy markers
+  come off the end repeatedly (`report (1) (2).pdf`), case and separators go,
+  and then the name splits into its **digit runs** and its **letters**. The
+  digits must match exactly and the letters may differ by a bounded edit
+  distance — one edit from five letters, two from sixteen, none below that.
+  That split is the load-bearing part: `IMG_0001.jpg` and `IMG_0002.jpg` are one
+  character apart and are two photographs rather than two copies. The extension
+  is part of the key, so a film is never grouped with its subtitles.
+
+All three arrive together because switching between them is the whole of using
+the dialog, and a size match worth a second look should not cost another walk.
+Groups come back sorted by what clearing them would free, each with the copy it
+suggests keeping first and marked — shallowest, then plainest name, then
+whichever sorts first, so the answer never depends on the order the index
+happened to be walked in.
+
+Two bounds keep the name pass affordable and honest. Only names sharing an
+extension and a digit signature are ever compared, sorted by length within that,
+so the walk stops the moment a candidate is too long to be bridged; a hard
+comparison budget catches the folder that gets past that anyway, and the answer
+says `partial` rather than pretending it compared everything. And because
+similarity chains — *a* is an edit from *b*, *b* from *c* — a run of near-matches
+that joins more than a handful of distinct names is treated as a naming scheme
+rather than a set of copies: it is broken back into the names that matched
+exactly, and the count of runs that happened to is reported. A folder of
+machine-made names would otherwise come back as one group of nine thousand
+duplicates, which is both wrong and the most alarming thing the dialog could
+say. A long run of *one* name — `report (1).pdf` through `report (40).pdf` — is
+not a chain and comes back whole.
+
+Nothing here removes anything. What is ticked goes to `DELETE /api/files/{id}`
+through the delete confirmation, one file at a time, or to the selection bar to
+be moved or scattered instead — the same composition every other organizer tool
+makes.
 
 ### 3.14 The files that went out short, and the way back to whole
 
@@ -1869,6 +1927,7 @@ reveals only whether a vault exists.
 | DELETE | `/api/files/{id}` | Erase every part, drop the entry |
 | GET | `/api/folders` | Every folder in the vault, root first — the whole tree in one answer, for a destination picker |
 | GET | `/api/folders/survey?path=` | Everything under a folder in one walk of the index: every file with its kind and depth, every folder with what it holds. Read-only — the organizer plans from it and then runs the move/delete endpoints per item (§3.13) |
+| GET | `/api/folders/duplicates?path=` | Which files under a folder are copies of each other, three ways from one walk: same SHA-256, same size, or names a copy marker apart. Read-only; what is removed goes through `DELETE /api/files/{id}` (§3.13) |
 | GET | `/api/folders/art?path=` | Which file's thumbnail a folder is drawn with, if any, and every file under it that could be (§3.12) |
 | POST | `/api/folders/art` | Give it a picture (`path`, `id`), or take it away again with an empty `id` |
 | POST | `/api/folders` | Create a folder |

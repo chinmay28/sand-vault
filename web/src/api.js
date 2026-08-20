@@ -336,6 +336,20 @@ export const api = {
   survey: (path, vault = '') =>
     request(`/api/folders/survey?path=${encodeURIComponent(path)}${vaultParam(vault)}`),
 
+  /* Which files under a folder are copies of each other, asked three ways from
+     one walk of the index: the same bytes (one SHA-256, which is proof), the
+     same length (which is a question), and names alike enough to be copies of
+     each other (which is a guess, and says so).
+
+     All three come back together because switching between them is the whole
+     of using it — a pair that is only a size match is worth a second look, and
+     finding that out should not cost another walk. Each group arrives with the
+     copy it suggests keeping first and marked, and with what clearing the rest
+     would free. It reads and nothing else: erasing a copy is deleteFile above,
+     one file at a time, and picking them instead is the selection bar. */
+  duplicates: (path, vault = '') =>
+    request(`/api/folders/duplicates?path=${encodeURIComponent(path)}${vaultParam(vault)}`),
+
   /* The picture a folder is drawn with, and what else it could be drawn with:
      every file under it that has a thumbnail, films first. What comes back is a
      file id — the picture itself is that file's own thumbnail, drawn through

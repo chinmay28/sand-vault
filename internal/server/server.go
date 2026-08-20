@@ -340,6 +340,11 @@ func (s *Server) Handler() (http.Handler, error) {
 		// organizer's four tools plan from this answer and then run over the
 		// move, delete and remove-folder endpoints above, one item at a time.
 		"GET /api/folders/survey": s.handleFolderSurvey,
+		// The copies under a folder, asked three ways in one walk: the same
+		// bytes, the same length, or names alike enough to be copies of each
+		// other. Read-only like the survey, and for the same reason — what is
+		// removed goes through DELETE /api/files/{id}, one file at a time.
+		"GET /api/folders/duplicates": s.handleFolderDuplicates,
 		// Moving a folder within the vault, which moves everything under it.
 		// No part leaves the account it is on: a folder is a path in the index,
 		// so this is a rewrite of that index and nothing more — the same as
