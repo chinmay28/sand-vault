@@ -159,14 +159,24 @@ export default function SubVaults({
       {creating && (
         <CreateSubVault
           onClose={() => setCreating(false)}
-          onCreated={(id) => { setCreating(false); onChanged(); if (id) onOpen({ id }) }}
+          onCreated={(id) => { setCreating(false); onChanged(); if (id) onOpen({ id, unlocked: true }) }}
         />
       )}
       {unlocking && (
         <UnlockSubVault
           sub={unlocking}
           onClose={() => setUnlocking(null)}
-          onUnlocked={() => { const sub = unlocking; setUnlocking(null); onChanged(); onOpen(sub) }}
+          /* Marked open on the way through. onChanged is a round-trip to the
+             server for a fresh status, and the walk in happens now — so the
+             copy handed over has to carry the unlock that just happened, or
+             whoever opens it is reading a list that still says locked and
+             asks for the password a second time. */
+          onUnlocked={() => {
+            const sub = { ...unlocking, unlocked: true }
+            setUnlocking(null)
+            onChanged()
+            onOpen(sub)
+          }}
         />
       )}
       {changing && (

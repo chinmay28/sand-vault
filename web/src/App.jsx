@@ -249,7 +249,14 @@ export default function App() {
   const openSubVault = useCallback((sub) => {
     if (!sub?.id) return
     const known = subVaults.find((s) => s.id === sub.id) || sub
-    if (known.unlocked === false) {
+    /* Whoever is asking may have opened it a moment ago — the unlock dialog
+       walks straight in once the password is accepted, and the fresh status
+       behind that is still in flight, so the listed copy here still says
+       locked. Their word that it is open beats this list, which is the older
+       of the two: trusting the list instead puts the same dialog back up over
+       the one that just closed, and from the outside that is a password the
+       app ignored. Only the list saying so unprompted keeps it shut. */
+    if (known.unlocked === false && sub.unlocked !== true) {
       setUnlockingSub(known)
       return
     }
