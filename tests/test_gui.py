@@ -216,6 +216,33 @@ def make_folder(page, name):
     page.wait_for_selector(f"text={name}", timeout=20000)
 
 
+def open_sub_vaults_panel(page):
+    """Open the sub vaults panel, which lives behind the settings menu."""
+    open_vault_setting(page, "Sub vaults")
+    panel = page.get_by_role("dialog", name="Sub vaults")
+    panel.wait_for(timeout=20000)
+    return panel
+
+
+def make_sub_vault(page, name, password):
+    """Make one through the panel, which walks into it once it exists."""
+    panel = open_sub_vaults_panel(page)
+    panel.get_by_role("button", name="+ New sub vault").click()
+
+    dialog = page.get_by_role("dialog", name="New sub vault")
+    dialog.wait_for(timeout=20000)
+    boxes = dialog.locator("form").locator("input")
+    boxes.nth(0).fill(name)
+    boxes.nth(1).fill(password)
+    boxes.nth(2).fill(password)
+    dialog.get_by_role("button", name="Create").click()
+
+    # Making one opens it, and the root crumb names which vault you are
+    # standing in — an unqualified "/" would be two different trees.
+    page.wait_for_selector(f"text=🔒 {name} /", timeout=30000)
+    page.wait_for_load_state("networkidle")
+
+
 def search_on_a_phone(page, query):
     """Type a query into the phone's search field, opening it first.
 
@@ -2695,32 +2722,8 @@ class TestSubVaultDeletion:
     does nothing at all.
     """
 
-    def open_panel(self, app):
-        open_vault_setting(app, "Sub vaults")
-        panel = app.get_by_role("dialog", name="Sub vaults")
-        panel.wait_for(timeout=20000)
-        return panel
-
-    def make_sub_vault(self, app, name, password):
-        """Make one through the panel, which walks into it once it exists."""
-        panel = self.open_panel(app)
-        panel.get_by_role("button", name="+ New sub vault").click()
-
-        dialog = app.get_by_role("dialog", name="New sub vault")
-        dialog.wait_for(timeout=20000)
-        boxes = dialog.locator("form").locator("input")
-        boxes.nth(0).fill(name)
-        boxes.nth(1).fill(password)
-        boxes.nth(2).fill(password)
-        dialog.get_by_role("button", name="Create").click()
-
-        # Making one opens it, and the root crumb names which vault you are
-        # standing in — an unqualified "/" would be two different trees.
-        app.wait_for_selector(f"text=🔒 {name} /", timeout=30000)
-        app.wait_for_load_state("networkidle")
-
     def test_deleting_one_asks_first_and_takes_its_contents_with_it(self, app, tmp_path):
-        self.make_sub_vault(app, "doomed-vault", "doomed-vault-passphrase")
+        make_sub_vault(app, "doomed-vault", "doomed-vault-passphrase")
 
         # A file put inside it, so what is being erased is not an empty record.
         source = tmp_path / "sealed.txt"
@@ -2736,7 +2739,7 @@ class TestSubVaultDeletion:
             0, timeout=20000)
 
         # Listed, with the count the vault keeps for it while it is shut.
-        panel = self.open_panel(app)
+        panel = open_sub_vaults_panel(app)
         expect(panel.get_by_text("doomed-vault", exact=True)).to_be_visible(timeout=20000)
         expect(panel).to_contain_text("1 file", timeout=20000)
 
@@ -2774,6 +2777,49 @@ class TestSubVaultDeletion:
         panel.wait_for(state="detached", timeout=20000)
         close_vault_settings(app)
         expect_vault_setting(app, "Sub vaults", "None")
+
+
+class TestSubVaultUnlock:
+    """Opening a shut sub vault, which asks for its password once.
+
+    The panel that lists them hands the app the row that was unlocked and the
+    app walks into it — but the row is the app's own copy of the list, and the
+    fresh one is still on its way back from the server, so the copy handed over
+    still says locked. Trusting it over the unlock that just happened put the
+    very same dialog straight back up over the one that had closed: from the
+    outside, a password typed correctly, a dialog that did not move, and a
+    second go at it before anything opened.
+    """
+
+    def test_one_password_opens_it(self, app):
+        make_sub_vault(app, "shut-vault", "shut-vault-passphrase")
+
+        # Out of it and shut again, which is the state the unlock starts from.
+        app.locator('button[aria-label="Back"]').click()
+        app.wait_for_selector("text=▣ /", timeout=20000)
+
+        panel = open_sub_vaults_panel(app)
+        panel.get_by_role("button", name="Lock", exact=True).click()
+        unlock = panel.get_by_role("button", name="Unlock", exact=True)
+        unlock.wait_for(timeout=20000)
+        unlock.click()
+
+        dialog = app.get_by_role("dialog", name="Unlock shut-vault")
+        dialog.wait_for(timeout=20000)
+        dialog.locator('input[type="password"]').fill("shut-vault-passphrase")
+        dialog.get_by_role("button", name="Unlock").click()
+
+        # The one password is the whole of it: the dialog goes, and what is
+        # behind it is the inside of the sub vault rather than the same dialog
+        # a second time.
+        expect(dialog).to_have_count(0, timeout=30000)
+        app.wait_for_selector("text=🔒 shut-vault /", timeout=30000)
+
+        # And it does not come back when the refreshed status lands, either —
+        # which is the moment the stale copy used to be replaced by.
+        app.wait_for_load_state("networkidle")
+        expect(app.get_by_role("dialog", name="Unlock shut-vault")).to_have_count(
+            0, timeout=20000)
 
 
 class TestWiderSchemes:
