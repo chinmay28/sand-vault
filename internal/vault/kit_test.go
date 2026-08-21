@@ -424,6 +424,141 @@ func TestKitImportCanSkipTheCloudIndex(t *testing.T) {
 	}
 }
 
+// The password chosen for the recovered vault is genuinely free — it changes
+// what unlocks the machine and nothing else. In particular it does not decide
+// which index the import lands on: the copies on the clouds open under the key
+// the kit carries, whatever is typed here.
+//
+// This is the claim the import screen makes under its password field, so it is
+// worth a test rather than a comment.
+func TestKitImportChoiceOfPasswordDoesNotChangeWhatComesBack(t *testing.T) {
+	ctx := context.Background()
+
+	// Each case needs its own clouds: a finished import rewrites manifest.sand
+	// on every account under the password it was given, so two cases sharing a
+	// set of accounts would measure the first one's push.
+	run := func(password string) *KitImportReport {
+		t.Helper()
+		v, _ := newTestVault(t, 3)
+		if _, _, err := v.Upload(ctx, MainScope, "/", "before.txt", []byte("in the kit\n"), UploadOptions{}); err != nil {
+			t.Fatalf("Upload: %v", err)
+		}
+		fingerprint, zipped := exportTestKit(t, v)
+		if _, _, err := v.Upload(ctx, MainScope, "/", "after.txt", []byte("added later\n"), UploadOptions{}); err != nil {
+			t.Fatalf("Upload after the export: %v", err)
+		}
+		v.AwaitBackupSync()
+		v.Lock()
+
+		restored := freshVault(t)
+		report, err := restored.ImportKit(ctx, openTestKit(t, zipped, fingerprint.Code),
+			KitImportOptions{Password: password})
+		if err != nil {
+			t.Fatalf("ImportKit(%q): %v", password, err)
+		}
+		return report
+	}
+
+	for _, password := range []string{"a password never used before", testPassword} {
+		report := run(password)
+		if report.PasswordChanged {
+			t.Errorf("password %q: PasswordChanged is set — the kit's key should have opened the clouds", password)
+		}
+		if report.IndexSource == "kit" {
+			t.Errorf("password %q: the kit's own index was used rather than the newer one on the clouds", password)
+		}
+		if report.Files != 2 || report.Recoverable != 2 {
+			t.Errorf("password %q: Files/Recoverable = %d/%d, want 2/2", password, report.Files, report.Recoverable)
+		}
+	}
+}
+
+// A password change made after the kit was exported retires the key the kit
+// carries, so the newer copies of the index on the accounts stop opening — and
+// then the old password is the only thing that opens them.
+//
+// Choosing that same password for the recovered vault does *not* stand in for
+// it: the new vault gets a salt of its own, so the same password derives a
+// different key. It has to be handed over as OldPassword.
+func TestKitImportNeedsTheOldPasswordAfterAPasswordChange(t *testing.T) {
+	ctx := context.Background()
+	const wasUsingAtDeath = "the password set after the kit was made"
+
+	// One file in the kit, one added after it, one added after the password
+	// change: three at death, and only the kit's one without the old password.
+	setup := func() (*KitFingerprint, []byte) {
+		t.Helper()
+		v, _ := newTestVault(t, 3)
+		if _, _, err := v.Upload(ctx, MainScope, "/", "before.txt", []byte("in the kit\n"), UploadOptions{}); err != nil {
+			t.Fatalf("Upload: %v", err)
+		}
+		fingerprint, zipped := exportTestKit(t, v)
+		if _, _, err := v.Upload(ctx, MainScope, "/", "after.txt", []byte("added later\n"), UploadOptions{}); err != nil {
+			t.Fatalf("Upload after the export: %v", err)
+		}
+		if _, err := v.ChangePassword(ctx, testPassword, wasUsingAtDeath, false); err != nil {
+			t.Fatalf("ChangePassword: %v", err)
+		}
+		if _, _, err := v.Upload(ctx, MainScope, "/", "after-change.txt", []byte("after the change\n"), UploadOptions{}); err != nil {
+			t.Fatalf("Upload after the change: %v", err)
+		}
+		v.AwaitBackupSync()
+		v.Lock()
+		return fingerprint, zipped
+	}
+
+	run := func(opts KitImportOptions) *KitImportReport {
+		t.Helper()
+		fingerprint, zipped := setup()
+		restored := freshVault(t)
+		report, err := restored.ImportKit(ctx, openTestKit(t, zipped, fingerprint.Code), opts)
+		if err != nil {
+			t.Fatalf("ImportKit: %v", err)
+		}
+		return report
+	}
+
+	// Without it: the clouds refuse the kit's key uniformly, which is reported
+	// rather than guessed at, and the kit's own index is what is left.
+	without := run(KitImportOptions{Password: "a password never used before"})
+	if !without.PasswordChanged {
+		t.Error("PasswordChanged is not set, so the uniform refusal was not noticed")
+	}
+	if without.IndexSource != "kit" || without.Files != 1 {
+		t.Errorf("IndexSource/Files = %q/%d, want \"kit\"/1", without.IndexSource, without.Files)
+	}
+
+	// Choosing the old password for the recovered vault is not the same thing
+	// and must not be mistaken for it — the new vault's salt is its own.
+	reused := run(KitImportOptions{Password: wasUsingAtDeath})
+	if reused.IndexSource != "kit" || reused.Files != 1 {
+		t.Errorf("reusing the old password as the new one changed the outcome: "+
+			"IndexSource/Files = %q/%d, want \"kit\"/1", reused.IndexSource, reused.Files)
+	}
+
+	// With it: the whole tree, including what landed after the change.
+	with := run(KitImportOptions{Password: "a password never used before", OldPassword: wasUsingAtDeath})
+	if !with.PasswordChanged {
+		t.Error("PasswordChanged should still say what was observed on the accounts")
+	}
+	if with.IndexSource == "kit" {
+		t.Fatal("the old password did not open the copies of the index on the accounts")
+	}
+	if with.Files != 3 || with.Recoverable != 3 {
+		t.Errorf("Files/Recoverable = %d/%d, want 3/3", with.Files, with.Recoverable)
+	}
+
+	// A wrong old password is a warning, not a failure: the import still lands
+	// on the kit's index rather than refusing to run.
+	wrong := run(KitImportOptions{Password: "a password never used before", OldPassword: testPassword})
+	if wrong.IndexSource != "kit" {
+		t.Errorf("IndexSource = %q, want \"kit\"", wrong.IndexSource)
+	}
+	if len(wrong.Warnings) == 0 {
+		t.Error("a password that opened nothing was not mentioned in the report")
+	}
+}
+
 // A kit read back must open with its code and refuse everything else, and each
 // refusal has to be its own distinguishable answer.
 func TestOpenKitRejections(t *testing.T) {

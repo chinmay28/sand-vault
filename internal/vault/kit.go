@@ -115,8 +115,14 @@ type Kit struct {
 	// already carries the data key, which opens the files themselves.
 	VaultKey string `json:"vault_key"`
 
-	// KDF is the lost vault's own parameters, so a restore under the same
-	// password reproduces the same vault key rather than a re-derived one.
+	// KDF is the lost vault's own parameters, carried as a record of how its
+	// vault key was derived.
+	//
+	// An import does not reuse them. The recovered vault gets a fresh salt of
+	// its own, so importing under the password the lost vault used does not
+	// reproduce its vault key — which is why the old password has to be given
+	// as KitImportOptions.OldPassword to open the copies of the index on the
+	// accounts, and why choosing the same password again does nothing.
 	KDF kdfParams `json:"kdf"`
 
 	// The store fields a manifest backup has no room for.

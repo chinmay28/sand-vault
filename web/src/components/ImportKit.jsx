@@ -18,6 +18,10 @@ export default function ImportKit({ onClose, onImported }) {
   const [secret, setSecret] = useState('')
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
+  /* Only ever needed by the vault whose password changed after the kit was
+     made, which is why it is folded away rather than asked for. See
+     OldPasswordField for what it buys. */
+  const [oldPassword, setOldPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const [codeHint, setCodeHint] = useState(null)
@@ -65,7 +69,7 @@ export default function ImportKit({ onClose, onImported }) {
     setBusy(true)
     setError(null)
     try {
-      const resp = await api.importKit({ file, secret, password })
+      const resp = await api.importKit({ file, secret, password, oldPassword })
       setReport(resp.report)
       setSignIn(resp.status)
     } catch (err) {
@@ -143,7 +147,7 @@ export default function ImportKit({ onClose, onImported }) {
             value={password}
             autoComplete="new-password"
             placeholder="Choose a strong passphrase"
-            help="What you will type to unlock this machine from now on. It does not have to be the one you used before."
+            help="What you will type to unlock this machine from now on. It can be a new one — the kit carries its own keys, so nothing here depends on it."
             onChange={(e) => setPassword(e.target.value)}
           />
           <PasswordInput
@@ -153,6 +157,8 @@ export default function ImportKit({ onClose, onImported }) {
             placeholder="Type it again"
             onChange={(e) => setConfirm(e.target.value)}
           />
+
+          <OldPasswordField value={oldPassword} onChange={setOldPassword} />
 
           <Button
             variant="primary"
@@ -176,6 +182,56 @@ export default function ImportKit({ onClose, onImported }) {
         </>
       )}
     </Modal>
+  )
+}
+
+/* The old password — the one the vault was using when the machine died.
+
+   It is not what unlocks the recovered vault, and it is not what opens the
+   kit. What it opens is the copies of manifest.sand sitting on the accounts,
+   which are the newest index in existence: the kit describes the day it was
+   exported, the clouds describe the day the machine stopped. The kit carries
+   the vault key those copies are sealed under, so ordinarily nothing needs to
+   be typed here at all — but a password change after the export retires that
+   key, and then the old password is the only thing left that opens them.
+
+   Folded away because the ordinary case must not read as a question. A person
+   who never changed their password should see two password fields, not three,
+   and a person who did should find this before they discover the gap from the
+   report — which is why it says what it costs to skip it.
+
+   Skipping is a real option, not a failure: it costs only the files added
+   between the export and the password change. */
+function OldPasswordField({ value, onChange }) {
+  const [open, setOpen] = useState(false)
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        style={{
+          display: 'block', width: '100%', marginBottom: '18px', padding: 0,
+          background: 'none', border: 'none', textAlign: 'left', cursor: 'pointer',
+          fontFamily: FONT.sans, fontSize: '11px', lineHeight: 1.55, color: COLORS.textMuted,
+        }}
+      >
+        <span style={{ color: COLORS.accent }}>Did your vault password change after this kit was made?</span>
+        {' '}Then the newer index on your accounts needs the old one to open.
+      </button>
+    )
+  }
+
+  return (
+    <PasswordInput
+      label="The password this vault used when the machine died"
+      value={value}
+      autoComplete="off"
+      autoFocus
+      placeholder="Optional — leave empty if it never changed"
+      help="Not what unlocks the recovered vault. It opens the copies of the index on your accounts, which are newer than the kit. Leaving it empty costs only what was added between the kit and the password change."
+      onChange={(e) => onChange(e.target.value)}
+    />
   )
 }
 
@@ -344,7 +400,9 @@ function ImportReport({ report: initial, onClose }) {
         <Banner tone="warn">
           The copies of the index on your accounts do not open under this kit&apos;s key, so the
           kit&apos;s own index was used. Usually that means your vault password changed after the
-          kit was made — anything added between the two is not in this tree.
+          kit was made — anything added between the two is not in this tree. Importing this kit
+          again into a fresh vault, this time giving the password the machine was using when it
+          died, would bring those back.
         </Banner>
       )}
 
