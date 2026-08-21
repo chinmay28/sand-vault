@@ -14,8 +14,6 @@ import { BulkAssign, BulkDelete, BulkDownload } from './BulkActions'
 import MoveToFolder from './MoveToFolder'
 import { FilmButton, FilmLookupSettings } from './FilmDetails'
 import { OrganizerButton, OrganizerMenu, OrganizerTool } from './Organizer'
-import { AutomationButton, AutomationSettings } from './FolderAutomation'
-import { FolderRepos, ReposButton } from './FolderRepos'
 
 /* How long to sit on a keystroke before asking the server. Long enough that
    typing a word is one query rather than six, short enough to feel live. */
@@ -57,8 +55,6 @@ export default function FileBrowser({
   const [tool, setTool] = useState(null)
   /* The folder's standing instruction: its schedule, what the last few runs
      found, and the button that starts one now. */
-  const [automating, setAutomating] = useState(false)
-  const [repos, setRepos] = useState(false)
   /* Files the organizer picked from below this folder, which have no row here
      to be ticked. They join the selection as items in their own right — see
      `chosen` — so the selection bar can move, download, scatter or erase a
@@ -465,13 +461,11 @@ export default function FileBrowser({
                than to a row in it. */
             organizer={(
               <>
-                <OrganizerButton mobile onOpen={() => setOrganizing(true)} />
-                {/* Third of the three folder-level buttons, and the only one
-                    that keeps working when nobody is looking. */}
-                <AutomationButton automation={automation} mobile onOpen={() => setAutomating(true)} />
-                {/* Lit only where repositories are actually kept, which is a
-                    handful of folders in a vault rather than all of them. */}
-                <ReposButton count={repoCount} mobile onOpen={() => setRepos(true)} />
+                {/* One button for everything done to the folder rather than to
+                    a row in it, standing instructions included — it lights when
+                    this folder is being looked after and goes amber when the
+                    last sweep found something. */}
+                <OrganizerButton automation={automation} mobile onOpen={() => setOrganizing(true)} />
               </>
             )}
             /* Handed to the heading rather than put in its place: the field
@@ -502,13 +496,7 @@ export default function FileBrowser({
               <NavCluster nav={nav} mobile={false} />
               <Breadcrumbs path={path} vault={vaultLabel} mobile={false} onNavigate={nav.navigate} />
               <FilmButton lookup={lookup} mobile={false} onOpen={() => setFilms(true)} />
-              <OrganizerButton mobile={false} onOpen={() => setOrganizing(true)} />
-              <AutomationButton
-                automation={automation}
-                mobile={false}
-                onOpen={() => setAutomating(true)}
-              />
-              <ReposButton count={repoCount} mobile={false} onOpen={() => setRepos(true)} />
+              <OrganizerButton automation={automation} mobile={false} onOpen={() => setOrganizing(true)} />
               <ViewControls
                 mobile={false}
                 prefs={prefs}
@@ -688,6 +676,8 @@ export default function FileBrowser({
       {organizing && (
         <OrganizerMenu
           path={path}
+          automation={automation}
+          repoCount={repoCount}
           onClose={() => setOrganizing(false)}
           onPick={setTool}
         />
@@ -705,30 +695,6 @@ export default function FileBrowser({
              with it — half of what was ticked may have moved or gone. */
           onDone={() => { setSelected(new Set()); setDeeper([]); onRefresh() }}
           onSelect={pickFiles}
-        />
-      )}
-
-      {automating && (
-        <AutomationSettings
-          path={path}
-          vault={vault}
-          onClose={() => setAutomating(false)}
-          /* A sweep can rebuild files, which changes which clouds their badges
-             name; and the button above is drawn from the listing's copy of the
-             policy. Both are the listing. */
-          onChanged={onRefresh}
-        />
-      )}
-
-      {repos && (
-        <FolderRepos
-          path={path}
-          vault={vault}
-          onClose={() => setRepos(false)}
-          /* Storing or refreshing a repository writes a file into this folder,
-             so the listing under the dialog is out of date the moment it
-             finishes. */
-          onChanged={onRefresh}
         />
       )}
 

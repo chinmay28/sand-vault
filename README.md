@@ -553,8 +553,11 @@ That is the whole feature. Every morning at ten, every account is pinged, every
 file under `/archive` is checked shard by shard against the accounts holding it,
 and anything that came back short is rebuilt onto the clouds that answered.
 
-In the browser it is the **⏱** button beside the film and organizer ones, on the
-folder you are standing in. The dialog leads with what the last few runs found,
+In the browser it is **Look after this folder**, under the **🗂** menu on the
+folder you are standing in — the same menu the tidying tools are in, because
+both are things done to the folder rather than to anything in it. The button
+itself goes amber when the last run found something, so a folder worth looking
+at says so without the menu being opened. The dialog leads with what the last few runs found,
 because a schedule nobody ever reads the results of is a schedule that is not
 doing anything; the settings are underneath.
 
@@ -1536,28 +1539,29 @@ pipe the password on stdin.
   would show them. Off everywhere until a folder asks for it, because it is the
   one thing in SAND that talks to anyone but your own accounts — see
   [Film details](#film-details)
-- **Organize a folder** — `🗂` beside `🎬` in the toolbar: flatten everything
-  below into this folder, remove the folders holding nothing, erase every file
-  of a kind, select every file of a kind and hand it to the selection bar, or
-  find the copies of things — the same bytes, the same size, or a name a copy
-  marker apart. Each counts what it would do before it does any of it — see
-  [Organizing a folder](#organizing-a-folder)
-- **Look after a folder** — `⏱` beside `🗂`: on a schedule of your choosing,
-  either every cloud is asked whether it is there and every shard of every file
-  under the folder is checked against the index that says where it went — and,
-  if you say so, whatever came back short is rebuilt onto the clouds that
-  answered — or every repository stored under the folder is asked whether its
-  upstream has moved, and brought up to date where it has. The
-  dialog leads with what the last runs found, and *Run it now* does not wait for
-  the next slot. The button is lit on a folder that is looked after and amber
-  when the last run found something — see
-  [A folder that looks after itself](#a-folder-that-looks-after-itself)
-- **Repositories** — `⑂` beside `⏱`: keep a copy of a git repository in this
-  folder as a single bundle holding its whole history, and see what is kept,
-  when each was last fetched, and whether any upstream has stopped answering.
-  *Refresh* asks the upstream whether it has moved and usually finds it has not,
-  which costs almost nothing — see
-  [Keeping copies of git repositories](#keeping-copies-of-git-repositories)
+- **Organize and automate a folder** — `🗂` beside `🎬` in the toolbar: one
+  menu for everything done to the folder rather than to a row in it. Five tidy
+  the tree as it stands — flatten everything below into this folder, remove the
+  folders holding nothing, erase every file of a kind, select every file of a
+  kind and hand it to the selection bar, or find the copies of things — and each
+  counts what it would do before it does any of it. See
+  [Organizing a folder](#organizing-a-folder).
+
+  Two are standing instructions that keep going afterwards. **Look after this
+  folder** puts the folder on a schedule: either every cloud is asked whether it
+  is there and every shard of every file is checked against the index that says
+  where it went — and, if you say so, whatever came back short is rebuilt onto
+  the clouds that answered — or every repository stored under it is asked
+  whether its upstream has moved. See
+  [A folder that looks after itself](#a-folder-that-looks-after-itself).
+  **Repositories kept here** is the copies themselves, each a bundle holding a
+  whole history, with what is stored and when it was last fetched. See
+  [Keeping copies of git repositories](#keeping-copies-of-git-repositories).
+
+  The button carries the standing state, so a folder looking after itself says
+  so without the menu being opened: lit when there is a policy, amber when the
+  last run found something, and the two standing rows say what they are up to in
+  place of a description
 - **Preview** — images, video, audio, PDF and text render inline, rebuilt on
   demand; anything else downloads. A matched film opens on its poster and
   summary rather than an unplayed black rectangle
@@ -1768,8 +1772,11 @@ those folders, paid where they are listed instead.
 ## Organizing a folder
 
 `🗂` in the toolbar, beside `🎬`, acts on the folder you are standing in and
-everything under it. Five jobs, all of them the kind nobody does one row at a
-time — which is why they never get done:
+everything under it. Five of the seven entries are jobs of the kind nobody does
+one row at a time — which is why they never get done — and the other two are the
+standing instructions in [A folder that looks after
+itself](#a-folder-that-looks-after-itself) and [Keeping copies of git
+repositories](#keeping-copies-of-git-repositories). The five:
 
 - **Flatten into this folder** — every file below comes up to here, and the
   folders they came from are dropped. Two files called `IMG_0001.jpg` is the

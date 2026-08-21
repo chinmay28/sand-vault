@@ -5,13 +5,17 @@ import { useIsMobile } from '../hooks'
 import { ActionSheet, Banner, Button, IconButton, Modal, Spinner } from './ui'
 import { BulkDelete, Progress, useRun } from './BulkActions'
 import { DuplicatesTool } from './Duplicates'
+import { AutomationSettings, describeCadence } from './FolderAutomation'
+import { FolderRepos } from './FolderRepos'
 
-/* Tidying a folder up.
+/* Everything you do to a folder rather than to a row in it.
 
    Everything else in this app is about one file: upload it, move it, give it a
-   poster, spread it over other clouds. These five are about the shape of the
-   tree instead — the jobs nobody does one row at a time because doing them one
-   row at a time is the reason they never get done.
+   poster, spread it over other clouds. What is under this menu is about the
+   folder — the jobs nobody does one row at a time because doing them one row at
+   a time is the reason they never get done.
+
+   Five of them tidy the tree as it stands:
 
      · Flatten     — bring every file under this folder up into it.
      · Empty folders — remove the ones holding nothing, however deep.
@@ -20,7 +24,19 @@ import { DuplicatesTool } from './Duplicates'
      · Duplicates  — the copies of things, by their bytes, their size or their
                      names. See Duplicates.jsx.
 
-   All five are planned from one read — api.survey for the first four, and the
+   Two are standing instructions rather than one-off jobs, and that is the whole
+   difference between the halves: the five above happen when you press them, and
+   these two keep happening afterwards.
+
+     · Look after it — check the parts of every file on a schedule, or the
+                       repositories kept here, and put back what has gone. See
+                       FolderAutomation.jsx.
+     · Repositories — the git repositories stored under this folder, each one a
+                      bundle holding its whole history. See FolderRepos.jsx.
+
+   They live together because they answer the same question — "what can I do to
+   this folder?" — and splitting them across three buttons on a phone toolbar
+   only meant three places to look. The first five are planned from one read — api.survey for the first four, and the
    duplicate question's own walk for the last, since hashes are the whole of
    what it needs and none of the other four wants them per file — and then run
    over endpoints that already existed: move a file, delete a file, remove a
@@ -39,30 +55,53 @@ import { DuplicatesTool } from './Duplicates'
    confirmation the delete button uses. */
 
 /* The button, beside the film one, because both are things done to the folder
-   rather than to anything in it. */
-export function OrganizerButton({ mobile, onOpen }) {
+   rather than to anything in it.
+
+   It carries the one piece of state that used to have a button of its own. A
+   folder looking after itself should say so at a glance, and a folder whose
+   last sweep found something should say that louder — that was the whole point
+   of the clock icon, and folding the dialog into this menu must not lose it. So
+   the glyph goes amber when the last run found something and accent when there
+   is simply a policy, and the tooltip says which. */
+export function OrganizerButton({ automation, mobile, onOpen }) {
+  const on = !!automation?.enabled
+  const trouble = !!automation?.trouble
+
+  const tint = trouble ? COLORS.warn : on ? COLORS.accent : undefined
+  const summary = !automation
+    ? 'nothing standing'
+    : !on
+      ? 'a policy, switched off'
+      : `${describeCadence(automation)}${trouble ? ', and the last run found something' : ''}`
+
   return (
     <IconButton
       glyph="🗂"
-      label="Organize this folder"
-      title="Flatten it, clear out the empty folders, find the duplicates, or act on every file of a kind"
+      label="Organize and automate this folder"
+      title={`Flatten it, clear out the empty folders, find the duplicates, act on every file of a kind — or have it looked after on a schedule (${summary})`}
       size={mobile ? 44 : 32}
       onClick={onOpen}
-      style={{ fontSize: mobile ? '15px' : '13px' }}
+      style={{ fontSize: mobile ? '15px' : '13px', color: tint }}
     />
   )
 }
 
-/* Which of the five. A sheet rather than a menu: they are five separate jobs
-   with nothing to configure at this level, and on a phone the sheet is already
-   how everything else in the toolbar asks a question. */
-export function OrganizerMenu({ path, onClose, onPick }) {
+/* Which of them. A sheet rather than a menu: they are separate jobs with
+   nothing to configure at this level, and on a phone the sheet is already how
+   everything else in the toolbar asks a question.
+
+   The two standing rows go last and carry their own state in the hint, because
+   that is the difference worth drawing: the five above are things you are about
+   to do, and these two are things already happening — or not, which is equally
+   worth being told at the moment you are looking for them. */
+export function OrganizerMenu({ path, automation, repoCount = 0, onClose, onPick }) {
   const here = path === '/' ? 'the vault' : path
+  const trouble = !!automation?.trouble
 
   return (
     <ActionSheet
-      title="Organize"
-      subtitle={`Five ways to tidy ${here} and everything under it. Each one counts what it would do before it does any of it.`}
+      title="Organize and automate"
+      subtitle={`Five ways to tidy ${here} and everything under it, each counting what it would do before it does any of it — and two standing instructions that keep going afterwards.`}
       onClose={onClose}
       items={[
         {
@@ -100,9 +139,43 @@ export function OrganizerMenu({ path, onClose, onPick }) {
           hint: 'The same file twice — by its bytes, by its size, or by a name a copy marker apart',
           onSelect: () => onPick('dupes'),
         },
+        {
+          key: 'automate',
+          glyph: '⏱',
+          label: 'Look after this folder',
+          hint: describeStanding(automation),
+          tint: trouble ? COLORS.warn : automation?.enabled ? COLORS.accent : undefined,
+          onSelect: () => onPick('automate'),
+        },
+        {
+          key: 'repos',
+          glyph: '⑂',
+          label: 'Repositories kept here',
+          hint: repoCount === 1
+            ? 'One, stored as a bundle — ask its upstream whether it has moved'
+            : repoCount
+              ? `${repoCount}, stored as bundles — ask their upstreams whether they have moved`
+              : 'Keep a copy of a git repository: one bundle holding its whole history',
+          tint: repoCount ? COLORS.accent : undefined,
+          onSelect: () => onPick('repos'),
+        },
       ]}
     />
   )
+}
+
+/* What the standing row says about itself, which is the sentence the clock
+   button's tooltip used to carry. */
+function describeStanding(automation) {
+  if (!automation) {
+    return 'On a schedule, check every part of every file — or the repositories — and put back what has gone'
+  }
+  if (!automation.enabled) {
+    return 'There is a policy here, switched off'
+  }
+  const what = automation.task === 'git' ? 'repositories' : 'parts of files'
+  const found = automation.trouble ? ' — the last run found something' : ''
+  return `${describeCadence(automation)}, over the ${what}${found}`
 }
 
 /* Whatever was chosen, over one reading of the folder.
@@ -116,14 +189,21 @@ export function OrganizerTool({ tool, path, vault, onClose, onDone, onSelect }) 
   const [survey, setSurvey] = useState(null)
   const [error, setError] = useState(null)
 
-  /* The duplicate finder asks a different question of the index — which files
+  /* Three of them do not want a survey at all, and taking one for them would be
+     a request whose answer is thrown away.
+
+     The duplicate finder asks a different question of the index — which files
      carry the same hash — and takes its own read rather than a survey carrying
-     a hash per file that only it would ever look at. Everything downstream of
-     it is shared: the same delete confirmation, the same selection bar. */
+     a hash per file that only it would ever look at. The two standing tools ask
+     nothing about the shape of the tree: one reads the folder's policy and the
+     other the repositories under it. Everything downstream of all three is
+     shared: the same delete confirmation, the same selection bar, the same
+     refresh of the listing behind. */
   const dupes = tool === 'dupes'
+  const standing = tool === 'automate' || tool === 'repos'
 
   useEffect(() => {
-    if (dupes) return undefined
+    if (dupes || standing) return undefined
     let live = true
     setSurvey(null)
     setError(null)
@@ -131,7 +211,22 @@ export function OrganizerTool({ tool, path, vault, onClose, onDone, onSelect }) 
       .then((resp) => { if (live) setSurvey(resp) })
       .catch((err) => { if (live) setError(err.message) })
     return () => { live = false }
-  }, [path, vault, tool, dupes])
+  }, [path, vault, tool, dupes, standing])
+
+  /* A sweep can rebuild files and a refresh writes a new bundle into this
+     folder, so in both cases what is on screen is out of date the moment the
+     dialog finishes — the same reason the five tidying tools call onDone. */
+  if (tool === 'automate') {
+    return (
+      <AutomationSettings path={path} vault={vault} onClose={onClose} onChanged={onDone} />
+    )
+  }
+
+  if (tool === 'repos') {
+    return (
+      <FolderRepos path={path} vault={vault} onClose={onClose} onChanged={onDone} />
+    )
+  }
 
   if (dupes) {
     return (

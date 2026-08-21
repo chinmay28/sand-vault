@@ -493,7 +493,7 @@ export function ActionSheet({ title, subtitle, items, onClose }) {
 }
 
 const SheetRow = React.forwardRef(function SheetRow(
-  { glyph, label, hint, danger, disabled, onSelect }, ref,
+  { glyph, label, hint, tint, danger, disabled, onSelect }, ref,
 ) {
   const [active, setActive] = useState(false)
 
@@ -523,7 +523,13 @@ const SheetRow = React.forwardRef(function SheetRow(
         opacity: disabled ? 0.4 : 1,
       }}
     >
-      <span style={{ width: '20px', textAlign: 'center', fontSize: '15px', flexShrink: 0 }}>{glyph}</span>
+      {/* tint colours the glyph alone, so a row can carry a state — a folder
+          whose last sweep found something — without a second badge or a
+          differently coloured label shouting over the four rows beside it. */}
+      <span style={{
+        width: '20px', textAlign: 'center', fontSize: '15px', flexShrink: 0,
+        color: tint || undefined,
+      }}>{glyph}</span>
       <span style={{ minWidth: 0 }}>
         <span style={{ display: 'block' }}>{label}</span>
         {hint && (

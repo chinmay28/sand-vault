@@ -22,32 +22,6 @@ import { Banner, Button, Input, Modal, Spinner } from './ui'
        helper — and it is why a machine with no git says so instead of failing
        at four in the morning. */
 
-export function ReposButton({ count, mobile, onOpen }) {
-  const on = count > 0
-  return (
-    <button
-      type="button"
-      aria-label="Repositories stored in this folder"
-      title={on
-        ? `${count} repositor${count === 1 ? 'y' : 'ies'} kept here`
-        : 'Keep a copy of a git repository in this folder'}
-      onClick={onOpen}
-      style={{
-        width: mobile ? 44 : 32,
-        height: mobile ? 44 : 32,
-        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-        background: 'transparent',
-        border: `1px solid ${on ? COLORS.accent : COLORS.border}`,
-        borderRadius: '6px',
-        color: on ? COLORS.accent : COLORS.textMuted,
-        cursor: 'pointer',
-        fontSize: mobile ? '17px' : '14px',
-        lineHeight: 1,
-      }}
-    >⑂</button>
-  )
-}
-
 export function FolderRepos({ path, vault = '', onClose, onChanged }) {
   const [repos, setRepos] = useState(null)
   const [available, setAvailable] = useState(true)
@@ -119,7 +93,12 @@ export function FolderRepos({ path, vault = '', onClose, onChanged }) {
   }
 
   return (
-    <Modal title={`Repositories in ${path}`} onClose={onClose} width={640}>
+    <Modal
+      title="Repositories kept here"
+      subtitle={path === '/' ? 'The whole vault, and everything under it' : path}
+      onClose={onClose}
+      width={640}
+    >
       {error && <Banner tone="error">{error}</Banner>}
       {!available && (
         <Banner tone="warn">

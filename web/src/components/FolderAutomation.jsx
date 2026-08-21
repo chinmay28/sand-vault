@@ -13,8 +13,15 @@ import { Banner, Button, Input, Modal, Spinner } from './ui'
    reads back perfectly, at full speed, right up until the day a second cloud is
    unavailable and it does not read back at all.
 
-   So the dialog is deliberately in two halves, and the top half is the one that
-   matters. "What did the last run find" comes first, because a policy nobody
+   It is reached from the organizer menu, with the tidying tools, because both
+   are things done to the folder rather than to a row in it — and because three
+   separate buttons on a phone toolbar only meant three places to look. What the
+   menu keeps of this dialog is the state: the row says what the policy is doing
+   and goes amber when the last run found something, so a folder worth looking
+   at says so without anything being opened.
+
+   The dialog itself is deliberately in two halves, and the top half is the one
+   that matters. "What did the last run find" comes first, because a policy nobody
    ever reads the results of is a policy that is not doing anything. The
    schedule is underneath it.
 
@@ -38,48 +45,11 @@ const CADENCES = [
 
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 
-/* The button, beside the film and organizer ones, because all three are things
-   done to the folder rather than to anything in it. Lit when the folder has a
-   policy that is switched on — a folder looking after itself should say so at a
-   glance, and a folder whose last run found something should say that too. */
-export function AutomationButton({ automation, mobile, onOpen }) {
-  const on = !!automation?.enabled
-  /* One flag, worked out on the server from the last run: a listing carries the
-     policy without its history, and "is anything wrong here" is the only thing
-     about that history a folder's button needs. */
-  const trouble = !!automation?.trouble
-
-  const tint = trouble ? COLORS.warn : COLORS.accent
-  const title = !automation
-    ? 'Off. Have this folder checked on a schedule, and repaired'
-    : !on
-      ? 'This folder has a policy, switched off'
-      : `${describeCadence(automation)} — ${describeAction(automation)}${trouble ? '. The last run found something.' : ''}`
-
-  return (
-    <button
-      type="button"
-      aria-label="Automation for this folder"
-      title={title}
-      onClick={onOpen}
-      style={{
-        width: mobile ? 44 : 32,
-        height: mobile ? 44 : 32,
-        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-        flexShrink: 0,
-        background: on ? `${tint}22` : 'transparent',
-        border: `1px solid ${on ? tint : COLORS.border}`,
-        borderRadius: '6px',
-        color: COLORS.textDim,
-        fontSize: mobile ? '15px' : '13px',
-        cursor: 'pointer',
-      }}
-    >⏱</button>
-  )
-}
-
-/* How a schedule reads in a sentence. */
-function describeCadence(policy) {
+/* A schedule written the way somebody would say it out loud. Exported because
+   the organizer menu says it too: the row that opens this dialog carries what
+   the policy is currently doing, so that a folder looking after itself says so
+   without the dialog being opened. */
+export function describeCadence(policy) {
   if (!policy) return ''
   if (policy.cadence === 'hourly') return 'Every hour'
   if (policy.cadence === 'weekly') return `Every ${DAYS[policy.weekday || 0]} at ${policy.at}`
