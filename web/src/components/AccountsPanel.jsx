@@ -157,7 +157,7 @@ function ActionTile({ icon, label, hint, onClick }) {
    came for on a phone, and the accounts are a place you visit. */
 export default function AccountsPanel({
   providers, loading, status, stats, webdav, mobile, open,
-  subVaults = [], showSubVaults, onToggleSubVaults, onOpenSubVault,
+  subVaults = [], showSubVaults, subVaultShown, onToggleSubVaults, onToggleSubVault, onOpenSubVault,
   onClose, onRefresh, onChanged,
 }) {
   // A sign-in that took over the tab is still in flight when the app reloads:
@@ -439,7 +439,9 @@ export default function AccountsPanel({
           webdav={webdav}
           subVaults={subVaults}
           showSubVaults={showSubVaults}
+          subVaultShown={subVaultShown}
           onToggleSubVaults={onToggleSubVaults}
+          onToggleSubVault={onToggleSubVault}
           onOpenSubVault={onOpenSubVault}
           onClose={() => setSettingsOpen(false)}
           onChanged={onChanged}

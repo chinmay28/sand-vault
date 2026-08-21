@@ -35,8 +35,8 @@ import {
 const CHILD_Z = 110
 
 export default function VaultSettings({
-  providers, stats, webdav, subVaults = [], showSubVaults, onToggleSubVaults,
-  onOpenSubVault, onClose, onChanged,
+  providers, stats, webdav, subVaults = [], showSubVaults, subVaultShown,
+  onToggleSubVaults, onToggleSubVault, onOpenSubVault, onClose, onChanged,
 }) {
   const [open, setOpen] = useState(null)
   const [filmKey, setFilmKey] = useState(null)
@@ -176,7 +176,9 @@ export default function VaultSettings({
         <SubVaults
           subVaults={subVaults}
           showSubVaults={showSubVaults}
+          subVaultShown={subVaultShown}
           onToggleSubVaults={onToggleSubVaults}
+          onToggleSubVault={onToggleSubVault}
           zIndex={CHILD_Z}
           onClose={close}
           onChanged={onChanged}

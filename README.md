@@ -864,9 +864,13 @@ reachable that way.
 ./sand sub assign /Papers Taxes --out   # and back out again
 ```
 
-In the browser it is **Vault settings → Sub vaults**. Tick *Show them at the top
-of the vault* there and they appear alongside your folders, locked ones included
-— click one and it asks for its password.
+In the browser it is **Vault settings → Sub vaults**. Each row there carries a
+tick of its own: the ones you tick appear above your folders at the root of the
+vault, locked ones included — click one and it asks for its password. The box
+underneath, *Show them at the top of the vault*, answers for all of them at
+once, and for the next sub vault you make. Which ones are drawn is a preference
+of that browser and nothing more: an unticked sub vault is only out of sight,
+not any more sealed than a ticked one.
 
 What holds:
 

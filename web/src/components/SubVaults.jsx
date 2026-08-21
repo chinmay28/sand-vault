@@ -17,7 +17,8 @@ import ImportVault, { FoundVaults, useForeignVaults } from './ImportVault'
    somebody would put a file here rather than in a folder. */
 
 export default function SubVaults({
-  subVaults = [], showSubVaults, onToggleSubVaults, zIndex = 110, onClose, onChanged, onOpen,
+  subVaults = [], showSubVaults, subVaultShown, onToggleSubVaults, onToggleSubVault = () => {},
+  zIndex = 110, onClose, onChanged, onOpen,
 }) {
   const [creating, setCreating] = useState(false)
   const [unlocking, setUnlocking] = useState(null)
@@ -31,6 +32,17 @@ export default function SubVaults({
      this opens rather than when the app does, since nothing before now had a
      use for the answer. */
   const foreign = useForeignVaults(true)
+
+  /* Whether a given one is drawn at the top of the vault. Falls back to the
+     blanket setting when the panel is used without the per-sub-vault plumbing
+     — which is what the strip did before there was any. */
+  const shown = (sub) => (subVaultShown ? subVaultShown(sub.id) : !!showSubVaults)
+  const shownCount = subVaults.filter(shown).length
+  /* The blanket tick reads the rows rather than the stored setting, or it
+     would sit unticked over a list where two of three are ticked. Mixed is
+     mixed: the box says so, and clicking it out of that state shows all. */
+  const allShown = subVaults.length > 0 ? shownCount === subVaults.length : !!showSubVaults
+  const someShown = shownCount > 0 && shownCount < subVaults.length
 
   const lock = async (sub) => {
     setBusy(sub.id)
@@ -81,6 +93,16 @@ export default function SubVaults({
               borderRadius: '8px',
             }}
           >
+            {/* Whether this one is drawn at the top of the vault. Its own
+                answer: the reason to have a sub vault at the root where you
+                can reach it is not a reason to have every one of them named
+                on screen. */}
+            <ShowTick
+              checked={shown(sub)}
+              label={`Show ${sub.label} at the top of the vault`}
+              onChange={(next) => onToggleSubVault(sub.id, next)}
+            />
+
             <span aria-hidden="true" style={{ fontSize: '15px', opacity: 0.8 }}>
               {sub.unlocked ? '🔓' : '🔒'}
             </span>
@@ -128,20 +150,34 @@ export default function SubVaults({
 
       {/* Where they are drawn, which is a preference of this browser rather
           than a property of the vault. It changes what the file list shows and
-          nothing else: a locked sub vault stays locked either way, and no
-          setting puts one on a mounted drive. */}
-      <label style={{
-        display: 'flex', alignItems: 'center', gap: '9px', marginTop: '18px',
-        paddingTop: '14px', borderTop: `1px solid ${COLORS.border}`,
-        fontFamily: FONT.mono, fontSize: '11px', color: COLORS.text, cursor: 'pointer',
+          nothing else: a locked sub vault stays locked whether it is ticked or
+          not, and no setting puts one on a mounted drive.
+
+          This one answers for all of them at once. With some ticked and some
+          not it draws mixed rather than empty — an unticked box over a vault
+          that is on screen would be a lie — and clicking it out of that state
+          shows the lot. */}
+      <div style={{
+        marginTop: '18px', paddingTop: '14px', borderTop: `1px solid ${COLORS.border}`,
       }}>
-        <input
-          type="checkbox"
-          checked={!!showSubVaults}
-          onChange={(e) => onToggleSubVaults(e.target.checked)}
-        />
-        Show them at the top of the vault, locked ones included
-      </label>
+        <label style={{
+          display: 'flex', alignItems: 'center', gap: '9px',
+          fontFamily: FONT.mono, fontSize: '11px', color: COLORS.text, cursor: 'pointer',
+        }}>
+          <input
+            type="checkbox"
+            checked={allShown}
+            ref={(el) => { if (el) el.indeterminate = someShown }}
+            onChange={(e) => onToggleSubVaults(e.target.checked)}
+          />
+          Show them at the top of the vault, locked ones included
+        </label>
+        <p style={{ ...note, margin: '6px 0 0 24px' }}>
+          {subVaults.length > 0
+            ? 'Or tick them one at a time above, to show some and not others. This box answers for all of them — and for the next one you make.'
+            : 'A sub vault you make can be shown or hidden on its own from its row here.'}
+        </p>
+      </div>
 
       <div style={{ marginTop: '22px', paddingTop: '16px', borderTop: `1px solid ${COLORS.border}` }}>
         <div style={{
@@ -211,6 +247,31 @@ const note = {
   lineHeight: 1.6,
   color: COLORS.textDim,
   margin: '0 0 4px',
+}
+
+/* The tick that decides whether one sub vault is drawn at the top of the
+   vault. Nothing in this panel selects rows, so a box on a row can only mean
+   the one thing — but it is a few pixels of ink either way, so the label
+   around it is what a fingertip actually aims at, and the name it carries is
+   what a screen reader reads out. */
+function ShowTick({ checked, label, onChange }) {
+  return (
+    <label
+      title={label}
+      style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        width: '24px', minHeight: '38px', flexShrink: 0, cursor: 'pointer',
+      }}
+    >
+      <input
+        type="checkbox"
+        checked={checked}
+        aria-label={label}
+        onChange={(e) => onChange(e.target.checked)}
+        style={{ accentColor: COLORS.accent, width: '14px', height: '14px', minHeight: 0, cursor: 'pointer' }}
+      />
+    </label>
+  )
 }
 
 /* Making one. The warning is the important half: there is no recovery for this

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { COLORS, FONT, assignAccountColors, formatBytes } from './theme'
 import { useIsMobile } from './hooks'
 import { useNavigator } from './navigation'
@@ -14,6 +14,25 @@ import FilmDetails from './components/FilmDetails'
 import { Brand, DevMark } from './components/Brand'
 import { Banner, Button } from './components/ui'
 import { UnlockSubVault } from './components/SubVaults'
+
+/* Where the sub vault view preference lives in this browser: the blanket
+   answer, and the sub vaults that have been decided one at a time. Neither is
+   sent anywhere — the server has no opinion about what a browser draws. */
+const SHOW_SUB_VAULTS_KEY = 'sand.showSubVaults'
+const SUB_VAULT_CHOICES_KEY = 'sand.subVaultsShown'
+
+function loadSubVaultChoices() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(SUB_VAULT_CHOICES_KEY) || '{}')
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
+    /* Anything that is not a plain yes or no is dropped rather than coerced —
+       a half-read value deciding what is on screen is worse than the blanket
+       setting deciding it. */
+    return Object.fromEntries(Object.entries(raw).filter(([, shown]) => typeof shown === 'boolean'))
+  } catch {
+    return {}
+  }
+}
 
 /* SAND — a file browser over storage you do not fully trust.
    Files are compressed, split into three encrypted parts and scattered across
@@ -44,17 +63,39 @@ export default function App() {
      effect below does not read it. */
   const [orphansDismissed, setOrphansDismissed] = useState('')
   const [unlockingSub, setUnlockingSub] = useState(null)
-  /* Whether the sub vaults show up in the file list. A view preference, kept
-     in this browser: it decides what is drawn and nothing else. A locked sub
-     vault stays locked with it on, and no setting puts one on a mounted
-     drive. */
+  /* Which sub vaults show up in the file list. A view preference, kept in this
+     browser: it decides what is drawn and nothing else. A locked sub vault
+     stays locked whether it is drawn or not, and no setting puts one on a
+     mounted drive.
+
+     Two halves, because "show them" was never one answer for everybody: the
+     sub vault you want in front of you at the root is rarely the same one you
+     would rather nobody standing behind you saw named. `showSubVaults` is what
+     a sub vault does when nothing has been said about it in particular — the
+     answer for the ones you have not decided on, and for the next one you
+     make. `subVaultChoices` holds the ones that have been decided one at a
+     time, and beats it. */
   const [showSubVaults, setShowSubVaults] = useState(() => {
-    try { return localStorage.getItem('sand.showSubVaults') === '1' } catch { return false }
+    try { return localStorage.getItem(SHOW_SUB_VAULTS_KEY) === '1' } catch { return false }
   })
+  const [subVaultChoices, setSubVaultChoices] = useState(loadSubVaultChoices)
 
   const mobile = useIsMobile()
   const unlocked = !!status?.unlocked
   const subVaults = status?.sub_vaults || []
+
+  /* An individual choice if one has been made, the blanket setting otherwise.
+     A sub vault made after the fact has no entry here, so it follows whatever
+     the blanket setting says rather than appearing where its siblings were
+     deliberately taken out of. */
+  const subVaultShown = useCallback((id) => (
+    Object.prototype.hasOwnProperty.call(subVaultChoices, id) ? subVaultChoices[id] : showSubVaults
+  ), [subVaultChoices, showSubVaults])
+
+  const shownSubVaults = useMemo(
+    () => subVaults.filter((sub) => subVaultShown(sub.id)),
+    [subVaults, subVaultShown],
+  )
 
   // A prompt that reappears every time the accounts are refreshed stops being a
   // prompt and starts being an obstacle. Held in a ref rather than in state so
@@ -263,10 +304,30 @@ export default function App() {
     nav.navigate({ vault: sub.id, path: '/' })
   }, [nav, subVaults])
 
+  /* The blanket tick answers for all of them, so the individual choices go
+     with it. Leaving them underneath would mean a box that says "all of them"
+     over a list where one is still crossed out. */
   const toggleSubVaults = useCallback((next) => {
     setShowSubVaults(next)
-    try { localStorage.setItem('sand.showSubVaults', next ? '1' : '0') } catch { /* private mode */ }
+    setSubVaultChoices({})
+    try {
+      localStorage.setItem(SHOW_SUB_VAULTS_KEY, next ? '1' : '0')
+      localStorage.removeItem(SUB_VAULT_CHOICES_KEY)
+    } catch { /* private mode */ }
   }, [])
+
+  const toggleSubVault = useCallback((id, next) => {
+    /* Rebuilt from the sub vaults that exist rather than merely written over:
+       a deleted one has no row left to take its choice off again, and its
+       entry would otherwise sit in this browser for good. */
+    const kept = {}
+    for (const sub of subVaults) {
+      if (sub.id === id) kept[sub.id] = next
+      else if (Object.prototype.hasOwnProperty.call(subVaultChoices, sub.id)) kept[sub.id] = subVaultChoices[sub.id]
+    }
+    setSubVaultChoices(kept)
+    try { localStorage.setItem(SUB_VAULT_CHOICES_KEY, JSON.stringify(kept)) } catch { /* private mode */ }
+  }, [subVaults, subVaultChoices])
 
   if (!status) {
     return <Shell><div style={{ padding: '80px 24px', textAlign: 'center', color: COLORS.textMuted }}>Loading…</div></Shell>
@@ -409,7 +470,9 @@ export default function App() {
             open={accountsOpen}
             subVaults={subVaults}
             showSubVaults={showSubVaults}
+            subVaultShown={subVaultShown}
             onToggleSubVaults={toggleSubVaults}
+            onToggleSubVault={toggleSubVault}
             onOpenSubVault={openSubVault}
             onClose={() => setAccountsOpen(false)}
             onRefresh={refreshProviders}
@@ -426,7 +489,7 @@ export default function App() {
             defaultScheme={status.stats?.default_scheme || ''}
             mobile={mobile}
             subVaults={subVaults}
-            showSubVaults={showSubVaults}
+            shownSubVaults={shownSubVaults}
             onOpenSubVault={openSubVault}
             onRefresh={refreshAll}
             onPreview={(file, hasThumb, film) => setPreview({ file, hasThumb, film })}
