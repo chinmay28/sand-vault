@@ -268,6 +268,7 @@ func TestSubVaultEndpointsNeedASession(t *testing.T) {
 		{http.MethodDelete, "/api/subvaults/" + id, nil},
 		{http.MethodPost, "/api/assign", map[string]any{"target": "/x", "to": id}},
 		{http.MethodPost, "/api/vaults/import", map[string]any{"provider": "x"}},
+		{http.MethodDelete, "/api/vaults/found/x", nil},
 	} {
 		w, _ := c.json(call.method, call.path, call.body)
 		if w.Code != http.StatusUnauthorized {
@@ -300,5 +301,103 @@ func TestRecoveryScanReportsOurOwnBackupAsOurs(t *testing.T) {
 		if foreign, _ := m["foreign"].(bool); foreign {
 			t.Errorf("this vault's own backup was reported as another vault's: %v", m)
 		}
+	}
+}
+
+// The other button on the row the scan draws. Importing is for the vault whose
+// files are still wanted; this is for the install from two machines ago, which
+// would otherwise be offered on that account forever.
+func TestDiscardingAFoundVaultOverHTTP(t *testing.T) {
+	roots := lostVault(t, "the password that is gone")
+	c := reconnected(t, "a brand new password", roots)
+
+	w, body := c.json(http.MethodGet, "/api/vault/recovery", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("recovery scan: %d %v", w.Code, body)
+	}
+	sources, _ := body["sources"].([]any)
+	if len(sources) != 3 {
+		t.Fatalf("scan reported %d accounts, want 3", len(sources))
+	}
+	first := sources[0].(map[string]any)
+	if foreign, _ := first["foreign"].(bool); !foreign {
+		t.Fatalf("%v is not holding another vault's index, so there is nothing to discard", first["name"])
+	}
+	target, _ := first["provider_id"].(string)
+
+	w, body = c.json(http.MethodDelete, "/api/vaults/found/"+target, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("discard: %d %v", w.Code, body)
+	}
+	if account, _ := body["account"].(string); account != first["name"] {
+		t.Errorf("account = %q, want %v", account, first["name"])
+	}
+	if claimed, _ := body["claimed"].(bool); !claimed {
+		t.Error("replication is on, so this vault's own index should be going there")
+	}
+	c.server.vault.AwaitBackupSync()
+
+	w, body = c.json(http.MethodGet, "/api/vault/recovery", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("recovery scan after the discard: %d %v", w.Code, body)
+	}
+	left := 0
+	for _, raw := range body["sources"].([]any) {
+		src := raw.(map[string]any)
+		foreign, _ := src["foreign"].(bool)
+		if id, _ := src["provider_id"].(string); id == target {
+			if foreign {
+				t.Error("the discarded index is still being offered")
+			}
+			// Taking the account over is the other half of it: the guard that
+			// was refusing this vault's own backup has nothing left to protect.
+			if backup, _ := src["backup"].(bool); !backup {
+				t.Error("nothing replaced the index that was removed")
+			}
+			continue
+		}
+		if foreign {
+			left++
+		}
+	}
+	// One row, one account. The same old vault put a copy of its index on every
+	// account it used, and each of those is its own decision.
+	if left != 2 {
+		t.Errorf("%d account(s) still offering the old vault, want 2", left)
+	}
+
+	// The same call a second time is pointed at this vault's own index, and
+	// that is the one thing it must never delete.
+	w, body = c.json(http.MethodDelete, "/api/vaults/found/"+target, nil)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("discarding this vault's own index = %d %v, want it refused", w.Code, body)
+	}
+	if msg, _ := body["error"].(string); msg == "" {
+		t.Error("the refusal carries no reason")
+	}
+
+	w, body = c.json(http.MethodGet, "/api/vault/recovery", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("recovery scan after the refusal: %d %v", w.Code, body)
+	}
+	for _, raw := range body["sources"].([]any) {
+		src := raw.(map[string]any)
+		if id, _ := src["provider_id"].(string); id != target {
+			continue
+		}
+		if backup, _ := src["backup"].(bool); !backup {
+			t.Error("the refused discard deleted this vault's own index anyway")
+		}
+	}
+}
+
+// An account that is not connected here is a stale row, not a 500.
+func TestDiscardingAVaultOnAnAccountThatIsNotThere(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("a vault password", 2)
+
+	w, body := c.json(http.MethodDelete, "/api/vaults/found/not-an-account", nil)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("discard on an unknown account = %d %v, want it refused", w.Code, body)
 	}
 }

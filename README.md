@@ -898,6 +898,7 @@ you connect that account to a new vault, SAND now says so.
 ```bash
 ./sand sub scan                    # which accounts hold a vault index, and whose
 ./sand sub import old-dropbox      # bring one in as a sub vault of this one
+./sand sub forget old-dropbox      # throw one away — an install you have no use for
 ```
 
 This is what to reach for when `sand vault recover` refuses because your vault
@@ -914,6 +915,21 @@ finally makes the old password useless.
 
 Files whose parts sit on accounts you have not connected come in anyway and are
 counted; connect those accounts and the files come back with them.
+
+Not every one of these is worth keeping. An install from two machines ago is
+found the same way, and leaving it alone is not a neutral choice: the scan goes
+on reporting it, and this vault goes on refusing to replicate its own index to
+that account, because overwriting somebody's recovery data is the one thing
+that guard exists to prevent. `sand sub forget <account>` — the 🗑 beside
+**Import** in the app — erases that index and settles it.
+
+Only the index goes. That vault's parts stay on the account: they are opaque
+objects, and which of them were its own is exactly what is being thrown away.
+What changes is that they stop being another vault's, so `sand vault sweep`
+starts offering them with a size on them, which is where the room they take up
+actually comes back. It is also one account's copy — a vault replicates its
+index to every account it used, so the others go on carrying it until each is
+dealt with too.
 
 ---
 
@@ -1265,6 +1281,7 @@ sand sub assign <path> <name> [--out]         Move a file or folder in, or back 
 sand sub rm <name> [--force]                  Delete it and erase its parts
 sand sub scan                                 Look for other vaults on your accounts
 sand sub import <account> [--name N]          Bring one in as a sub vault
+sand sub forget <account>                     Erase another vault's index from it
 ```
 
 Every ordinary command takes `--in <name>` to work inside one:

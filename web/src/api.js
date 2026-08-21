@@ -533,6 +533,14 @@ export const api = {
       },
     }),
 
+  /* The other thing to do with a vault found on an account: erase its index,
+     for an old install nobody wants back. Only the index goes — the parts stay
+     on the account, and stop being withheld from the stray-parts sweep, which
+     is where the room they take up is actually reclaimed. The server refuses to
+     delete this vault's own index this way. */
+  discardFoundVault: (provider) =>
+    request(`/api/vaults/found/${encodeURIComponent(provider)}`, { method: 'DELETE' }),
+
   /* Replicating the index to the connected accounts. Turning it off erases the
      copies already out there, which is the point: leaving them would make it a
      setting that changed nothing. */

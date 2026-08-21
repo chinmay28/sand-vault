@@ -2512,6 +2512,83 @@ class TestDisasterRecovery:
         for name in names:
             expect(page.get_by_text(name, exact=True).first).to_be_visible(timeout=30000)
 
+
+class TestDiscardingAFoundVault:
+    """The old install nobody wants back.
+
+    An account reconnected out of tidiness still carries the index of whichever
+    vault last used it, so the sub vaults panel offers to import it — and goes
+    on offering, since nothing about that account will ever change on its own.
+    The trash button beside the offer is how somebody says the files behind it
+    are not wanted.
+
+    What it erases is that index and nothing else. The parts stay on the
+    account, which is why the dialog says so rather than implying a cleanup it
+    is not doing: what changes is that they stop being another vault's, so the
+    stray-parts sweep will offer them with a size on them.
+    """
+
+    def first_run(self, page, base_url, cloud):
+        """A fresh vault on a new machine, with one dead cloud wired back up."""
+        page.goto(base_url)
+        page.wait_for_selector("text=Create your vault", timeout=20000)
+        boxes = page.locator('input[autocomplete="new-password"]')
+        boxes.nth(0).fill("a-brand-new-passphrase")
+        boxes.nth(1).fill("a-brand-new-passphrase")
+        page.get_by_text("▶ Create vault").click()
+        page.wait_for_selector("text=Connected clouds", timeout=20000)
+
+        page.get_by_text("+ Connect a cloud").click()
+        page.wait_for_selector("text=Local folder", timeout=15000)
+        page.get_by_text("Local folder").click()
+        form = page.locator("form")
+        form.locator("input").nth(0).fill("tidied-up")
+        form.locator("input").nth(1).fill(cloud)
+        form.locator("button[type=submit]").click()
+        page.wait_for_selector("text=tidied-up", timeout=30000)
+
+        # An empty vault beside a foreign index is the recovery prompt's
+        # business first. Saying no to it is what leaves somebody in front of
+        # the panel this is about.
+        not_now = page.get_by_role("button", name="Not now")
+        if not_now.count() > 0:
+            not_now.click()
+            page.wait_for_timeout(300)
+
+    def test_the_trash_button_erases_the_index_it_was_offering(
+        self, page, spawn_server, lost_vault,
+    ):
+        clouds, _, _ = lost_vault
+        self.first_run(page, spawn_server("case-discard"), clouds[0])
+
+        open_vault_setting(page, "Sub vaults")
+        panel = page.get_by_role("dialog", name="Sub vaults")
+        panel.wait_for(timeout=20000)
+
+        # The row, with both of the things that can be done to it.
+        row = panel.get_by_text("holds another vault’s index")
+        expect(row).to_be_visible(timeout=30000)
+        expect(panel.get_by_role("button", name="Import")).to_be_visible()
+        panel.get_by_role("button", name="🗑").click()
+
+        # In front of the panel that opened it, and plain about the half it is
+        # not doing.
+        dialog = page.get_by_role("dialog", name=re.compile(r"^Forget the vault on"))
+        dialog.wait_for(timeout=20000)
+        expect(dialog.get_by_text(re.compile(r"stay on the account as parts"))).to_be_visible()
+        dialog.get_by_role("button", name="Erase the index").click()
+
+        # Gone from the panel, and the panel says so in the way it says it when
+        # there was never anything there.
+        expect(panel.get_by_text("holds another vault’s index")).to_have_count(0, timeout=30000)
+        expect(panel.get_by_text("Nothing but this vault’s own")).to_be_visible(timeout=30000)
+
+        # And it stays gone: a fresh scan is the same answer, not a row that
+        # comes back the moment anyone looks again.
+        panel.get_by_role("button", name=re.compile(r"^Scan accounts for vaults")).click()
+        expect(panel.get_by_text("Nothing but this vault’s own")).to_be_visible(timeout=30000)
+
+
 class TestSubVaultDeletion:
     """Throwing away a vault that is inside the vault.
 

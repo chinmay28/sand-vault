@@ -3,11 +3,14 @@ package vault
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/chinmay28/sand-vault/internal/archive"
+	"github.com/chinmay28/sand-vault/internal/crypto"
 	"github.com/chinmay28/sand-vault/internal/provider"
 	"github.com/google/uuid"
 )
@@ -285,6 +288,98 @@ func (v *Vault) importSnapshot(ctx context.Context, snapshot *Snapshot, provider
 		v.scheduleBackup(true)
 	}
 	return report, nil
+}
+
+// ErrNotForeign is returned when the index on an account turns out to be this
+// vault's own. Discarding one is for somebody else's; this vault's own copy is
+// its recovery data, and erasing that is what turning replication off is for.
+var ErrNotForeign = errors.New("that account holds this vault's own index")
+
+// DiscardReport says what discarding a found vault did.
+type DiscardReport struct {
+	// Account is the account the index was removed from.
+	Account string `json:"account"`
+
+	// Claimed reports that this vault's own index is going to that account in
+	// its place, which is what happens unless replication is switched off.
+	Claimed bool `json:"claimed"`
+}
+
+// DiscardFoundVault erases another vault's index from one connected account.
+//
+// It is the other answer to what the scan found. Importing is for a vault whose
+// files are still wanted; this is for the ones that are not — an install from
+// two machines ago, a cloud that was reconnected out of tidiness — where the
+// offer to import will otherwise stand on that account forever.
+//
+// What goes is the index and nothing else. The parts of that vault's files stay
+// on the account: they are opaque objects, this vault cannot tell which of them
+// were that vault's, and deleting an account's contents is not what somebody
+// dismissing a row asked for. What changes is that they stop being protected.
+// The foreign index is what makes the orphan scan withhold that account, so
+// once it is gone those parts are offered up as storage to reclaim — which is
+// the honest way to get rid of them, one confirmation at a time, rather than
+// hidden inside this call.
+//
+// The guard against clobbering somebody else's recovery data is what made the
+// account unusable for this vault's own backup, and removing the index settles
+// it: the account joins the ordinary replication from the next push on.
+func (v *Vault) DiscardFoundVault(ctx context.Context, providerID string) (*DiscardReport, error) {
+	v.mu.RLock()
+	if v.dataKey == nil {
+		v.mu.RUnlock()
+		return nil, ErrLocked
+	}
+	cfg, ok := v.configForLocked(providerID)
+	vaultKey := append([]byte(nil), v.vaultKey...)
+	v.mu.RUnlock()
+	defer crypto.ZeroBytes(vaultKey)
+
+	if !ok {
+		return nil, fmt.Errorf("no connected account with id %s", providerID)
+	}
+
+	p, err := v.buildProvider(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	// Read it before erasing it. The scan that put the row on screen ran at some
+	// earlier moment, and the one thing this must never do is delete this
+	// vault's own recovery data because the answer went stale in between.
+	blob, err := p.Get(ctx, BackupKey)
+	if errors.Is(err, provider.ErrNotFound) {
+		return nil, fmt.Errorf("%s: %w", cfg.Name, ErrNoBackup)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading the index on %s: %w", cfg.Name, err)
+	}
+
+	var backup Backup
+	if json.Unmarshal(blob, &backup) != nil || backup.Magic != backupMagic {
+		return nil, fmt.Errorf("what %s holds under %s is not a vault index, so it was left alone",
+			cfg.Name, BackupKey)
+	}
+	if backup.opensWith(vaultKey) {
+		return nil, fmt.Errorf("%s: %w", cfg.Name, ErrNotForeign)
+	}
+
+	if err := p.Delete(ctx, BackupKey); err != nil && !errors.Is(err, provider.ErrNotFound) {
+		return nil, fmt.Errorf("removing the index from %s: %w", cfg.Name, err)
+	}
+
+	// Nothing on the account is worth protecting from this vault any more, and
+	// the guard remembers per unlock rather than asking again — so it has to be
+	// told, exactly as an import tells it. The push that follows is the ordinary
+	// unforced one: it writes here because there is no longer anything in the
+	// way, and it still leaves every other account's foreign index alone.
+	v.markBackupChecked(providerID)
+	v.backupMu.Lock()
+	delete(v.backupWarned, providerID)
+	v.backupMu.Unlock()
+	v.scheduleBackup(false)
+
+	return &DiscardReport{Account: cfg.Name, Claimed: v.BackupEnabled()}, nil
 }
 
 // adoptNestedSubVaults brings the sub vaults of an imported vault in as sub
