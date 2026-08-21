@@ -280,6 +280,19 @@ reconnected show up as unreachable parts. The recovered vault adopts the old
 data key, so new uploads join the existing files instead of starting a second
 key, and it rewrites the backups under its own password.
 
+**The offline route needs the manifest, not just the parts.** Row two of that
+table is the one that reads like it should work with two files and a password,
+and it cannot: a shard on an account is sealed under the vault's random
+`data_key`, and `manifest.sand` is the only thing outside the vault file that
+carries it, so `sand restore` refuses parts in the chunked format without
+`--manifest` rather than prompting for a password that opens nothing. The other
+half of that row is *enough* parts: a chunked file is `ChunkShardKey`'s
+`-cNNNNNNN-pN.sand` per chunk per shard, the manifest's shard records name only
+chunk zero, and `RestoreChunked` reads each chunk's `k` off the parts handed to
+it. Missing chunks are an error naming `meta.ChunkCount` rather than a short
+file, which makes a first run with too few parts the way to find out how many
+there are.
+
 **Nobody has to know the command exists.** The route above is only a route back
 for someone who already suspects there is one, and the person in this situation
 — a reinstalled machine, an empty vault, a file list that is blank because

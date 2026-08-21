@@ -1091,7 +1091,10 @@ Backup written 2026-08-13 05:20 — 2 file(s), 3 account(s), strict placement
 ```
 
 **You also have two of a file's parts** — rebuild it with no vault, no accounts
-and no network:
+and no network. The manifest is not optional here: the parts are sealed under
+the vault's data key rather than under your password, and the manifest is what
+carries that key. [The walkthrough is
+below](#rebuilding-one-file-by-hand-without-the-app).
 
 ```bash
 sand restore --parts 7d4206c8…-p1.sand,7d4206c8…-p3.sand \
@@ -1227,6 +1230,76 @@ wait for the one you want. Files stay readable throughout, and stopping is safe
 In the browser this is a standing banner in the accounts panel, and a dialog
 with the cloud picker in it.
 
+### Rebuilding one file by hand, without the app
+
+Two parts on their own are not enough, and this is the part that surprises
+people: a part a vault wrote is encrypted under that vault's random data key,
+never under your password, so a `manifest.sand` has to come down alongside the
+parts. Any account's copy will do — every account carries the same one.
+`sand restore` says so rather than failing obscurely:
+
+```
+these parts were written by a vault and cannot be opened by a password alone —
+pass the manifest.sand from one of the accounts with --manifest
+```
+
+The whole procedure, from a browser tab per cloud and a terminal:
+
+1. Download `manifest.sand` from any one account.
+2. Read it, to find what the parts are called and who holds which:
+
+   ```bash
+   sand manifest ls manifest.sand --long
+   ```
+
+3. Download two of the parts it lists for the file you want, from two different
+   accounts.
+4. Rebuild it — no vault, no accounts, no network:
+
+   ```bash
+   sand restore --parts 7d4206c8…-p1.sand,7d4206c8…-p3.sand \
+                --manifest manifest.sand --preserve-tree --output-dir ./rescued
+   ```
+
+Which two you have does not matter, only that they are two different parts;
+passing all three is fine as well. `--preserve-tree` puts the file back under
+the folders it lived in inside `--output-dir`, instead of dropping it there
+flat. A file stored under [a wider
+scheme](#a-wider-spread-when-you-have-the-clouds-for-it) needs its own *k* parts
+rather than two — the count is read off the parts themselves, so being short
+says so with the number it wanted.
+
+The prompt is for the **vault password**, the one belonging to the vault that
+wrote the manifest. `--password` is refused alongside `--manifest`, so it cannot
+be mistaken for the per-archive password standalone mode uses; set
+`SAND_PASSWORD` or pipe it on stdin to run unattended.
+
+**A large file is many chunks, and every chunk needs its own two parts.** Files
+go up in chunks — 16 MB by default — each split and sealed on its own, so an
+account holds `<archive-id>-c0000000-p1.sand`, `<archive-id>-c0000001-p1.sand`
+and onward rather than a single part file. The manifest lists chunk zero's key
+for each part, and the rest are that name with the index counting up. So take
+*every* object on the account whose name starts with that archive ID and ends in
+your part number, do the same on a second account, and pass the lot in one
+`--parts` list:
+
+```bash
+sand restore --parts "$(ls 7d4206c8*-p1.sand 7d4206c8*-p3.sand | paste -sd,)" \
+             --manifest manifest.sand --output-dir ./rescued
+```
+
+Missing chunks are refused rather than quietly splicing the file back together
+shorter than it was, and the refusal names how many the archive has, so a first
+run with too few parts tells you what is still to download. (Files written
+before the chunked format are one `<archive-id>-pN.sand` per part, which is what
+the tree above shows.)
+
+**Parts written by `sand archive` are the other case entirely.** Those are
+sealed under the password you typed at the time and there is no manifest
+anywhere — see [standalone mode](#standalone-mode-no-vault-no-accounts).
+`sand restore` tells the two apart by reading the parts themselves, so there is
+no wrong guess to make.
+
 ### The tradeoff, stated plainly
 
 A copy of this file sits in every account, and every copy is one password away
@@ -1318,6 +1391,12 @@ file, and erases the old parts once the new ones are committed.
 sand manifest ls <manifest.sand> [--long]     Print the tree a backup records
 sand restore --parts A,B --manifest M         Rebuild a file offline from loose parts
 ```
+
+Parts pulled out of a cloud account need `--manifest` as well as the parts: they
+are encrypted under the vault's own key, which no password reaches on its own.
+Parts written by `sand archive` need only the password they were written with.
+See [rebuilding one file by
+hand](#rebuilding-one-file-by-hand-without-the-app).
 
 ### Accounts
 
@@ -1464,6 +1543,11 @@ sand archive report.pdf photos.zip --output-dir ./out
 sand restore --parts report.pdf.p1.sand,report.pdf.p3.sand --output-dir .
 # → report.pdf, byte-identical
 ```
+
+These parts open with the password you typed at archive time and nothing else.
+Parts that came out of a *vault's* cloud accounts are a different case — they
+need the manifest too, and [rebuilding one file by
+hand](#rebuilding-one-file-by-hand-without-the-app) is that procedure.
 
 ### Passwords in scripts
 

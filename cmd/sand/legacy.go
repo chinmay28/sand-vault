@@ -192,7 +192,8 @@ and the password — rebuilds a file with no vault and no network.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&parts, "parts", "", "comma-separated .sand part files (2 or 3)")
+	cmd.Flags().StringVar(&parts, "parts", "",
+		"comma-separated .sand part files — two of a whole file's three, or two of every chunk's")
 	cmd.Flags().StringVar(&password, "password", "", "decryption password (prompted if omitted)")
 	cmd.Flags().StringVar(&outputDir, "output-dir", ".", "where to write the restored file")
 	cmd.Flags().StringVar(&manifestPath, "manifest", "",
