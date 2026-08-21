@@ -237,8 +237,10 @@ type Kit struct {
     // the accounts without the old password.
     VaultKey string `json:"vault_key"`
 
-    // KDF is the lost vault's own parameters, kept so a restore under the same
-    // password produces the same vault key rather than a re-derived one.
+    // KDF is the lost vault's own parameters, kept as a record of how its
+    // vault key was derived. An import does not reuse them: the recovered
+    // vault gets a salt of its own, so choosing the lost vault's password
+    // again does *not* reproduce its vault key. §6.5.
     KDF kdfParams `json:"kdf"`
 
     // Preferences are the store fields a manifest backup has no room for.
@@ -732,12 +734,30 @@ copies on the accounts. Phase 4
 detects it — the check block in each `manifest.sand` fails, uniformly, on
 every account — and distinguishes it from corruption by its uniformity.
 
-The import does not fail. It reports:
+The import does not fail. `KitImportReport.PasswordChanged` says what was
+observed — the copies refused the carried key, uniformly — and the kit's own
+index is installed.
 
-> The index on your accounts was sealed after this kit was made — your vault
-> password changed on **12 June**. Type the password you were using when the
-> machine died and the newer index comes back too; skip, and you get the
-> {date} index from the kit.
+**The old password is the only thing that closes the gap.** Not the password
+chosen for the recovered vault: that vault is minted with a fresh KDF salt, so
+typing the lost vault's password into the *new password* field derives a
+different key and changes nothing. It has to be handed over separately, as
+`KitImportOptions.OldPassword`, which is tried against every reachable account
+when the carried key is refused (`cloudIndexWithPassword`). A password that
+opens nothing is a warning on the report, not a failure.
+
+Because phase 4 runs after phase 1 has already written the vault, there is no
+point at which the import can stop and ask. So it is asked up front instead,
+and asked *quietly*:
+
+- The browser folds the field away behind one line — "Did your vault password
+  change after this kit was made?" — so the ordinary import shows two password
+  fields rather than three.
+- The CLI reads it from `SAND_OLD_PASSWORD`, named in `sand vault kit import
+  --help`.
+- Where it was needed and not given, both surfaces say so on the report, and
+  name the remedy: import again into a fresh vault, this time with the old
+  password.
 
 Skipping is a real option and is offered as one — and it is the *default* on a
 code-sealed kit, because the person in front of this dialog has already proved
@@ -746,6 +766,12 @@ never have had. The kit's index is older but complete for what it describes,
 and every account is already connected, which is nearly all of the value. What
 skipping costs is named exactly: the files added between the export and the
 password change, which the report counts.
+
+What must not be implied anywhere is that the lost vault's password is of no
+further use. It is not needed to *unlock* the recovered machine and it is not
+needed to *open the kit* — but it is the only key to the newest index in
+existence, and a dialog that reads as "you will never need the old one again"
+is telling somebody to discard it.
 
 ### 6.6 Rejected: shipping the vault file verbatim
 

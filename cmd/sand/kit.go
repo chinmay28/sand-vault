@@ -231,7 +231,17 @@ func kitImportCmd() *cobra.Command {
 already had, the file tree back as it was, sub vaults present and still shut.
 
 You choose the password the recovered vault will use from now on. It need not
-be the one the lost vault used.
+be the one the lost vault used: the kit carries its own keys, and nothing in
+the import is derived from what you type here.
+
+The lost vault's own password is worth having anyway, in one case. The copies
+of the index sitting on your accounts are newer than the kit — they were
+rewritten every time the tree changed — and the kit carries the key that opens
+them. A password change made after the kit was exported retires that key, and
+then the old password is the only thing that opens them. Put it in
+SAND_OLD_PASSWORD and it is tried when the kit's key is refused. Leaving it out
+is a real option: it costs only the files added between the export and the
+password change.
 
 An account that will not connect does not stop this. It is recorded, the rest
 carries on, and the report says which one to fix and how.`,
@@ -385,6 +395,10 @@ func printKitImportReport(r *vault.KitImportReport) {
 		fmt.Printf("  key, so the kit's own index (%s) was used. Usually that means\n",
 			r.IndexAt.Format("2 Jan 2006"))
 		fmt.Printf("  the vault password changed after the kit was made.\n")
+		if os.Getenv("SAND_OLD_PASSWORD") == "" {
+			fmt.Printf("  Importing again into a fresh vault with SAND_OLD_PASSWORD set to the\n")
+			fmt.Printf("  password the machine was using when it died would close that gap.\n")
+		}
 	}
 
 	fmt.Printf("  %d of %d file(s) can be opened", r.Recoverable, r.Files)
