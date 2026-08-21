@@ -114,6 +114,7 @@ make build
 
 # 4. Store and retrieve
 ./sand put ~/Documents/passport.pdf          # add --accounts to pick the clouds
+./sand put ~/Photos                          # or a whole folder, keeping its shape
 ./sand ls
 #   passport.pdf  2.1 MB  Aug 12 09:14  p1:usb-drive p2:r2-cold p3:nextcloud
 ./sand get /passport.pdf -o ./restored.pdf
@@ -1360,7 +1361,9 @@ have always had.
 ```
 sand ls [path] [-l]                24 B  Aug 12 09:14  p1:acct-a p2:acct-b p3:acct-c
 sand find <query> [--path /dir] [--type file|folder] [--limit N] [-l]
-sand put <file>... [--path /dir] [--overwrite] [--accounts a,b,c]
+sand put <path>... [--path /dir] [--overwrite] [--accounts a,b,c]
+                                   Files, or a whole folder — it lands under
+                                   --path keeping its shape, empty folders too
 sand get <path-or-id> [-o out]     Rebuild and decrypt
 sand mkdir <path>
 sand mv <path> <new-path>          A file or a folder; index only, parts never move
@@ -1507,7 +1510,9 @@ pipe the password on stdin.
   them, file and all
 - **Connect dialog** — generated from each backend's own field spec, so new
   backends appear without frontend changes
-- **Browser** — folders, breadcrumbs, drag-and-drop upload with progress
+- **Browser** — folders, breadcrumbs, drag-and-drop upload with progress.
+  A folder can be uploaded as well as a file, from the picker or by dropping
+  it: everything under it goes up keeping its shape, however deep
 - **Navigation** — Back, Forward and Up lead the toolbar and step along the
   trail of folders you have walked through, as does `Alt+←` / `Alt+→` / `Alt+↑`.
   The trail is held in memory only and goes when the vault locks
@@ -1933,7 +1938,7 @@ one walk, so comparing them costs nothing.
 | DELETE | `/api/providers/{id}` | Disconnect (`?force=1`) |
 | GET | `/api/files?path=` | List a folder |
 | GET | `/api/search?q=` | Find files and folders by name (`&path=` to scope, `&type=file\|folder`, `&limit=`) |
-| POST | `/api/files` | Upload (`files[]`, `path`, `overwrite`, `thumb-N` per file) |
+| POST | `/api/files` | Upload (`files[]`, `path`, `overwrite`, `thumb-N` per file, `rel-N` for the path a file had inside an uploaded folder, `dirs` for the folders of one that hold no file) |
 | GET | `/api/files/{id}/content` | Serve at an offset — a range costs the chunks it covers, not the file (`?download=1`) |
 | GET | `/api/conversions` | Files still in the pre-chunking format |
 | POST | `/api/files/{id}/convert` | Move one out of it |
@@ -1973,6 +1978,13 @@ Uploads report per-file results, so one failure in a batch doesn't sink the rest
   ]
 }
 ```
+
+A file uploaded as part of a folder is named by the path it had inside it —
+`2024/summer/cover.jpg` rather than `cover.jpg` — because a folder can hold four
+files of the same name and a failure has to say which one. Those paths are
+rebuilt under `path` and checked as strictly as a typed name: a segment that is
+not a plain name, or one that would climb out of the folder the upload was
+posted to, is refused rather than repaired.
 
 Sessions use a `SameSite=Strict` cookie and every write is `Origin`-checked, so
 another site in your browser can't drive the local API.

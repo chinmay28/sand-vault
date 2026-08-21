@@ -117,6 +117,13 @@ def close_vault_settings(page):
     menu.wait_for(state="detached", timeout=20000)
 
 
+# The app has two file inputs, because whether an input asks for files or for a
+# folder is a property of the input and not of the click. They are told apart
+# here the way the browser tells them apart.
+FILE_INPUT = "input[type=file]:not([webkitdirectory])"
+FOLDER_INPUT = "input[webkitdirectory]"
+
+
 def select_clouds(page, names):
     """Leave exactly `names` selected in whichever cloud picker is open.
 
@@ -144,7 +151,7 @@ def upload_and_settle(page, source, choose=None):
     parts are still being scattered.
     """
     name = os.path.basename(source)
-    page.set_input_files("input[type=file]", str(source))
+    page.set_input_files(FILE_INPUT, str(source))
 
     confirm = page.get_by_role("button", name=re.compile(r"Upload to \d+ cloud"))
     confirm.wait_for(timeout=20000)
@@ -1152,7 +1159,7 @@ class TestChoosingClouds:
     def _open_picker(self, app, tmp_path, name="picked.txt"):
         source = tmp_path / name
         source.write_text("choose where this lives")
-        app.set_input_files("input[type=file]", str(source))
+        app.set_input_files(FILE_INPUT, str(source))
         app.wait_for_selector("text=/Upload to \\d+ cloud/", timeout=20000)
         return source
 
@@ -1231,6 +1238,92 @@ class TestFolders:
         app.get_by_text("gui-folder").first.click()
         # Breadcrumb reflects the folder we walked into.
         app.wait_for_selector("text=gui-folder", timeout=10000)
+
+
+class TestUploadingAFolder:
+    """A folder can be uploaded, not only the files inside one.
+
+    A browser will not hand over a folder: it hands over the files, each
+    carrying the path it had inside the folder that was chosen, and the shape
+    has to be rebuilt on the other side. What these prove is that it is — that
+    what comes back is the folder that was picked and not its contents tipped
+    out flat into whatever was on screen.
+    """
+
+    def tree(self, tmp_path, name):
+        """A small folder with depth, and two files sharing a name across it.
+
+        The repeated name is the point: flattening a tree is not a subtle bug
+        when two files called cover.txt land in the same folder, and it is
+        invisible when every name is unique.
+        """
+        root = tmp_path / name
+        (root / "2024" / "summer").mkdir(parents=True)
+        (root / "2023").mkdir(parents=True)
+        (root / "hike.txt").write_text("a ridge")
+        (root / "2024" / "summer" / "cover.txt").write_text("summer cover")
+        (root / "2023" / "cover.txt").write_text("last year's cover")
+        return root
+
+    def upload(self, app, source, choose=None):
+        app.set_input_files(FOLDER_INPUT, str(source))
+        confirm = app.get_by_role("button", name=re.compile(r"Upload to \d+ cloud"))
+        confirm.wait_for(timeout=20000)
+        if choose is not None:
+            select_clouds(app, choose)
+        confirm.click()
+        app.wait_for_selector(
+            f'button[title="Open folder"]:has-text("{os.path.basename(source)}")', timeout=90000)
+        app.wait_for_load_state("networkidle")
+
+    def test_the_folder_arrives_as_a_folder(self, app, tmp_path):
+        source = self.tree(tmp_path, "gui-tree")
+        self.upload(app, source)
+
+        # The folder itself, in the folder it was uploaded into.
+        app.get_by_text("gui-tree", exact=True).first.click()
+        app.wait_for_selector('button[aria-label="Download hike.txt"]', timeout=20000)
+        assert listed_files(app) == ["hike.txt"]
+        for year in ("2023", "2024"):
+            assert app.get_by_text(year, exact=True).count() >= 1
+
+        # And the depth below it, with the two cover.txt kept apart by the
+        # folders they arrived in rather than collided into one.
+        app.get_by_text("2024", exact=True).first.click()
+        app.get_by_text("summer", exact=True).first.click()
+        app.wait_for_selector('button[aria-label="Download cover.txt"]', timeout=20000)
+        assert listed_files(app) == ["cover.txt"]
+
+        # The file rebuilds off the clouds, which is the only proof the parts
+        # really went out and came back.
+        app.locator('button[title="Open"]', has_text="cover.txt").click()
+        app.wait_for_selector("text=summer cover", timeout=60000)
+        app.keyboard.press("Escape")
+
+    def test_the_picker_names_the_folder_rather_than_its_files(self, app, tmp_path):
+        source = self.tree(tmp_path, "gui-named")
+        app.set_input_files(FOLDER_INPUT, str(source))
+        app.wait_for_selector("text=/Upload to \\d+ cloud/", timeout=20000)
+
+        # "Upload gui-named", not "Upload 3 files": what was chosen was a
+        # folder, and the count belongs underneath it.
+        expect(app.get_by_role("heading", name="Upload gui-named")).to_be_visible()
+        assert app.get_by_text(re.compile(r"3 files · ")).count() == 1
+
+        app.get_by_role("button", name="Cancel").click()
+        app.wait_for_selector("text=/Upload to \\d+ cloud/", state="detached", timeout=20000)
+        assert app.get_by_text("gui-named", exact=True).count() == 0
+
+    def test_upload_offers_files_or_a_folder(self, app):
+        app.get_by_role("button", name="↑ Upload").click()
+        sheet = app.get_by_role("dialog", name="Upload into this folder")
+        sheet.wait_for(timeout=20000)
+
+        expect(app.get_by_text("Everything inside it, however deep", exact=False)).to_be_visible()
+        assert app.get_by_text("One or several, picked by hand").count() == 1
+
+        app.keyboard.press("Escape")
+        sheet.wait_for(state="detached", timeout=20000)
 
 
 class TestMovingBetweenFolders:
@@ -2700,7 +2793,7 @@ class TestWiderSchemes:
 
         source = tmp_path / "wide.txt"
         source.write_text("cut four of six")
-        app.set_input_files("input[type=file]", str(source))
+        app.set_input_files(FILE_INPUT, str(source))
         app.wait_for_selector("text=/Upload to \\d+ cloud/", timeout=20000)
 
         select_clouds(app, ["ui-one", "ui-two", "ui-three", "ui-four", "ui-five", "ui-six"])
@@ -2727,7 +2820,7 @@ class TestWiderSchemes:
 
         source = tmp_path / "between.txt"
         source.write_text("four is not a scheme")
-        app.set_input_files("input[type=file]", str(source))
+        app.set_input_files(FILE_INPUT, str(source))
         app.wait_for_selector("text=/Upload to \\d+ cloud/", timeout=20000)
 
         select_clouds(app, ["ui-one", "ui-two", "ui-three", "ui-four"])

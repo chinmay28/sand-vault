@@ -7,6 +7,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -97,6 +98,10 @@ func (s *Server) handleFileMeta(w http.ResponseWriter, r *http.Request) {
 // uploadResult reports the outcome of one file in a multi-file upload. A
 // partial failure is normal when several files are dropped at once, so each
 // one carries its own status rather than failing the whole request.
+//
+// Name is the path the file had inside the directory it came from, not just its
+// leaf: a dropped folder can hold four "cover.jpg", and a failure has to say
+// which one.
 type uploadResult struct {
 	Name     string       `json:"name"`
 	OK       bool         `json:"ok"`
@@ -140,15 +145,59 @@ func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Where every file of this upload lands, worked out before anything is
+	// sent: a file chosen on its own keeps its name in the folder being looked
+	// at, and a file that came in as part of a directory keeps the path it had
+	// inside it. Done up front so a path the client should not have asked for
+	// is refused before a byte of it is scattered.
+	places := make([]uploadPlace, len(uploads))
+	for i, fh := range uploads {
+		places[i] = placeUpload(dir, formRelPath(r, i), fh.Filename)
+	}
+
+	folders, err := uploadFolders(r, dir, places)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "BAD_PATH")
+		return
+	}
+
 	ctx, cancel := contextWithTimeout(r, 30*time.Minute)
 	defer cancel()
 
 	v, _ := s.Vault()
-	results := make([]uploadResult, 0, len(uploads))
+	results := make([]uploadResult, 0, len(uploads)+len(folders))
 	stored := 0
 
+	// The tree the files hang off, made once each. A folder that will not be
+	// made is reported like a file that will not store — everything under it
+	// then fails on its own line, which is what says how much of the directory
+	// actually arrived.
+	made := map[string]bool{vault.CleanDir(dir): true}
+	for _, folder := range folders {
+		if made[folder] || v.FolderExists(scope, folder) {
+			made[folder] = true
+			continue
+		}
+		if err := v.Mkdir(scope, folder); err != nil {
+			results = append(results, uploadResult{Name: strings.TrimPrefix(folder, "/"), Error: err.Error()})
+			continue
+		}
+		made[folder] = true
+	}
+
 	for i, fh := range uploads {
-		result := uploadResult{Name: fh.Filename}
+		place := places[i]
+		result := uploadResult{Name: place.Label}
+		if place.Err != nil {
+			result.Error = place.Err.Error()
+			results = append(results, result)
+			continue
+		}
+		if !made[place.Dir] {
+			result.Error = fmt.Sprintf("could not make the folder %s", place.Dir)
+			results = append(results, result)
+			continue
+		}
 
 		f, err := fh.Open()
 		if err != nil {
@@ -163,7 +212,7 @@ func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 		// UploadStreamAt rather than UploadStream because the parser has already
 		// spilled anything large to disk, and spooling it again would write the
 		// film twice.
-		entry, warnings, err := v.UploadStreamAt(ctx, scope, dir, fh.Filename, f, fh.Size, vault.UploadOptions{
+		entry, warnings, err := v.UploadStreamAt(ctx, scope, place.Dir, place.Name, f, fh.Size, vault.UploadOptions{
 			Overwrite: overwrite,
 			Accounts:  accounts,
 			Scheme:    scheme,
@@ -239,6 +288,146 @@ func formAccounts(r *http.Request) []string {
 		}
 	}
 	return out
+}
+
+// uploadPlace is where one file of an upload belongs: the folder it goes in,
+// the name it takes there, and the path to call it by when reporting back. Err
+// is set instead of the rest when the client asked for somewhere it may not go.
+type uploadPlace struct {
+	Dir   string
+	Name  string
+	Label string
+	Err   error
+}
+
+// placeUpload works out where one file of an upload belongs.
+//
+// A file chosen on its own is a name, and lands in the folder the upload was
+// posted to. A file that arrived as part of a directory carries the path it had
+// inside that directory — "2024/summer/hike.jpg" — and that path is rebuilt
+// under the destination rather than flattened into it, because a folder that
+// arrives as four hundred loose files is not the folder that was dropped.
+//
+// The relative path is whatever the client wrote in the form, so it is treated
+// as such: every segment goes through the check a typed name goes through, and
+// a ".." among them is refused rather than cleaned away — a form asking to
+// climb out of the folder it was posted to is not one to guess the intent of.
+func placeUpload(dir, rel, filename string) uploadPlace {
+	segments, err := pathSegments(rel)
+	if err != nil {
+		return uploadPlace{Label: rel, Err: err}
+	}
+
+	// No path, or one that was nothing but separators: an ordinary single file,
+	// placed exactly where it was before directories could be uploaded at all.
+	if len(segments) == 0 {
+		name, err := vault.SanitizeName(filename)
+		if err != nil {
+			return uploadPlace{Label: filename, Err: err}
+		}
+		return uploadPlace{Dir: vault.CleanDir(dir), Name: name, Label: name}
+	}
+
+	place := uploadPlace{
+		Dir:   vault.CleanDir(dir),
+		Name:  segments[len(segments)-1],
+		Label: strings.Join(segments, "/"),
+	}
+	for _, segment := range segments[:len(segments)-1] {
+		place.Dir = vault.JoinPath(place.Dir, segment)
+	}
+	return place
+}
+
+// pathSegments splits a client-supplied relative path into names that are safe
+// to build a folder out of. Separators are normalized because a Windows browser
+// and a Unix one do not agree on them, "." segments are dropped as the nothing
+// they are, and anything else that is not a plain name is an error rather than
+// something to be quietly repaired.
+func pathSegments(rel string) ([]string, error) {
+	rel = strings.TrimSpace(strings.ReplaceAll(rel, "\\", "/"))
+	if rel == "" {
+		return nil, nil
+	}
+	// A path inside a folder is relative by definition. One that is not is
+	// refused rather than quietly read as though it were: no browser writes
+	// this field with a root on it, so whatever did is not describing a
+	// directory somebody chose.
+	if strings.HasPrefix(rel, "/") {
+		return nil, fmt.Errorf("invalid path %q", rel)
+	}
+
+	var segments []string
+	for _, segment := range strings.Split(rel, "/") {
+		switch strings.TrimSpace(segment) {
+		case "", ".":
+			continue
+		case "..":
+			return nil, fmt.Errorf("invalid path %q", rel)
+		}
+		name, err := vault.SanitizeName(segment)
+		if err != nil {
+			return nil, err
+		}
+		segments = append(segments, name)
+	}
+	return segments, nil
+}
+
+// uploadFolders lists every folder this upload needs, parents first.
+//
+// Two things ask for one: a file that came in with a path under it, and the
+// "dirs" field, which names folders in their own right. The second exists for
+// the folders a directory holds that hold no file — a browser that walks a
+// dropped tree can see those, and a directory that arrives with its empty
+// corners missing is not the directory that was dropped.
+func uploadFolders(r *http.Request, dir string, places []uploadPlace) ([]string, error) {
+	base := vault.CleanDir(dir)
+	seen := map[string]bool{base: true}
+	var wanted []string
+
+	add := func(folder string) {
+		if seen[folder] {
+			return
+		}
+		seen[folder] = true
+		wanted = append(wanted, folder)
+	}
+
+	for _, raw := range r.MultipartForm.Value["dirs"] {
+		segments, err := pathSegments(raw)
+		if err != nil {
+			return nil, err
+		}
+		folder := base
+		for _, segment := range segments {
+			folder = vault.JoinPath(folder, segment)
+			add(folder)
+		}
+	}
+	for _, place := range places {
+		if place.Err == nil {
+			add(place.Dir)
+		}
+	}
+
+	// Shortest first, so a folder is never asked for before the folder holding
+	// it — which is also the order the failures read in when a tree cannot be
+	// built.
+	sort.Strings(wanted)
+	return wanted, nil
+}
+
+// formRelPath reads the path a file had inside the directory it came from.
+// Named for the file's position for the same reason the thumbnail field is: two
+// files in one upload can share a name, and only some of them came out of a
+// directory at all. Absent, the file was chosen on its own.
+func formRelPath(r *http.Request, index int) string {
+	values := r.MultipartForm.Value[fmt.Sprintf("rel-%d", index)]
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
 }
 
 // formThumb reads the preview image the browser generated for the nth file of

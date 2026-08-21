@@ -450,7 +450,11 @@ func (m *Manifest) Mkdir(dir string) error {
 		return nil
 	}
 
+	// Every segment is checked before any of them is kept: a path that fails
+	// half way through would otherwise leave the folders above the failure in
+	// the manifest, to be written out by whatever persists next.
 	var built string
+	var missing []string
 	for _, segment := range strings.Split(strings.TrimPrefix(dir, "/"), "/") {
 		if segment == "" {
 			return fmt.Errorf("invalid folder path %q", dir)
@@ -463,9 +467,14 @@ func (m *Manifest) Mkdir(dir string) error {
 			return fmt.Errorf("a file already exists at %s", built)
 		}
 		if !m.hasExplicitFolder(built) {
-			m.Folders = append(m.Folders, built)
+			missing = append(missing, built)
 		}
 	}
+	if len(missing) == 0 {
+		return nil
+	}
+
+	m.Folders = append(m.Folders, missing...)
 	sort.Strings(m.Folders)
 	return nil
 }
