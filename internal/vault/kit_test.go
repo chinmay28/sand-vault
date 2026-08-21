@@ -816,6 +816,89 @@ func TestConfiguredPathOnlyMatchesLocalFolders(t *testing.T) {
 	}
 }
 
+// Which door a failed account opens is a fact about the backend, not about the
+// failure. A revoked Dropbox consent and a rotated S3 key both come back as an
+// authentication failure, and the repairs share no steps.
+func TestRepairForAsksTheBackend(t *testing.T) {
+	signIn := []provider.Kind{provider.KindGDrive, provider.KindDropbox, provider.KindOneDrive, provider.KindBox}
+	for _, kind := range signIn {
+		spec, ok := provider.SpecFor(kind)
+		if !ok {
+			t.Fatalf("no spec for %s", kind)
+		}
+		if spec.OAuth == nil {
+			t.Fatalf("%s is expected to be an OAuth backend", kind)
+		}
+		cfg := provider.Config{Kind: kind}
+		if got := repairFor(cfg, KitAccountNeedsReauth); got != KitRepairSignIn {
+			t.Errorf("%s: repair = %q, want %q", kind, got, KitRepairSignIn)
+		}
+	}
+
+	// No consent screen to send anybody to: what these want is the key typed
+	// again, which is a form rather than a round trip.
+	for _, kind := range []provider.Kind{provider.KindS3, provider.KindWebDAV} {
+		if spec, ok := provider.SpecFor(kind); ok && spec.OAuth != nil {
+			t.Fatalf("%s unexpectedly signs in", kind)
+		}
+		cfg := provider.Config{Kind: kind}
+		if got := repairFor(cfg, KitAccountNeedsReauth); got != KitRepairSettings {
+			t.Errorf("%s: repair = %q, want %q", kind, got, KitRepairSettings)
+		}
+	}
+
+	local := provider.Config{Kind: provider.KindLocal}
+	for _, tc := range []struct{ status, want string }{
+		{KitAccountConnected, ""},
+		{KitAccountNeedsPath, KitRepairPath},
+		{KitAccountUnreachable, KitRepairRetry},
+	} {
+		if got := repairFor(local, tc.status); got != tc.want {
+			t.Errorf("status %q: repair = %q, want %q", tc.status, got, tc.want)
+		}
+	}
+}
+
+// An import has to say which door to open, not merely that something is wrong.
+func TestKitImportReportsHowToRepairEachAccount(t *testing.T) {
+	ctx := context.Background()
+	v, roots := newTestVault(t, 3)
+	if _, _, err := v.Upload(ctx, MainScope, "/", "notes.txt", []byte("x"), UploadOptions{}); err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	fingerprint, zipped := exportTestKit(t, v)
+	v.AwaitBackupSync()
+	v.Lock()
+
+	if err := os.RemoveAll(roots[2]); err != nil {
+		t.Fatalf("removing an account's folder: %v", err)
+	}
+
+	restored := freshVault(t)
+	kit := openTestKit(t, zipped, fingerprint.Code)
+	report, err := restored.ImportKit(ctx, kit, KitImportOptions{Password: "new password"})
+	if err != nil {
+		t.Fatalf("ImportKit: %v", err)
+	}
+
+	for _, a := range report.Accounts {
+		switch a.Status {
+		case KitAccountConnected:
+			if a.Repair != "" {
+				t.Errorf("%s connected but names a repair (%q)", a.Name, a.Repair)
+			}
+		case KitAccountNeedsPath:
+			if a.Repair != KitRepairPath {
+				t.Errorf("%s: repair = %q, want %q", a.Name, a.Repair, KitRepairPath)
+			}
+		default:
+			if a.Repair == "" {
+				t.Errorf("%s failed as %q and names no repair", a.Name, a.Status)
+			}
+		}
+	}
+}
+
 // Swapping one account for another leaves the count alone and makes the kit
 // strictly less able to help, so it has to read as a change.
 func TestKitStatusNoticesASwappedAccount(t *testing.T) {

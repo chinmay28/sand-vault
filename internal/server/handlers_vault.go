@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
@@ -295,15 +296,32 @@ func (s *Server) startSession(w http.ResponseWriter, r *http.Request) {
 
 type backupRequest struct {
 	Enabled bool `json:"enabled"`
+
+	// Force claims the connected accounts for this vault, overwriting a copy
+	// of the index it cannot open rather than leaving it alone.
+	//
+	// What needs it is an account repaired *after* a recovery. The push that
+	// follows a recovery forces, and claims every account it can reach; one
+	// that was unreachable then — or that has since been pointed at where its
+	// parts really are — still holds the index of the vault that died, and the
+	// guard protecting a foreign backup will refuse it forever. That guard is
+	// right in general and wrong here, because this vault has already been
+	// told, with the password and the kit, that these accounts are its own.
+	Force bool `json:"force"`
 }
 
 // handleVaultBackup turns replication of the index to the connected accounts on
-// or off.
+// or off — or, with force, claims those accounts for this vault.
 //
 // Turning it off erases the copies that are already out there, which is the
 // point of asking for it: the setting exists for someone who does not want a
 // file naming every one of their files sitting on a cloud account, and leaving
 // the old copies behind would make it a setting that changed nothing.
+//
+// Forcing does the opposite of leaving things alone: it overwrites a copy this
+// vault cannot open. See backupRequest.Force for the one situation that wants
+// that. It is a no-op on a vault whose replication is switched off, since there
+// is then nothing to claim an account with.
 func (s *Server) handleVaultBackup(w http.ResponseWriter, r *http.Request) {
 	var req backupRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -315,13 +333,34 @@ func (s *Server) handleVaultBackup(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	v, _ := s.Vault()
-	warnings, err := v.SetBackupEnabled(ctx, req.Enabled)
+
+	var warnings []string
+	var err error
+	if req.Force {
+		warnings, err = v.SyncManifestBackup(ctx, true)
+		// A configuration that refuses to hold a backup is the answer to a
+		// claim rather than a failure of one: there is nothing to write, and
+		// the caller wanted the accounts left consistent, which they are. Only
+		// the forced path is forgiving of it — a refused *enable* has to keep
+		// carrying its reason, since by then the copies that were there have
+		// already been erased.
+		if errors.Is(err, vault.ErrBackupRefused) {
+			warnings = append(warnings, err.Error())
+			err = nil
+		}
+	} else {
+		warnings, err = v.SetBackupEnabled(ctx, req.Enabled)
+	}
 	if err != nil {
 		vaultErrorResponse(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"manifest_backup": v.BackupEnabled(),
-		"warnings":        warnings,
+		// Whether the claim did anything. Replication switched off means there
+		// is no index to claim an account with, and a caller that reported
+		// success on that would be reporting a push that never happened.
+		"claimed":  req.Force && v.BackupEnabled(),
+		"warnings": warnings,
 	})
 }

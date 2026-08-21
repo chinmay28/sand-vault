@@ -1,8 +1,9 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { COLORS, FONT, KIND_ICONS, accountColor, formatBytes, formatDate } from '../theme'
 import { api } from '../api'
 import { Banner, Button, Input, Modal, PasswordInput, Spinner } from './ui'
 import { FilePicker } from './RecoveryKit'
+import EditAccount from './EditAccount'
 
 /* The third door on the lock screen: I have a recovery kit.
 
@@ -260,8 +261,63 @@ async function checkSymbol(bytes) {
 
 /* The report leads on the shortfall, the same way the recovery report does,
    because a list of what worked is not what the person reading it needs. */
-function ImportReport({ report, onClose }) {
+function ImportReport({ report: initial, onClose }) {
+  /* The counts move as accounts are repaired, so the report is state rather
+     than a prop. An account brought back after the import holds parts the
+     index gave up on, and saying "312 files cannot be opened" underneath a row
+     that has just gone green would be the report contradicting itself. */
+  const [report, setReport] = useState(initial)
   const complete = report.lost === 0
+
+  /* The repair dialog edits a real account, not the summary row the report is
+     drawn from — so the accounts are fetched once here. The import has already
+     signed this session in, which is what makes them readable at all. Rows
+     whose account has not arrived yet keep their button disabled rather than
+     opening a dialog on nothing. */
+  const [configs, setConfigs] = useState(null)
+  const [all, setAll] = useState([])
+  const [accountsError, setAccountsError] = useState(null)
+  const loadAccounts = () => api.providers()
+    .then((resp) => {
+      const list = resp.providers || []
+      setAll(list)
+      setConfigs(Object.fromEntries(list.map((p) => [p.id, p])))
+      setAccountsError(null)
+    })
+    .catch((err) => {
+      // Without this the repair buttons stay disabled forever with nothing
+      // said, which reads as "there is nothing to be done here".
+      setConfigs({})
+      setAccountsError(err.message)
+    })
+  useEffect(() => { loadAccounts() }, [])
+
+  /* What a repaired account is actually worth. Reconcile is the operation
+     built for exactly this — "finish a recovery that ran before every account
+     was back" — so a repair ends by running it: the accounts are asked what
+     they hold, records that now have somewhere to point are re-pointed, and
+     the tally comes back honest.
+
+     It is what tells a folder that holds the parts from a folder that merely
+     exists. Pointing an account at the wrong directory succeeds — a local
+     backend creates what it is given — so "connected" alone would be a green
+     tick over an empty folder. */
+  const reconcile = () => api.resumeRecovery({ dryRun: false })
+    .then((resp) => {
+      const r = resp.report || {}
+      setReport((was) => ({
+        ...was,
+        files: r.files ?? was.files,
+        recoverable: r.recoverable ?? was.recoverable,
+        bytes: r.bytes ?? was.bytes,
+        recoverable_bytes: r.recoverable_bytes ?? was.recoverable_bytes,
+        lost: r.lost ?? was.lost,
+        missing: r.missing ?? was.missing,
+        blocking: r.missing_accounts ?? was.blocking,
+      }))
+      return r
+    })
+    .catch(() => null)
 
   return (
     <Modal
@@ -297,8 +353,25 @@ function ImportReport({ report, onClose }) {
         textTransform: 'uppercase', color: COLORS.textMuted, margin: '4px 0 9px',
       }}>Your accounts</div>
 
+      {accountsError && (
+        <Banner tone="warn">
+          The accounts could not be read back, so the repairs below cannot be opened yet:
+          {' '}{accountsError}
+        </Banner>
+      )}
+
       <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '18px' }}>
-        {report.accounts.map((a) => <AccountRow key={a.id} account={a} />)}
+        {report.accounts.map((a) => (
+          <AccountRow
+            key={a.id}
+            account={a}
+            config={configs?.[a.id]}
+            providers={all}
+            loading={configs === null}
+            onRepaired={loadAccounts}
+            onReconcile={reconcile}
+          />
+        ))}
         {report.blocking?.filter((b) => !report.accounts.some((a) => a.id === b.id)).map((b) => (
           <UnknownAccountRow key={b.id} account={b} />
         ))}
@@ -353,29 +426,87 @@ function ImportReport({ report, onClose }) {
 
    A failure here is never fatal to the import: a year-old sign-in is the
    expected case, not the edge case. Both repairs keep the account's id, which
-   is what keeps the index correct across them. */
-function AccountRow({ account }) {
-  const [busy, setBusy] = useState(false)
-  const [done, setDone] = useState(false)
+   is what keeps the index correct across them.
+
+   The repair itself is the accounts panel's own Edit dialog, opened on its
+   "How it connects" half. That half already knows how to put a broken account
+   right — a trip through the provider's consent screen reusing the OAuth app
+   the kit carried, or the settings form for a backend with no consent screen —
+   and whatever it is given is built into a live backend and pinged before it
+   is stored, so credentials the provider rejects are refused rather than saved.
+
+   How much that ping proves depends on the backend. A rejected key is a real
+   refusal; a *folder*, though, is created if it is not there, so pointing an
+   account at the wrong directory succeeds and comes back empty. That is why a
+   saved dialog is not treated as the end of it: the row re-tests the account
+   and then re-counts the whole vault, and the figures it puts back on the
+   report are the only honest answer to whether the repair helped. */
+function AccountRow({ account, config, providers, loading, onRepaired, onReconcile }) {
+  const [editing, setEditing] = useState(false)
+  const [checking, setChecking] = useState(false)
+  const [fixed, setFixed] = useState(false)
+  const [note, setNote] = useState(null)
   const [error, setError] = useState(null)
-  const [path, setPath] = useState('')
-  const [asking, setAsking] = useState(false)
 
   const colour = accountColor(account.id)
   const glyph = KIND_ICONS[account.kind] || '☁'
-  const settled = done || account.status === 'connected'
+  const settled = fixed || account.status === 'connected'
 
-  const repoint = async () => {
-    setBusy(true)
+  /* The dialog says the settings were accepted, which is not the same claim as
+     "this account is working now" — so the row asks the account itself, and
+     believes the answer rather than the 200 that carried it: a failed test is
+     a normal reply here, not an HTTP error. */
+  const recheck = async () => {
+    setChecking(true)
     setError(null)
+    setNote(null)
     try {
-      await api.repointProvider(account.id, account.path_option || 'path', path)
-      setDone(true)
-      setAsking(false)
+      const result = await api.testProvider(account.id)
+      if (!result?.online) {
+        setError(result?.error || 'that account still does not answer')
+        return
+      }
+      setFixed(true)
+
+      /* An account that comes back after the import is still holding the index
+         of the vault that died — the push that claimed the others could not
+         reach it. Left alone it would refuse this vault's index forever, and
+         the next recovery would find a stale one sitting there. */
+      const claim = await api.claimBackups().catch((err) => ({ error: err.message }))
+      if (claim?.error) {
+        setNote(`It is connected, but this vault's index could not be copied to it: ${claim.error}`)
+      } else if (claim && claim.claimed === false) {
+        setNote('It is connected. Copies of the index are switched off for this vault, so it is '
+          + 'still holding the one the old vault left there.')
+      } else if (claim?.warnings?.length) {
+        setNote(claim.warnings[0])
+      }
+
+      /* Records that now have somewhere to point are pointed there, and the
+         report's tally comes back honest. This is what a repair is *for*, and
+         Reconcile is the operation built for it — "finish a recovery that ran
+         before every account was back". */
+      await onReconcile?.()
+
+      /* Deliberately no "but is it the right folder?" warning here. A folder
+         backend creates what it is pointed at, so a wrong one answers exactly
+         as a right one does, and the figures that would tell them apart —
+         what is actually on the account — are not ones this can get cheaply
+         and correctly for every backend. A warning that fires on a guess is
+         worse than none on the screen a person is reading in a bad hour.
+
+         What is honest is above: Reconcile has just re-counted, so the file
+         tally is the current truth. A repair that found nothing leaves it
+         where it was, which is the report declining to claim an improvement
+         rather than inventing a reason. */
     } catch (err) {
       setError(err.message)
     } finally {
-      setBusy(false)
+      setChecking(false)
+      // Whatever happened, the stored settings have moved on — a second
+      // attempt must open the dialog on what is there now rather than on the
+      // options that were broken.
+      onRepaired?.()
     }
   }
 
@@ -409,40 +540,54 @@ function AccountRow({ account }) {
         {settled && (
           <span style={{ fontFamily: FONT.sans, fontSize: '11px', color: COLORS.success }}>✓ connected</span>
         )}
-        {!settled && account.status === 'needs_path' && !asking && (
-          <Button size="sm" onClick={() => setAsking(true)}>FIND IT</Button>
+        {!settled && checking && <Spinner size={13} />}
+        {!settled && !checking && (account.repair === 'retry' || !account.repair) && (
+          /* No repair named means the account could not even be restored into
+             the vault, so there is nothing to open a dialog on — but there is
+             still something to try, and a row with neither a button nor a word
+             on it reads as one nobody has to do anything about. */
+          <Button size="sm" onClick={recheck}>TRY AGAIN</Button>
         )}
-        {!settled && account.status === 'needs_reauth' && (
-          <Button size="sm" onClick={() => { window.location.hash = '#accounts' }}>SIGN IN AGAIN</Button>
-        )}
-        {!settled && account.status === 'unreachable' && (
-          <span style={{ fontFamily: FONT.sans, fontSize: '11px', color: COLORS.warn }}>unreachable</span>
+        {!settled && !checking && account.repair && account.repair !== 'retry' && (
+          <Button
+            size="sm"
+            variant={account.repair === 'sign_in' ? 'primary' : 'default'}
+            disabled={loading || !config}
+            onClick={() => setEditing(true)}
+          >
+            {loading ? '…' : REPAIR_LABEL[account.repair]}
+          </Button>
         )}
       </div>
 
-      {asking && (
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
-          <input
-            value={path}
-            autoFocus
-            placeholder="The folder on this machine"
-            onChange={(e) => setPath(e.target.value)}
-            style={{
-              flex: 1, padding: '8px 10px', background: COLORS.bg,
-              border: `1px solid ${COLORS.border}`, borderRadius: '6px',
-              color: COLORS.text, fontFamily: FONT.mono, fontSize: '12px', outline: 'none',
-            }}
-          />
-          <Button size="sm" variant="primary" disabled={busy || !path} onClick={repoint}>
-            {busy ? '…' : 'USE THIS'}
-          </Button>
-        </div>
-      )}
       {error && (
         <span style={{ fontFamily: FONT.sans, fontSize: '11px', color: COLORS.error }}>{error}</span>
       )}
+      {note && (
+        <span style={{ fontFamily: FONT.sans, fontSize: '11px', color: COLORS.warn, lineHeight: 1.45 }}>
+          {note}
+        </span>
+      )}
+
+      {editing && config && (
+        <EditAccount
+          provider={config}
+          providers={providers}
+          initialTab="connection"
+          onClose={() => setEditing(false)}
+          onChanged={() => { setEditing(false); recheck() }}
+        />
+      )}
     </div>
   )
+}
+
+/* What the one button says. The status is what is wrong; this is what the
+   person is about to do about it, and they are different sentences. */
+const REPAIR_LABEL = {
+  sign_in: 'SIGN IN AGAIN',
+  settings: 'FIX SETTINGS',
+  path: 'FIND IT',
 }
 
 /* An account the newer index names that the kit never knew about — connected

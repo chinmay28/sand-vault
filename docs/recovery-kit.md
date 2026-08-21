@@ -535,7 +535,7 @@ Every account is pinged in parallel, and each lands in one of four states:
 | State | Meaning | What the user does |
 |---|---|---|
 | `connected` | ping succeeded | nothing |
-| `needs_reauth` | OAuth refresh token expired or revoked | one button: sign in again |
+| `needs_reauth` | credentials rejected — a revoked consent, an expired token, a rotated key | one button: sign in again, or fix settings |
 | `needs_path` | the configured folder does not exist here | one button: find this folder |
 | `unreachable` | network, DNS, 5xx, bucket gone | retry later; `resume` picks it up |
 
@@ -547,18 +547,54 @@ in this document: a year-old OAuth token is the *expected* case, not the edge
 case, and an import that refused to finish because Dropbox wanted a fresh
 sign-in would be useless precisely when it is needed.
 
-Both repairs preserve the account id, which is what keeps the manifest correct
-across them:
+**The status says what is wrong; `Repair` says which door to open**, and they
+are not the same question. A Dropbox account whose consent was revoked and an
+S3 bucket whose keys were rotated both fail authentication, and the repairs
+share no steps: one is a trip through somebody's consent screen, the other is a
+form. Only the backend knows which, so `repairFor` asks it — `spec.OAuth != nil`
+is the whole test — and the report gets `sign_in`, `settings`, `path` or
+`retry`. That value is what the button says, which is the only reason the
+distinction has to survive as far as the browser.
 
-- **Re-auth** runs the existing OAuth flow (`POST /api/providers/oauth/start`)
-  and writes the new tokens into the *existing* config rather than adding an
-  account.
-- **Re-point** is a new `PATCH /api/providers/{id}` field for the path option,
-  guarded by a probe: the folder must contain at least one `.sand` object the
-  index expects to find there, or the user is warned they have picked the
-  wrong folder. That probe is worth the code — "find this folder" on a new
-  machine with a differently-named home directory is where a person picks
-  their *Downloads* folder and then wonders why nothing came back.
+**The repair itself is the accounts panel's own Edit dialog**, opened on its
+"How it connects" half over the report. That half already knows how to put a
+broken account right: it reuses the OAuth app the kit carried, so signing back
+in is one button rather than a form asking for a client secret the browser was
+never given; and for a backend with no consent screen it is the settings form.
+Whatever it is given is built into a live backend and pinged *before* anything
+is written down, so credentials the provider rejects are refused rather than
+saved.
+
+How much that proves depends on the backend, and it is worth being exact. A
+rejected key is a real refusal. A **folder** is not: a local or synced-folder
+backend creates the directory it is pointed at, so naming the wrong one succeeds
+and comes back empty. Nothing can tell "this is the wrong folder" from "this is
+the right folder and the parts are gone" at the moment of typing.
+
+So the row does not guess. When the dialog closes it re-tests the account and
+then runs `Reconcile` — the operation built for exactly this, "finish a recovery
+that ran before every account was back" — which asks the accounts what they
+hold, re-points the records that now have somewhere to point, and hands back a
+fresh tally. The report is drawn from that tally rather than from the one the
+import left behind, so a repair that found nothing leaves the figures where they
+were. That is the report declining to claim an improvement, which is the right
+shape for this screen: no warning invented from a guess, and no green tick over
+a number that has not moved.
+
+Note what such a repair costs and does not: with 2-of-3, a file whose third
+account came back empty is still openable from the other two. What was lost is
+the spare, not the file, and the tally says so.
+
+Building a second, simpler repair here was tried and dropped. It saved a path
+without so much as a ping, which is strictly worse than the dialog on every
+backend and no better on the one where the dialog is weakest.
+
+Every repair preserves the account id, which is what keeps the manifest correct
+across it. And each one ends by **claiming the account**: an account that comes
+back after phase 7 is still holding the index of the vault that died, and the
+guard that protects somebody else's backup would go on refusing this vault's
+index forever — so the row forces one push (`POST /api/vault/backup` with
+`force`) once the account answers.
 
 **Phase 3 — install the index.** The kit's manifest, as it stands.
 
@@ -847,6 +883,11 @@ it, and the UI does not present it as revocation.
 | `POST /api/vault/kit/verify` | yes | the fire drill |
 | `POST /api/vault/kit/inspect` | no | what is in this zip; changes nothing |
 | `POST /api/vault/kit/import` | no | the import; starts a session on success |
+
+Repairing an account from the report uses what is already there — the OAuth
+flow under `/api/providers/oauth/`, and `PATCH /api/providers/{id}` for a
+backend that is configured rather than signed in to — plus `POST
+/api/vault/backup` with `force` to claim the account once it answers.
 
 `inspect` and `import` sit outside the session for the same reason
 `/api/vault/init` does: on the machine where they matter there is no vault to

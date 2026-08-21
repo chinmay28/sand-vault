@@ -282,11 +282,6 @@ func (s *Server) Handler() (http.Handler, error) {
 		// touches the backend holding it.
 		"PATCH /api/providers/{id}":  s.handleProviderUpdate,
 		"DELETE /api/providers/{id}": s.handleProviderRemove,
-		// Pointing a path-configured account at a folder that exists on *this*
-		// machine, keeping its id. What "find this folder" needs after a kit
-		// import onto a different computer, where a home directory the vault
-		// was connected with may simply not be here.
-		"POST /api/providers/{id}/repoint": s.handleProviderRepoint,
 
 		// Which accounts have been winning the race every read runs, over
 		// today, this month, this year or all of it. Counters the read path

@@ -210,14 +210,6 @@ export const api = {
     form.append('secret', secret)
     return request('/api/vault/kit/verify', { method: 'POST', formData: form })
   },
-  /* Points a path-configured account at a folder that exists on *this*
-     machine, keeping its id — which is what keeps the index correct. What
-     "find this folder" needs after a kit lands on a different computer. */
-  repointProvider: (id, option, value) =>
-    request(`/api/providers/${encodeURIComponent(id)}/repoint`, {
-      method: 'POST',
-      body: { option, value },
-    }),
 
   providerSpecs: () => request('/api/providers/specs'),
   providers: () => request('/api/providers'),
@@ -546,6 +538,13 @@ export const api = {
      setting that changed nothing. */
   setManifestBackup: (enabled) =>
     request('/api/vault/backup', { method: 'POST', body: { enabled } }),
+  /* Claims the connected accounts for this vault, replacing a copy of the
+     index it cannot open. What an account repaired after a recovery needs: the
+     push that followed the recovery could not reach it, so it is still holding
+     the index of the vault that died, and the guard that protects somebody
+     else's backup would refuse it forever. */
+  claimBackups: () =>
+    request('/api/vault/backup', { method: 'POST', body: { enabled: true, force: true } }),
 
   /* A link a player outside the browser can follow. VLC has none of what
      authenticates this app — the session cookie is HttpOnly and SameSite=Strict
