@@ -46,6 +46,7 @@ Use --in on the ordinary commands to work inside one:
 	cmd.AddCommand(
 		subVaultLsCmd(), subVaultNewCmd(), subVaultPasswdCmd(),
 		subVaultAssignCmd(), subVaultRmCmd(), subVaultScanCmd(), subVaultImportCmd(),
+		subVaultForgetCmd(),
 	)
 	return cmd
 }
@@ -331,7 +332,58 @@ import' brings them in as a sub vault of this one, which is the case
 			}
 			fmt.Fprintf(os.Stderr,
 				"\n%d account(s) hold another vault's index — 'sand sub import <account>' "+
-					"brings one in as a sub vault of this one.\n", others)
+					"brings one in as a sub vault of this one, and 'sand sub forget <account>' "+
+					"throws it away.\n", others)
+			return nil
+		},
+	}
+}
+
+func subVaultForgetCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "forget <account>",
+		Short: "Erase another vault's index from an account",
+		Long: `Delete the index of a vault you have no use for from the account carrying it.
+
+For the install from two machines ago: 'sand sub scan' will go on reporting it,
+and this vault will go on refusing to back its own index up to that account,
+until one or the other is done about it.
+
+Only the index goes. That vault's parts stay on the account — they are opaque
+objects, and which of them were its own is exactly what is being thrown away —
+but they stop being another vault's, so 'sand vault sweep' will offer them with a
+size on them, which is where the storage actually comes back.
+
+It is one account's copy. A vault replicates its index to every account it used,
+so the others go on carrying it until they are dealt with too. This vault's own
+index is never what this deletes; it refuses, whatever the account is called.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			v, err := openVault(cmd)
+			if err != nil {
+				return err
+			}
+			defer v.Lock()
+			defer v.AwaitBackupSync()
+
+			providerID, err := resolveAccountID(v, args[0])
+			if err != nil {
+				return err
+			}
+
+			report, err := v.DiscardFoundVault(cmd.Context(), providerID)
+			if err != nil {
+				return err
+			}
+
+			fmt.Printf("Erased another vault's index from %q.\n", report.Account)
+			if report.Claimed {
+				fmt.Fprintln(os.Stderr,
+					"This vault backs its own index up there from now on.")
+			}
+			fmt.Fprintln(os.Stderr,
+				"The parts that vault left are still on the account — 'sand vault sweep' "+
+					"says how much room they take.")
 			return nil
 		},
 	}

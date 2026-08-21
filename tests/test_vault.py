@@ -1061,6 +1061,43 @@ class TestImportingAFoundVault:
                 "-o", out, sub="imported-passphrase")
         assert open(out).read() == "the deed"
 
+    def test_forget_throws_the_found_vault_away(self, sand_bin, tmp_path):
+        """The other answer to the same finding: the old install nobody wants.
+
+        The scan goes on reporting it and this vault goes on refusing to back
+        its own index up to that account, so leaving it alone is not a neutral
+        choice — which is what makes throwing it away worth a command.
+        """
+        root = str(tmp_path / "forget")
+        clouds = self.abandoned(sand_bin, root)
+
+        sub_cli(sand_bin, root, "vault", "init")
+        for i, path in enumerate(clouds):
+            sub_cli(sand_bin, root, "remote", "add", "local",
+                    "--name", f"reconnected-{i}", "--set", f"path={path}")
+
+        found = sub_cli(sand_bin, root, "sub", "scan")
+        assert "another vault" in found.stdout + found.stderr
+
+        forgotten = sub_cli(sand_bin, root, "sub", "forget", "reconnected-0")
+        assert "Erased another vault's index" in forgotten.stdout
+
+        # That account holds this vault's index now; the other two still hold
+        # the old one, because each is its own decision.
+        after = sub_cli(sand_bin, root, "sub", "scan")
+        lines = [line for line in after.stdout.splitlines() if line.strip()]
+        for line in lines:
+            if line.startswith("reconnected-0"):
+                assert "this vault" in line, line
+            else:
+                assert "another vault" in line, line
+
+        # And this vault's own index is not something the same command will
+        # delete, whatever it is pointed at.
+        refused = sub_cli(sand_bin, root, "sub", "forget", "reconnected-0", check=False)
+        assert refused.returncode != 0
+        assert "own index" in refused.stdout + refused.stderr
+
 
 # ---------------------------------------------------------------------------
 # Losing the vault file

@@ -323,8 +323,11 @@ func (s *Server) Handler() (http.Handler, error) {
 
 		// Bringing a vault found on an account in as a sub vault, rather than
 		// recovering over this one. Which accounts hold one is already the
-		// recovery scan's answer, above.
-		"POST /api/vaults/import": s.handleVaultImport,
+		// recovery scan's answer, above. The DELETE is the other answer to the
+		// same finding: an old install nobody wants back, whose index would
+		// otherwise be offered on that account forever.
+		"POST /api/vaults/import":             s.handleVaultImport,
+		"DELETE /api/vaults/found/{provider}": s.handleFoundVaultDiscard,
 
 		"GET /api/search": s.handleSearch,
 		"GET /api/files":  s.handleFilesList,

@@ -258,3 +258,23 @@ func (s *Server) handleVaultImport(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, report)
 }
+
+// handleFoundVaultDiscard erases another vault's index from one account, for
+// the found vault nobody wants back.
+//
+// No password is asked for, because none would prove anything: what is being
+// thrown away is unopenable here either way. The session is the authority, the
+// same as it is for deleting a file. What the vault refuses is deleting its own
+// index this way — see DiscardFoundVault.
+func (s *Server) handleFoundVaultDiscard(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := contextWithTimeout(r, time.Minute)
+	defer cancel()
+
+	v, _ := s.Vault()
+	report, err := v.DiscardFoundVault(ctx, r.PathValue("provider"))
+	if err != nil {
+		vaultErrorResponse(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, report)
+}

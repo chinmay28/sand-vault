@@ -1,6 +1,7 @@
 package vault
 
 import (
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -216,5 +217,139 @@ func TestImportRefusesAWrongBackupPassword(t *testing.T) {
 	}
 	if len(subs) != 0 {
 		t.Errorf("a refused import left something behind: %+v", subs)
+	}
+}
+
+// The other answer to what the scan found: the old vault nobody wants back.
+func TestDiscardingAFoundVaultTakesTheAccountOver(t *testing.T) {
+	roots, _ := abandonedVault(t, 3)
+
+	v, _ := newTestVault(t, 3)
+	v.AwaitBackupSync()
+	ids := connect(t, v, roots, "reconnected")
+
+	report, err := v.DiscardFoundVault(t.Context(), ids[0])
+	if err != nil {
+		t.Fatalf("DiscardFoundVault: %v", err)
+	}
+	if report.Account != "reconnected-a" {
+		t.Errorf("Account = %q, want the account it was told to clear", report.Account)
+	}
+	if !report.Claimed {
+		t.Error("replication is on, so this vault's own index should be going there")
+	}
+	v.AwaitBackupSync()
+
+	scan, err := v.ScanForRecovery(t.Context())
+	if err != nil {
+		t.Fatalf("ScanForRecovery: %v", err)
+	}
+	for _, src := range scan.Sources {
+		switch src.ProviderID {
+		case ids[0]:
+			if src.Foreign {
+				t.Error("the discarded index is still being offered")
+			}
+			// The point of taking the account over: the guard that was
+			// refusing it has nothing left to protect, so this vault's own
+			// index goes there like any other account's.
+			if !src.Backup {
+				t.Error("nothing replaced the index that was removed")
+			}
+		case ids[1], ids[2]:
+			// One row, one account. The same old vault's index sits on the
+			// other two, and each is its own decision.
+			if !src.Foreign {
+				t.Errorf("%s stopped offering its index, which nobody asked for", src.Name)
+			}
+		}
+	}
+}
+
+// What is left behind, and where it can be dealt with. The parts of the
+// discarded vault stay on the account — but a foreign index is exactly what
+// makes the orphan scan withhold one, so removing it is what puts that storage
+// in front of somebody with a size on it.
+func TestDiscardingAFoundVaultOffersItsPartsToTheSweep(t *testing.T) {
+	roots, _ := abandonedVault(t, 3)
+
+	v, _ := newTestVault(t, 3)
+	v.AwaitBackupSync()
+	ids := connect(t, v, roots, "reconnected")
+
+	before := orphanScan(t, v)
+	if before.Deletable != 0 {
+		t.Fatalf("%d object(s) were offered while another vault's index was there", before.Deletable)
+	}
+
+	for _, id := range ids {
+		if _, err := v.DiscardFoundVault(t.Context(), id); err != nil {
+			t.Fatalf("DiscardFoundVault: %v", err)
+		}
+	}
+	v.AwaitBackupSync()
+
+	after := orphanScan(t, v)
+	if after.Deletable == 0 {
+		t.Error("the discarded vault's parts are still withheld from the sweep")
+	}
+	for _, item := range after.Items {
+		if !item.Deletable {
+			t.Errorf("a row is still withheld: %s", item.Reason)
+		}
+	}
+}
+
+// The one thing this must never do, because the row it is reached from was
+// drawn from a scan that may have gone stale.
+func TestDiscardRefusesThisVaultsOwnIndex(t *testing.T) {
+	v, _ := newTestVault(t, 3)
+	if _, _, err := v.Upload(t.Context(), MainScope, "/", "mine.txt", []byte("already here"), UploadOptions{}); err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	v.AwaitBackupSync()
+
+	scan, err := v.ScanForRecovery(t.Context())
+	if err != nil {
+		t.Fatalf("ScanForRecovery: %v", err)
+	}
+	own := scan.Sources[0]
+	if !own.Backup || own.Foreign {
+		t.Fatalf("%s is not holding this vault's own index, so there is nothing to refuse", own.Name)
+	}
+
+	if _, err := v.DiscardFoundVault(t.Context(), own.ProviderID); !errors.Is(err, ErrNotForeign) {
+		t.Fatalf("DiscardFoundVault on this vault's own index = %v, want ErrNotForeign", err)
+	}
+
+	// And the refusal left it where it was, which is the whole point: that copy
+	// is what a recovery reads.
+	after, err := v.ScanForRecovery(t.Context())
+	if err != nil {
+		t.Fatalf("ScanForRecovery: %v", err)
+	}
+	if !after.Sources[0].Backup {
+		t.Error("the refused discard deleted this vault's own index anyway")
+	}
+}
+
+// An account holding nothing has nothing to discard, and says so rather than
+// reporting a success it did not have.
+func TestDiscardOnAnAccountWithNoIndex(t *testing.T) {
+	roots, _ := abandonedVault(t, 3)
+
+	v, _ := newTestVault(t, 3)
+	v.AwaitBackupSync()
+	ids := connect(t, v, roots, "reconnected")
+
+	if _, err := v.DiscardFoundVault(t.Context(), ids[0]); err != nil {
+		t.Fatalf("DiscardFoundVault: %v", err)
+	}
+	v.AwaitBackupSync()
+
+	// Twice. The second time the index it was pointed at is this vault's own,
+	// so the refusal is the one that matters most.
+	if _, err := v.DiscardFoundVault(t.Context(), ids[0]); !errors.Is(err, ErrNotForeign) {
+		t.Fatalf("discarding twice = %v, want ErrNotForeign", err)
 	}
 }

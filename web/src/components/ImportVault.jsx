@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { COLORS, FONT } from '../theme'
 import { api } from '../api'
-import { Banner, Button, Input, Modal, PasswordInput, Spinner } from './ui'
+import { Banner, Button, ConfirmDialog, Input, Modal, PasswordInput, Spinner } from './ui'
 
 /* Another vault, found on one of your accounts.
 
@@ -41,15 +41,24 @@ export function useForeignVaults(enabled) {
 }
 
 /* The list, for the settings panel. Absent entirely when nothing was found,
-   which is the ordinary case. */
+   which is the ordinary case.
+
+   Two things can be done with a row, because there are two kinds of old vault.
+   One is worth importing. The other — the install from two machines ago, the
+   cloud reconnected out of tidiness — is not, and without a way to say so its
+   row stands on that account forever, offering to bring back files that were
+   never wanted. Discarding is what says so. */
 export function FoundVaults({ found, scanning, onScan, onImport }) {
+  const [discarding, setDiscarding] = useState(null)
+
   return (
     <div>
       <p style={note}>
         Every vault keeps a copy of its index on each account it uses. If an
         account here holds one that is not this vault’s, it is another vault’s —
         an older install, or the machine you had before — and it can be brought
-        in as a sub vault without replacing anything you have.
+        in as a sub vault without replacing anything you have. One you have no
+        use for can be thrown away instead, which is what 🗑 does.
       </p>
 
       {found.length > 0 && (
@@ -68,10 +77,22 @@ export function FoundVaults({ found, scanning, onScan, onImport }) {
                   holds another vault’s index
                 </span>
               </span>
-              <Button size="sm" onClick={() => onImport(f)}>Import</Button>
+              <span style={{ display: 'flex', gap: '4px', flexShrink: 0 }}>
+                <Button size="sm" onClick={() => onImport(f)}>Import</Button>
+                <Button size="sm" variant="ghost" onClick={() => setDiscarding(f)}
+                  title={`Erase that vault's index from ${f.name}`}>🗑</Button>
+              </span>
             </div>
           ))}
         </div>
+      )}
+
+      {discarding && (
+        <DiscardFoundVault
+          found={discarding}
+          onClose={() => setDiscarding(null)}
+          onDiscarded={() => { setDiscarding(null); onScan() }}
+        />
       )}
 
       <Button size="sm" variant="ghost" onClick={onScan} disabled={scanning}>
@@ -90,6 +111,66 @@ const note = {
   lineHeight: 1.6,
   color: COLORS.textDim,
   margin: '0 0 4px',
+}
+
+/* Throwing away the index of a vault nobody wants back.
+
+   Only the index goes, and that is worth being plain about rather than
+   comfortable: the parts of that vault's files are opaque objects on the
+   account and stay exactly where they are. What changes is that they stop being
+   protected — a foreign index is why the stray-parts sweep withholds an account
+   — so afterwards they can be looked at, priced and agreed to there, which is
+   the honest place for that decision rather than buried in this one.
+
+   It is also one account's copy. A vault replicates its index to every account
+   it used, so another account carrying the same old vault goes on carrying it,
+   and goes on offering it, until it is dealt with too. */
+function DiscardFoundVault({ found, onClose, onDiscarded }) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+
+  const confirm = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      await api.discardFoundVault(found.provider_id)
+      onDiscarded()
+    } catch (err) {
+      setError(err.message)
+      setBusy(false)
+    }
+  }
+
+  return (
+    <ConfirmDialog
+      title={`Forget the vault on ${found.name}?`}
+      subtitle="Its index is erased from that account"
+      confirmLabel="Erase the index"
+      busy={busy}
+      onConfirm={confirm}
+      zIndex={120}
+      onClose={() => !busy && onClose()}
+    >
+      {error && <Banner tone="error">{error}</Banner>}
+      <p style={note}>
+        The copy of that vault’s index on {found.name} is deleted, and it stops
+        being offered here. Nothing in this vault is touched — what is erased
+        cannot be opened by this vault at all.
+      </p>
+      <p style={note}>
+        Its files stay on the account as parts. They become the sweep’s business
+        rather than this one’s: an account holding another vault’s index is
+        withheld from “Parts nothing points at”, and once the index is gone that
+        storage is offered back with a size on it.
+      </p>
+      <p style={note}>
+        Every account that vault used holds a copy of the same index, so any
+        others will keep offering it until they are dealt with too. If those
+        files might still be wanted, import it instead — this is the choice
+        without an undo.
+      </p>
+    </ConfirmDialog>
+  )
 }
 
 /* Two passwords: the old vault's, to open what was found, and the one the sub
