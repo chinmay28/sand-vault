@@ -220,6 +220,16 @@ func (s *Server) handleKitImport(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := contextWithTimeout(r, 15*time.Minute)
 	defer cancel()
 
+	// This route is outside the session by design — the machine it runs on has
+	// no vault to have a session with — which means that for the whole of the
+	// import the idle sweep counts zero sessions and would lock the vault the
+	// import has just created, one tick in. The vault refuses to lose its keys
+	// mid-import either way (vault.holdKeys), but the sweep should not be
+	// trying: this counts as use for exactly as long as the import runs, the
+	// same way a sweep or a mounted share does.
+	s.noteExternalActivity()
+	defer s.noteExternalActivity()
+
 	v, err := s.Vault()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error(), "VAULT_ERROR")
