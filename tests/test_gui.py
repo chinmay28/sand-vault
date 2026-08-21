@@ -2822,6 +2822,96 @@ class TestSubVaultUnlock:
             0, timeout=20000)
 
 
+class TestSubVaultVisibility:
+    """Which sub vaults are drawn at the top of the vault, one at a time.
+
+    Showing them was one answer for all of them, and that is not how anybody
+    holds them: the sub vault you want in front of you at the root — the one
+    you are working out of this week — is rarely the one you would rather
+    nobody standing behind you saw named on screen. Each row carries its own
+    tick, the box underneath answers for the ones nothing has been said about,
+    and the whole of it is a preference of this browser: nothing here unlocks
+    anything, and nothing here puts a sub vault on a mounted drive.
+    """
+
+    def test_one_can_be_shown_while_another_stays_out_of_sight(self, app):
+        make_sub_vault(app, "seen-vault", "seen-vault-passphrase")
+        app.locator('button[aria-label="Back"]').click()
+        app.wait_for_selector("text=▣ /", timeout=20000)
+
+        make_sub_vault(app, "unseen-vault", "unseen-vault-passphrase")
+        app.locator('button[aria-label="Back"]').click()
+        app.wait_for_selector("text=▣ /", timeout=20000)
+
+        # Nothing is drawn at the root until it is asked for, which is where
+        # this starts: a fresh browser has said nothing about either of them.
+        expect(app.get_by_title("Open seen-vault")).to_have_count(0, timeout=20000)
+        expect(app.get_by_title("Open unseen-vault")).to_have_count(0)
+
+        # One tick, on one row.
+        panel = open_sub_vaults_panel(app)
+        panel.get_by_label("Show seen-vault at the top of the vault").check()
+        app.keyboard.press("Escape")
+        panel.wait_for(state="detached", timeout=20000)
+        close_vault_settings(app)
+
+        # And that one is on screen while its sibling is not, which is the
+        # whole of what a per-sub-vault tick is for.
+        expect(app.get_by_title("Open seen-vault")).to_be_visible(timeout=20000)
+        expect(app.get_by_title("Open unseen-vault")).to_have_count(0)
+
+        # It is a preference of this browser rather than a thing the app is
+        # holding in memory, so a reload is the only proof it was written down.
+        app.reload()
+        app.wait_for_selector("text=Connected clouds", timeout=20000)
+        expect(app.get_by_title("Open seen-vault")).to_be_visible(timeout=20000)
+        expect(app.get_by_title("Open unseen-vault")).to_have_count(0)
+
+    def test_the_box_underneath_answers_for_all_of_them(self, app):
+        make_sub_vault(app, "blanket-vault", "blanket-vault-passphrase")
+        app.locator('button[aria-label="Back"]').click()
+        app.wait_for_selector("text=▣ /", timeout=20000)
+
+        make_sub_vault(app, "blanket-other", "blanket-other-passphrase")
+        app.locator('button[aria-label="Back"]').click()
+        app.wait_for_selector("text=▣ /", timeout=20000)
+
+        panel = open_sub_vaults_panel(app)
+        blanket = panel.get_by_label(
+            "Show them at the top of the vault, locked ones included")
+        panel.get_by_label("Show blanket-vault at the top of the vault").check()
+
+        # One of several ticked is neither yes nor no, and the box says so
+        # rather than sitting empty over a sub vault that is on screen.
+        assert blanket.evaluate("box => box.indeterminate"), (
+            "the box that answers for all of them reads as a flat no while one "
+            "of them is ticked — an unticked box over a sub vault that is "
+            "drawn at the root")
+
+        # Clicking it out of that state is an answer for the lot.
+        blanket.check()
+        assert not blanket.evaluate("box => box.indeterminate")
+        app.keyboard.press("Escape")
+        panel.wait_for(state="detached", timeout=20000)
+        close_vault_settings(app)
+
+        expect(app.get_by_title("Open blanket-vault")).to_be_visible(timeout=20000)
+        expect(app.get_by_title("Open blanket-other")).to_be_visible(timeout=20000)
+
+        # And unticking it takes them all back off, individual ticks included:
+        # a box saying "all of them" over a list where one is still crossed out
+        # would be answering a question nobody asked.
+        panel = open_sub_vaults_panel(app)
+        panel.get_by_label(
+            "Show them at the top of the vault, locked ones included").uncheck()
+        app.keyboard.press("Escape")
+        panel.wait_for(state="detached", timeout=20000)
+        close_vault_settings(app)
+
+        expect(app.get_by_title("Open blanket-vault")).to_have_count(0, timeout=20000)
+        expect(app.get_by_title("Open blanket-other")).to_have_count(0)
+
+
 class TestWiderSchemes:
     """Six clouds and nine are the same choice as three, made wider.
 

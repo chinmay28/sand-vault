@@ -27,7 +27,7 @@ const TILE_MIN_PX = { mobile: 108, desktop: 132 }
 
 export default function FileBrowser({
   nav, listing, loading, error, providers, defaultAccounts, defaultScheme, mobile,
-  subVaults = [], showSubVaults = false, onOpenSubVault,
+  subVaults = [], shownSubVaults = [], onOpenSubVault,
   onRefresh, onPreview, onInspect, onFilm, onError,
 }) {
   const [dragging, setDragging] = useState(false)
@@ -654,14 +654,19 @@ export default function FileBrowser({
           </div>
         ))}
 
-        {/* At the top of the main vault, and only when asked for: the vaults
-            inside this one, locked ones included. They sit above the folders
-            rather than among them, because they are not folders — a bulk
-            delete must not be able to sweep one up, and a row that behaved
-            like a folder would suggest it could be opened by being clicked. */}
-        {showSubVaults && !searchTerm && vault === '' && path === '/' && subVaults.length > 0 && (
+        {/* At the top of the main vault, and only the ones asked for: the
+            vaults inside this one, locked ones included. Which ones is a
+            per-sub-vault setting in the sub vaults panel, so this is handed
+            the drawable ones rather than the whole list and a flag — the rest
+            of this component still needs every sub vault, to name the one
+            being stood in and to offer the open ones as move targets. They sit
+            above the folders rather than among them, because they are not
+            folders — a bulk delete must not be able to sweep one up, and a row
+            that behaved like a folder would suggest it could be opened by
+            being clicked. */}
+        {!searchTerm && vault === '' && path === '/' && shownSubVaults.length > 0 && (
           <SubVaultStrip
-            subVaults={subVaults}
+            subVaults={shownSubVaults}
             mobile={mobile}
             onOpen={onOpenSubVault}
           />
@@ -1168,7 +1173,8 @@ function NewFolderModal({ path, vault, onClose, onCreated }) {
    A locked one is still listed. That is the point of showing them at all: you
    are meant to see that there is a place called Taxes and be asked for a
    password, rather than have it be invisible until you remember to go looking
-   in settings. */
+   in settings. Which ones get here at all is settled before this — a sub vault
+   left unticked in the panel is not passed in. */
 function SubVaultStrip({ subVaults, mobile, onOpen }) {
   return (
     <div style={{ marginBottom: '14px' }}>
