@@ -2,9 +2,10 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { COLORS, FONT, formatBytes, isPlayable } from '../theme'
 import { api, joinPath } from '../api'
 import { sortFiles, sortFolders, sortHits, useViewPrefs } from '../view'
-import { Banner, Button, Empty, Modal, Spinner } from './ui'
+import { ActionSheet, Banner, Button, Empty, Modal, Spinner } from './ui'
 import { UploadDestination, RelocateClouds } from './CloudSelect'
 import { makeThumbnail } from '../thumbs'
+import { describePicks, emptyDirs, picksFromDrop, picksFromInput } from '../upload'
 import {
   COLUMNS, FILM_COLUMNS, TILE_POSTER, TILE_SQUARE,
   FileRow, FileTile, FolderRow, FolderTile, SelectBox,
@@ -61,6 +62,17 @@ export default function FileBrowser({
      hundred subtitle files that are scattered over forty folders. */
   const [deeper, setDeeper] = useState([])
   const fileInput = useRef(null)
+  /* A second input, because `webkitdirectory` is a property of the input and
+     not of the click: an input can ask for files or for a folder, never for
+     whichever the person turns out to want. */
+  const dirInput = useRef(null)
+  /* Which of the two the Upload button should open. Asked rather than guessed:
+     both are ordinary things to want, and only one dialog can be opened. */
+  const [choosing, setChoosing] = useState(false)
+  /* Walking a dropped folder takes a moment on a large tree, and it happens
+     before the destination dialog can open, so the drop needs something to say
+     for itself in the meantime. */
+  const [reading, setReading] = useState(false)
   const dragDepth = useRef(0)
   // Where the last tick was put, so a shift-click has a range to reach back to.
   const anchor = useRef(null)
@@ -324,20 +336,37 @@ export default function FileBrowser({
     return () => window.removeEventListener('keydown', onKey)
   }, [nav])
 
-  /* Files are held here until the clouds they are going to have been settled.
-     Nothing is read or sent in the meantime — the picker is between choosing
-     files and uploading them, not a step inside the upload. */
-  const chooseFiles = useCallback((files) => {
-    if (!files.length) return
+  /* What was chosen is held here until the clouds it is going to have been
+     settled. Nothing is read or sent in the meantime — the picker is between
+     choosing and uploading, not a step inside the upload.
+
+     A choice is files each with the path it had inside whatever was picked, so
+     a folder can be rebuilt on the other side rather than tipped out flat; see
+     upload.js. */
+  const choosePicks = useCallback((picks) => {
+    /* A folder with nothing in it is not an upload — no bytes, no clouds, no
+       choice to make about where its parts go. It is a folder, so it is made
+       rather than put through the picker and refused there for having no
+       files. */
+    if (!picks.files.length) {
+      if (!picks.dirs.length) return
+      Promise.all(picks.dirs.map((dir) => api.createFolder(joinPath(path, dir), vault)))
+        .then(onRefresh)
+        .catch((err) => onError(err.message))
+      return
+    }
     if (!canUpload) {
       onError('Connect a cloud account before uploading — there is nowhere to put the parts yet.')
       return
     }
-    setPending(files)
-  }, [canUpload, onError])
+    setPending(picks)
+  }, [canUpload, onError, onRefresh, path, vault])
 
-  const uploadFiles = useCallback(async (files, accounts, scheme = '') => {
-    const batch = { id: Math.random().toString(36).slice(2), names: [...files].map((f) => f.name), progress: 0 }
+  const uploadFiles = useCallback(async (picks, accounts, scheme = '') => {
+    const { files } = picks
+    // What is going up, said the way it was chosen: one file by its name, a
+    // folder by the folder rather than by the four hundred files inside it.
+    const batch = { id: Math.random().toString(36).slice(2), label: describePicks(picks), progress: 0 }
     setUploads((prev) => [...prev, batch])
 
     try {
@@ -345,13 +374,15 @@ export default function FileBrowser({
          plaintext file exists in a browser. Each one resolves to null rather
          than throwing, so a format we cannot draw never holds up its upload. */
       const thumbnails = await Promise.all(
-        [...files].map((file) => makeThumbnail(file, file.type, file.name)))
+        files.map(({ file }) => makeThumbnail(file, file.type, file.name)))
 
       const resp = await api.upload(files, path, {
         vault,
         accounts,
         scheme,
         thumbs: thumbnails,
+        // Only the folders that no file's own path already names.
+        dirs: emptyDirs(picks),
         onProgress: (fraction) => setUploads((prev) =>
           prev.map((u) => (u.id === batch.id ? { ...u, progress: fraction } : u))),
       })
@@ -382,11 +413,19 @@ export default function FileBrowser({
     dragDepth.current -= 1
     if (dragDepth.current <= 0) { dragDepth.current = 0; setDragging(false) }
   }
+  /* A drop may be a folder, and only the entries API can say so or look inside
+     one — which it will only do while the drop event is still on the stack, so
+     the reading starts here rather than after an await. */
   const onDrop = (e) => {
     e.preventDefault()
     dragDepth.current = 0
     setDragging(false)
-    chooseFiles(Array.from(e.dataTransfer.files || []))
+    const walking = picksFromDrop(e.dataTransfer)
+    setReading(true)
+    walking
+      .then(choosePicks)
+      .catch((err) => onError(err.message))
+      .finally(() => setReading(false))
   }
 
   const listProps = {
@@ -451,7 +490,7 @@ export default function FileBrowser({
             onSelecting={stopSelecting}
             onSearch={() => setSearchOpen(true)}
             onNewFolder={() => setCreatingFolder(true)}
-            onUpload={() => fileInput.current?.click()}
+            onUpload={() => setChoosing(true)}
             /* Onto the strip under the heading, with the other controls that
                say how this folder is read rather than what is in it. Lit when
                the folder is opted in, since a folder that talks to a third
@@ -514,19 +553,31 @@ export default function FileBrowser({
                 onChange={setQuery}
               />
               <Button size="sm" onClick={() => setCreatingFolder(true)}>+ Folder</Button>
-              <Button size="sm" variant="primary" onClick={() => fileInput.current?.click()} disabled={!canUpload}>
+              <Button size="sm" variant="primary" onClick={() => setChoosing(true)} disabled={!canUpload}>
                 ↑ Upload
               </Button>
             </div>
           </>
         )}
 
+        {/* Two inputs rather than one, because whether an input asks for files
+            or for a folder is a property of the input and not of the click. */}
         <input
           ref={fileInput}
           type="file"
           multiple
           style={{ display: 'none' }}
-          onChange={(e) => { chooseFiles(Array.from(e.target.files || [])); e.target.value = '' }}
+          onChange={(e) => { choosePicks(picksFromInput(e.target.files)); e.target.value = '' }}
+        />
+        <input
+          ref={dirInput}
+          type="file"
+          multiple
+          /* Still prefixed in every browser that has it, Firefox and Safari
+             included, and still the only way to ask for a folder. */
+          webkitdirectory=""
+          style={{ display: 'none' }}
+          onChange={(e) => { choosePicks(picksFromInput(e.target.files)); e.target.value = '' }}
         />
       </div>
 
@@ -565,6 +616,14 @@ export default function FileBrowser({
           </Banner>
         )}
 
+        {reading && (
+          <Banner tone="info">
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
+              <Spinner size={11} /> Reading the folder — nothing has left the machine yet.
+            </span>
+          </Banner>
+        )}
+
         {uploads.map((upload) => (
           <div key={upload.id} style={{
             padding: '11px 13px',
@@ -578,7 +637,7 @@ export default function FileBrowser({
               fontFamily: FONT.mono, fontSize: '11px', color: COLORS.textDim, marginBottom: '8px',
             }}>
               <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {upload.names.length === 1 ? upload.names[0] : `${upload.names.length} files`}
+                {upload.label}
               </span>
               <span>{upload.progress >= 1
                 ? 'splitting, encrypting and scattering…'
@@ -625,11 +684,11 @@ export default function FileBrowser({
         ) : entries.length === 0 ? (
           <Empty icon="◇" title={path === '/' ? 'Nothing stored yet' : 'This folder is empty'}>
             {canUpload
-              ? 'Drop files anywhere in this pane, or use Upload. Each file is compressed, split into three encrypted parts, and each part goes to a different cloud account.'
+              ? 'Drop files or a whole folder anywhere in this pane, or use Upload. A folder keeps its shape; each file inside it is compressed, split into three encrypted parts, and each part goes to a different cloud account.'
               : 'Connect at least two cloud accounts first — SAND needs somewhere separate to put each part of a file.'}
             {canUpload && (
               <div style={{ marginTop: '16px' }}>
-                <Button variant="primary" size="sm" onClick={() => fileInput.current?.click()}>↑ Choose files</Button>
+                <Button variant="primary" size="sm" onClick={() => setChoosing(true)}>↑ Choose files or a folder</Button>
               </div>
             )}
           </Empty>
@@ -654,15 +713,42 @@ export default function FileBrowser({
           <div style={{ textAlign: 'center', padding: '0 20px', fontFamily: FONT.mono, color: COLORS.accentBright }}>
             <div style={{ fontSize: '30px', marginBottom: '10px' }}>↓</div>
             <div style={{ fontSize: '13px', wordBreak: 'break-word' }}>
-              Drop to split, encrypt and scatter into {path}
+              Drop files or a folder to split, encrypt and scatter into {path}
             </div>
           </div>
         </div>
       )}
 
+      {choosing && (
+        <ActionSheet
+          title="Upload into this folder"
+          subtitle={`Whatever you pick is compressed, split and scattered into ${path === '/' ? 'the vault' : path}. A folder arrives as a folder, with everything inside it in the place it was.`}
+          onClose={() => setChoosing(false)}
+          items={[
+            {
+              key: 'files',
+              glyph: '🗎',
+              label: 'Files',
+              hint: 'One or several, picked by hand',
+              /* Opened from inside the click that chose it, because a file
+                 dialog only opens while the click that asked for it is still
+                 being handled. The sheet closes itself afterwards. */
+              onSelect: () => fileInput.current?.click(),
+            },
+            {
+              key: 'folder',
+              glyph: '🗀',
+              label: 'Folder',
+              hint: 'Everything inside it, however deep, keeping its shape',
+              onSelect: () => dirInput.current?.click(),
+            },
+          ]}
+        />
+      )}
+
       {pending && (
         <UploadDestination
-          files={pending}
+          picks={pending}
           path={path}
           providers={providers}
           defaults={defaultAccounts}

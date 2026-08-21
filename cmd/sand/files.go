@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
@@ -177,9 +178,15 @@ func putCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "put <file>...",
-		Short: "Upload files into the vault",
-		Args:  cobra.MinimumNArgs(1),
+		Use:   "put <path>...",
+		Short: "Upload files or whole folders into the vault",
+		Long: `Upload files or whole folders into the vault.
+
+A folder goes up as a folder: everything under it is uploaded, however deep,
+and lands under a folder of the same name inside --path. Each file in it is
+still compressed, split and scattered on its own, so a folder is a convenience
+here and not a different kind of thing in the vault.`,
+		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			v, scope, err := openVaultIn(cmd)
 			if err != nil {
@@ -196,37 +203,143 @@ func putCmd() *cobra.Command {
 				return err
 			}
 
-			ctx := context.Background()
-			for _, path := range args {
-				data, err := os.ReadFile(path)
-				if err != nil {
-					return fmt.Errorf("reading %s: %w", path, err)
-				}
+			opts := vault.UploadOptions{Overwrite: overwrite, Accounts: chosen, Scheme: cut}
 
-				entry, warnings, err := v.Upload(ctx, scope, dest, filepath.Base(path), data, vault.UploadOptions{
-					Overwrite: overwrite,
-					Accounts:  chosen,
-					Scheme:    cut,
-				})
+			ctx := context.Background()
+			for _, arg := range args {
+				info, err := os.Stat(arg)
 				if err != nil {
-					return fmt.Errorf("uploading %s: %w", path, err)
+					return fmt.Errorf("reading %s: %w", arg, err)
 				}
-				for _, warning := range warnings {
-					fmt.Fprintf(os.Stderr, "warning: %s\n", warning)
+				if info.IsDir() {
+					if err := putTree(ctx, v, scope, dest, arg, opts); err != nil {
+						return err
+					}
+					continue
 				}
-				fmt.Printf("%s → %s  [%s]\n", path, entry.Path(), describeSpread(entry))
+				if err := putFile(ctx, v, scope, dest, arg, opts); err != nil {
+					return err
+				}
 			}
 			return nil
 		},
 	}
 
-	cmd.Flags().StringVar(&dest, "path", "/", "destination folder inside the vault")
+	cmd.Flags().StringVar(&dest, "path", "/", "destination folder inside the vault — a named folder lands under it")
 	cmd.Flags().BoolVar(&overwrite, "overwrite", false, "replace an existing file with the same name")
 	cmd.Flags().StringSliceVar(&accounts, "accounts", nil,
 		"accounts to scatter these files over, by name or id (default: the vault's, or three at random)")
 	cmd.Flags().StringVar(&scheme, "scheme", "",
 		"the code to cut with, k-of-n — 3-of-5, 6-of-10 (default: 2m-of-3m, from how many accounts were named)")
 	return cmd
+}
+
+// putFile uploads one file and says where it landed.
+//
+// Streamed from disk rather than read into memory first: a folder of films is
+// exactly the thing this command is now asked to take, and reading each one
+// whole would cost its size in RAM on a machine that may be a Raspberry Pi.
+func putFile(ctx context.Context, v *vault.Vault, scope vault.Scope, dir, source string, opts vault.UploadOptions) error {
+	f, err := os.Open(source)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", source, err)
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", source, err)
+	}
+
+	entry, warnings, err := v.UploadStreamAt(ctx, scope, dir, filepath.Base(source), f, info.Size(), opts)
+	if err != nil {
+		return fmt.Errorf("uploading %s: %w", source, err)
+	}
+	for _, warning := range warnings {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", warning)
+	}
+	fmt.Printf("%s → %s  [%s]\n", source, entry.Path(), describeSpread(entry))
+	return nil
+}
+
+// putTree uploads a folder and everything under it, keeping its shape.
+//
+// The folder itself is kept: putting ./photos into / gives /photos, not the
+// contents of photos strewn across the root. Empty folders are made too — a
+// folder that arrives with its empty corners missing is not the folder that was
+// uploaded.
+//
+// Symlinks are not followed. WalkDir does not follow them by default, and that
+// is the behaviour to want here: a link pointing back up its own tree would
+// otherwise be uploaded forever, and a link out of the tree would quietly put
+// somebody's home directory in the vault.
+func putTree(ctx context.Context, v *vault.Vault, scope vault.Scope, dir, source string, opts vault.UploadOptions) error {
+	label, err := folderName(source)
+	if err != nil {
+		return err
+	}
+	root := vault.JoinPath(vault.CleanDir(dir), label)
+
+	// The walk starts at what the path points at rather than at the path, so
+	// naming a symlinked folder uploads the folder instead of reporting that a
+	// symlink is not a regular file. Links found inside it are still left
+	// alone — this resolves the one the person named, nothing more.
+	walk := source
+	if resolved, err := filepath.EvalSymlinks(source); err == nil {
+		walk = resolved
+	}
+
+	return filepath.WalkDir(walk, func(name string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", name, err)
+		}
+
+		rel, err := filepath.Rel(walk, name)
+		if err != nil {
+			return err
+		}
+		target := root
+		if rel != "." {
+			for _, segment := range strings.Split(filepath.ToSlash(rel), "/") {
+				target = vault.JoinPath(target, segment)
+			}
+		}
+
+		if entry.IsDir() {
+			// Made on the way down, so the files inside it have somewhere to go
+			// and so a folder holding nothing still arrives.
+			if err := v.Mkdir(scope, target); err != nil {
+				return fmt.Errorf("making %s: %w", target, err)
+			}
+			return nil
+		}
+		if !entry.Type().IsRegular() {
+			fmt.Fprintf(os.Stderr, "skipping %s: not a regular file\n", name)
+			return nil
+		}
+		return putFile(ctx, v, scope, path.Dir(target), name, opts)
+	})
+}
+
+// folderName is what an uploaded folder is called in the vault. Normally the
+// last part of the path given, but "." and ".." and a bare separator name a
+// folder without saying its name, so those are resolved against where the
+// command is being run from before the name is taken.
+func folderName(source string) (string, error) {
+	name := filepath.Base(filepath.Clean(source))
+	if name != "." && name != ".." && name != string(os.PathSeparator) {
+		return name, nil
+	}
+
+	full, err := filepath.Abs(source)
+	if err != nil {
+		return "", fmt.Errorf("reading %s: %w", source, err)
+	}
+	name = filepath.Base(full)
+	if name == string(os.PathSeparator) {
+		return "", fmt.Errorf("%s is the whole filesystem — name a folder to upload", source)
+	}
+	return name, nil
 }
 
 // parseSchemeFlag reads a --scheme value. Empty is not a malformed scheme but

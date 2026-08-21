@@ -951,3 +951,25 @@ func TestUpdateProviderDoesNotStrandACredentialSpentOnARefusedEdit(t *testing.T)
 		t.Errorf("token = %q, want the one the check left behind", got)
 	}
 }
+
+// A folder is made whole or not at all.
+//
+// Mkdir builds a path a segment at a time, and the segment that fails need not
+// be the first: everything above it is perfectly makeable. Keeping those anyway
+// would leave folders in the index that nobody asked for and no error
+// mentioned, waiting for the next write to persist them.
+func TestMkdirKeepsNothingWhenPartOfThePathFails(t *testing.T) {
+	v, _ := newTestVault(t, 3)
+
+	if err := v.Mkdir(MainScope, "/photos/2024/summer\x00"); err == nil {
+		t.Fatal("made a folder with an impossible name in it")
+	}
+
+	folders, err := v.Folders(MainScope)
+	if err != nil {
+		t.Fatalf("Folders: %v", err)
+	}
+	if len(folders) != 1 || folders[0] != "/" {
+		t.Errorf("folders = %v, want just the root — a failed Mkdir kept part of its path", folders)
+	}
+}

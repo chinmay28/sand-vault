@@ -632,19 +632,30 @@ export const api = {
     request(`/api/files/${encodeURIComponent(id)}/movie`, { method: 'DELETE' }),
 
   /* Uploads go through XMLHttpRequest rather than fetch so the UI can show
-     real progress while a large file is being split and scattered. */
-  upload(files, path, {
-    overwrite = false, accounts = [], scheme = '', thumbs = [], vault = '', onProgress,
+     real progress while a large file is being split and scattered.
+
+     `picks` is what was chosen — see upload.js. Each file carries the path it
+     had inside the folder it came from, which is what lets a directory arrive
+     as a directory rather than as its files in a heap; `dirs` names the folders
+     of that directory that hold no file of their own. A file picked on its own
+     has a path that is just its name and needs neither. */
+  upload(picks, path, {
+    overwrite = false, accounts = [], scheme = '', thumbs = [], dirs = [], vault = '', onProgress,
   } = {}) {
     return new Promise((resolve, reject) => {
       const form = new FormData()
-      Array.from(files).forEach((file, i) => {
+      picks.forEach(({ file, path: rel }, i) => {
         form.append('files[]', file)
         /* Named for the file's position rather than its name: two files
            dropped together can share a name, and only some of them will have
-           a picture at all. */
+           a picture at all. The path inside the folder is named the same way
+           and for the same reason — twice over, since a dropped folder is
+           where two files sharing a name is ordinary rather than unlucky. */
+        if (rel && rel !== file.name) form.append(`rel-${i}`, rel)
         if (thumbs[i]) form.append(`thumb-${i}`, thumbs[i], 'thumb.jpg')
       })
+      // The corners of the tree no file would make on the way past.
+      for (const dir of dirs) form.append('dirs', dir)
       form.append('path', path)
       form.append('overwrite', String(overwrite))
       /* One field per account rather than a joined string: the server accepts

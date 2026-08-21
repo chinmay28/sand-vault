@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { COLORS, FONT, KIND_ICONS, accountColor, formatBytes } from '../theme'
 import { api } from '../api'
 import { Banner, Button, Modal, Spinner } from './ui'
+import { describePicks, totalBytes } from '../upload'
 
 /* Choosing where a file's shards go, and how it is cut.
 
@@ -423,11 +424,15 @@ function SelectionNote({ providers, selected, scheme, moving = false }) {
   )
 }
 
-/* The dialog every upload passes through: which files are going up, which three
-   clouds they are being scattered over, and the chance to change that before a
-   single byte leaves the machine. */
+/* The dialog every upload passes through: what is going up, which three clouds
+   it is being scattered over, and the chance to change that before a single
+   byte leaves the machine.
+
+   `picks` is what was chosen rather than a list of files — see upload.js — so a
+   folder can be named as the folder it is instead of as the four hundred files
+   inside it. */
 export function UploadDestination({
-  files, path, providers, defaults, defaultScheme, onUpload, onClose, onChanged,
+  picks, path, providers, defaults, defaultScheme, onUpload, onClose, onChanged,
 }) {
   const [selected, setSelected] = useState(() => initialSelection(providers, defaults))
   // The vault's own default is where the threshold starts, so an upload that
@@ -456,8 +461,11 @@ export function UploadDestination({
     return set.size > 0 && selected.length === set.size && selected.every((id) => set.has(id))
   }, [defaults, selected])
 
-  const names = files.map((f) => f.name)
-  const total = files.reduce((sum, f) => sum + f.size, 0)
+  const what = describePicks(picks)
+  const total = totalBytes(picks)
+  // A folder is worth counting the files of; a handful picked by hand is
+  // already counted by the heading.
+  const nested = picks.files.filter(({ path: rel }) => rel.includes('/')).length
 
   const submit = async () => {
     setBusy(true)
@@ -478,8 +486,9 @@ export function UploadDestination({
 
   return (
     <Modal
-      title={names.length === 1 ? `Upload ${names[0]}` : `Upload ${names.length} files`}
-      subtitle={`${formatBytes(total)} into ${path} — cut ${
+      title={`Upload ${what}`}
+      subtitle={`${nested ? `${nested} file${nested === 1 ? '' : 's'} · ` : ''}${
+        formatBytes(total)} into ${path} — cut ${
         schemeName(scheme) || 'across the chosen clouds'
       }, one encrypted shard per cloud`}
       onClose={busy ? undefined : onClose}

@@ -2146,7 +2146,7 @@ reveals only whether a vault exists.
 | DELETE | `/api/providers/{id}` | Disconnect (`?force=1` to override the guard) |
 | GET | `/api/files?path=` | List a folder (`&vault=` for a sub vault; absent is the main one) |
 | GET | `/api/search?q=` | Find files and folders by name (`&path=` scopes to a subtree, `&vault=`, `&type=file\|folder`, `&limit=`) |
-| POST | `/api/files` | Upload (multipart `files[]`, `path`, `overwrite`, `accounts`) |
+| POST | `/api/files` | Upload (multipart `files[]`, `path`, `overwrite`, `accounts`). A whole folder goes up as its files, each with the path it had inside it under `rel-N`, plus `dirs` for the folders holding no file; the tree is rebuilt under `path` and every segment is checked as a typed name is |
 | GET | `/api/files/{id}` | Metadata including part placement |
 | GET | `/api/files/{id}/content` | **Serve at an offset** through `ChunkedReader` (`?download=1` to save) |
 | GET | `/api/conversions` | Files still in the pre-chunking format |
@@ -2203,6 +2203,11 @@ dropping twelve files onto the browser and having one fail is normal:
 }
 ```
 
+`name` is the path a file had inside an uploaded folder rather than its leaf, so
+a tree with four `cover.jpg` in it produces four distinguishable lines. A folder
+that cannot be made is a result of its own, on the same footing: the files under
+it then fail one by one, which is what says how much of the directory arrived.
+
 Deletes behave the same way: an unreachable account produces a warning, and the
 index entry is dropped regardless, so a dead provider cannot pin a file in the
 browser forever.
@@ -2214,8 +2219,8 @@ browser forever.
 ```
 
 `LOCKED · WRONG_PASSWORD · NO_VAULT · NOT_FOUND · CROSS_ORIGIN · VAULT_ERROR ·
-PARSE_ERROR · MISSING_FILE · NEEDS_CONVERSION · NO_MOVIE_KEY · BAD_MOVIE_KEY ·
-MOVIE_LOOKUP_OFF`
+PARSE_ERROR · MISSING_FILE · BAD_PATH · NEEDS_CONVERSION · NO_MOVIE_KEY ·
+BAD_MOVIE_KEY · MOVIE_LOOKUP_OFF`
 
 ### 9.4 The WebDAV share
 
