@@ -115,6 +115,15 @@ type Vault struct {
 	// find another vault's copy on every account. See holdBackups.
 	backupHold bool
 
+	// keyHold counts the operations that would be destroyed by losing the keys
+	// half way through, and lockWanted remembers a Lock that arrived while one
+	// was running. See holdKeys.
+	//
+	// Guarded by mu, because the whole point is that it is consulted by Lock
+	// under the same lock that does the zeroing.
+	keyHold    int
+	lockWanted bool
+
 	// backupChecked remembers the accounts already known to hold this vault's
 	// own backup, so the guard against clobbering another vault's copy costs
 	// one read per account per unlock rather than one per push.
@@ -457,10 +466,66 @@ func (v *Vault) VerifyPassword(password string) error {
 }
 
 // Lock discards the in-memory keys and decrypted index.
+//
+// A lock that lands while a held operation is running is remembered rather than
+// performed — see holdKeys. It is never simply dropped: the request stands, and
+// releaseKeys carries it out the moment the operation ends.
 func (v *Vault) Lock() {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
+	if v.keyHold > 0 {
+		v.lockWanted = true
+		return
+	}
+	v.lockLocked()
+}
+
+// holdKeys marks the start of an operation that must not lose the keys under
+// it, and returns the release.
+//
+// The case this exists for is a kit import. It unlocks the vault in phase 1 and
+// spends the next several minutes out at the accounts before phase 3 installs
+// the index, and for the whole of that window nothing is holding the vault
+// open: the browser has no session yet — the import is what issues one — so the
+// server's idle sweep counts zero sessions and locks on its next tick, one
+// minute in. Phase 3 then finds no data key and the import dies.
+//
+// What that left on disk was the worst shape available: a vault under the new
+// password with every account restored and not one file in it, which reads to
+// the person in front of it as a recovery that lost their files.
+//
+// A pending lock is honoured on release, so this delays the idle sweep rather
+// than defeating it.
+func (v *Vault) holdKeys() func() {
+	v.mu.Lock()
+	v.keyHold++
+	v.mu.Unlock()
+
+	var once sync.Once
+	return func() { once.Do(v.releaseKeys) }
+}
+
+// releaseKeys ends one hold, performing a lock that arrived while it was on.
+func (v *Vault) releaseKeys() {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	if v.keyHold > 0 {
+		v.keyHold--
+	}
+	if v.keyHold > 0 || !v.lockWanted {
+		return
+	}
+	v.lockWanted = false
+	if v.dataKey == nil && v.vaultKey == nil {
+		return
+	}
+	v.lockLocked()
+}
+
+// lockLocked is Lock's body, with mu already held.
+func (v *Vault) lockLocked() {
 	// Last chance to save what has been counted: the key it is sealed under is
 	// about to be wiped along with everything else.
 	v.flushReadHistoryLocked()

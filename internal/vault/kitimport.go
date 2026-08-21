@@ -235,6 +235,14 @@ func (v *Vault) ImportKit(ctx context.Context, kit *Kit, opts KitImportOptions) 
 	v.holdBackups()
 	defer v.releaseBackups()
 
+	// Phase 1 unlocks this vault and phase 3 is what puts the files in it, and
+	// between them sit the accounts — minutes of them on a fresh install. The
+	// keys have to survive that. Nothing is holding the vault open in that
+	// window otherwise: the browser has no session until this returns and
+	// issues one, so the server's idle sweep sees no sessions at all and locks
+	// on its next tick. See holdKeys.
+	defer v.holdKeys()()
+
 	// --- Phase 1: mint the vault, adopt the kit's keys ----------------------
 	if err := v.adoptKit(kit, opts.Password); err != nil {
 		return nil, err
