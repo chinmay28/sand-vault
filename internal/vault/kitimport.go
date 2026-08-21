@@ -47,6 +47,32 @@ const (
 	KitAccountUnreachable = "unreachable"
 )
 
+// What would put a failed account right. The status says what is wrong; this
+// says which door to open, because they are not the same question and the
+// browser should not have to infer one from the other.
+//
+// A Dropbox account whose consent was revoked and an S3 bucket whose keys were
+// rotated both fail authentication, and the repairs share no steps: one is a
+// trip through somebody's consent screen, the other is a form. Only the backend
+// knows which, so the backend is asked.
+const (
+	// KitRepairSignIn sends the account back through its provider's consent
+	// screen, reusing the OAuth app the kit carried.
+	KitRepairSignIn = "sign_in"
+
+	// KitRepairSettings is the form: rotated keys, a moved bucket, a WebDAV
+	// password that changed.
+	KitRepairSettings = "settings"
+
+	// KitRepairPath is a folder that is not on this machine, which is what a
+	// fresh install usually means for a synced-folder account.
+	KitRepairPath = "path"
+
+	// KitRepairRetry is for an account with nothing to fix — the network, the
+	// service, or the machine was simply down.
+	KitRepairRetry = "retry"
+)
+
 // KitAccountResult is one account as the import left it.
 type KitAccountResult struct {
 	ID     string `json:"id"`
@@ -61,6 +87,10 @@ type KitAccountResult struct {
 	// PathOption names the setting a re-point would change, so the browser can
 	// offer a folder picker without knowing anything about backends.
 	PathOption string `json:"path_option,omitempty"`
+
+	// Repair is which door to open: sign_in, settings, path or retry. Empty on
+	// an account that connected.
+	Repair string `json:"repair,omitempty"`
 }
 
 // KitImportReport describes what an import did, or would do.
@@ -427,6 +457,7 @@ func (v *Vault) restoreKitAccounts(ctx context.Context, kit *Kit) []KitAccountRe
 		go func(i int, cfg provider.Config) {
 			defer wg.Done()
 			results[i].Status, results[i].Detail, results[i].PathOption = v.probeRestored(ctx, cfg)
+			results[i].Repair = repairFor(cfg, results[i].Status)
 		}(i, cfg)
 	}
 	wg.Wait()
@@ -463,6 +494,30 @@ func (v *Vault) probeRestored(ctx context.Context, cfg provider.Config) (status,
 		return KitAccountUnreachable, err.Error(), ""
 	}
 	return KitAccountConnected, "", ""
+}
+
+// repairFor says which door would put a failed account right.
+//
+// Asked of the backend rather than guessed from the failure: whether an account
+// signs in or is configured is a fact about the backend, and it is the one that
+// decides whether the button says "sign in again" or "fix settings".
+func repairFor(cfg provider.Config, status string) string {
+	switch status {
+	case KitAccountConnected:
+		return ""
+	case KitAccountNeedsPath:
+		return KitRepairPath
+	case KitAccountNeedsReauth:
+		if spec, ok := provider.SpecFor(cfg.Kind); ok && spec.OAuth != nil {
+			return KitRepairSignIn
+		}
+		// A backend with no consent screen answers a rejected credential with
+		// the same 401 an expired token gets. There is nothing to sign in to;
+		// what it wants is the key typed again.
+		return KitRepairSettings
+	default:
+		return KitRepairRetry
+	}
 }
 
 // configuredPath returns the option holding a backend's folder *on this

@@ -878,68 +878,6 @@ func (v *Vault) RestoreProvider(cfg provider.Config) error {
 	return nil
 }
 
-// RepointProvider changes one option on a connected account — the folder a
-// path-configured backend is pointed at — without disturbing anything else
-// about it, its id above all.
-//
-// This is what "find this folder" needs after a kit import onto a different
-// machine. A fresh install often means a different home directory or a
-// different operating system entirely, so the path a sync-folder account was
-// connected with may simply not exist here; re-pointing keeps the id, and
-// keeping the id is what keeps the index correct.
-func (v *Vault) RepointProvider(id, option, value string) (provider.Config, error) {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-
-	if v.dataKey == nil {
-		return provider.Config{}, ErrLocked
-	}
-
-	idx := -1
-	for i := range v.providers {
-		if v.providers[i].ID == id {
-			idx = i
-			break
-		}
-	}
-	if idx < 0 {
-		return provider.Config{}, fmt.Errorf("no connected account with id %s", id)
-	}
-
-	spec, ok := provider.SpecFor(v.providers[idx].Kind)
-	if !ok {
-		return provider.Config{}, fmt.Errorf("no backend of kind %s", v.providers[idx].Kind)
-	}
-	known := false
-	for _, f := range spec.Fields {
-		if f.Key == option {
-			known = true
-			break
-		}
-	}
-	if !known {
-		return provider.Config{}, fmt.Errorf("%s accounts have no %q setting", spec.Label, option)
-	}
-
-	before := v.providers[idx].Options[option]
-	if v.providers[idx].Options == nil {
-		v.providers[idx].Options = map[string]string{}
-	}
-	v.providers[idx].Options[option] = value
-
-	if err := v.persistLocked(); err != nil {
-		v.providers[idx].Options[option] = before
-		return provider.Config{}, err
-	}
-
-	// The cached live provider was built against the old setting.
-	v.liveMu.Lock()
-	delete(v.live, id)
-	v.liveMu.Unlock()
-
-	return v.providers[idx].Redacted(), nil
-}
-
 // ProviderEdit names what can be changed about an account after it is
 // connected. A nil field is left exactly as it was, so recolouring an account
 // cannot disturb its name and renaming one cannot disturb its colour.

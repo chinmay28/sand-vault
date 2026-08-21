@@ -505,3 +505,107 @@ func TestRecoveryScanReportsAnAccountItCannotRead(t *testing.T) {
 		t.Errorf("%d accounts reported nothing, want only the one that was never restored", empty)
 	}
 }
+
+// An account that comes back after a recovery is still holding the index of
+// the vault that died, and the guard protecting somebody else's backup would go
+// on refusing this vault's forever. Forcing is how the report's repair claims
+// it — see backupRequest.Force.
+func TestForcedBackupClaimsAnAccountHoldingAnotherVaultsIndex(t *testing.T) {
+	roots := lostVault(t, "the password that is gone")
+
+	// Only two of the three come back, so the third keeps the dead vault's
+	// copy through the recovery's own forced push.
+	c := reconnected(t, "a brand new password", roots[:2])
+
+	w, _ := c.json(http.MethodPost, "/api/vault/recovery", map[string]any{
+		"password": "the password that is gone",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("recover: %d %s", w.Code, w.Body.String())
+	}
+	c.server.vault.AwaitBackupSync()
+
+	// The straggler arrives late — the account the report would offer a repair
+	// for. An ordinary push leaves it alone, because what is on it was written
+	// by a vault this one cannot open.
+	w, _ = c.json(http.MethodPost, "/api/providers", map[string]any{
+		"kind": "local", "name": "late", "options": map[string]string{"path": roots[2]},
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("connect the straggler: %d %s", w.Code, w.Body.String())
+	}
+	c.server.vault.AwaitBackupSync()
+
+	before, err := c.server.vault.ScanForRecovery(t.Context())
+	if err != nil {
+		t.Fatalf("ScanForRecovery: %v", err)
+	}
+	foreign := 0
+	for _, src := range before.Sources {
+		if src.Backup && src.Foreign {
+			foreign++
+		}
+	}
+	if foreign == 0 {
+		// Not a skip: this is the whole premise. If the straggler is not
+		// holding the dead vault's index, the claim below proves nothing and
+		// the test has quietly stopped testing anything.
+		t.Fatal("the late account is not holding another vault's index, so there is nothing to claim")
+	}
+
+	// Forcing claims it.
+	w, _ = c.json(http.MethodPost, "/api/vault/backup", map[string]any{
+		"enabled": true, "force": true,
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("forced backup: %d %s", w.Code, w.Body.String())
+	}
+	c.server.vault.AwaitBackupSync()
+
+	after, err := c.server.vault.ScanForRecovery(t.Context())
+	if err != nil {
+		t.Fatalf("ScanForRecovery after the claim: %v", err)
+	}
+	for _, src := range after.Sources {
+		if src.Backup && src.Foreign {
+			t.Errorf("%s still holds another vault's index after a forced claim", src.Name)
+		}
+	}
+}
+
+// A refused *enable* must keep carrying its reason. The forced claim is
+// forgiving of a refusal — there is simply nothing to write — and letting that
+// tolerance leak into the enable path would answer 200 to a request that had
+// just erased every copy it was asked to create.
+func TestBackupEnableStillReportsARefusal(t *testing.T) {
+	c := newTestClient(t)
+	// Redundant placement with two accounts puts enough parts of a file on one
+	// of them to rebuild it, which is the one configuration a backup refuses:
+	// the data key would be sitting beside the parts it opens.
+	c.setup("a password", 2)
+	w, _ := c.json(http.MethodPost, "/api/vault/policy", map[string]any{"policy": "redundant"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("switch to redundant: %d %s", w.Code, w.Body.String())
+	}
+
+	w, body := c.json(http.MethodPost, "/api/vault/backup", map[string]any{"enabled": true})
+	if w.Code == http.StatusOK {
+		t.Fatalf("a refused enable answered 200 with %v", body)
+	}
+	if msg, _ := body["error"].(string); msg == "" {
+		t.Errorf("the refusal carries no reason: %v", body)
+	}
+
+	// The forced claim, on the same vault, is not an error: it wrote nothing
+	// because there was nothing to write, and it says so rather than failing.
+	w, body = c.json(http.MethodPost, "/api/vault/backup", map[string]any{
+		"enabled": true, "force": true,
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("a forced claim on a refusing vault: %d %s", w.Code, w.Body.String())
+	}
+	warnings, _ := body["warnings"].([]any)
+	if len(warnings) == 0 {
+		t.Error("the forced claim said nothing about why it wrote nothing")
+	}
+}

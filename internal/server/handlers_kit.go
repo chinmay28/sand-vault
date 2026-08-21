@@ -297,33 +297,3 @@ func kitOpenErrorResponse(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, err.Error(), "KIT_SECRET_WRONG")
 	}
 }
-
-// kitRepointRequest points a path-configured account at a folder that exists on
-// this machine, keeping its id — which is what keeps the index correct.
-type kitRepointRequest struct {
-	Option string `json:"option"`
-	Value  string `json:"value"`
-}
-
-func (s *Server) handleProviderRepoint(w http.ResponseWriter, r *http.Request) {
-	var req kitRepointRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
-		return
-	}
-	if req.Option == "" {
-		req.Option = "path"
-	}
-	if req.Value == "" {
-		writeError(w, http.StatusBadRequest, "choose a folder", "BAD_REQUEST")
-		return
-	}
-
-	v, _ := s.Vault()
-	cfg, err := v.RepointProvider(r.PathValue("id"), req.Option, req.Value)
-	if err != nil {
-		vaultErrorResponse(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, cfg)
-}
