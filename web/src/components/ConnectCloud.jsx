@@ -39,6 +39,11 @@ export default function ConnectCloud({ onClose, onConnected }) {
   const [pasted, setPasted] = useState('')
   const [showPaste, setShowPaste] = useState(false)
 
+  // Where a link-style sign-in wants the account holder to go. It arrives on a
+  // poll rather than when the flow starts, because the link does not exist
+  // until the backend's client has been run to produce one.
+  const [signInURL, setSignInURL] = useState('')
+
   const [name, setName] = useState('')
   const [values, setValues] = useState({})
   const [busy, setBusy] = useState(false)
@@ -76,12 +81,13 @@ export default function ConnectCloud({ onClose, onConnected }) {
     setKind(target.kind)
     setError(null)
     setValues(defaultsFor(target))
-    setName(target.oauth ? '' : target.label)
+    setName(target.oauth || target.sign_in_link ? '' : target.label)
     setClient({ clientId: '', clientSecret: '' })
     setPasted('')
     setShowPaste(false)
+    setSignInURL('')
 
-    if (target.oauth) {
+    if (target.oauth || target.sign_in_link) {
       setMode('signin')
       setStep('client')
       return
@@ -109,7 +115,21 @@ export default function ConnectCloud({ onClose, onConnected }) {
   const beginSignIn = async () => {
     setBusy(true)
     setError(null)
+    setSignInURL('')
     try {
+      /* A link-style sign-in has nowhere to send the browser. It starts a
+         client on the server, which prints a link once it is running; the wait
+         below is what picks that up. The settings typed so far travel with it,
+         since one of them may be where that client lives. */
+      if (spec.sign_in_link) {
+        const resp = await api.protonSignIn({ options: settingsOnly(spec, values) })
+        const started = { id: resp.flow_id, kind: spec.kind }
+        rememberFlow(started)
+        setFlow(started)
+        setStep('waiting')
+        return
+      }
+
       const resp = await api.oauthStart(spec.kind, {
         clientId: client.clientId,
         clientSecret: client.clientSecret,
@@ -139,7 +159,11 @@ export default function ConnectCloud({ onClose, onConnected }) {
     },
     onFailed: (message) => {
       setError(message)
+      setSignInURL('')
       setStep('client')
+    },
+    onPending: (resp) => {
+      if (resp.sign_in_url) setSignInURL(resp.sign_in_url)
     },
   })
 
@@ -246,6 +270,8 @@ export default function ConnectCloud({ onClose, onConnected }) {
             spec={spec}
             client={client}
             setClient={setClient}
+            values={values}
+            setValues={setValues}
             busy={busy}
             onStart={beginSignIn}
             onManual={() => { setMode('form'); setName(spec.label) }}
@@ -257,13 +283,14 @@ export default function ConnectCloud({ onClose, onConnected }) {
           <SignInWaiting
             spec={spec}
             flow={flow}
+            signInURL={signInURL}
             pasted={pasted}
             setPasted={setPasted}
             showPaste={showPaste}
             setShowPaste={setShowPaste}
             busy={busy}
             onPaste={submitPasted}
-            onCancel={() => { forgetFlow(); setFlow(null); setStep('client') }}
+            onCancel={() => { forgetFlow(); setFlow(null); setSignInURL(''); setStep('client') }}
           />
         )}
 
@@ -380,8 +407,12 @@ const isFolderBackend = (spec) =>
   spec.fields?.length > 0 && spec.fields.every((field) => field.directory)
 
 function ProviderPicker({ specs, onChoose }) {
-  const signIn = specs.filter((s) => s.oauth)
-  const manual = specs.filter((s) => !s.oauth)
+  // Both kinds of sign-in belong in the same group. What differs is only where
+  // the browser goes next, which is not a distinction worth making somebody
+  // read before they have picked a service.
+  const signsIn = (s) => s.oauth || s.sign_in_link
+  const signIn = specs.filter(signsIn)
+  const manual = specs.filter((s) => !signsIn(s))
   const credentials = manual.filter((s) => !isFolderBackend(s))
   const folders = manual.filter(isFolderBackend)
 
@@ -443,15 +474,15 @@ function ProviderCard({ spec, onChoose }) {
       }}>
         <span>{KIND_ICONS[spec.kind] || '☁'}</span>
         <span style={{ flex: 1, minWidth: 0 }}>{spec.label}</span>
-        {spec.oauth && (
+        {(spec.oauth || spec.sign_in_link) && (
           <span style={{
             fontSize: '9px',
             letterSpacing: '1px',
             padding: '2px 6px',
             borderRadius: '10px',
-            color: spec.oauth.configured ? COLORS.success : COLORS.textMuted,
-            border: `1px solid ${spec.oauth.configured ? COLORS.success : COLORS.border}66`,
-          }}>{spec.oauth.configured ? 'ONE CLICK' : 'SIGN IN'}</span>
+            color: spec.oauth?.configured ? COLORS.success : COLORS.textMuted,
+            border: `1px solid ${spec.oauth?.configured ? COLORS.success : COLORS.border}66`,
+          }}>{spec.oauth?.configured ? 'ONE CLICK' : 'SIGN IN'}</span>
         )}
       </div>
       <div style={{
@@ -465,7 +496,33 @@ function ProviderCard({ spec, onChoose }) {
 /* The screen a sign-in starts from. With app credentials already configured on
    the server it is one button; without them, it is the shortest possible
    detour through the provider's developer console. */
-function SignInStart({ spec, client, setClient, busy, onStart, onManual, onBack }) {
+function SignInStart({ spec, client, setClient, values, setValues, busy, onStart, onManual, onBack }) {
+  /* A link-style sign-in has no app to register and no client credentials to
+     collect — there is nothing to fill in before it but the account's own
+     settings, and even those have defaults. So the screen is the note, the
+     settings, and the button. */
+  if (spec.sign_in_link) {
+    return (
+      <>
+        <Banner tone="info">{spec.sign_in_link.note}</Banner>
+
+        <SpecFields
+          fields={settingFields(spec)}
+          values={values}
+          onChange={(key, value) => setValues({ ...values, [key]: value })}
+        />
+
+        <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+          <Button type="button" variant="ghost" onClick={onBack}>← Back</Button>
+          <Button type="button" variant="primary" onClick={onStart} disabled={busy}>
+            {busy ? <Spinner size={12} color={COLORS.bg} /> : null}
+            {busy ? 'Starting…' : spec.sign_in_link.sign_in_label}
+          </Button>
+        </div>
+      </>
+    )
+  }
+
   const ready = spec.oauth.configured
     || (client.clientId.trim() && (!spec.oauth.secret_required || client.clientSecret.trim()))
 
@@ -550,7 +607,57 @@ function SignInStart({ spec, client, setClient, busy, onStart, onManual, onBack 
 /* Waiting on the provider's window. Also the home of the escape hatch for the
    case the redirect cannot reach this server — a vault on localhost being
    driven from a phone, most often. */
-function SignInWaiting({ spec, flow, pasted, setPasted, showPaste, setShowPaste, busy, onPaste, onCancel }) {
+function SignInWaiting({ spec, flow, signInURL, pasted, setPasted, showPaste, setShowPaste, busy, onPaste, onCancel }) {
+  /* A link-style sign-in has nothing to approve in a window that opened,
+     because no window opened. What it has is a link, which turns up a moment
+     after the flow starts — and which is worth copying rather than only
+     clicking, since the device meant to follow it is often not this one. */
+  if (spec.sign_in_link) {
+    return (
+      <>
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: '10px',
+          padding: '14px 0 16px',
+          fontFamily: FONT.sans, fontSize: '13px', color: COLORS.textDim,
+        }}>
+          <Spinner size={14} />
+          {signInURL
+            ? `Waiting for you to sign in to ${spec.label}…`
+            : `Starting ${spec.label}'s client…`}
+        </div>
+
+        {signInURL ? (
+          <>
+            <p style={{
+              fontFamily: FONT.sans, fontSize: '11.5px',
+              color: COLORS.textMuted, lineHeight: 1.6, margin: '0 0 10px',
+            }}>
+              Open this on any device — a phone will do. Nothing is typed here,
+              and no password reaches SAND.
+            </p>
+            <CopyField value={signInURL} />
+            <Button
+              variant="primary"
+              onClick={() => window.open(signInURL, '_blank', 'noopener,noreferrer')}
+              style={{ width: '100%', justifyContent: 'center', margin: '10px 0 12px' }}
+            >Open in this browser</Button>
+          </>
+        ) : (
+          <p style={{
+            fontFamily: FONT.sans, fontSize: '11.5px',
+            color: COLORS.textMuted, lineHeight: 1.6, margin: '0 0 14px',
+          }}>
+            The link appears here as soon as the client is running. It does not
+            exist until then.
+          </p>
+        )}
+
+        <Button type="button" variant="ghost" onClick={onCancel}
+          style={{ width: '100%', justifyContent: 'center' }}>Cancel</Button>
+      </>
+    )
+  }
+
   return (
     <>
       <div style={{

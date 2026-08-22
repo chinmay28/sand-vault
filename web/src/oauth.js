@@ -65,11 +65,15 @@ export function openAuthWindow(authURL) {
    window to post from, and a popup that was closed by hand never posts at all.
    The message only makes the next poll happen sooner.
 
-   `onReady` and `onFailed` are read through a ref, so a caller passing fresh
-   closures every render does not restart the poll under itself. */
-export function useSignInResult({ flowId, active, onReady, onFailed }) {
-  const handlers = useRef({ onReady, onFailed })
-  handlers.current = { onReady, onFailed }
+   `onPending` is for the sign-ins that have something to say before they
+   finish: Proton's client produces its link a moment after the flow starts,
+   because the link does not exist until the client has been run.
+
+   The handlers are read through a ref, so a caller passing fresh closures every
+   render does not restart the poll under itself. */
+export function useSignInResult({ flowId, active, onReady, onFailed, onPending }) {
+  const handlers = useRef({ onReady, onFailed, onPending })
+  handlers.current = { onReady, onFailed, onPending }
 
   useEffect(() => {
     if (!active || !flowId) return
@@ -85,6 +89,8 @@ export function useSignInResult({ flowId, active, onReady, onFailed }) {
         } else if (resp.status === 'error') {
           forgetFlow()
           handlers.current.onFailed(resp.error || 'the provider refused the sign-in')
+        } else {
+          handlers.current.onPending?.(resp)
         }
       } catch (err) {
         if (stopped) return

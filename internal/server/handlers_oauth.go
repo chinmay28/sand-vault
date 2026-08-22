@@ -341,6 +341,12 @@ func (s *Server) writeOAuthStatus(w http.ResponseWriter, id string) {
 	if flow.ProviderID != "" {
 		payload["provider_id"] = flow.ProviderID
 	}
+	// The link for a sign-in that could not send the browser anywhere. It
+	// arrives a moment after the flow starts rather than with it, since it
+	// comes from a client that has to be run to produce it.
+	if flow.SignInURL != "" {
+		payload["sign_in_url"] = flow.SignInURL
+	}
 	if flow.Err != "" {
 		payload["error"] = flow.Err
 	}

@@ -34,6 +34,11 @@ const (
 	KindProton   Kind = "proton"
 	KindICloud   Kind = "icloud"
 
+	// Proton Drive again, reached through Proton's own command-line client
+	// rather than through the folder its desktop app syncs. See protoncli.go
+	// for why one service has two backends.
+	KindProtonCLI Kind = "protoncli"
+
 	// The rest of the synced-folder backends, registered from one table in
 	// syncfolder.go.
 	KindMega       Kind = "mega"
@@ -457,9 +462,34 @@ type Spec struct {
 	// the browser instead of pasting credentials.
 	OAuth *OAuthSpec `json:"oauth,omitempty"`
 
+	// SignInLink, when set, means the same thing by a different route: this
+	// backend is connected by signing in, but it cannot send the browser
+	// anywhere. What it produces is a link to show — which can be followed on
+	// a different device from the one SAND is being driven from, and that is
+	// the whole reason a machine with no browser on it can connect an account
+	// at all. Proton's client is the one that works this way; see
+	// protoncli.go.
+	SignInLink *SignInLinkSpec `json:"sign_in_link,omitempty"`
+
 	// Order sorts the backends in the connect dialog: the ones you sign in to
 	// first, then the ones needing credentials, then the ones on disk.
 	Order int `json:"-"`
+}
+
+// SignInLinkSpec describes a sign-in the browser watches rather than performs.
+type SignInLinkSpec struct {
+	// SignInLabel is the button, e.g. "Sign in to Proton".
+	SignInLabel string `json:"sign_in_label"`
+
+	// StartPath is the endpoint that begins it. Unlike an OAuth flow there is
+	// no authorize URL to build here: the link does not exist until the client
+	// has been run, so it arrives on a later poll rather than in the answer to
+	// starting.
+	StartPath string `json:"start_path"`
+
+	// Note is the one thing about this shape somebody has to be told, since it
+	// is not how any other account connects.
+	Note string `json:"note,omitempty"`
 }
 
 // resolved returns a copy of the spec with everything that depends on how this

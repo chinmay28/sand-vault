@@ -182,6 +182,7 @@ Reads are a race, so a slow or offline account costs you nothing — it just los
 | `webdav` | Nextcloud, ownCloud, pCloud, Koofr, Fastmail, anything behind `rclone serve webdav` | URL, username, app password |
 | `sftp` | Any machine you have an SSH login on — a VPS, a NAS, rsync.net, a Hetzner Storage Box | Host, username, private key |
 | `icloud` | iCloud Drive, through the folder macOS or iCloud for Windows syncs | A path |
+| `protoncli` | Proton Drive, through Proton's own client — no desktop app needed | **Sign in** |
 | `proton` | Proton Drive, through the folder its desktop app syncs | A path |
 | `mega` | MEGA, through the folder its desktop app syncs | A path |
 | `jottacloud` | Jottacloud, through the folder its desktop app syncs | A path |
@@ -274,6 +275,41 @@ for adding one.
 > accept every part and upload none of them. On a headless box, several of
 > these have an rclone backend that `rclone serve webdav` will put behind a URL
 > you can connect as `webdav` instead.
+
+> **Proton Drive has a second backend**, `protoncli`, that talks to Proton
+> rather than to a folder. It drives `proton-drive`, the command-line client
+> Proton builds on [its own Drive SDK](https://github.com/ProtonDriveApps/sdk),
+> and it is the better of the two wherever it can run. Three reasons. It works
+> on a machine with no desktop app, which is most servers. Its upload confirms
+> the part reached *Proton* — the folder backend's returns as soon as the file
+> is on local disk, so an account whose client is signed out looks healthy
+> while holding nothing. And it can report what the account is holding, which a
+> synced folder cannot: a folder account measures the free space on your disk,
+> not in your Drive.
+>
+> It needs that client installed.
+> [`scripts/quickstart.sh`](#quick-start-on-linux-ubuntu--raspberry-pi) builds
+> one; `INSTALL_PROTON=never` skips it, and `PROTON_CLI_URL` takes a
+> [prebuilt binary](https://proton.me/download/drive/cli/index.html) instead,
+> which on a Raspberry Pi is the difference between seconds and twenty minutes.
+> Without a client the backend still appears in the connect dialog and says so
+> when you try to use it, naming the fix — it is not hidden, because a backend
+> that vanishes on some machines is worse to explain than one that fails with a
+> sentence.
+>
+> Signing in is a link rather than a redirect: Proton's client prints one and
+> waits. **Open it on any device** — a phone will do — which is exactly how a
+> headless box connects an account. From a terminal:
+> `sand remote proton login --name proton`.
+>
+> Two things worth knowing. Proton keeps the session in the OS secret store,
+> which a system service with no keyring and no home cannot reach, so SAND
+> keeps it in the vault instead and writes it to a private file only for as
+> long as one command runs — see
+> [`docs/cloud-backends.md`](./docs/cloud-backends.md). And Proton's
+> cryptographic model changes at the end of 2026; because SAND drives Proton's
+> own binary rather than reimplementing it, that migration is handled by
+> updating the client.
 
 > **iCloud Drive** publishes no API either, and is the same arrangement: SAND
 > writes its parts, already encrypted, into the folder the Mac — or the iCloud
@@ -2480,7 +2516,8 @@ sand/
 │   ├── splitter/                # split, XOR, reconstruct
 │   ├── sandfile/                # binary .sand part format
 │   ├── provider/                # local, s3 (SigV4), webdav, gdrive, dropbox,
-│   │                            #   onedrive, box, proton + the OAuth sign-in flow
+│   │                            #   onedrive, box, proton + the OAuth sign-in flow;
+│   │                            #   protoncli drives Proton's own client
 │   ├── movie/                   # file name → film, and the film database client —
 │   │                            #   the only package that talks to a third party
 │   ├── vault/                   # encrypted store, manifest, placement, scatter/gather,

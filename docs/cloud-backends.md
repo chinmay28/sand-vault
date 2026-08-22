@@ -79,9 +79,10 @@ encrypted before the client ever sees them, so *"a folder that syncs"* and *"an
 account that answers HTTP"* are the same arrangement from the vault's point of
 view.
 
-All of it now lives in one table in `syncfolder.go` — **Proton Drive**,
-**MEGA**, **Jottacloud**, **Sync.com**, **Tresorit**, **Icedrive** — where a
-service is a dozen lines: a kind, a label, a description, and a function
+All of it now lives in one table in `syncfolder.go` — **Proton Drive** (which
+also has a tier-4 backend of its own, below, and that is the better of the two
+wherever it can run), **MEGA**, **Jottacloud**, **Sync.com**, **Tresorit**,
+**Icedrive** — where a service is a dozen lines: a kind, a label, a description, and a function
 guessing where this machine's client put its folder. **iCloud Drive** stayed in
 `icloud.go`, for the reason below. Adding another service means adding a row:
 
@@ -170,6 +171,88 @@ When adding one, the parts that are easy to get wrong are already solved
 elsewhere: copy `box.go` for a provider that rotates refresh tokens, and
 `gdrive.go` for one where the scope must stay narrow enough that SAND can only
 ever see what it created.
+
+---
+
+## Tier 4 — driving the service's own client — **done for Proton**
+
+The tier that exists because tier 1 has a hole in it. A synced folder is only a
+backend where somebody has installed a desktop app, and the machine SAND is
+usually installed on is a server with no desktop at all. Worse, the folder
+backend cannot tell the difference: its `Put` returns as soon as the file is on
+local disk, so an account whose client is signed out or never installed looks
+perfectly healthy while holding nothing.
+
+Where a service ships a *command-line* client, that hole closes. `protoncli.go`
+drives `proton-drive`, the CLI Proton builds on
+[its own Drive SDK](https://github.com/ProtonDriveApps/sdk): `filesystem
+upload` for `Put`, `download` for `Get`, `info` for `Stat`, `list` for `List`,
+`delete` for `Delete`, all with `--json`. It is roughly 500 lines and no
+cryptography.
+
+**Why not speak the API.** Proton publishes no Go SDK — the native ones are
+TypeScript and C#, and the Kotlin and Swift bindings wrap the C# one. The SDK
+excludes authentication, session management and the address provider outright,
+so an implementation would carry Proton's login as well as its API. And
+Proton's cryptographic model changes at the end of 2026, after which clients
+implementing only the old one stop interoperating. Driving Proton's binary puts
+that migration on Proton.
+
+**Where the session lives, and why it is not simply on disk.** Proton's client
+keeps its session in the OS secret store. A systemd service with no session
+bus, no keyring and no home cannot reach one. The client's other options are
+`pass`, which needs a GPG key that would sit unlocked beside the thing it
+protects, and a plaintext file, which Proton labels for testing only — fairly,
+since the session holds the password that unlocks the account's key material
+and not merely an access token.
+
+So SAND keeps it where it keeps every other cloud credential: in the vault,
+encrypted under the vault password. The plaintext file is the *handover*
+between the two and not a home — written 0600 immediately before a command,
+removed immediately after, in a directory only the service user can read:
+
+```
+vault ──decrypt──▶ $SAND_PROTON_STATE_DIR/<account>/auth-session.json
+                     proton-drive filesystem upload …
+vault ◀──encrypt── (rotated session read back)
+                     file removed
+```
+
+Reading it back matters as much as writing it. Proton rotates the session as it
+is used, exactly as Box and Microsoft rotate a refresh token, and the existing
+`CredentialRotator` sink is what carries the new one to the vault. A rotation
+that is dropped leaves the account working until the token it still holds
+expires, and then signed out for good — the kind of failure that arrives weeks
+after the mistake.
+
+**The rest of the shape**, for anyone adding a second one of these:
+
+- *One invocation at a time per account.* The client keeps SQLite caches in its
+  state directory and rewrites the session there; two copies race on both. The
+  parallelism that matters is across accounts, and that is untouched.
+- *A directory per account.* Two accounts sharing one would each sign the other
+  out. An account has no ID until it is stored, so a sign-in that has not
+  produced an account yet uses a temporary directory.
+- *`UsageMeasurer`, not `UsageReporter`.* The client has no quota command, so
+  the only honest figure is the sum of a listing — the same position a bucket
+  is in, and taken when somebody opens the panel rather than on every ping.
+- *Parts stage under the state directory, not `/tmp`.* The unit sets
+  `PrivateTmp`, which makes `/tmp` memory; a 16 MiB chunk passing through it
+  would spend a memory ceiling on a file being handed straight on.
+- *A missing binary is a `Ping` failure, not a hidden backend.* It names the
+  fix and the synced-folder alternative. A connect list that varies by machine
+  is worse to document than one entry that fails with a sentence.
+- *Signing in is a link, not a redirect.* The client prints one and blocks;
+  there is nothing to catch. `SignInLink` on the spec declares that shape, and
+  the browser polls the same flow store OAuth uses. The link being *copyable*
+  is the point — it can be followed on a phone, which is how a machine with no
+  browser connects an account.
+
+**Candidates.** Any service with a real CLI and no usable API. The test is
+whether the client can be driven non-interactively, put its session somewhere
+readable, and report a missing path distinguishably from a broken account —
+without which `ErrNotFound` cannot be told from a failure, and the vault
+repairs parts that were never lost.
 
 ---
 

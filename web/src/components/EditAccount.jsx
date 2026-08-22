@@ -8,7 +8,7 @@ import { useIsMobile } from '../hooks'
 import {
   callbackURL, forgetFlow, openAuthWindow, pendingOAuthFlow, rememberFlow, useSignInResult,
 } from '../oauth'
-import { Banner, Button, Input, Modal, PasswordInput, Spinner } from './ui'
+import { Banner, Button, CopyField, Input, Modal, PasswordInput, Spinner } from './ui'
 import SpecFields, { STORED_SECRET } from './SpecFields'
 
 /* `size` items at a time, in order. */
@@ -578,7 +578,7 @@ function Connection({ provider, busy, setBusy, onClose, onChanged }) {
           its own buttons, and a button inside a form is a submit button unless
           it says otherwise — "Continue with Google" saving the settings form on
           its way to the provider is not a mistake worth leaving available. */}
-      {spec.oauth && (
+      {(spec.oauth || spec.sign_in_link) && (
         <Reauthorize
           provider={provider}
           spec={spec}
@@ -725,6 +725,9 @@ function Reauthorize({ provider, spec, disabled, onDone }) {
   const [needClient, setNeedClient] = useState(false)
   const [pasted, setPasted] = useState('')
   const [showPaste, setShowPaste] = useState(false)
+
+  // The link a sign-in that cannot redirect produces, once its client is up.
+  const [signInURL, setSignInURL] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
 
@@ -740,7 +743,20 @@ function Reauthorize({ provider, spec, disabled, onDone }) {
   const begin = async () => {
     setBusy(true)
     setError(null)
+    setSignInURL('')
     try {
+      /* A link-style sign-in reuses the account's own settings — its folder,
+         its client, its state directory — so the browser sends nothing but the
+         account's ID and the server reads the rest off the account. */
+      if (spec.sign_in_link) {
+        const resp = await api.protonSignIn({ providerId: provider.id })
+        const started = { id: resp.flow_id, kind: provider.kind, provider_id: provider.id }
+        rememberFlow(started)
+        setFlow(started)
+        setStep('waiting')
+        return
+      }
+
       const resp = await api.oauthStart(provider.kind, {
         providerId: provider.id,
         clientId: client.clientId,
@@ -776,7 +792,11 @@ function Reauthorize({ provider, spec, disabled, onDone }) {
     },
     onFailed: (message) => {
       setError(message)
+      setSignInURL('')
       setStep('idle')
+    },
+    onPending: (resp) => {
+      if (resp.sign_in_url) setSignInURL(resp.sign_in_url)
     },
   })
 
@@ -811,6 +831,7 @@ function Reauthorize({ provider, spec, disabled, onDone }) {
   const cancel = () => {
     forgetFlow()
     setFlow(null)
+    setSignInURL('')
     setStep('idle')
     setPasted('')
     setShowPaste(false)
@@ -845,13 +866,18 @@ function Reauthorize({ provider, spec, disabled, onDone }) {
             color: COLORS.textDim,
             lineHeight: 1.6,
           }}>
-            Sends you back to {spec.label} to approve access again, and replaces
-            the tokens SAND holds for this account with the new ones. It stays
-            the same account throughout — same name, same colour, same
-            {provider.shards === 1 ? ' part' : ' parts'}.
+            {spec.sign_in_link
+              ? <>Signs in to {spec.label} again and replaces the session SAND
+                holds for this account. It stays the same account throughout —
+                same name, same colour, same
+                {provider.shards === 1 ? ' part' : ' parts'}.</>
+              : <>Sends you back to {spec.label} to approve access again, and
+                replaces the tokens SAND holds for this account with the new
+                ones. It stays the same account throughout — same name, same
+                colour, same{provider.shards === 1 ? ' part' : ' parts'}.</>}
           </p>
 
-          {needClient && (
+          {needClient && spec.oauth && (
             <>
               <p style={{
                 margin: '0 0 10px',
@@ -898,7 +924,7 @@ function Reauthorize({ provider, spec, disabled, onDone }) {
             style={{ width: '100%', justifyContent: 'center', marginBottom: '13px' }}
           >
             {busy ? <Spinner size={12} color={COLORS.bg} /> : null}
-            {busy ? 'Opening…' : spec.oauth.sign_in_label}
+            {busy ? 'Opening…' : (spec.sign_in_link?.sign_in_label || spec.oauth.sign_in_label)}
           </Button>
         </>
       )}
@@ -915,10 +941,41 @@ function Reauthorize({ provider, spec, disabled, onDone }) {
             color: COLORS.textDim,
           }}>
             <Spinner size={14} />
-            Waiting for {spec.label} to hand the account back…
+            {/* "Hand the account back" is redirect wording, and a link-style
+                sign-in never redirects: nothing is coming back, somebody has to
+                go and follow a link. */}
+            {spec.sign_in_link
+              ? (signInURL
+                ? <>Waiting for you to sign in to {spec.label}…</>
+                : <>Starting {spec.label}&apos;s client…</>)
+              : <>Waiting for {spec.label} to hand the account back…</>}
           </div>
 
-          {!showPaste && (
+          {/* A link-style sign-in has no window that opened and no redirect to
+              paste. What it has is a link, worth copying rather than only
+              clicking: the device meant to follow it is often not this one. */}
+          {spec.sign_in_link && signInURL && (
+            <>
+              <p style={{
+                margin: '0 0 10px',
+                fontFamily: FONT.sans, fontSize: '11.5px',
+                color: COLORS.textMuted, lineHeight: 1.6,
+              }}>
+                Open this on any device. Sign in as the same account
+                {' '}{provider.name} already holds its parts on — signing in as a
+                different one leaves them where SAND cannot reach them.
+              </p>
+              <CopyField value={signInURL} />
+              <Button
+                type="button"
+                variant="primary"
+                onClick={() => window.open(signInURL, '_blank', 'noopener,noreferrer')}
+                style={{ width: '100%', justifyContent: 'center', margin: '10px 0 12px' }}
+              >Open in this browser</Button>
+            </>
+          )}
+
+          {!spec.sign_in_link && !showPaste && (
             <button
               type="button"
               onClick={() => setShowPaste(true)}
@@ -930,7 +987,7 @@ function Reauthorize({ provider, spec, disabled, onDone }) {
             >The page did not come back — paste the URL instead</button>
           )}
 
-          {showPaste && (
+          {!spec.sign_in_link && showPaste && (
             <>
               {/* The way back in when the redirect cannot reach this server —
                   a vault on localhost being driven from a phone, most often. */}
