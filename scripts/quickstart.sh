@@ -611,8 +611,14 @@ step "[5/8] Proton Drive client"
 # bun_supported reports whether this machine has a bun to build with. bun ships
 # 64-bit builds only, so a 32-bit Raspberry Pi cannot build the client — which
 # is a thing to say plainly rather than a build to watch fail.
+#
+# dpkg is asked first because `uname -m` answers for the KERNEL, and a Pi
+# running a 64-bit kernel over a 32-bit userland — the stock Raspberry Pi OS
+# armhf image does exactly this — reports aarch64 while every binary on it is
+# 32-bit. Trusting that downloads a bun that cannot run.
+bun_arch() { dpkg --print-architecture 2>/dev/null || uname -m; }
 bun_supported() {
-  case "$(uname -m)" in
+  case "$(bun_arch)" in
     x86_64 | amd64 | aarch64 | arm64) return 0 ;;
     *) return 1 ;;
   esac
@@ -622,20 +628,72 @@ bun_supported() {
 # $PREFIX rather than into the service user's home so that an upgrade can find
 # it again, and so nothing ends up in /root when this is run under sudo.
 install_bun() {
-  if [ -x "$BUN_DIR/bin/bun" ]; then
-    ok "bun $("$BUN_DIR/bin/bun" --version 2>/dev/null || echo present)"
+  # Present is not the same as working: a bun left behind by an install that
+  # fetched the wrong architecture is a file that exists and cannot run, and
+  # the whole point of checking here is to not discover that twenty minutes
+  # into a build.
+  if [ -x "$BUN_DIR/bin/bun" ] && version="$("$BUN_DIR/bin/bun" --version 2>/dev/null)"; then
+    ok "bun $version"
     return 0
   fi
   ensure_pkg unzip
   log "installing bun (builds Proton's client)…"
   install -d -o "$SVC_USER" -g "$SVC_USER" -m 755 "$BUN_DIR"
-  # bun's installer respects BUN_INSTALL for the destination. It is fetched
-  # over TLS from bun.sh and run, which is the project's documented install
-  # path; PROTON_CLI_URL exists for anyone who would rather not.
-  as_svc env BUN_INSTALL="$BUN_DIR" sh -c 'curl -fsSL https://bun.sh/install | bash' >/dev/null 2>&1 \
-    || { warn "bun would not install."; return 1; }
-  [ -x "$BUN_DIR/bin/bun" ] || { warn "bun installed but no binary at $BUN_DIR/bin/bun."; return 1; }
-  ok "bun $("$BUN_DIR/bin/bun" --version)"
+
+  # Deliberately NOT `curl … | bash`, which is how bun documents this and is
+  # wrong for an unattended installer: a pipeline exits with the status of its
+  # LAST command, so a curl that fails hands bash an empty script and bash
+  # exits 0. The download failure vanishes and the only symptom is a missing
+  # binary further on, which is a much worse thing to debug from. Fetch first,
+  # check that, then run it.
+  #
+  # It lands in $BUN_DIR because the service user has to be able to read it,
+  # and mktemp would give it a file owned by root and mode 600.
+  installer="$BUN_DIR/install.sh"
+  bun_log="$BUN_DIR/install.log"
+  if ! curl -fsSL https://bun.sh/install -o "$installer"; then
+    rm -f "$installer"
+    warn "could not fetch bun's installer from https://bun.sh/install."
+    warn "Proton's client needs it. Check the network from this machine, or set"
+    warn "PROTON_CLI_URL to a prebuilt proton-drive binary and re-run."
+    return 1
+  fi
+  chown "$SVC_USER":"$SVC_USER" "$installer" 2>/dev/null || true
+  chmod 0755 "$installer"
+
+  # The output is kept rather than discarded. When this fails it is the only
+  # thing that says why, and "it did not work" is not a bug report anybody can
+  # act on — least of all somebody reading it over ssh on a Pi.
+  if ! as_svc env BUN_INSTALL="$BUN_DIR" bash "$installer" > "$bun_log" 2>&1; then
+    warn "bun's installer failed. Last lines of $bun_log:"
+    tail -n 6 "$bun_log" 2>/dev/null | sed 's/^/       /' >&2
+    return 1
+  fi
+
+  if [ ! -x "$BUN_DIR/bin/bun" ]; then
+    warn "bun's installer finished but left no binary at $BUN_DIR/bin/bun."
+    warn "Last lines of $bun_log:"
+    tail -n 6 "$bun_log" 2>/dev/null | sed 's/^/       /' >&2
+    return 1
+  fi
+  # Captured with `|| status=$?` rather than tested with `if !`, because inside
+  # the branch of a negated test $? is the negation's own status — 0 — and the
+  # message would report every failure as a success. It also keeps set -e off
+  # the assignment.
+  status=0
+  version="$("$BUN_DIR/bin/bun" --version 2>&1)" || status=$?
+  if [ "$status" -ne 0 ]; then
+    # A binary of the wrong architecture is killed by the kernel and may say
+    # nothing at all, so there has to be something to print when it does not.
+    [ -n "$version" ] || version="it exited $status without saying anything"
+    warn "bun installed but will not run on this machine:"
+    warn "  $version"
+    warn "That usually means a 64-bit kernel over a 32-bit userland, which bun"
+    warn "has no build for. Set PROTON_CLI_URL to a prebuilt proton-drive"
+    warn "binary, or connect Proton as a synced folder."
+    return 1
+  fi
+  ok "bun $version"
 }
 
 # fetch_proton_sdk clones or updates the checkout the client is built from, and
@@ -686,7 +744,7 @@ install_proton_cli() {
   fi
 
   if ! bun_supported; then
-    warn "bun has no build for $(uname -m), so Proton's client cannot be built here."
+    warn "bun has no build for $(bun_arch), so Proton's client cannot be built here."
     warn "Connect Proton as a synced folder, or set PROTON_CLI_URL to a prebuilt binary."
     return 1
   fi
