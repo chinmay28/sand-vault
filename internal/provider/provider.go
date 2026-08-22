@@ -34,6 +34,11 @@ const (
 	KindProton   Kind = "proton"
 	KindICloud   Kind = "icloud"
 
+	// Proton Drive again, reached through Proton's own command-line client
+	// rather than through the folder its desktop app syncs. See protoncli.go
+	// for why one service has two backends.
+	KindProtonCLI Kind = "protoncli"
+
 	// The rest of the synced-folder backends, registered from one table in
 	// syncfolder.go.
 	KindMega       Kind = "mega"

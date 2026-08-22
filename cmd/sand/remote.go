@@ -21,7 +21,7 @@ func remoteCmd() *cobra.Command {
 		Short:   "Connect and manage cloud accounts",
 	}
 	cmd.AddCommand(remoteKindsCmd(), remoteAddCmd(), remoteListCmd(), remoteEditCmd(),
-		remoteTestCmd(), remoteMeasureCmd(), remoteRemoveCmd())
+		remoteTestCmd(), remoteMeasureCmd(), remoteRemoveCmd(), remoteProtonCmd())
 	return cmd
 }
 
@@ -474,4 +474,111 @@ func firstLine(s string) string {
 		return s[:idx]
 	}
 	return s
+}
+
+// remoteProtonCmd groups what only the Proton backend needs, which is a way to
+// sign in. Every other backend is connected by pasting something or by a
+// redirect the browser can follow; Proton's client prints a URL and waits, so
+// there has to be somewhere to run it from and something to print it to.
+func remoteProtonCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "proton",
+		Short: "Sign in to a Proton Drive account that uses Proton's client",
+	}
+	cmd.AddCommand(remoteProtonLoginCmd())
+	return cmd
+}
+
+func remoteProtonLoginCmd() *cobra.Command {
+	var name, folder, binary string
+
+	cmd := &cobra.Command{
+		Use:   "login [name-or-id]",
+		Short: "Sign in to Proton Drive and connect or repair an account",
+		Long: `Sign in to Proton Drive through Proton's own client.
+
+The client prints a link and waits. Open it in a browser — on this machine or
+on any other, which is what lets a headless server connect — and finish signing
+in there. Nothing is typed here, and no password reaches SAND.
+
+With no argument this connects a new account:
+
+  sand remote proton login --name proton --folder /my-files/sand
+
+With one, it signs an existing account back in, which is the fix for an account
+reporting that it has been signed out:
+
+  sand remote proton login proton`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			v, err := openVault(cmd)
+			if err != nil {
+				return err
+			}
+			defer closeVault(v)
+
+			// A sign-in against an existing account has to run with that
+			// account's settings — its folder, its client, its own state
+			// directory — so it is fetched first and only the session changes.
+			cfg := provider.Config{Kind: provider.KindProtonCLI, Name: name, Options: map[string]string{}}
+			existing := false
+			if len(args) == 1 {
+				found, err := findProvider(v, args[0])
+				if err != nil {
+					return err
+				}
+				if found.Kind != provider.KindProtonCLI {
+					return fmt.Errorf("%s is a %s account, and only a %s one signs in this way",
+						found.Name, found.Kind, provider.KindProtonCLI)
+				}
+				cfg, existing = found, true
+			}
+			if folder != "" {
+				cfg.Options["folder"] = folder
+			}
+			if binary != "" {
+				cfg.Options["binary"] = binary
+			}
+
+			options, err := provider.ProtonCLISignIn(cmd.Context(), cfg, func(url string) {
+				fmt.Printf("\nSign in to Proton at:\n\n  %s\n\n"+
+					"You can open that on another device. Waiting for you to finish…\n", url)
+			})
+			if err != nil {
+				return err
+			}
+
+			// Storing it goes through the ordinary path, so the session is
+			// verified against the account before it is written down: a
+			// sign-in that worked but cannot reach the folder is a failure
+			// worth hearing about now rather than at the next upload.
+			if existing {
+				updated, err := v.UpdateProvider(cmd.Context(), cfg.ID, vault.ProviderEdit{Options: options})
+				if err != nil {
+					return err
+				}
+				fmt.Printf("%s is signed in again\n", updated.Name)
+				return nil
+			}
+
+			for key, value := range cfg.Options {
+				options[key] = value
+			}
+			added, err := v.AddProvider(cmd.Context(), provider.Config{
+				Kind:    provider.KindProtonCLI,
+				Name:    name,
+				Options: options,
+			})
+			if err != nil {
+				return err
+			}
+			fmt.Printf("Connected %s (%s) — id %s\n", added.Name, added.Kind, added.ID)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&name, "name", "", "a label for a newly connected account")
+	cmd.Flags().StringVar(&folder, "folder", "", "where in Proton Drive the parts go (default /my-files/sand)")
+	cmd.Flags().StringVar(&binary, "binary", "", "path to the proton-drive client (default: found on PATH)")
+	return cmd
 }
