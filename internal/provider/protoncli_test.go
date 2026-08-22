@@ -140,10 +140,31 @@ case "$action" in
 		[ -e "$target" ] || fail "ValidationError: Node not found: $1"
 		cp "$target" "$2/$(basename "$1")"
 		;;
-	delete)
+	trash)
 		target="$REMOTE/$(echo "$1" | sed 's|^/||')"
 		[ -e "$target" ] || fail "ValidationError: Node not found: $1"
-		rm -rf "$target"
+		mkdir -p "$REMOTE/trash"
+		mv "$target" "$REMOTE/trash/$(basename "$1")"
+		printf '[\n{"uid":"%s","ok":true}\n]\n' "$(basename "$1")"
+		;;
+	delete)
+		# The real client refuses a live path outright, and this refuses it the
+		# same way. A stand-in that accepted one is why the tests passed while
+		# the account said "You can permanently delete items only from trash."
+		case "$1" in
+			/trash/*) ;;
+			*) fail "You can permanently delete items only from trash. Trash your files first." ;;
+		esac
+		name="$(basename "$1")"
+		[ -e "$REMOTE/trash/$name" ] || fail "ValidationError: Trashed node not found"
+		# A refusal the client reports per node — and exits 0 for, which is the
+		# trap this arrangement exists to catch.
+		if [ -f "$REMOTE/.refuse-delete" ]; then
+			printf '[\n{"uid":"%s","ok":false,"error":{}}\n]\n' "$name"
+			exit 0
+		fi
+		rm -rf "$REMOTE/trash/$name"
+		printf '[\n{"uid":"%s","ok":true}\n]\n' "$name"
 		;;
 	*) fail "unknown action $action" ;;
 esac
@@ -249,6 +270,106 @@ func TestProtonCLIMissingObject(t *testing.T) {
 	// half-finished delete depends on it.
 	if err := p.Delete(ctx, "missing.sand"); err != nil {
 		t.Fatalf("Delete of a missing key = %v, want nil", err)
+	}
+}
+
+// TestProtonCLIDeleteTrashesThenPurges is the shape Proton actually requires.
+// Its client refuses to permanently delete a live file — "You can permanently
+// delete items only from trash" — so a part is trashed and then purged, and a
+// part left in the trash goes on spending the account's quota.
+func TestProtonCLIDeleteTrashesThenPurges(t *testing.T) {
+	p, remote := protonCLITestProvider(t, nil)
+	ctx := context.Background()
+	if err := p.Ping(ctx); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+	if err := p.Put(ctx, "part.sand", []byte("x")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	if err := p.Delete(ctx, "part.sand"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(remote, "my-files", "sand", "part.sand")); !os.IsNotExist(err) {
+		t.Error("the part is still in the folder")
+	}
+	// And gone from the trash too. Trashing alone would take it out of SAND's
+	// folder and leave it costing the account until somebody emptied the trash
+	// by hand.
+	if _, err := os.Stat(filepath.Join(remote, "trash", "part.sand")); !os.IsNotExist(err) {
+		t.Error("the part was left sitting in the Proton trash")
+	}
+}
+
+// TestProtonCLIDeletePurgesAPartLeftInTheTrash checks that a delete interrupted
+// after the trash step finishes the job next time, rather than leaving the part
+// spending quota for good.
+func TestProtonCLIDeletePurgesAPartLeftInTheTrash(t *testing.T) {
+	p, remote := protonCLITestProvider(t, nil)
+	ctx := context.Background()
+	if err := p.Ping(ctx); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+
+	// The state a half-finished delete leaves: out of the folder, in the trash.
+	if err := os.MkdirAll(filepath.Join(remote, "trash"), 0o700); err != nil {
+		t.Fatalf("preparing the trash: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(remote, "trash", "part.sand"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("preparing the trash: %v", err)
+	}
+
+	if err := p.Delete(ctx, "part.sand"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(remote, "trash", "part.sand")); !os.IsNotExist(err) {
+		t.Error("a part already in the trash was not purged")
+	}
+}
+
+// TestProtonCLIDeleteNoticesARefusal is the one that would otherwise pass
+// silently. Unlike upload, the trash and delete commands report a refusal as an
+// "ok": false in their JSON and exit zero anyway — so a backend reading the
+// exit status alone would tell the vault a part was deleted while it still sits
+// on the account.
+func TestProtonCLIDeleteNoticesARefusal(t *testing.T) {
+	p, remote := protonCLITestProvider(t, nil)
+	ctx := context.Background()
+	if err := p.Ping(ctx); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+	if err := p.Put(ctx, "part.sand", []byte("x")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(remote, ".refuse-delete"), nil, 0o600); err != nil {
+		t.Fatalf("arming the refusal: %v", err)
+	}
+
+	err := p.Delete(ctx, "part.sand")
+	if err == nil {
+		t.Fatal("a refused delete was reported as success")
+	}
+	if !strings.Contains(err.Error(), "refused") {
+		t.Fatalf("Delete error = %v, want it to say the client refused", err)
+	}
+}
+
+// TestProtonCLINodeResults checks the parsing on its own, including the shape
+// the client actually emits — an Error serializes to {} through JSON.stringify,
+// so there is no message to report, only the refusal.
+func TestProtonCLINodeResults(t *testing.T) {
+	if err := protonCLINodeResults(`[` + "\n" + `{"uid":"a","ok":true}` + "\n" + `]`); err != nil {
+		t.Errorf("all-ok results reported an error: %v", err)
+	}
+	if err := protonCLINodeResults(""); err != nil {
+		t.Errorf("empty output reported an error: %v", err)
+	}
+	if err := protonCLINodeResults(`[{"uid":"a","ok":true},{"uid":"b","ok":false,"error":{}}]`); err == nil {
+		t.Error("a refusal among the results was not noticed")
+	}
+	// Silence must not read as success.
+	if err := protonCLINodeResults("not json at all"); err == nil {
+		t.Error("unparseable output was taken for success")
 	}
 }
 
