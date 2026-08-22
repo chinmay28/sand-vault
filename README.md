@@ -180,6 +180,7 @@ Reads are a race, so a slow or offline account costs you nothing — it just los
 | `box` | Box | **Sign in** |
 | `s3` | Amazon S3, Cloudflare R2, Backblaze B2, Wasabi, MinIO | Bucket, keys, endpoint for non-AWS |
 | `webdav` | Nextcloud, ownCloud, pCloud, Koofr, Fastmail, anything behind `rclone serve webdav` | URL, username, app password |
+| `sftp` | Any machine you have an SSH login on — a VPS, a NAS, rsync.net, a Hetzner Storage Box | Host, username, private key |
 | `icloud` | iCloud Drive, through the folder macOS or iCloud for Windows syncs | A path |
 | `proton` | Proton Drive, through the folder its desktop app syncs | A path |
 | `mega` | MEGA, through the folder its desktop app syncs | A path |
@@ -214,6 +215,25 @@ for adding one.
 > `sudo ./scripts/allow-local-path.sh /data/SANDVault` — and reconnect. See
 > [Local folders on the systemd
 > service](#local-folders-on-the-systemd-service).
+
+> **SSH / SFTP** needs nothing installed on the far end: if you can `sftp` to a
+> box, SAND can hold parts on it. Paste an OpenSSH private key — generate one
+> with `ssh-keygen -t ed25519` and put its `.pub` half in the account's
+> `authorized_keys` — and name a folder for the parts.
+>
+> The host key is checked, always. The first connection learns the server's
+> fingerprint and stores it; every connection after that requires the same one,
+> and a host answering with a different key is refused with both fingerprints
+> shown, because a rebuilt VPS and somebody answering in its place look
+> identical from here and only you can tell them apart. If you rebuilt it,
+> clear the stored fingerprint and reconnect. To have even the *first*
+> connection checked, read the fingerprint off the server with `ssh-keygen -lf
+> /etc/ssh/ssh_host_ed25519_key.pub` and paste the `SHA256:…` part into the
+> connect form's advanced settings. See [`docs/sftp.md`](./docs/sftp.md).
+>
+> A VPS is **one** account, however many folders you point at it. Connecting the
+> same box twice does not make it two places, and two parts of one file on one
+> machine is one machine that can rebuild the file.
 
 > **The backends that take a path** — `local`, and the seven services whose
 > folders a desktop client syncs — are pointed at one rather than told it: the

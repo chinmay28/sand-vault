@@ -169,6 +169,79 @@ export function Input({ label, help, trailing, id, style, ...props }) {
   )
 }
 
+/* A field whose value has newlines in it, which so far means a private key.
+
+   Not a nicer-looking Input: an <input> drops the line breaks out of anything
+   pasted into it, so a PEM block pasted into one arrives as a single line and
+   does not parse. The field has to be a textarea or it cannot be filled in.
+
+   Masking is deliberately not offered. A key is a secret, but one long enough
+   to need a textarea is also one you check by looking at — the BEGIN line, the
+   END line, that the middle is not truncated — and a wall of dots defeats the
+   only reason the box is this big. `spellCheck` and the autocapitalise hints
+   are off because a phone keyboard will otherwise helpfully capitalise
+   base64. */
+export function TextArea({ label, help, id, rows = 6, style, ...props }) {
+  const [focused, setFocused] = useState(false)
+  const generated = useId()
+  const fieldId = id || generated
+  const helpId = `${fieldId}-help`
+
+  return (
+    <div style={{ marginBottom: '14px' }}>
+      {label && (
+        <label htmlFor={fieldId} style={{
+          display: 'block',
+          fontFamily: FONT.mono,
+          fontSize: '10px',
+          fontWeight: 600,
+          letterSpacing: '1.5px',
+          textTransform: 'uppercase',
+          color: COLORS.textMuted,
+          marginBottom: '6px',
+        }}>{label}</label>
+      )}
+      <textarea
+        {...props}
+        id={fieldId}
+        rows={rows}
+        spellCheck={false}
+        autoCapitalize="off"
+        autoCorrect="off"
+        aria-describedby={help ? helpId : undefined}
+        onFocus={(e) => { setFocused(true); props.onFocus?.(e) }}
+        onBlur={(e) => { setFocused(false); props.onBlur?.(e) }}
+        style={{
+          width: '100%',
+          padding: '10px 12px',
+          background: COLORS.bg,
+          border: `1px solid ${focused ? COLORS.accent : COLORS.border}`,
+          borderRadius: '6px',
+          color: COLORS.text,
+          fontFamily: FONT.mono,
+          fontSize: '12px',
+          lineHeight: 1.5,
+          outline: 'none',
+          boxSizing: 'border-box',
+          resize: 'vertical',
+          transition: 'border-color 0.15s ease',
+          ...style,
+        }}
+      />
+      {help && (
+        <span id={helpId} style={{
+          display: 'block',
+          marginTop: '5px',
+          fontFamily: FONT.sans,
+          fontSize: '11px',
+          color: COLORS.textMuted,
+          lineHeight: 1.45,
+        }}>{help}</span>
+      )}
+    </div>
+  )
+}
+
 export function PasswordInput({ label, help, value, onChange, ...props }) {
   const [reveal, setReveal] = useState(false)
 

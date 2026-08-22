@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"path"
 	"strings"
@@ -829,8 +830,13 @@ func (v *Vault) updateProviderOptions(id string, updates map[string]string) erro
 // connected accounts may be entirely different after an unlock.
 func (v *Vault) resetLiveCache() {
 	v.liveMu.Lock()
+	dropped := v.live
 	v.live = map[string]provider.Provider{}
 	v.liveMu.Unlock()
+
+	for _, p := range dropped {
+		closeProvider(p)
+	}
 
 	v.backupMu.Lock()
 	v.backupChecked = map[string]bool{}
@@ -841,8 +847,25 @@ func (v *Vault) resetLiveCache() {
 // forgetProvider drops one account from the live cache.
 func (v *Vault) forgetProvider(id string) {
 	v.liveMu.Lock()
+	dropped := v.live[id]
 	delete(v.live, id)
 	v.liveMu.Unlock()
+
+	closeProvider(dropped)
+}
+
+// closeProvider lets go of whatever a dropped backend was holding.
+//
+// Most of them hold nothing: an HTTP backend shares one transport with every
+// other, and dropping it is enough. A backend over SSH holds an open socket
+// and a session on somebody else's machine, which stays open until sshd's own
+// timeout notices — so a vault locked and unlocked a few times would leave a
+// trail of sessions behind. An error closing something already being thrown
+// away is not worth reporting to anyone.
+func closeProvider(p provider.Provider) {
+	if closer, ok := p.(io.Closer); ok {
+		_ = closer.Close()
+	}
 }
 
 // AddProvider connects a new cloud account after verifying it is reachable.
