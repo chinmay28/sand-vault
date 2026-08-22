@@ -93,6 +93,19 @@
 #   INSTALL_GO       auto | never            install Go if missing/old (default: auto; build-time only)
 #   BACKUP_KEEP      pre-upgrade backups kept (default: 10)
 #
+#   INSTALL_PROTON   auto | never            build Proton's Drive client so a Proton
+#                    account can be connected without the desktop app (default: auto).
+#                    Unlike Node and Go this is NOT build-time only — the client is
+#                    what the service runs to reach Proton, so it stays installed.
+#                    It needs bun, which has no build for 32-bit ARM; on such a host
+#                    this step says so and skips rather than failing the install.
+#   PROTON_CLI_URL   URL of a prebuilt proton-drive binary. Set this to skip the
+#                    build entirely — on a Raspberry Pi it is the difference between
+#                    seconds and twenty minutes. Get the URL for your platform from
+#                    https://proton.me/download/drive/cli/index.html
+#   PROTON_SDK_REF   branch/tag/commit of github.com/ProtonDriveApps/sdk to build
+#                    (default: main)
+#
 # A NOTE ON HOST.  This defaults to 0.0.0.0, so the service is reachable from
 # the rest of your network as soon as it is installed. Understand what you are
 # exposing: this server is the one component that ever holds plaintext — it
@@ -193,6 +206,16 @@ INSTALL_NODE="${INSTALL_NODE:-auto}"
 INSTALL_GO="${INSTALL_GO:-auto}"
 BACKUP_KEEP="${BACKUP_KEEP:-10}"
 
+# Proton's own Drive client. SAND drives it to reach a Proton account without
+# the desktop app, which is the only way a headless box can hold one — see
+# internal/provider/protoncli.go. It is installed by default because the
+# alternative is an account that connects, accepts parts and uploads none of
+# them, which is the failure this backend exists to prevent.
+INSTALL_PROTON="${INSTALL_PROTON:-auto}"
+PROTON_SDK_REPO="${PROTON_SDK_REPO:-https://github.com/ProtonDriveApps/sdk.git}"
+PROTON_SDK_REF="${PROTON_SDK_REF:-main}"
+PROTON_CLI_URL="${PROTON_CLI_URL:-}"
+
 SRC_DIR="$PREFIX/src"
 # The service user is created with --no-create-home, so the home directory in
 # its passwd entry does not exist and it has no way to create one. npm needs a
@@ -202,6 +225,20 @@ SRC_DIR="$PREFIX/src"
 BUILD_HOME="$PREFIX/.build-home"
 VAULT_PATH="$DATA_DIR/vault.sand"
 BACKUP_DIR="$DATA_DIR/backups"
+
+# Proton's client, the checkout it is built from, and the bun that builds it.
+# The client goes on PATH via a symlink, so both the service and somebody
+# running `sand remote proton login` by hand find the same binary.
+PROTON_BIN="$PREFIX/bin/proton-drive"
+PROTON_LINK="/usr/local/bin/proton-drive"
+PROTON_SDK_DIR="$PREFIX/proton-sdk"
+PROTON_STAMP="$PREFIX/.proton-cli-built"
+BUN_DIR="$PREFIX/bun"
+
+# Where each Proton account keeps its client cache and, for the moment a
+# command runs, its session. Under the data directory because that is the one
+# path ProtectSystem=strict leaves writable — see write_unit.
+PROTON_STATE_DIR="$DATA_DIR/proton"
 # Minimum Go release that can bootstrap the build; the go directive in go.mod
 # pins the real toolchain, which Go fetches automatically.
 GO_MIN_MINOR=25
@@ -304,7 +341,7 @@ as_svc() {
 # ---------------------------------------------------------------------------
 # 1. Prerequisites
 # ---------------------------------------------------------------------------
-step "[1/7] Prerequisites"
+step "[1/8] Prerequisites"
 
 APT=0; command -v apt-get >/dev/null 2>&1 && APT=1
 ensure_pkg() {
@@ -359,7 +396,7 @@ fi
 # ---------------------------------------------------------------------------
 # 2. Service user
 # ---------------------------------------------------------------------------
-step "[2/7] Service user"
+step "[2/8] Service user"
 if id -u "$SVC_USER" >/dev/null 2>&1; then
   ok "user '$SVC_USER' exists"
 else
@@ -379,7 +416,7 @@ PREV_SHA=""
 # ---------------------------------------------------------------------------
 # 3. Source or release
 # ---------------------------------------------------------------------------
-step "[3/7] Fetch"
+step "[3/8] Fetch"
 
 release_arch() {
   case "$(uname -m)" in
@@ -517,7 +554,7 @@ fi
 # ---------------------------------------------------------------------------
 # 4. Build (source mode only)
 # ---------------------------------------------------------------------------
-step "[4/7] Build"
+step "[4/8] Build"
 
 build_src() {
   # Build the web client first — the Go binary embeds it, so the order matters.
@@ -553,10 +590,154 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 5. Proton Drive client
+# ---------------------------------------------------------------------------
+#
+# Proton publishes no API a third party may use, and no Go SDK. What it does
+# publish is the client its own apps are built on, so SAND drives that instead
+# of reimplementing Proton's cryptography — which is just as well, since that
+# cryptography changes at the end of 2026 and every client implementing only
+# the old model stops working. Building Proton's binary puts that migration on
+# Proton.
+#
+# This is not a build-time dependency like Node and Go. The client is what the
+# running service executes to reach Proton, so it stays.
+#
+# Everything here is skippable and nothing here is fatal: a host that cannot
+# build it gets a warning and an install that works in every other respect. A
+# Proton account can still be connected as a synced folder.
+step "[5/8] Proton Drive client"
+
+# bun_supported reports whether this machine has a bun to build with. bun ships
+# 64-bit builds only, so a 32-bit Raspberry Pi cannot build the client — which
+# is a thing to say plainly rather than a build to watch fail.
+bun_supported() {
+  case "$(uname -m)" in
+    x86_64 | amd64 | aarch64 | arm64) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# install_bun fetches the runtime Proton's client is built with. It goes under
+# $PREFIX rather than into the service user's home so that an upgrade can find
+# it again, and so nothing ends up in /root when this is run under sudo.
+install_bun() {
+  if [ -x "$BUN_DIR/bin/bun" ]; then
+    ok "bun $("$BUN_DIR/bin/bun" --version 2>/dev/null || echo present)"
+    return 0
+  fi
+  ensure_pkg unzip
+  log "installing bun (builds Proton's client)…"
+  install -d -o "$SVC_USER" -g "$SVC_USER" -m 755 "$BUN_DIR"
+  # bun's installer respects BUN_INSTALL for the destination. It is fetched
+  # over TLS from bun.sh and run, which is the project's documented install
+  # path; PROTON_CLI_URL exists for anyone who would rather not.
+  as_svc env BUN_INSTALL="$BUN_DIR" sh -c 'curl -fsSL https://bun.sh/install | bash' >/dev/null 2>&1 \
+    || { warn "bun would not install."; return 1; }
+  [ -x "$BUN_DIR/bin/bun" ] || { warn "bun installed but no binary at $BUN_DIR/bin/bun."; return 1; }
+  ok "bun $("$BUN_DIR/bin/bun" --version)"
+}
+
+# fetch_proton_sdk clones or updates the checkout the client is built from, and
+# prints the commit it left it at, so the caller can tell a rebuild from a
+# no-op.
+fetch_proton_sdk() {
+  if [ -d "$PROTON_SDK_DIR/.git" ]; then
+    as_svc git -C "$PROTON_SDK_DIR" fetch --depth 1 origin "$PROTON_SDK_REF" >/dev/null 2>&1 || return 1
+    as_svc git -C "$PROTON_SDK_DIR" checkout -q FETCH_HEAD >/dev/null 2>&1 || return 1
+  else
+    rm -rf "$PROTON_SDK_DIR"
+    install -d -o "$SVC_USER" -g "$SVC_USER" -m 755 "$PROTON_SDK_DIR"
+    as_svc git clone --depth 1 --branch "$PROTON_SDK_REF" "$PROTON_SDK_REPO" "$PROTON_SDK_DIR" >/dev/null 2>&1 \
+      || as_svc git clone --depth 1 "$PROTON_SDK_REPO" "$PROTON_SDK_DIR" >/dev/null 2>&1 || return 1
+  fi
+  as_svc git -C "$PROTON_SDK_DIR" rev-parse HEAD 2>/dev/null
+}
+
+# build_proton_cli compiles the client. CLI_APP_VERSION_NAME is not decoration:
+# Proton requires every third-party client to identify itself honestly in the
+# x-pm-appversion header, in this shape, and forbids passing as a first-party
+# app. It is baked in at build time, which is the whole reason this is built
+# here rather than repackaged.
+build_proton_cli() {
+  as_svc env \
+      BUN_INSTALL="$BUN_DIR" \
+      PATH="$BUN_DIR/bin:$PATH" \
+      CLI_APP_VERSION_NAME="external-drive-sand" \
+      sh -c "cd '$PROTON_SDK_DIR/cli' && bun install --frozen-lockfile && bun run build" >/dev/null 2>&1
+}
+
+install_proton_cli() {
+  install -d -o "$SVC_USER" -g "$SVC_USER" -m 755 "$PREFIX/bin"
+
+  # A prebuilt binary, when one has been named. This is the fast path and the
+  # only practical one on a small board.
+  if [ -n "$PROTON_CLI_URL" ]; then
+    log "downloading Proton's client…"
+    tmp="$(mktemp)"
+    if ! curl -fsSL "$PROTON_CLI_URL" -o "$tmp"; then
+      rm -f "$tmp"
+      warn "could not download $PROTON_CLI_URL — Proton accounts will need the synced folder."
+      return 1
+    fi
+    install -m 755 -o "$SVC_USER" -g "$SVC_USER" "$tmp" "$PROTON_BIN"
+    rm -f "$tmp"
+    return 0
+  fi
+
+  if ! bun_supported; then
+    warn "bun has no build for $(uname -m), so Proton's client cannot be built here."
+    warn "Connect Proton as a synced folder, or set PROTON_CLI_URL to a prebuilt binary."
+    return 1
+  fi
+
+  install_bun || return 1
+
+  log "fetching Proton's Drive SDK…"
+  rev="$(fetch_proton_sdk)" || { warn "could not fetch $PROTON_SDK_REPO."; return 1; }
+
+  # Rebuilding takes minutes and produces the same binary from the same commit,
+  # so an upgrade that has not moved the SDK skips it.
+  if [ -x "$PROTON_BIN" ] && [ "$(cat "$PROTON_STAMP" 2>/dev/null)" = "$rev" ]; then
+    ok "Proton client already built from $(printf '%.7s' "$rev")"
+    return 0
+  fi
+
+  log "building Proton's client (this takes a while)…"
+  if ! build_proton_cli; then
+    warn "Proton's client would not build. The rest of the install is unaffected;"
+    warn "connect Proton as a synced folder, or set PROTON_CLI_URL to a prebuilt binary."
+    return 1
+  fi
+  [ -f "$PROTON_SDK_DIR/cli/release/proton-drive" ] || {
+    warn "the Proton build finished but produced no binary."
+    return 1
+  }
+  install -m 755 -o "$SVC_USER" -g "$SVC_USER" "$PROTON_SDK_DIR/cli/release/proton-drive" "$PROTON_BIN"
+  printf '%s' "$rev" > "$PROTON_STAMP"
+}
+
+PROTON_READY=0
+if [ "$INSTALL_PROTON" = never ]; then
+  ok "skipping Proton's client (INSTALL_PROTON=never)"
+elif install_proton_cli; then
+  # On PATH under its own name, so the service finds it without being told and
+  # `sand remote proton login` works from an ordinary shell.
+  ln -sf "$PROTON_BIN" "$PROTON_LINK"
+  PROTON_READY=1
+  ok "proton-drive installed → $PROTON_BIN"
+fi
+
+# ---------------------------------------------------------------------------
 # 5. Data dir + pre-upgrade vault snapshot
 # ---------------------------------------------------------------------------
-step "[5/7] Data directory + backup"
+step "[6/8] Data directory + backup"
 install -d -o "$SVC_USER" -g "$SVC_USER" -m 750 "$DATA_DIR" "$BACKUP_DIR"
+# 700 rather than 750: a Proton account's session passes through here on its
+# way to the client, and for those few moments it is the key material that
+# unlocks the account rather than a token that expires. Nothing but the service
+# user has any business in this directory.
+install -d -o "$SVC_USER" -g "$SVC_USER" -m 700 "$PROTON_STATE_DIR"
 ok "data dir ready ($DATA_DIR, owned by $SVC_USER)"
 
 stop_service()  { systemctl stop  "${SERVICE_NAME}.service" 2>/dev/null || true; }
@@ -584,7 +765,7 @@ fi
 # ---------------------------------------------------------------------------
 # 6. systemd unit + (re)start
 # ---------------------------------------------------------------------------
-step "[6/7] systemd service"
+step "[7/8] systemd service"
 
 # The service is quiesced by now on an upgrade, so this is where the staged
 # binary replaces the running one (keeping the old one for rollback).
@@ -631,6 +812,12 @@ Group=$SVC_USER
 WorkingDirectory=$WORK_DIR
 ExecStart=$SERVER_BIN serve --port $PORT --bind $HOST --vault $VAULT_PATH$WEBDAV_ARGS
 Environment=SAND_VAULT=$VAULT_PATH
+# Where a Proton account's client keeps its cache, and its session for the
+# moment a command runs. Without this the client falls back to a cache
+# directory under a home the service user does not have, which
+# ProtectSystem=strict leaves read-only — and a client that cannot write its
+# cache cannot run at all.
+Environment=SAND_PROTON_STATE_DIR=$PROTON_STATE_DIR
 Restart=on-failure
 RestartSec=3
 
@@ -700,7 +887,7 @@ ok "service enabled and started"
 # ---------------------------------------------------------------------------
 # 7. Health check (with rollback on a failed upgrade)
 # ---------------------------------------------------------------------------
-step "[7/7] Health check"
+step "[8/8] Health check"
 health_url="http://127.0.0.1:$PORT/api/health"
 check_health() {
   for _ in $(seq 1 30); do
@@ -789,6 +976,13 @@ ${C_GREEN}SAND Vault $verb and running.${C_OFF}
     $SERVER_BIN --vault $VAULT_PATH vault init
     $SERVER_BIN --vault $VAULT_PATH remote kinds
 
+$(if [ "$PROTON_READY" = 1 ]; then cat <<PROTON
+
+  Proton Drive: sign in once, in a browser on any device —
+    $SERVER_BIN --vault $VAULT_PATH remote proton login --name proton
+  It prints a link and waits. Nothing is typed here and no password reaches SAND.
+PROTON
+fi)
   Manage the service:
     systemctl status  ${SERVICE_NAME}
     systemctl restart ${SERVICE_NAME}

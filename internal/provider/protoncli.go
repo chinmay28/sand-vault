@@ -299,6 +299,26 @@ func (p *protonCLIProvider) sessionPath() string {
 	return filepath.Join(p.stateDir, protonCLISessionFile)
 }
 
+// scratchDir is where a part waits while it is handed to or taken from the
+// client, which only moves files on disk and never bytes on a pipe.
+//
+// It is under the state directory rather than in the system temp directory,
+// because the service runs with PrivateTmp and its /tmp is therefore memory:
+// a chunk is sixteen megabytes, several accounts write at once, and a unit
+// with a memory ceiling would be spending it on files it is only passing on.
+// The state directory is on the disk the vault is on, which the unit already
+// grants.
+func (p *protonCLIProvider) scratchDir(what string) (string, error) {
+	if err := os.MkdirAll(p.stateDir, 0o700); err != nil {
+		return "", fmt.Errorf("creating %s: %w", p.stateDir, err)
+	}
+	dir, err := os.MkdirTemp(p.stateDir, "scratch-"+what+"-")
+	if err != nil {
+		return "", fmt.Errorf("staging under %s: %w", p.stateDir, err)
+	}
+	return dir, nil
+}
+
 // run invokes the client with the session staged around it, and returns what it
 // wrote to stdout.
 func (p *protonCLIProvider) run(ctx context.Context, args ...string) (string, error) {
@@ -479,9 +499,9 @@ func (p *protonCLIProvider) Put(ctx context.Context, key string, data []byte) er
 	// directory of its own so that two concurrent Puts of the same key — which
 	// the lock below makes impossible for one account, but not across a
 	// retry — cannot see each other's half-written staging file.
-	dir, err := os.MkdirTemp("", "sand-proton-put-")
+	dir, err := p.scratchDir("put")
 	if err != nil {
-		return fmt.Errorf("staging the part: %w", err)
+		return err
 	}
 	defer os.RemoveAll(dir)
 
@@ -523,9 +543,9 @@ func (p *protonCLIProvider) Get(ctx context.Context, key string) ([]byte, error)
 		return nil, err
 	}
 
-	dir, err := os.MkdirTemp("", "sand-proton-get-")
+	dir, err := p.scratchDir("get")
 	if err != nil {
-		return nil, fmt.Errorf("staging the download: %w", err)
+		return nil, err
 	}
 	defer os.RemoveAll(dir)
 
