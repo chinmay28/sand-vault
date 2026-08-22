@@ -122,7 +122,7 @@ function Crumb({ label, mobile, onClick, active }) {
    Forward when there is somewhere to go forward to. */
 export function FolderHeader({
   nav, path, vault = '', stats, prefs, view, selecting, canUpload, search, film, organizer,
-  onSelecting, onSearch, onNewFolder, onUpload,
+  onSelecting, onSearch, onNewFolder, onUpload, onImport,
 }) {
   const [jumping, setJumping] = useState(false)
   const [sorting, setSorting] = useState(false)
@@ -203,6 +203,21 @@ export function FolderHeader({
             </span>
           )}
         </button>
+
+        {/* Files arriving off a machine you have a login on, which is the same
+            act as an upload and belongs next to it. Icon-only here: the phone
+            heading has room for one worded button and uploading is the one
+            people came for. */}
+        {onImport && (
+          <Button
+            size="md"
+            onClick={onImport}
+            disabled={!canUpload}
+            aria-label="Import from a machine"
+            title={canUpload ? `Import into ${path} from a machine` : 'Connect a cloud account first'}
+            style={{ flexShrink: 0, minHeight: '44px', fontSize: '13px' }}
+          >↓</Button>
+        )}
 
         <Button
           size="md"

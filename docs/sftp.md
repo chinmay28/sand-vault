@@ -8,8 +8,8 @@ them apart in your head:
 | What the far end sees | opaque encrypted shards | your actual files, in the clear |
 | Who names the paths | SAND, from the archive ID | you, browsing |
 | Access needed | read/write under one folder | read only |
-| Implements | `provider.Provider` | nothing that exists yet |
-| Status | **built** — `internal/provider/sftp.go` | **designed** — this document |
+| Implements | `provider.Provider` | `vault.Source` |
+| Status | **built** — `internal/provider/sftp.go` | **built** — `internal/vault/source.go` |
 
 They should stay two connected entries even when they point at the same box.
 The cost is typing the host twice; what it buys is that an import source cannot
@@ -127,9 +127,11 @@ later":
 2. The joined result is then checked against the root, which catches the sibling
    case: `/srv/sandbox` is not under `/srv/sand`, however much it looks like it.
 
-For the import side there is a third rule, not yet implemented: **do not follow
-a symlink out of the configured root.** Browsing wants to be permissive and a
-symlink is the way permissiveness escapes.
+For the import side there is a third rule, and it turned out to need real work
+rather than a line: **do not follow a symlink out of the configured root.**
+Browsing wants to be permissive and a symlink is the way permissiveness escapes.
+See "The import half, as built" below for why the path check alone was not
+enough and what `(*sftp.Client).resolve` does instead.
 
 ---
 
@@ -215,11 +217,15 @@ nothing stops you connecting the same host twice.
 
 ```
 internal/sftp/              dial, host-key policy (TOFU + pinning), key parsing,
-                            connection pooling, path confinement
+                            connection pooling, path confinement, browsing
 internal/sftp/sftptest/     an in-process sshd, so the code that talks to a
                             server is tested against a server
 internal/provider/sftp.go   KindSFTP: Put/Get/Stat/Delete/List/Ping,
                             CredentialRotator, UsageReporter
+internal/vault/source.go    a machine to import from: stored, connected, browsed
+internal/vault/importsource.go   planning a selection and pulling it in
+internal/server/handlers_remote.go   the five endpoints above
+web/src/components/ImportFromMachine.jsx   connect, browse, pick, import
 ```
 
 Notes on the backend that are not obvious from the interface:
@@ -252,20 +258,18 @@ Notes on the backend that are not obvious from the interface:
 
 ---
 
-## What is not built
-
-The import half. Proposed surface, mirroring the shapes already in
-`server.go`'s route table:
+## The import half, as built
 
 ```
 GET    /api/remote                    configured sources
 POST   /api/remote                    add one (host, user, key, root, fingerprint)
-GET    /api/remote/{id}/browse?path=  one directory — mirrors handleSystemFolders
-POST   /api/remote/{id}/import        {paths[], dest, accounts, scheme} → results[]
+PATCH  /api/remote/{id}               edit one
 DELETE /api/remote/{id}               forget one
+GET    /api/remote/{id}/files?path=   one directory
+POST   /api/remote/{id}/import        {paths[], dest, accounts, scheme} → results[]
 ```
 
-The seam that makes the import itself small is already there:
+The seam that makes the import itself small was already there:
 
 ```go
 // internal/vault/stream.go
@@ -276,16 +280,55 @@ An SFTP file handle **is** an `io.Reader`. So an import is: open the remote
 file, hand the reader to `UploadStream`, done — compressed, split, encrypted and
 scattered by the code that already does it. Bytes go VPS → SAND → clouds.
 They never touch the browser, never hit `MaxUploadSize`, and never spool through
-a multipart parser. `handleFilesUpload` does considerably more work than this
-handler will need to.
+a multipart parser.
 
-Build order, each step independently useful:
+Notes on what the implementation settled that the design left open:
+
+- **Sources live in the sealed settings section**, not one of their own. That
+  section is the part of the vault that is *not* replicated to the connected
+  accounts, which is exactly right for an SSH private key: the argument the
+  film-database key is kept there for applies with more force to a key that
+  opens a shell. The consequence, stated in the code and worth repeating: a
+  source does not travel in a recovery kit. A rebuilt install reconnects its
+  accounts and has to be told about its sources again — which is the right
+  trade, since a kit exists to restore access to the data and a source holds
+  none of it.
+- **Symlinks needed more than a path check.** `Under` is lexical: it stops
+  `../..` and cannot stop `ln -s / everything`, because the escape is not
+  written in the path. So `(*sftp.Client).resolve` walks every component below
+  the root, follows a link only if its target lands back inside, and caps the
+  hops. That walk is done in SAND rather than left to the server's own
+  `SSH_FXP_REALPATH`, because the spec is loose enough that servers differ on
+  whether they resolve links at all — and a boundary that holds against some
+  servers is not a boundary. The test that caught this is
+  `TestReadDirWillNotFollowALinkOutOfTheRoot`.
+- **A link out of the root is listed, not hidden**, with a reason attached and
+  no checkbox. A directory that appears to hold fewer files than `ls` shows
+  reads as a bug rather than as a rule.
+- **The host-key pin is not cleared by an ordinary edit.** An edit form that
+  does not mention the fingerprint is not asking to trust a stranger, so
+  `UpdateSource` takes a separate `relearnHostKey` argument. Forgetting a pin
+  is the one edit here that weakens something, which makes it worth being
+  unable to do by accident.
+- **Connections are not pooled on the source side**, which is the opposite of
+  the backend and not an inconsistency: a scatter writes every shard of a chunk
+  at once and would pay a handshake per shard, while browsing is one round trip
+  a click and an import is one long request that dials once and reads every
+  file over the same session. Neither wants a connection held between requests.
+- **The skip is sound, not a heuristic.** `UploadStream` spools, scatters and
+  only then commits, so an interrupted import leaves *no* entry rather than
+  half of one — the vault holds the complete file or nothing. A size match at
+  the destination is therefore a real answer, with the source's modification
+  time as the guard on the one case size alone gets wrong: a file replaced by a
+  different file of the same length.
+
+Build order:
 
 1. ~~client + host keys~~ — done
 2. ~~`KindSFTP` backend~~ — done
-3. browse
-4. import
-5. export
+3. ~~browse~~ — done
+4. ~~import~~ — done
+5. export — still open, and still the direction that writes plaintext
 
 ---
 

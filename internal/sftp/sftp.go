@@ -113,6 +113,10 @@ type Client struct {
 	closeOnce sync.Once
 	closed    atomic.Bool
 	closeErr  error
+
+	// roots caches each configured folder's canonicalized form — see realRoot.
+	rootsMu sync.Mutex
+	roots   map[string]string
 }
 
 // HostKey returns the fingerprint the server presented, in "SHA256:…" form.

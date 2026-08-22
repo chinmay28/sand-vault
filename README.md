@@ -235,6 +235,24 @@ for adding one.
 > same box twice does not make it two places, and two parts of one file on one
 > machine is one machine that can rebuild the file.
 
+> **Bringing files in from a machine** is the other direction, and a separate
+> thing: **↓ Import** in a folder connects a machine you have an SSH login on,
+> browses it, and pulls what you pick into that folder — compressed, split,
+> encrypted and scattered like any other upload. The bytes go from the machine
+> to SAND to your accounts; they never pass through the browser.
+>
+> Two entries, even for the same box. A connected account is a place SAND
+> *writes* encrypted parts to. A source is a place it *reads* your own files
+> from, and never writes to. Keeping them apart is what stops an import browser
+> from seeing the shard store.
+>
+> Nothing is removed from the machine, and nothing outside the folder you scope
+> it to can be seen — including through a symlink pointing out of it. **If an
+> import is interrupted, nothing is lost:** every file that arrived is already
+> scattered, and running the same import again skips those and carries on. That
+> is the whole of the resume story — there is no job to resume, only an import
+> to repeat.
+
 > **The backends that take a path** — `local`, and the seven services whose
 > folders a desktop client syncs — are pointed at one rather than told it: the
 > field has a **Browse…** button that walks the folders of the machine SAND is

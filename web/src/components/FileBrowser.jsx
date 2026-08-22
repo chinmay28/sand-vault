@@ -15,6 +15,7 @@ import { BulkAssign, BulkDelete, BulkDownload } from './BulkActions'
 import MoveToFolder from './MoveToFolder'
 import { FilmButton, FilmLookupSettings } from './FilmDetails'
 import { OrganizerButton, OrganizerMenu, OrganizerTool } from './Organizer'
+import { ImportFromMachine } from './ImportFromMachine'
 
 /* How long to sit on a keystroke before asking the server. Long enough that
    typing a word is one query rather than six, short enough to feel live. */
@@ -53,6 +54,7 @@ export default function FileBrowser({
      the same click, and a single state would have the sheet's own dismissal
      land on the tool it had just opened. */
   const [organizing, setOrganizing] = useState(false)
+  const [importing, setImporting] = useState(false)
   const [tool, setTool] = useState(null)
   /* The folder's standing instruction: its schedule, what the last few runs
      found, and the button that starts one now. */
@@ -491,6 +493,7 @@ export default function FileBrowser({
             onSearch={() => setSearchOpen(true)}
             onNewFolder={() => setCreatingFolder(true)}
             onUpload={() => setChoosing(true)}
+            onImport={() => setImporting(true)}
             /* Onto the strip under the heading, with the other controls that
                say how this folder is read rather than what is in it. Lit when
                the folder is opted in, since a folder that talks to a third
@@ -553,6 +556,13 @@ export default function FileBrowser({
                 onChange={setQuery}
               />
               <Button size="sm" onClick={() => setCreatingFolder(true)}>+ Folder</Button>
+              {/* Beside Upload rather than under the organizer, because it is
+                  the same act: files arriving in this folder. The only
+                  difference is that these come off a machine you have a login
+                  on instead of off the device you are holding. */}
+              <Button size="sm" onClick={() => setImporting(true)} disabled={!canUpload}>
+                ↓ Import
+              </Button>
               <Button size="sm" variant="primary" onClick={() => setChoosing(true)} disabled={!canUpload}>
                 ↑ Upload
               </Button>
@@ -761,6 +771,17 @@ export default function FileBrowser({
           onClose={() => setPending(null)}
           onChanged={onRefresh}
           onUpload={(accounts, scheme) => { setPending(null); uploadFiles(pending, accounts, scheme) }}
+        />
+      )}
+
+      {importing && (
+        <ImportFromMachine
+          path={path}
+          vault={vault}
+          onClose={() => setImporting(false)}
+          /* What arrived is in this folder now, so the listing on screen is no
+             longer what is there. */
+          onChanged={onRefresh}
         />
       )}
 

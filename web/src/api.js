@@ -464,6 +464,37 @@ export const api = {
   untrackRepo: (id, vault = '') =>
     request(`/api/git/${encodeURIComponent(id)}${vaultParam(vault, true)}`, { method: 'DELETE' }),
 
+  /* The machines a vault imports files *from*, which is the other direction
+     from a connected account and deliberately not one: an account holds
+     encrypted parts under names SAND invents, a source holds your own files
+     under paths you browse, and nothing is ever written to it.
+
+     Listing is index work. The rest talk to somebody else's machine: connecting
+     is a handshake and a directory listing, browsing is a round trip a click,
+     and importing can be a media library coming down a home connection and
+     going back up to three clouds. Only the last one takes real time. */
+  sources: () => request('/api/remote'),
+  connectSource: (body, { signal } = {}) =>
+    request('/api/remote', { method: 'POST', body, signal }),
+  updateSource: (id, body, { signal } = {}) =>
+    request(`/api/remote/${encodeURIComponent(id)}`, { method: 'PATCH', body, signal }),
+  forgetSource: (id) =>
+    request(`/api/remote/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  /* One directory on a source. The path is relative to the folder the source
+     is scoped to — never an absolute path on somebody's server, in either
+     direction — and everything outside it is refused however it is written,
+     symlinks included. */
+  browseSource: (id, path = '', { signal } = {}) =>
+    request(`/api/remote/${encodeURIComponent(id)}/files?path=${encodeURIComponent(path)}`, { signal }),
+  /* Pull a selection into a folder of the vault. A folder in the selection
+     brings everything under it, keeping its shape.
+
+     Interrupting this loses nothing: every file that arrived is committed, and
+     running the same import again skips those and carries on. That is the whole
+     of the resume story — there is no job to resume, only an import to repeat. */
+  importFromSource: (id, body, { signal } = {}) =>
+    request(`/api/remote/${encodeURIComponent(id)}/import`, { method: 'POST', body, signal }),
+
   /* The picture a folder is drawn with, and what else it could be drawn with:
      every file under it that has a thumbnail, films first. What comes back is a
      file id — the picture itself is that file's own thumbnail, drawn through
