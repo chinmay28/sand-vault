@@ -171,6 +171,7 @@ func newProtonCLIProvider(cfg Config) (Provider, error) {
 		folder:   folder,
 		stateDir: abs,
 		session:  cfg.Option("session"),
+		uids:     map[string]string{},
 	}, nil
 }
 
@@ -239,6 +240,16 @@ type protonCLIProvider struct {
 
 	// sink is where a rotated session goes to be written back to the vault.
 	sink func(map[string]string)
+
+	// uids maps a part's key to the node UID Proton knows it by, and warmed
+	// says the folder has been read once to fill it. See nodeRefLocked for why
+	// this is worth its weight.
+	//
+	// Both live under mu with everything else: every operation holds the lock
+	// for its whole duration, so there is one lock to reason about rather than
+	// a cache lock that could be taken while the run lock is held.
+	uids   map[string]string
+	warmed bool
 }
 
 // OnCredentialChange registers a sink for a rotated session. It satisfies
@@ -334,18 +345,14 @@ func (p *protonCLIProvider) scratchDir(what string) (string, error) {
 	return dir, nil
 }
 
-// run invokes the client with the session staged around it, and returns what it
-// wrote to stdout.
-func (p *protonCLIProvider) run(ctx context.Context, args ...string) (string, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.runLocked(ctx, args...)
-}
-
-// runLocked is run for callers that already hold the lock, which is every
-// operation built out of more than one command — a Put that has to create the
-// folder first must not let another goroutine sign the account out between the
-// two.
+// runLocked invokes the client with the session staged around it and returns
+// what it wrote to stdout. The caller holds mu.
+//
+// There is no unlocked variant on purpose. Every exported operation takes the
+// lock once and holds it for the whole thing: a Put that creates the folder
+// first must not let another goroutine sign the account out between the two,
+// and a read that consults the UID cache and then acts on what it found must
+// not have the answer change underneath it.
 func (p *protonCLIProvider) runLocked(ctx context.Context, args ...string) (string, error) {
 	bin, err := p.resolveBinary()
 	if err != nil {
@@ -525,6 +532,64 @@ func (p *protonCLIProvider) remotePath(key string) (string, error) {
 	return p.folder + "/" + clean, nil
 }
 
+// --- finding a part without walking the folder -------------------------------
+
+// nodeRefLocked is the path to address a part by, preferring the node UID.
+//
+// This is where most of a Proton read goes. Given a path, the client resolves
+// each segment by iterating the folder's children and decrypting every name
+// until one matches — twice over, once for the folder and once for the part.
+// That is O(everything in the folder) per operation, and it gets slower as the
+// vault fills. Given a UID it calls getNode directly instead, so the walk does
+// not happen at all.
+//
+// The UIDs are learned by listing the folder once, which costs the same as a
+// single name lookup and answers for every part at once. It is the same trick
+// gdrive.go plays with its ID cache, for the same reason.
+//
+// A miss falls back to the name, which is always correct and merely slow.
+func (p *protonCLIProvider) nodeRefLocked(ctx context.Context, key string) (string, bool) {
+	if uid, ok := p.uids[key]; ok {
+		return protonCLIRootSection(p.folder) + "/" + uid, true
+	}
+
+	// One listing per provider, not one per miss. A part somebody else added
+	// after that is a miss for good — but it is one slow read, not a re-listing
+	// on every read of a key that is genuinely not there.
+	if !p.warmed {
+		p.warmed = true
+		if nodes, err := p.listFolderLocked(ctx); err == nil {
+			p.rememberNodes(nodes)
+		}
+		if uid, ok := p.uids[key]; ok {
+			return protonCLIRootSection(p.folder) + "/" + uid, true
+		}
+	}
+
+	remote, err := p.remotePath(key)
+	if err != nil {
+		// Callers have already validated the key; this cannot happen, and a
+		// path that cannot be built is not a reference worth returning.
+		return "", false
+	}
+	return remote, false
+}
+
+// rememberNodes files away what a listing said, so the next read of any of
+// those parts skips the walk.
+func (p *protonCLIProvider) rememberNodes(nodes []protonCLINode) {
+	for _, node := range nodes {
+		if node.Type == "file" && node.UID != "" && node.name() != "" {
+			p.uids[node.name()] = node.UID
+		}
+	}
+}
+
+// forgetUID drops a UID that has stopped meaning anything — the node behind it
+// was removed, or was never the one this key names. The next read learns it
+// again from the folder.
+func (p *protonCLIProvider) forgetUID(key string) { delete(p.uids, key) }
+
 // --- the object store surface ----------------------------------------------
 
 func (p *protonCLIProvider) Put(ctx context.Context, key string, data []byte) error {
@@ -577,8 +642,7 @@ func (p *protonCLIProvider) Put(ctx context.Context, key string, data []byte) er
 }
 
 func (p *protonCLIProvider) Get(ctx context.Context, key string) ([]byte, error) {
-	remote, err := p.remotePath(key)
-	if err != nil {
+	if _, err := p.remotePath(key); err != nil {
 		return nil, err
 	}
 
@@ -588,20 +652,40 @@ func (p *protonCLIProvider) Get(ctx context.Context, key string) ([]byte, error)
 	}
 	defer os.RemoveAll(dir)
 
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	ref, byUID := p.nodeRefLocked(ctx, key)
+	data, err := p.downloadLocked(ctx, key, ref, dir)
+	if errors.Is(err, ErrNotFound) && byUID {
+		// The UID named a node that is no longer there — the part was removed
+		// and written again, here or somewhere else. Forget it and ask by name,
+		// which is the answer that cannot go stale.
+		p.forgetUID(key)
+		ref, _ = p.nodeRefLocked(ctx, key)
+		data, err = p.downloadLocked(ctx, key, ref, dir)
+	}
+	return data, err
+}
+
+// downloadLocked fetches one part into dir and reads it back.
+func (p *protonCLIProvider) downloadLocked(ctx context.Context, key, ref, dir string) ([]byte, error) {
 	// The directory is empty and freshly made, so no conflict strategy can come
 	// into play; one is passed anyway, because the alternative to a strategy is
 	// the client stopping to ask a question nobody is there to answer.
-	if _, err := p.run(ctx, "filesystem", "download",
+	if _, err := p.runLocked(ctx, "filesystem", "download",
 		"--file-conflict-strategy", "skip",
 		"--folder-conflict-strategy", "skip",
 		"--json",
-		remote, dir); err != nil {
+		ref, dir); err != nil {
 		if protonCLIIsNotFound(err) {
 			return nil, ErrNotFound
 		}
-		return nil, fmt.Errorf("downloading %s: %w", remote, err)
+		return nil, fmt.Errorf("downloading %s: %w", key, err)
 	}
 
+	// Named after the node rather than after what it was asked for, so this is
+	// the key whether the part was fetched by name or by UID.
 	data, err := os.ReadFile(filepath.Join(dir, key))
 	if errors.Is(err, os.ErrNotExist) {
 		// The client reports a skipped or missing transfer by not writing the
@@ -616,33 +700,53 @@ func (p *protonCLIProvider) Get(ctx context.Context, key string) ([]byte, error)
 }
 
 func (p *protonCLIProvider) Stat(ctx context.Context, key string) (ObjectInfo, error) {
-	remote, err := p.remotePath(key)
-	if err != nil {
+	if _, err := p.remotePath(key); err != nil {
 		return ObjectInfo{}, err
 	}
 
-	out, err := p.run(ctx, "filesystem", "info", "--json", remote)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	ref, byUID := p.nodeRefLocked(ctx, key)
+	info, err := p.statLocked(ctx, key, ref)
+	if errors.Is(err, ErrNotFound) && byUID {
+		p.forgetUID(key)
+		ref, _ = p.nodeRefLocked(ctx, key)
+		info, err = p.statLocked(ctx, key, ref)
+	}
+	return info, err
+}
+
+func (p *protonCLIProvider) statLocked(ctx context.Context, key, ref string) (ObjectInfo, error) {
+	out, err := p.runLocked(ctx, "filesystem", "info", "--json", ref)
 	if err != nil {
 		if protonCLIIsNotFound(err) {
 			return ObjectInfo{}, ErrNotFound
 		}
-		return ObjectInfo{}, fmt.Errorf("checking %s: %w", remote, err)
+		return ObjectInfo{}, fmt.Errorf("checking %s: %w", key, err)
 	}
 
 	var node protonCLINode
 	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &node); err != nil {
 		return ObjectInfo{}, fmt.Errorf("checking %s: %s said something unexpected: %w",
-			remote, p.binary, err)
+			key, p.binary, err)
+	}
+	// Whatever it was asked by, the answer carries the UID to ask by next time.
+	if node.UID != "" {
+		p.uids[key] = node.UID
 	}
 	return ObjectInfo{Key: key, Size: node.size()}, nil
 }
 
 func (p *protonCLIProvider) Delete(ctx context.Context, key string) error {
-	remote, err := p.remotePath(key)
-	if err != nil {
+	// Validated here rather than used here: the path itself now comes from
+	// nodeRefLocked, which prefers a UID, but a key that could not make a path
+	// is still a key this backend has never been handed.
+	if _, err := p.remotePath(key); err != nil {
 		return err
 	}
 
+	var err error
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -658,10 +762,28 @@ func (p *protonCLIProvider) Delete(ctx context.Context, key string) error {
 	// trash spending the account's quota forever. Purging is the whole point of
 	// the second step — trashing alone would take the part out of SAND's folder
 	// and go on costing the account until somebody emptied the trash by hand.
-	if err := p.protonRemove(ctx, "trash", remote); err != nil {
-		return fmt.Errorf("deleting %s: %w", remote, err)
+	ref, byUID := p.nodeRefLocked(ctx, key)
+	err = p.protonRemove(ctx, "trash", ref)
+	if protonCLIIsNotFound(err) && byUID {
+		p.forgetUID(key)
+		ref, _ = p.nodeRefLocked(ctx, key)
+		err = p.protonRemove(ctx, "trash", ref)
 	}
-	if err := p.protonRemove(ctx, "delete", protonCLITrashSection+"/"+key); err != nil {
+	if protonCLIIsNotFound(err) {
+		// Not there to trash. It may still be sitting in the trash from a
+		// delete that got half way, so the purge below still runs.
+		err = nil
+	}
+	// The part is on its way out either way, so the UID it was known by is not
+	// worth keeping. Holding a UID for a node that has been trashed would send
+	// the next read after something in the bin.
+	p.forgetUID(key)
+	if err != nil {
+		return fmt.Errorf("deleting %s: %w", key, err)
+	}
+
+	if err := p.protonRemove(ctx, "delete", protonCLITrashSection+"/"+key); err != nil &&
+		!protonCLIIsNotFound(err) {
 		return fmt.Errorf("purging %s from the Proton trash: %w", key, err)
 	}
 	return nil
@@ -672,9 +794,10 @@ func (p *protonCLIProvider) Delete(ctx context.Context, key string) error {
 func (p *protonCLIProvider) protonRemove(ctx context.Context, action, path string) error {
 	out, err := p.runLocked(ctx, "filesystem", action, "--json", path)
 	if err != nil {
-		if protonCLIIsNotFound(err) {
-			return nil
-		}
+		// Returned rather than swallowed: Delete has to tell "the part is
+		// already gone" from "the UID I used has gone stale", and only the
+		// caller knows which it was asking by. It is Delete that turns a
+		// genuine absence into success.
 		return err
 	}
 	return protonCLINodeResults(out)
@@ -716,10 +839,17 @@ func protonCLINodeResults(out string) error {
 }
 
 func (p *protonCLIProvider) List(ctx context.Context, prefix string) ([]ObjectInfo, error) {
-	nodes, err := p.listFolder(ctx)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	nodes, err := p.listFolderLocked(ctx)
 	if err != nil {
 		return nil, err
 	}
+	// A listing answers the "where is this node" question for every part at
+	// once, which is the cheapest the UID cache ever gets filled.
+	p.rememberNodes(nodes)
+	p.warmed = true
 
 	out := make([]ObjectInfo, 0, len(nodes))
 	for _, node := range nodes {
@@ -735,11 +865,11 @@ func (p *protonCLIProvider) List(ctx context.Context, prefix string) ([]ObjectIn
 	return out, nil
 }
 
-// listFolder reads the folder's children, treating a folder that is not there
-// as an empty one: an account connected but not yet written to has no folder,
-// and "nothing stored here" is the true answer rather than an error.
-func (p *protonCLIProvider) listFolder(ctx context.Context) ([]protonCLINode, error) {
-	out, err := p.run(ctx, "filesystem", "list", "--json", p.folder)
+// listFolderLocked reads the folder's children, treating a folder that is not
+// there as an empty one: an account connected but not yet written to has no
+// folder, and "nothing stored here" is the true answer rather than an error.
+func (p *protonCLIProvider) listFolderLocked(ctx context.Context) ([]protonCLINode, error) {
+	out, err := p.runLocked(ctx, "filesystem", "list", "--json", p.folder)
 	if err != nil {
 		if protonCLIIsNotFound(err) {
 			return nil, nil
@@ -807,10 +937,16 @@ func (p *protonCLIProvider) ensureFolderLocked(ctx context.Context) error {
 // drawn against their plan's size types it into the account's capacity, and it
 // is then labelled as their figure rather than Proton's.
 func (p *protonCLIProvider) MeasureUsage(ctx context.Context) (Usage, error) {
-	nodes, err := p.listFolder(ctx)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	nodes, err := p.listFolderLocked(ctx)
 	if err != nil {
 		return Usage{}, err
 	}
+	p.rememberNodes(nodes)
+	p.warmed = true
+
 	var used int64
 	for _, node := range nodes {
 		if node.Type == "file" {
@@ -823,9 +959,12 @@ func (p *protonCLIProvider) MeasureUsage(ctx context.Context) (Usage, error) {
 // Account names the signed-in address, so a freshly connected account can call
 // itself something better than "Proton Drive 2".
 func (p *protonCLIProvider) Account(ctx context.Context) (string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	// The section the account's own files live in is owned by the account, and
 	// is there before anything has been stored — which the parts folder is not.
-	out, err := p.run(ctx, "filesystem", "info", "--json", protonCLIRootSection(p.folder))
+	out, err := p.runLocked(ctx, "filesystem", "info", "--json", protonCLIRootSection(p.folder))
 	if err != nil {
 		return "", err
 	}
@@ -862,6 +1001,10 @@ type protonCLINode struct {
 		OK    bool   `json:"ok"`
 		Value string `json:"value"`
 	} `json:"name"`
+
+	// UID is how the client addresses a node without being told where it
+	// lives, and is what nodeRefLocked caches to avoid the folder walk.
+	UID string `json:"uid"`
 
 	Type string `json:"type"`
 

@@ -186,6 +186,8 @@ func ProtonCLISignOut(ctx context.Context, cfg Config) error {
 	if !ok {
 		return fmt.Errorf("proton drive: unexpected backend %T", p)
 	}
-	_, err = client.run(ctx, "auth", "logout", "--json")
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	_, err = client.runLocked(ctx, "auth", "logout", "--json")
 	return err
 }

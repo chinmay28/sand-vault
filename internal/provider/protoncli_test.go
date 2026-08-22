@@ -59,14 +59,49 @@ SESSION="$PROTON_DRIVE_CACHE_DIR/auth-session.json"
 
 fail() { echo "$1" >&2; exit 1; }
 
+# uid_for invents a node UID for a name, in the shape the real client insists
+# on: two 22-character words either side of a ~. The shape matters — the client
+# decides a path segment is a UID by matching that pattern, and a segment that
+# misses it is taken for a name and looked up the slow way.
+uid_for() { h=$(printf '%s' "$1" | md5sum | cut -c1-22); printf '%s~%s' "$h" "$h"; }
+
 node_json() {
 	# $1 path on disk, $2 name
 	if [ -d "$1" ]; then
-		printf '{"name":{"ok":true,"value":"%s"},"type":"folder","ownedBy":{"email":"someone@proton.me"}}' "$2"
+		printf '{"uid":"%s","name":{"ok":true,"value":"%s"},"type":"folder","ownedBy":{"email":"someone@proton.me"}}' "$(uid_for "$2")" "$2"
 	else
 		size=$(wc -c < "$1" | tr -d ' ')
-		printf '{"name":{"ok":true,"value":"%s"},"type":"file","activeRevision":{"claimedSize":%s},"ownedBy":{"email":"someone@proton.me"}}' "$2" "$size"
+		printf '{"uid":"%s","name":{"ok":true,"value":"%s"},"type":"file","activeRevision":{"claimedSize":%s},"ownedBy":{"email":"someone@proton.me"}}' "$(uid_for "$2")" "$2" "$size"
 	fi
+}
+
+# resolve turns a path into a file on disk, understanding a trailing node UID
+# the way the client does — a UID is looked up directly, a name is walked to.
+# Every resolution is recorded, so a test can tell which of the two happened
+# and prove the folder walk was skipped rather than assume it.
+resolve() {
+	last="${1##*/}"
+	case "$last" in
+		*~*)
+			printf 'uid %s\n' "$last" >> "$REMOTE/.calls"
+			# A UID the test has declared dead stands for a node removed since
+			# it was cached.
+			if [ -f "$REMOTE/.dead-uids" ] && grep -qF "$last" "$REMOTE/.dead-uids"; then
+				return 1
+			fi
+			for f in "$REMOTE/my-files/sand"/* "$REMOTE/trash"/*; do
+				[ -e "$f" ] || continue
+				if [ "$(uid_for "$(basename "$f")")" = "$last" ]; then printf '%s' "$f"; return 0; fi
+			done
+			return 1
+			;;
+		*)
+			printf 'name %s\n' "$1" >> "$REMOTE/.calls"
+			t="$REMOTE/$(echo "$1" | sed 's|^/||')"
+			[ -e "$t" ] || return 1
+			printf '%s' "$t"
+			;;
+	esac
 }
 
 if [ "$1" = "auth" ] && [ "$2" = "login" ]; then
@@ -107,12 +142,12 @@ set -- $args
 
 case "$action" in
 	info)
-		target="$REMOTE/$(echo "$1" | sed 's|^/||')"
-		[ -e "$target" ] || fail "ValidationError: Node not found: $1"
-		node_json "$target" "$(basename "$1")"
+		target="$(resolve "$1")" || fail "ValidationError: Node not found: $1"
+		node_json "$target" "$(basename "$target")"
 		printf '\n'
 		;;
 	list)
+		printf 'list %s\n' "$1" >> "$REMOTE/.calls"
 		target="$REMOTE/$(echo "$1" | sed 's|^/||')"
 		[ -d "$target" ] || fail "ValidationError: Node not found: $1"
 		printf '[\n'
@@ -136,16 +171,16 @@ case "$action" in
 		cp "$1" "$parent/$(basename "$1")"
 		;;
 	download)
-		target="$REMOTE/$(echo "$1" | sed 's|^/||')"
-		[ -e "$target" ] || fail "ValidationError: Node not found: $1"
-		cp "$target" "$2/$(basename "$1")"
+		target="$(resolve "$1")" || fail "ValidationError: Node not found: $1"
+		# Named after the node, not after what was asked for — which is what
+		# makes a download by UID land under the part's own name.
+		cp "$target" "$2/$(basename "$target")"
 		;;
 	trash)
-		target="$REMOTE/$(echo "$1" | sed 's|^/||')"
-		[ -e "$target" ] || fail "ValidationError: Node not found: $1"
+		target="$(resolve "$1")" || fail "ValidationError: Node not found: $1"
 		mkdir -p "$REMOTE/trash"
-		mv "$target" "$REMOTE/trash/$(basename "$1")"
-		printf '[\n{"uid":"%s","ok":true}\n]\n' "$(basename "$1")"
+		mv "$target" "$REMOTE/trash/$(basename "$target")"
+		printf '[\n{"uid":"%s","ok":true}\n]\n' "$(basename "$target")"
 		;;
 	delete)
 		# The real client refuses a live path outright, and this refuses it the
@@ -370,6 +405,140 @@ func TestProtonCLINodeResults(t *testing.T) {
 	// Silence must not read as success.
 	if err := protonCLINodeResults("not json at all"); err == nil {
 		t.Error("unparseable output was taken for success")
+	}
+}
+
+// protonCLICalls is every path the stand-in client was asked to resolve, and
+// how — "uid …" or "name …" — which is what makes the caching testable rather
+// than merely asserted.
+func protonCLICalls(t *testing.T, remote string) []string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(remote, ".calls"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		t.Fatalf("reading the call log: %v", err)
+	}
+	return strings.Split(strings.TrimSpace(string(data)), "\n")
+}
+
+func protonCLICountCalls(calls []string, prefix string) int {
+	n := 0
+	for _, call := range calls {
+		if strings.HasPrefix(call, prefix) {
+			n++
+		}
+	}
+	return n
+}
+
+// TestProtonCLIReadsByUIDAfterTheFirst is the point of the cache. Addressing a
+// part by name makes the client walk the folder and decrypt every name in it,
+// twice, on every single read; addressing it by UID does not. One listing
+// answers for every part at once, so the walk should happen once and never
+// again.
+func TestProtonCLIReadsByUIDAfterTheFirst(t *testing.T) {
+	p, remote := protonCLITestProvider(t, nil)
+	ctx := context.Background()
+	if err := p.Ping(ctx); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+	for _, key := range []string{"one.sand", "two.sand", "three.sand"} {
+		if err := p.Put(ctx, key, []byte(key)); err != nil {
+			t.Fatalf("Put %s: %v", key, err)
+		}
+	}
+
+	// Everything above is setup; the reads are what is being measured.
+	if err := os.Remove(filepath.Join(remote, ".calls")); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("clearing the call log: %v", err)
+	}
+
+	for _, key := range []string{"one.sand", "two.sand", "three.sand"} {
+		got, err := p.Get(ctx, key)
+		if err != nil {
+			t.Fatalf("Get %s: %v", key, err)
+		}
+		if string(got) != key {
+			t.Fatalf("Get %s returned %q", key, got)
+		}
+	}
+
+	calls := protonCLICalls(t, remote)
+	// One listing, to learn where everything is. Not one per read.
+	if listings := protonCLICountCalls(calls, "list "); listings != 1 {
+		t.Errorf("the folder was listed %d times for three reads, want 1: %v", listings, calls)
+	}
+	// And every download addressed by UID, so the client never walked.
+	if byUID := protonCLICountCalls(calls, "uid "); byUID != 3 {
+		t.Errorf("%d of 3 reads went by UID: %v", byUID, calls)
+	}
+	if byName := protonCLICountCalls(calls, "name /my-files/sand/"); byName != 0 {
+		t.Errorf("%d reads still walked the folder by name: %v", byName, calls)
+	}
+}
+
+// TestProtonCLIStaleUIDFallsBackToTheName checks the failure this cache makes
+// possible: a UID that named a node somebody has since removed. The read must
+// find the part anyway, by the name that cannot go stale.
+func TestProtonCLIStaleUIDFallsBackToTheName(t *testing.T) {
+	p, remote := protonCLITestProvider(t, nil)
+	ctx := context.Background()
+	if err := p.Ping(ctx); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+	if err := p.Put(ctx, "part.sand", []byte("payload")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	// Warm the cache, then declare the UID it learned dead.
+	if _, err := p.List(ctx, ""); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	uid := p.uids["part.sand"]
+	if uid == "" {
+		t.Fatal("listing did not fill the UID cache")
+	}
+	if err := os.WriteFile(filepath.Join(remote, ".dead-uids"), []byte(uid), 0o600); err != nil {
+		t.Fatalf("killing the uid: %v", err)
+	}
+
+	got, err := p.Get(ctx, "part.sand")
+	if err != nil {
+		t.Fatalf("Get with a stale UID: %v", err)
+	}
+	if string(got) != "payload" {
+		t.Fatalf("Get returned %q", got)
+	}
+	// And the dead UID is not kept to fail again on the next read.
+	if p.uids["part.sand"] == uid {
+		t.Error("the stale UID was kept after it failed")
+	}
+}
+
+// TestProtonCLIDeleteForgetsTheUID checks that removing a part takes its UID
+// with it. A UID left behind would send the next read after a node in the bin.
+func TestProtonCLIDeleteForgetsTheUID(t *testing.T) {
+	p, _ := protonCLITestProvider(t, nil)
+	ctx := context.Background()
+	if err := p.Ping(ctx); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+	if err := p.Put(ctx, "part.sand", []byte("x")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if _, err := p.List(ctx, ""); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if p.uids["part.sand"] == "" {
+		t.Fatal("listing did not fill the UID cache")
+	}
+
+	if err := p.Delete(ctx, "part.sand"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if uid, ok := p.uids["part.sand"]; ok {
+		t.Errorf("the UID %q outlived the part", uid)
 	}
 }
 
