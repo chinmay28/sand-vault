@@ -234,6 +234,10 @@ PROTON_LINK="/usr/local/bin/proton-drive"
 PROTON_SDK_DIR="$PREFIX/proton-sdk"
 PROTON_STAMP="$PREFIX/.proton-cli-built"
 BUN_DIR="$PREFIX/bun"
+# Whichever route installs bun writes here, and its last lines are what a
+# failure prints. Keeping it is the difference between "it did not work" and a
+# report somebody can act on.
+BUN_LOG="$PREFIX/bun-install.log"
 
 # Where each Proton account keeps its client cache and, for the moment a
 # command runs, its session. Under the data directory because that is the one
@@ -636,44 +640,29 @@ install_bun() {
     ok "bun $version"
     return 0
   fi
-  ensure_pkg unzip
   log "installing bun (builds Proton's client)…"
   install -d -o "$SVC_USER" -g "$SVC_USER" -m 755 "$BUN_DIR"
 
-  # Deliberately NOT `curl … | bash`, which is how bun documents this and is
-  # wrong for an unattended installer: a pipeline exits with the status of its
-  # LAST command, so a curl that fails hands bash an empty script and bash
-  # exits 0. The download failure vanishes and the only symptom is a missing
-  # binary further on, which is a much worse thing to debug from. Fetch first,
-  # check that, then run it.
+  # npm first, where there is one. It is faster than fetching and unpacking a
+  # zip, it reports an unsupported platform as an error instead of installing
+  # something that cannot run, and — the reason it is first rather than the
+  # fallback — a source-mode install has already used the npm registry to build
+  # the web client, so it is a route this machine is known to reach. bun.sh is
+  # one more host that may not be.
   #
-  # It lands in $BUN_DIR because the service user has to be able to read it,
-  # and mktemp would give it a file owned by root and mode 600.
-  installer="$BUN_DIR/install.sh"
-  bun_log="$BUN_DIR/install.log"
-  if ! curl -fsSL https://bun.sh/install -o "$installer"; then
-    rm -f "$installer"
-    warn "could not fetch bun's installer from https://bun.sh/install."
-    warn "Proton's client needs it. Check the network from this machine, or set"
-    warn "PROTON_CLI_URL to a prebuilt proton-drive binary and re-run."
-    return 1
-  fi
-  chown "$SVC_USER":"$SVC_USER" "$installer" 2>/dev/null || true
-  chmod 0755 "$installer"
-
-  # The output is kept rather than discarded. When this fails it is the only
-  # thing that says why, and "it did not work" is not a bug report anybody can
-  # act on — least of all somebody reading it over ssh on a Pi.
-  if ! as_svc env BUN_INSTALL="$BUN_DIR" bash "$installer" > "$bun_log" 2>&1; then
-    warn "bun's installer failed. Last lines of $bun_log:"
-    tail -n 6 "$bun_log" 2>/dev/null | sed 's/^/       /' >&2
-    return 1
+  # Release mode installs no Node, so npm may not be here at all; that is what
+  # the second route is for.
+  if command -v npm >/dev/null 2>&1 && install_bun_via_npm; then
+    :
+  else
+    command -v npm >/dev/null 2>&1 && warn "npm could not install bun; trying bun.sh."
+    install_bun_via_bunsh || return 1
   fi
 
   if [ ! -x "$BUN_DIR/bin/bun" ]; then
-    warn "bun's installer finished but left no binary at $BUN_DIR/bin/bun."
-    warn "Last lines of $bun_log:"
-    tail -n 6 "$bun_log" 2>/dev/null | sed 's/^/       /' >&2
+    warn "the bun install finished but left no binary at $BUN_DIR/bin/bun."
+    warn "Last lines of $BUN_LOG:"
+    tail -n 6 "$BUN_LOG" 2>/dev/null | sed 's/^/       /' >&2
     return 1
   fi
   # Captured with `|| status=$?` rather than tested with `if !`, because inside
@@ -694,6 +683,51 @@ install_bun() {
     return 1
   fi
   ok "bun $version"
+}
+
+# install_bun_via_npm takes bun from the registry, which publishes it as a
+# per-platform binary package. Everything downstream looks for $BUN_DIR/bin/bun,
+# so the two routes are made to agree with a symlink rather than by teaching the
+# rest of the script about npm's layout.
+install_bun_via_npm() {
+  as_svc npm install --no-audit --no-fund --prefix "$BUN_DIR" bun > "$BUN_LOG" 2>&1 || return 1
+  [ -x "$BUN_DIR/node_modules/.bin/bun" ] || return 1
+  install -d -o "$SVC_USER" -g "$SVC_USER" -m 755 "$BUN_DIR/bin"
+  ln -sf "$BUN_DIR/node_modules/.bin/bun" "$BUN_DIR/bin/bun"
+}
+
+# install_bun_via_bunsh is bun's own installer, for the hosts with no npm.
+install_bun_via_bunsh() {
+  ensure_pkg unzip
+
+  # Deliberately NOT `curl … | bash`, which is how bun documents this and is
+  # wrong for an unattended installer: a pipeline exits with the status of its
+  # LAST command, so a curl that fails hands bash an empty script and bash
+  # exits 0. The download failure vanishes and the only symptom is a missing
+  # binary further on, which is a much worse thing to debug from. Fetch first,
+  # check that, then run it.
+  #
+  # It lands in $BUN_DIR because the service user has to be able to read it,
+  # and mktemp would give it a file owned by root and mode 600.
+  installer="$BUN_DIR/install.sh"
+  if ! curl -fsSL https://bun.sh/install -o "$installer"; then
+    rm -f "$installer"
+    warn "could not fetch bun's installer from https://bun.sh/install."
+    warn "Proton's client needs a bun. Check the network from this machine, or"
+    warn "set PROTON_CLI_URL to a prebuilt proton-drive binary and re-run."
+    return 1
+  fi
+  chown "$SVC_USER":"$SVC_USER" "$installer" 2>/dev/null || true
+  chmod 0755 "$installer"
+
+  # The output is kept rather than discarded. When this fails it is the only
+  # thing that says why, and "it did not work" is not a bug report anybody can
+  # act on — least of all somebody reading it over ssh on a Pi.
+  if ! as_svc env BUN_INSTALL="$BUN_DIR" bash "$installer" > "$BUN_LOG" 2>&1; then
+    warn "bun's installer failed. Last lines of $BUN_LOG:"
+    tail -n 6 "$BUN_LOG" 2>/dev/null | sed 's/^/       /' >&2
+    return 1
+  fi
 }
 
 # fetch_proton_sdk clones or updates the checkout the client is built from, and
