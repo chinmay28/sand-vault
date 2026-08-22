@@ -137,10 +137,16 @@ A backend of its own: a `Spec` with fields, a struct, six methods, its own
 signing. No SDK — everything here is `net/http` and `crypto` out of the
 standard library, which is what keeps the artifact one static CGO-free binary.
 
+**Done: SFTP.** One backend covers rsync.net, BorgBase, Hetzner Storage Box,
+every VPS and every NAS, and nothing has to be installed on the far end. It
+came in cheaper than this page estimated — `golang.org/x/crypto` was already a
+direct dependency, so `ssh` was a new import path rather than a new module.
+See [`sftp.md`](sftp.md), which also covers the half that is designed and not
+yet built: browsing a machine and importing files off it into a vault folder.
+
 | Candidate | Why | Notes |
 |---|---|---|
 | **Azure Blob Storage** | The biggest real gap — the third hyperscaler, and the only one with no S3 face | SharedKey signing, same exercise as the SigV4 code in `s3.go` |
-| **SFTP** | One backend covers rsync.net, BorgBase, Hetzner Storage Box, every VPS and every NAS | Needs `golang.org/x/crypto/ssh` — the only new dependency on this page, and still no CGO |
 | **Backblaze B2 native** | — | Low value: the S3 preset already covers B2, and B2's own API reports no bucket size either — usage there is counted by listing and measured against a declared capacity (`UsageMeasurer`, `Config.Capacity`) |
 
 ---
@@ -193,8 +199,10 @@ adding a backend. In order:
    folder, a row in the `syncFolders` table in `syncfolder.go`, which does the
    registering for you. The `Spec` is the connect form: each
    `FieldSpec` becomes an input, `Secret` fields are redacted on the way to the
-   browser, `Directory` fields get the folder picker, `Advanced` fields hide
-   behind a disclosure, and `Presets` become buttons.
+   browser, `Directory` fields get the folder picker, `Multiline` fields get a
+   textarea (needed for anything with newlines in it — an `<input>` drops them
+   silently), `Advanced` fields hide behind a disclosure, and `Presets` become
+   buttons.
 3. **The six methods** — `Put`, `Get`, `Stat`, `Delete`, `List`, `Ping`.
    `Get`/`Stat` return `ErrNotFound` for a missing object; `Delete` is
    idempotent. Implement `UsageReporter` where the service reports a quota —

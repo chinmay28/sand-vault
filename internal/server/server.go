@@ -411,6 +411,20 @@ func (s *Server) Handler() (http.Handler, error) {
 		"POST /api/git/track":        s.handleGitTrack,
 		"POST /api/git/{id}/refresh": s.handleGitRefresh,
 		"DELETE /api/git/{id}":       s.handleGitUntrack,
+
+		// The machines a vault imports files *from*, which is the opposite
+		// direction from a connected account and is deliberately not one: an
+		// account holds opaque shards under keys SAND generates, a source holds
+		// the user's own files under paths the user browses, and it is never
+		// written to. Listing is index work; the other four talk to somebody
+		// else's machine and carry deadlines of their own. See
+		// handlers_remote.go and internal/vault/source.go.
+		"GET /api/remote":              s.handleRemoteList,
+		"POST /api/remote":             s.handleRemoteAdd,
+		"PATCH /api/remote/{id}":       s.handleRemoteUpdate,
+		"DELETE /api/remote/{id}":      s.handleRemoteRemove,
+		"GET /api/remote/{id}/files":   s.handleRemoteBrowse,
+		"POST /api/remote/{id}/import": s.handleRemoteImport,
 	}
 	for pattern, handler := range protected {
 		mux.HandleFunc(pattern, s.requireSession(handler))

@@ -26,6 +26,7 @@ const (
 	KindLocal    Kind = "local"
 	KindS3       Kind = "s3"
 	KindWebDAV   Kind = "webdav"
+	KindSFTP     Kind = "sftp"
 	KindGDrive   Kind = "gdrive"
 	KindDropbox  Kind = "dropbox"
 	KindOneDrive Kind = "onedrive"
@@ -407,6 +408,13 @@ type FieldSpec struct {
 	// connect form keeps them behind a disclosure so the common path is a
 	// button rather than a form.
 	Advanced bool `json:"advanced,omitempty"`
+
+	// Multiline marks a field whose value has newlines in it, which so far
+	// means a private key. Not a cosmetic preference: an <input> silently
+	// drops the line breaks out of a pasted PEM block, so a key pasted into
+	// one arrives as a single line and does not parse. The form has to render
+	// a textarea or the field cannot be filled in at all.
+	Multiline bool `json:"multiline,omitempty"`
 }
 
 // Preset pre-fills a backend's form for one well-known service, so pCloud is

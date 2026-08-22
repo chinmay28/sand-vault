@@ -1,6 +1,6 @@
 import React, { useState } from 'react'
 import { COLORS, FONT } from '../theme'
-import { Input, PasswordInput } from './ui'
+import { Input, PasswordInput, TextArea } from './ui'
 import DirectoryPicker from './DirectoryPicker'
 
 /* What a stored secret looks like once it has left the vault.
@@ -37,6 +37,24 @@ export default function SpecFields({ fields, values, onChange, secretPlaceholder
           value={values[field.key] || ''}
           disabled={disabled}
           onChange={(value) => onChange(field.key, value)}
+        />
+      )
+    }
+
+    /* A key is pasted, not typed, so it gets a box big enough to paste into
+       and to check afterwards. Secret and multiline together resolve to the
+       textarea: masking a PEM block would hide the only part of it worth
+       looking at. */
+    if (field.multiline) {
+      return (
+        <TextArea
+          key={field.key}
+          label={field.label + (field.required ? ' *' : '')}
+          help={field.help}
+          placeholder={field.secret && secretPlaceholder ? secretPlaceholder : field.placeholder}
+          value={values[field.key] || ''}
+          disabled={disabled}
+          onChange={(e) => onChange(field.key, e.target.value)}
         />
       )
     }

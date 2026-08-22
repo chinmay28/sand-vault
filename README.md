@@ -180,6 +180,7 @@ Reads are a race, so a slow or offline account costs you nothing — it just los
 | `box` | Box | **Sign in** |
 | `s3` | Amazon S3, Cloudflare R2, Backblaze B2, Wasabi, MinIO | Bucket, keys, endpoint for non-AWS |
 | `webdav` | Nextcloud, ownCloud, pCloud, Koofr, Fastmail, anything behind `rclone serve webdav` | URL, username, app password |
+| `sftp` | Any machine you have an SSH login on — a VPS, a NAS, rsync.net, a Hetzner Storage Box | Host, username, private key |
 | `icloud` | iCloud Drive, through the folder macOS or iCloud for Windows syncs | A path |
 | `proton` | Proton Drive, through the folder its desktop app syncs | A path |
 | `mega` | MEGA, through the folder its desktop app syncs | A path |
@@ -214,6 +215,43 @@ for adding one.
 > `sudo ./scripts/allow-local-path.sh /data/SANDVault` — and reconnect. See
 > [Local folders on the systemd
 > service](#local-folders-on-the-systemd-service).
+
+> **SSH / SFTP** needs nothing installed on the far end: if you can `sftp` to a
+> box, SAND can hold parts on it. Paste an OpenSSH private key — generate one
+> with `ssh-keygen -t ed25519` and put its `.pub` half in the account's
+> `authorized_keys` — and name a folder for the parts.
+>
+> The host key is checked, always. The first connection learns the server's
+> fingerprint and stores it; every connection after that requires the same one,
+> and a host answering with a different key is refused with both fingerprints
+> shown, because a rebuilt VPS and somebody answering in its place look
+> identical from here and only you can tell them apart. If you rebuilt it,
+> clear the stored fingerprint and reconnect. To have even the *first*
+> connection checked, read the fingerprint off the server with `ssh-keygen -lf
+> /etc/ssh/ssh_host_ed25519_key.pub` and paste the `SHA256:…` part into the
+> connect form's advanced settings. See [`docs/sftp.md`](./docs/sftp.md).
+>
+> A VPS is **one** account, however many folders you point at it. Connecting the
+> same box twice does not make it two places, and two parts of one file on one
+> machine is one machine that can rebuild the file.
+
+> **Bringing files in from a machine** is the other direction, and a separate
+> thing: **↓ Import** in a folder connects a machine you have an SSH login on,
+> browses it, and pulls what you pick into that folder — compressed, split,
+> encrypted and scattered like any other upload. The bytes go from the machine
+> to SAND to your accounts; they never pass through the browser.
+>
+> Two entries, even for the same box. A connected account is a place SAND
+> *writes* encrypted parts to. A source is a place it *reads* your own files
+> from, and never writes to. Keeping them apart is what stops an import browser
+> from seeing the shard store.
+>
+> Nothing is removed from the machine, and nothing outside the folder you scope
+> it to can be seen — including through a symlink pointing out of it. **If an
+> import is interrupted, nothing is lost:** every file that arrived is already
+> scattered, and running the same import again skips those and carries on. That
+> is the whole of the resume story — there is no job to resume, only an import
+> to repeat.
 
 > **The backends that take a path** — `local`, and the seven services whose
 > folders a desktop client syncs — are pointed at one rather than told it: the

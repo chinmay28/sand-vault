@@ -225,12 +225,29 @@ type vaultSettings struct {
 	// onto three cloud providers. Nothing about the arrangement is weakened by
 	// keeping it — see Vault.KitCode.
 	KitCodes map[string]string `json:"kit_codes,omitempty"`
+
+	// Sources are the machines files are imported *from* — see source.go.
+	//
+	// Here rather than in a section of their own, and for the reason stated
+	// above rather than to save a section: this is the part of the vault that
+	// is *not* replicated to the connected accounts. A source carries an SSH
+	// private key for a machine the user owns, and a credential like that has
+	// no business being copied onto three cloud providers as part of a
+	// manifest backup — which is precisely the argument the film key is here
+	// for, and it applies with more force to a key that opens a shell.
+	//
+	// The consequence is worth being explicit about: sources do not travel in
+	// a recovery kit, so a rebuilt install reconnects its accounts and has to
+	// be told about its sources again. That is the right trade. A kit exists
+	// to restore access to the data, and an import source holds none of it —
+	// what was imported is in the vault like any other file.
+	Sources []Source `json:"sources,omitempty"`
 }
 
 // empty reports whether anything is set, so that a vault which has never
 // touched these writes no section rather than an encrypted empty object.
 func (s *vaultSettings) empty() bool {
-	return s == nil || (s.MovieAPIKey == "" && len(s.KitCodes) == 0)
+	return s == nil || (s.MovieAPIKey == "" && len(s.KitCodes) == 0 && len(s.Sources) == 0)
 }
 
 // subVaultRecord is one sub vault as it sits on disk: its own KDF salt, its own
