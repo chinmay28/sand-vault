@@ -127,6 +127,11 @@ const (
 	// told to keep in a file. The name is not ours to choose: it is where the
 	// client looks.
 	protonCLISessionFile = "auth-session.json"
+
+	// protonCLITrashSection is where the client addresses trashed nodes, by
+	// name rather than by their old path — the account has one trash, not one
+	// per folder.
+	protonCLITrashSection = "/trash"
 )
 
 // newProtonCLIProvider builds an account backed by the Proton client.
@@ -638,16 +643,74 @@ func (p *protonCLIProvider) Delete(ctx context.Context, key string) error {
 		return err
 	}
 
-	// `delete` rather than `trash`: a part SAND has finished with should stop
-	// costing the account quota, and a trashed one goes on costing it until
-	// somebody empties the trash by hand.
-	if _, err := p.run(ctx, "filesystem", "delete", "--json", remote); err != nil {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Removing a part takes two commands, because Proton's client will not
+	// permanently delete a live file: `delete` accepts a path in the trash and
+	// refuses anything else — "You can permanently delete items only from
+	// trash. Trash your files first." So the part is trashed, then purged from
+	// the trash by name.
+	//
+	// Both steps tolerate the thing already being gone, and that is what makes
+	// a retry heal rather than accumulate: a part trashed by a delete that then
+	// failed is still purged the next time round, instead of sitting in the
+	// trash spending the account's quota forever. Purging is the whole point of
+	// the second step — trashing alone would take the part out of SAND's folder
+	// and go on costing the account until somebody emptied the trash by hand.
+	if err := p.protonRemove(ctx, "trash", remote); err != nil {
+		return fmt.Errorf("deleting %s: %w", remote, err)
+	}
+	if err := p.protonRemove(ctx, "delete", protonCLITrashSection+"/"+key); err != nil {
+		return fmt.Errorf("purging %s from the Proton trash: %w", key, err)
+	}
+	return nil
+}
+
+// protonRemove runs one of the two removal commands and reports whether the
+// node is gone, treating "it was not there" as gone.
+func (p *protonCLIProvider) protonRemove(ctx context.Context, action, path string) error {
+	out, err := p.runLocked(ctx, "filesystem", action, "--json", path)
+	if err != nil {
 		if protonCLIIsNotFound(err) {
-			// Deleting a missing object is not an error — the interface says
-			// the operation is idempotent.
 			return nil
 		}
-		return fmt.Errorf("deleting %s: %w", remote, err)
+		return err
+	}
+	return protonCLINodeResults(out)
+}
+
+// protonCLINodeResults reads what the client says about each node it was asked
+// to trash or delete.
+//
+// This is not belt and braces. Unlike the upload command, which fails the whole
+// invocation when a transfer fails, these two print a result per node and exit
+// zero regardless — a refusal is an `"ok": false` in the JSON and nothing else.
+// Taking the exit status at face value would have SAND report a part deleted
+// while it is still sitting on the account, and the vault would stop tracking
+// something that still exists.
+func protonCLINodeResults(out string) error {
+	trimmed := strings.TrimSpace(out)
+	if trimmed == "" {
+		return nil
+	}
+
+	var results []struct {
+		UID string `json:"uid"`
+		OK  bool   `json:"ok"`
+	}
+	if err := json.Unmarshal([]byte(trimmed), &results); err != nil {
+		// Not a shape this knows. Better to say so than to read silence as
+		// success.
+		return fmt.Errorf("the Proton client said something unexpected: %w", err)
+	}
+	for _, result := range results {
+		if !result.OK {
+			// The client serializes the error as a bare Error, which
+			// JSON.stringify renders as {} — so there is no message to pass on
+			// here, only the fact of the refusal.
+			return fmt.Errorf("the Proton client refused to remove %s", result.UID)
+		}
 	}
 	return nil
 }
