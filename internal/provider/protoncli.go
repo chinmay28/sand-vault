@@ -479,12 +479,18 @@ func protonCLIFirstMeaningfulLine(stderrText string) string {
 
 // protonCLIIsNotFound reports whether a failure was the client saying the path
 // is not there, which every object store has to tell apart from a real error.
+//
+// It matches the client's own phrasing rather than a bare "not found", and the
+// difference is not pedantry. Delete treats a missing object as success, so a
+// failure wrongly read as "not there" is reported to the vault as a part
+// deleted — and the vault stops tracking a part that is still sitting on the
+// account. Anything this does not recognise is an error, which is the safe way
+// round: an error is retried, a false success is not.
 func protonCLIIsNotFound(err error) bool {
 	if err == nil {
 		return false
 	}
-	text := strings.ToLower(err.Error())
-	return strings.Contains(text, "not found") || strings.Contains(text, "does not exist")
+	return strings.Contains(strings.ToLower(err.Error()), "node not found")
 }
 
 // protonCLIIsAuthFailure reports whether the client refused for want of a

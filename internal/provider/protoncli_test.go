@@ -652,6 +652,20 @@ func TestProtonCLIErrorsAreReadable(t *testing.T) {
 		t.Fatalf("the stack trace reached the message: %v", err)
 	}
 
+	// Only the client's own phrasing counts as "not there". Delete reports a
+	// missing object as success, so a failure read as not-found would tell the
+	// vault a part was deleted while it sits on the account still.
+	for _, stderr := range []string{
+		"Trace: AccountApiError: session not found\n",
+		"Trace: Error: getaddrinfo ENOTFOUND drive.proton.me\n",
+		"Trace: Error: volume not found for this account\n",
+	} {
+		if protonCLIIsNotFound(protonCLIError([]string{"filesystem", "delete"}, stderr,
+			fmt.Errorf("exit status 1"))) {
+			t.Errorf("a failure was mistaken for a missing object: %q", stderr)
+		}
+	}
+
 	signedOut := protonCLIError([]string{"filesystem", "list"},
 		"Trace: AuthRequiredError: You need to login first\n", fmt.Errorf("exit status 1"))
 	if !strings.Contains(signedOut.Error(), "signed out") {
