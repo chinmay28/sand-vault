@@ -356,10 +356,25 @@ export function ShardInspector({ file, providers = [], onClose, onChanged }) {
     return () => { cancelled = true }
   }, [file.id])
 
+  /* A chunked file is not one object per part — it is one per part per chunk,
+     all on the same account under the same name with the chunk number counting
+     up. A 4 GB film is thousands of them, so the list below stays one row per
+     part and names that part's first chunk; a page of `-c0000001-`,
+     `-c0000002-` would say nothing the count does not.
+
+     Which is only honest if the count is said out loud. A row showing
+     `-c0000000-` and nothing else reads as if the part were a single object,
+     and then the size beside it reads as the whole part when it is what the
+     sample weighed. Both are said here instead. */
+  const chunks = health?.chunk_count || file.chunk_count || 0
+  const chunked = chunks > 1
+  const sampled = health?.chunks_sampled || 0
+
   return (
     <Modal
       title="Where this file lives"
-      subtitle={`${file.name} — cut ${schemeName(fileScheme(file))} into encrypted shards. Any ${
+      subtitle={`${file.name} — cut ${schemeName(fileScheme(file))} into encrypted shards${
+        chunked ? `, one set per chunk across ${chunks} chunks` : ''}. Any ${
         fileScheme(file).data} of them rebuild the original; fewer is noise.`}
       onClose={onClose}
       width={620}
@@ -374,6 +389,20 @@ export function ShardInspector({ file, providers = [], onClose, onChanged }) {
               ? 'Enough parts are reachable to rebuild this file right now.'
               : 'Too few parts are reachable — this file cannot currently be rebuilt.'}
           </Banner>
+
+          {chunked && (
+            <Banner tone="info">
+              {`This file is stored as ${chunks} chunks, each cut into the same shards. `
+                + "One row per shard below, naming that shard's first chunk — the other "
+                + `${chunks === 2 ? 'one sits' : `${chunks - 1} sit`} beside it on the `
+                + 'same account, same name with the chunk number counting up. '
+                + (sampled > 0 && sampled < chunks
+                  ? `${sampled} of them, spread across the file, were checked just now `
+                    + `rather than all ${chunks}: a shard is written to every chunk or to `
+                    + 'none of them, so a handful catches one that never landed.'
+                  : 'Every one of them was checked just now.')}
+            </Banner>
+          )}
 
           {health.shards.map((shard) => (
             /* Keyed by the copy and not the part: a file spread over six
@@ -420,12 +449,22 @@ export function ShardInspector({ file, providers = [], onClose, onChanged }) {
                   wordBreak: 'break-all',
                 }}>
                   {shard.key}
+                  {chunked ? ` — chunk 1 of ${chunks}` : ''}
                   {shard.error ? ` — ${shard.error}` : ''}
                 </div>
               </span>
 
-              <span style={{ color: COLORS.textDim, flexShrink: 0, whiteSpace: 'nowrap' }}>
-                {shard.present ? formatBytes(shard.observed_size) : '—'}
+              {/* The recorded figure for a chunked file, because the observed one
+                  is what the sampled chunks weighed and would read as the whole
+                  shard sitting there. For a file stored whole the two are the
+                  same measurement, and the observed one was taken just now. */}
+              <span
+                title={chunked
+                  ? `This shard across all ${chunks} chunks`
+                  : 'Measured on the account just now'}
+                style={{ color: COLORS.textDim, flexShrink: 0, whiteSpace: 'nowrap' }}
+              >
+                {shard.present ? formatBytes(chunked ? shard.size : shard.observed_size) : '—'}
               </span>
             </div>
           ))}

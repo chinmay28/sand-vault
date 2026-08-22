@@ -904,6 +904,32 @@ class TestUploadAndPreview:
         # Each part must name the account holding it.
         assert re.search(r"ui-(one|two|three)", body)
 
+    @pytest.mark.slow
+    def test_shard_inspector_says_how_many_chunks_a_file_has(self, app, tmp_path):
+        """One row per shard, naming that shard's first chunk — which is fine
+        for a file that is thousands of objects, as long as the dialog says how
+        many chunks there are and which one the row is naming."""
+        # Over the 16 MiB chunk length, so the file really is stored as more
+        # than one chunk and the rows really are naming the first of them.
+        source = tmp_path / "chunky.bin"
+        source.write_bytes(b"one chunk is not the whole file." * (17 * 1024 * 1024 // 32))
+
+        upload_and_settle(app, source)
+
+        row = app.locator('button[title="Open"]', has_text="chunky.bin").locator("xpath=..")
+        row.locator('button[title="Where the shards live"]').click()
+
+        inspector = app.get_by_role("dialog", name="Where this file lives")
+        inspector.wait_for(timeout=20000)
+        expect(inspector).to_contain_text("Enough parts are reachable", timeout=60000)
+
+        # How many there are, said before the list and again on every row, so
+        # that a key ending `-c0000000-p1.sand` cannot be read as the whole of
+        # what that account is holding.
+        expect(inspector).to_contain_text("across 2 chunks")
+        expect(inspector).to_contain_text("stored as 2 chunks")
+        assert inspector.inner_text().count("chunk 1 of 2") >= 3
+
     def test_moving_a_file_to_other_clouds_moves_only_what_it_has_to(self, app, tmp_path, clouds):
         """The parts inspector prices the change before it happens, and moving
         one cloud out of three leaves the other two parts exactly where they
