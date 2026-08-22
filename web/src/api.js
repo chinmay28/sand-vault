@@ -287,6 +287,16 @@ export const api = {
       },
     }),
   oauthStatus: (flowId) => request(`/api/providers/oauth/${encodeURIComponent(flowId)}`),
+  /* A sign-in that cannot send the browser anywhere. Proton's client prints a
+     link and waits, so this returns a flow to poll and the link turns up on a
+     later poll rather than here — it does not exist until the client has been
+     run. Everything after that is the OAuth path: same status, same complete,
+     same reauthorize. */
+  protonSignIn: ({ options = {}, providerId = '' } = {}) =>
+    request('/api/providers/proton/signin', {
+      method: 'POST',
+      body: { options, provider_id: providerId },
+    }),
   oauthExchange: (flowId, url) =>
     request('/api/providers/oauth/exchange', { method: 'POST', body: { flow_id: flowId, url } }),
   oauthComplete: (flowId, name, options) =>

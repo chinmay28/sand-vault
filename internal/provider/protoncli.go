@@ -61,6 +61,13 @@ func init() {
 			"than only the folder, and it works on a machine with no desktop app — but it needs " +
 			"the `proton-drive` binary installed. The Linux quick-start installer builds it for you.",
 		DocsURL: "https://github.com/ProtonDriveApps/sdk/tree/main/cli",
+		SignInLink: &SignInLinkSpec{
+			SignInLabel: "Sign in to Proton",
+			StartPath:   "/api/providers/proton/signin",
+			Note: "Proton's client prints a link and waits for you to follow it. " +
+				"You can open it on any device — a phone, another computer — which is " +
+				"how a machine with no browser of its own connects an account.",
+		},
 		// Immediately above the synced-folder Proton entry, so somebody
 		// scanning for "Proton" meets the two together and can tell them apart.
 		Order: 30,
@@ -360,6 +367,24 @@ func (p *protonCLIProvider) runLocked(ctx context.Context, args ...string) (stri
 		return stdout.String(), protonCLIError(args, stderr.String(), err)
 	}
 	return stdout.String(), nil
+}
+
+// ProtonCLIClientPath reports where the client this account is configured for
+// actually is, or why there is none.
+//
+// It exists so that a sign-in can fail before it starts on a machine with no
+// client installed: the alternative is a flow that is begun, polled, and
+// answers a moment later with the same news.
+func ProtonCLIClientPath(cfg Config) (string, error) {
+	p, err := newProtonCLIProvider(cfg)
+	if err != nil {
+		return "", err
+	}
+	client, ok := p.(*protonCLIProvider)
+	if !ok {
+		return "", fmt.Errorf("proton drive: unexpected backend %T", p)
+	}
+	return client.resolveBinary()
 }
 
 // resolveBinary finds the client, and says something useful when it is not

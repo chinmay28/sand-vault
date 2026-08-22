@@ -47,6 +47,13 @@ type oauthFlow struct {
 
 	CreatedAt time.Time
 
+	// SignInURL is where the account holder has to go, for the sign-ins that
+	// cannot send the browser there themselves. Proton's client prints one and
+	// waits; there is no redirect to catch, so the link is shown instead — and
+	// can be opened on another device, which is what lets a headless box
+	// connect at all. Empty for every flow that redirects.
+	SignInURL string
+
 	// Filled in once the provider redirects back.
 	Done    bool
 	Err     string
@@ -132,6 +139,20 @@ func (s *oauthFlowStore) byState(state string) (*oauthFlow, bool) {
 		}
 	}
 	return nil, false
+}
+
+// setSignInURL records where a sign-in that cannot redirect wants the account
+// holder to go, for the browser to pick up on its next poll. A flow that has
+// aged out or been finished is left alone.
+func (s *oauthFlowStore) setSignInURL(id, url string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	flow, ok := s.flows[id]
+	if !ok || flow.Done {
+		return
+	}
+	flow.SignInURL = url
 }
 
 // finish records the outcome of a callback against a flow.
