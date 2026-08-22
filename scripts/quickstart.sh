@@ -238,6 +238,8 @@ BUN_DIR="$PREFIX/bun"
 # failure prints. Keeping it is the difference between "it did not work" and a
 # report somebody can act on.
 BUN_LOG="$PREFIX/bun-install.log"
+PROTON_FETCH_LOG="$PREFIX/proton-fetch.log"
+PROTON_BUILD_LOG="$PREFIX/proton-build.log"
 
 # Where each Proton account keeps its client cache and, for the moment a
 # command runs, its session. Under the data directory because that is the one
@@ -690,7 +692,19 @@ install_bun() {
 # so the two routes are made to agree with a symlink rather than by teaching the
 # rest of the script about npm's layout.
 install_bun_via_npm() {
-  as_svc npm install --no-audit --no-fund --prefix "$BUN_DIR" bun > "$BUN_LOG" 2>&1 || return 1
+  # npm refuses a --prefix with no package.json in it (ENOENT, and it names the
+  # missing file rather than the problem). A private stub makes the directory a
+  # place npm will install into, and keeps the install out of any package.json
+  # further up the tree.
+  [ -f "$BUN_DIR/package.json" ] || printf '{"name":"sand-bun","private":true}\n' > "$BUN_DIR/package.json"
+  chown "$SVC_USER":"$SVC_USER" "$BUN_DIR/package.json" 2>/dev/null || true
+
+  # cd into the directory rather than pointing --prefix at it. This script runs
+  # from wherever it was invoked, and npm resolves a project from the working
+  # directory: started inside somebody else's Node project, --prefix is not
+  # enough to stop npm deciding that project is "up to date" and installing
+  # nothing here — exiting 0 while leaving no bun behind.
+  as_svc sh -c "cd '$BUN_DIR' && exec npm install --no-audit --no-fund bun" > "$BUN_LOG" 2>&1 || return 1
   [ -x "$BUN_DIR/node_modules/.bin/bun" ] || return 1
   install -d -o "$SVC_USER" -g "$SVC_USER" -m 755 "$BUN_DIR/bin"
   ln -sf "$BUN_DIR/node_modules/.bin/bun" "$BUN_DIR/bin/bun"
@@ -734,14 +748,17 @@ install_bun_via_bunsh() {
 # prints the commit it left it at, so the caller can tell a rebuild from a
 # no-op.
 fetch_proton_sdk() {
+  # Output goes to a log rather than /dev/null for the same reason it does
+  # everywhere else in this step: when a clone fails, git's own sentence is the
+  # only thing that says whether it was the network, the ref or the disk.
   if [ -d "$PROTON_SDK_DIR/.git" ]; then
-    as_svc git -C "$PROTON_SDK_DIR" fetch --depth 1 origin "$PROTON_SDK_REF" >/dev/null 2>&1 || return 1
-    as_svc git -C "$PROTON_SDK_DIR" checkout -q FETCH_HEAD >/dev/null 2>&1 || return 1
+    as_svc git -C "$PROTON_SDK_DIR" fetch --depth 1 origin "$PROTON_SDK_REF" > "$PROTON_FETCH_LOG" 2>&1 || return 1
+    as_svc git -C "$PROTON_SDK_DIR" checkout -q FETCH_HEAD >> "$PROTON_FETCH_LOG" 2>&1 || return 1
   else
     rm -rf "$PROTON_SDK_DIR"
     install -d -o "$SVC_USER" -g "$SVC_USER" -m 755 "$PROTON_SDK_DIR"
-    as_svc git clone --depth 1 --branch "$PROTON_SDK_REF" "$PROTON_SDK_REPO" "$PROTON_SDK_DIR" >/dev/null 2>&1 \
-      || as_svc git clone --depth 1 "$PROTON_SDK_REPO" "$PROTON_SDK_DIR" >/dev/null 2>&1 || return 1
+    as_svc git clone --depth 1 --branch "$PROTON_SDK_REF" "$PROTON_SDK_REPO" "$PROTON_SDK_DIR" > "$PROTON_FETCH_LOG" 2>&1 \
+      || as_svc git clone --depth 1 "$PROTON_SDK_REPO" "$PROTON_SDK_DIR" >> "$PROTON_FETCH_LOG" 2>&1 || return 1
   fi
   as_svc git -C "$PROTON_SDK_DIR" rev-parse HEAD 2>/dev/null
 }
@@ -751,12 +768,76 @@ fetch_proton_sdk() {
 # x-pm-appversion header, in this shape, and forbids passing as a first-party
 # app. It is baked in at build time, which is the whole reason this is built
 # here rather than repackaged.
+# PROTON_SDK_PACKAGES is every package that has to have its dependencies
+# installed, in dependency order.
+#
+# There are three rather than one because the SDK is a monorepo with no
+# workspace root — no package.json at the top of it — so `bun install` in cli/
+# links ../client/js and ../incubating/account/js as file: dependencies and
+# never installs THEIRS. The build then dies resolving ttag, @xmldom/xmldom and
+# exifreader out of packages that were linked but never populated, which is
+# exactly what "Proton's client would not build" was hiding.
+PROTON_SDK_PACKAGES="client/js incubating/account/js cli"
+
 build_proton_cli() {
+  for package in $PROTON_SDK_PACKAGES; do
+    log "installing dependencies in $package…"
+
+    # --frozen-lockfile first, because a build of somebody else's tree should
+    # use the versions they pinned. It is not worth failing the install over,
+    # though: this tracks a moving ref, and a lockfile that needs migrating to
+    # the bun just installed is a bad reason to have no Proton backend. So a
+    # second pass without it, saying so.
+    if proton_bun "$package" install --frozen-lockfile > "$PROTON_BUILD_LOG" 2>&1; then
+      continue
+    fi
+    warn "the pinned install failed in $package; retrying without --frozen-lockfile."
+    if ! proton_bun "$package" install > "$PROTON_BUILD_LOG" 2>&1; then
+      warn "bun could not install dependencies in $package. Last lines of $PROTON_BUILD_LOG:"
+      proton_log_tail "$PROTON_BUILD_LOG"
+      return 1
+    fi
+  done
+
+  if ! proton_bun cli run build > "$PROTON_BUILD_LOG" 2>&1; then
+    warn "the Proton client would not compile. Last lines of $PROTON_BUILD_LOG:"
+    proton_log_tail "$PROTON_BUILD_LOG"
+    proton_note_memory
+    return 1
+  fi
+}
+
+# proton_bun runs one bun command in one package of the SDK, with the
+# environment the build needs. CLI_APP_VERSION_NAME is not decoration: Proton
+# requires a third-party client to identify itself honestly in x-pm-appversion,
+# and it is baked in at build time — the built binary reports
+# external-drive-sand@<version>.
+proton_bun() {
+  package="$1"
+  shift
   as_svc env \
       BUN_INSTALL="$BUN_DIR" \
       PATH="$BUN_DIR/bin:$PATH" \
       CLI_APP_VERSION_NAME="external-drive-sand" \
-      sh -c "cd '$PROTON_SDK_DIR/cli' && bun install --frozen-lockfile && bun run build" >/dev/null 2>&1
+      sh -c "cd '$PROTON_SDK_DIR/$package' && exec bun $*"
+}
+
+proton_log_tail() {
+  tail -n 12 "$1" 2>/dev/null | sed 's/^/       /' >&2
+}
+
+# proton_note_memory adds the sentence the log usually will not. A compile
+# killed for memory says little or nothing — the kernel takes the process out
+# and bun never gets to complain — and on a 2 GB Pi that is the first thing to
+# suspect rather than the last.
+proton_note_memory() {
+  total_kb="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+  [ "${total_kb:-0}" -gt 0 ] 2>/dev/null || return 0
+  [ "$total_kb" -lt 3000000 ] || return 0
+  warn "This machine has $((total_kb / 1024)) MB of RAM. Compiling the client needs"
+  warn "more than a small board usually has, and a build killed for memory often"
+  warn "says nothing at all. PROTON_CLI_URL takes a prebuilt binary instead:"
+  warn "  https://proton.me/download/drive/cli/index.html"
 }
 
 install_proton_cli() {
@@ -786,7 +867,11 @@ install_proton_cli() {
   install_bun || return 1
 
   log "fetching Proton's Drive SDK…"
-  rev="$(fetch_proton_sdk)" || { warn "could not fetch $PROTON_SDK_REPO."; return 1; }
+  if ! rev="$(fetch_proton_sdk)"; then
+    warn "could not fetch $PROTON_SDK_REPO. Last lines of $PROTON_FETCH_LOG:"
+    proton_log_tail "$PROTON_FETCH_LOG"
+    return 1
+  fi
 
   # Rebuilding takes minutes and produces the same binary from the same commit,
   # so an upgrade that has not moved the SDK skips it.
@@ -797,8 +882,10 @@ install_proton_cli() {
 
   log "building Proton's client (this takes a while)…"
   if ! build_proton_cli; then
-    warn "Proton's client would not build. The rest of the install is unaffected;"
-    warn "connect Proton as a synced folder, or set PROTON_CLI_URL to a prebuilt binary."
+    # build_proton_cli has already said what failed and why. This is the part
+    # somebody needs next: the install is fine, and Proton has another route.
+    warn "The rest of the install is unaffected. Connect Proton as a synced"
+    warn "folder, or set PROTON_CLI_URL to a prebuilt binary and re-run."
     return 1
   fi
   [ -f "$PROTON_SDK_DIR/cli/release/proton-drive" ] || {
