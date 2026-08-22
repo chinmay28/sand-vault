@@ -10,6 +10,52 @@ Each section below is the body of the corresponding GitHub release. A heading
 must name the tag exactly — a tag whose commit builds a different version is a
 tag that shouldn't be published.
 
+## Unreleased
+
+### Proton Drive without the desktop app
+
+Proton Drive gains a second backend, `protoncli`, that talks to Proton rather
+than to the folder its desktop app syncs. It drives `proton-drive`, the
+command-line client Proton builds on its own Drive SDK.
+
+Where the existing `proton` backend can run, this one is better in three ways.
+It works on a machine with no desktop app, which is most servers — previously
+that case needed `rclone serve webdav` in front of rclone's reverse-engineered
+backend. Its upload confirms the part reached *Proton*: the folder backend's
+`Put` returns as soon as the file is on local disk, so an account whose client
+is signed out looked healthy while holding nothing. And it can measure what the
+account holds, where a folder account can only measure the free space on your
+disk.
+
+The folder backend is unchanged and stays the default for a laptop that runs
+the Proton app. Existing `proton` accounts keep working exactly as they did;
+nothing migrates.
+
+**Signing in is a link, not a redirect.** Proton's client prints one and waits,
+so SAND shows it — copyable, because it can be followed on a phone or another
+computer. That is how a headless box connects an account. From a terminal,
+`sand remote proton login --name proton` does the same thing.
+
+**The session is kept in the vault**, not in a file on disk. Proton's client
+stores it in the OS secret store, which a systemd service with no keyring and
+no home cannot reach; SAND writes it to a private 0600 file only for as long as
+one command runs, and picks up Proton's rotations on the way back out. The
+session holds the password that unlocks the account's key material, so this is
+not the same as caching an access token.
+
+**`scripts/quickstart.sh` builds the client**, with `CLI_APP_VERSION_NAME` set
+so the install identifies itself honestly to Proton as a third-party client.
+`INSTALL_PROTON=never` skips it; `PROTON_CLI_URL` takes a prebuilt binary
+instead, which on a Raspberry Pi is the difference between seconds and twenty
+minutes. A 32-bit board, a failed build or a failed download each warn and
+leave the rest of the install alone — Proton can still be connected as a synced
+folder. The unit gains `SAND_PROTON_STATE_DIR` under the data directory.
+
+Proton's cryptographic model changes at the end of 2026 and clients
+implementing only the old one stop interoperating. Because SAND drives Proton's
+own binary rather than reimplementing its cryptography, that migration is
+handled by updating the client — re-run the installer.
+
 ## v2026.8 — calendar versioning
 
 The version is now `vYEAR.MONTH.PATCH`: the year and month the release line
