@@ -68,9 +68,12 @@ func init() {
 				"You can open it on any device — a phone, another computer — which is " +
 				"how a machine with no browser of its own connects an account.",
 		},
-		// Immediately above the synced-folder Proton entry, so somebody
-		// scanning for "Proton" meets the two together and can tell them apart.
-		Order: 30,
+		// With the backends you sign in to, which is where the connect dialog
+		// puts it — not beside the synced-folder Proton, which the dialog files
+		// under folders and which somebody scanning for "Proton" therefore
+		// meets in a different section however these are numbered. Last of the
+		// sign-ins, since it is the only one needing something installed.
+		Order: 14,
 		Fields: []FieldSpec{
 			{
 				Key:      "folder",
