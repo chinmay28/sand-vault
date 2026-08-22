@@ -941,8 +941,13 @@ function Reauthorize({ provider, spec, disabled, onDone }) {
             color: COLORS.textDim,
           }}>
             <Spinner size={14} />
-            {spec.sign_in_link && !signInURL
-              ? <>Starting {spec.label}&apos;s client…</>
+            {/* "Hand the account back" is redirect wording, and a link-style
+                sign-in never redirects: nothing is coming back, somebody has to
+                go and follow a link. */}
+            {spec.sign_in_link
+              ? (signInURL
+                ? <>Waiting for you to sign in to {spec.label}…</>
+                : <>Starting {spec.label}&apos;s client…</>)
               : <>Waiting for {spec.label} to hand the account back…</>}
           </div>
 
