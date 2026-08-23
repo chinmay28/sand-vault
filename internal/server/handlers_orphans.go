@@ -18,9 +18,12 @@ import (
 // internal/vault/orphans.go for how the gap opens and why the scan refuses to
 // act on its own in the cases it refuses.
 //
-// Two endpoints and not one, for the same reason recovery is three: looking is
-// safe and erasing is not, so looking is a GET that anything may call on a
-// schedule and erasing is a POST that names exactly what it agreed to.
+// One GET and three POSTs, for the same reason recovery is three: looking is
+// safe and acting is not, so looking is a GET that anything may call on a
+// schedule and each of the three things that can be done about what it found —
+// erase the abandoned parts, record the mislaid ones back, erase the working
+// files left in the vault's own directory — is a POST naming exactly what it
+// agreed to.
 
 // handleOrphanScan reports the abandoned parts on every connected account.
 //
@@ -87,6 +90,41 @@ func (s *Server) handleOrphanReattach(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, report)
+}
+
+// leftoverSweepRequest names the working files to erase from the vault's own
+// directory.
+type leftoverSweepRequest struct {
+	// Names are the file names from a scan's leftovers, which is what the
+	// browser sends back from the rows somebody ticked. Empty means every one
+	// the vault currently considers finished with — what "clean them all up"
+	// means, and what a bare POST from a script means too.
+	//
+	// Only a name the fresh scan makes again is ever acted on, so a request
+	// naming something outside the vault's directory reaches nothing.
+	Names []string `json:"names"`
+
+	// DryRun asks what would go without anything going.
+	DryRun bool `json:"dry_run"`
+}
+
+// handleLeftoverSweep erases the working files SAND left in its own directory.
+//
+// The local half of the same housekeeping: a spool an interrupted upload left
+// behind is the whole file it was sending, in plaintext, and there is one per
+// upload that did not finish. Reading them is part of the scan above; erasing
+// them is here, and re-scans first so that a spool something has started
+// writing to since is skipped rather than pulled out from under it. See
+// internal/vault/leftovers.go.
+func (s *Server) handleLeftoverSweep(w http.ResponseWriter, r *http.Request) {
+	var req leftoverSweepRequest
+	if err := decodeJSON(r, &req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
+		return
+	}
+
+	v, _ := s.Vault()
+	writeJSON(w, http.StatusOK, v.SweepLeftovers(req.Names, req.DryRun))
 }
 
 // handleOrphanSweep erases the parts nothing points at.

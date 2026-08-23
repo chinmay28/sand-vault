@@ -90,6 +90,17 @@ type Vault struct {
 	liveMu sync.Mutex
 	live   map[string]provider.Provider
 
+	// spoolMu guards the set of temporary files this process is writing right
+	// now — an upload being spooled, a conversion being rebuilt, a repository
+	// being packed. Another leaf lock, taken alone.
+	//
+	// It exists for the housekeeping scan in leftovers.go, which asks the
+	// vault's own directory what is lying around in it. A file that is being
+	// written looks exactly like one a killed process abandoned, and only the
+	// process holding it knows the difference.
+	spoolMu sync.Mutex
+	spools  map[string]bool
+
 	// thumbMu guards the decrypted thumbnails held in memory, by folder and
 	// then by file. Another leaf lock: nothing is acquired while it is held,
 	// which is what lets Lock clear the cache while holding mu.
@@ -149,6 +160,7 @@ func Open(path string) (*Vault, error) {
 		path:      path,
 		live:      map[string]provider.Provider{},
 		chunkSize: archive.DefaultChunkSize,
+		spools:    map[string]bool{},
 		chunks:    newChunkCache(DefaultChunkCacheBytes),
 		flight:    newChunkFlight(),
 		reads:     newReadStats(),

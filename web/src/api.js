@@ -136,6 +136,24 @@ export const api = {
      can only come out of it with more shards than it went in with. */
   reattachShards: ({ dryRun = false } = {}) =>
     request('/api/vault/orphans/reattach', { method: 'POST', body: { dry_run: dryRun } }),
+  /* The third thing the same scan turns up, and the only one that is not about
+     a cloud at all.
+
+     SAND writes its working files into the folder its vault file lives in —
+     /var/lib/sand on a server, ~/.sand on a desktop — and the big one is the
+     upload spool. A stream cannot say its own hash until its last byte, and
+     every chunk has to carry that hash, so an upload arriving over the network
+     is written to disk in full before any of it is sent. That file is removed
+     on every way out of an upload except the one that is not a way out at all:
+     the process being killed, or the machine losing power. What is left is the
+     whole file that was being uploaded, sitting there for nobody.
+
+     orphanScan() reports them under `leftovers`; this erases the ones named,
+     or all of the ones it considers finished with when nothing is named. The
+     server re-scans first, so a spool something has started writing to since
+     the scan is skipped rather than pulled out from under it. */
+  sweepLeftovers: ({ names = [], dryRun = false } = {}) =>
+    request('/api/vault/orphans/leftovers', { method: 'POST', body: { names, dry_run: dryRun } }),
   /* The recovery kit: one sealed file that reconnects every cloud on a fresh
      install rather than only rebuilding the index.
 

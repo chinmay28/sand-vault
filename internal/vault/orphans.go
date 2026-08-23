@@ -249,6 +249,14 @@ type OrphanScan struct {
 	Items          []OrphanArchive `json:"items"`
 	ItemsTruncated int             `json:"items_truncated,omitempty"`
 
+	// Leftovers is the same question asked of the one disk SAND writes to
+	// itself: the working files in the vault's own directory that no operation
+	// is using any more, chiefly the spool an interrupted upload left at the
+	// full size of the file it was sending. It rides along with this scan
+	// because it is the same question and it is asked at the same moment, and
+	// it is swept by a call of its own — see leftovers.go.
+	Leftovers *LeftoverScan `json:"leftovers,omitempty"`
+
 	// Blocked says why a sweep is being withheld across the board, and is what
 	// the browser shows instead of a delete button. Empty means the sweep is
 	// offered.
@@ -308,6 +316,12 @@ func (v *Vault) scanForOrphans(ctx context.Context) (*OrphanScan, error) {
 		Accounts: []OrphanAccount{},
 		Items:    []OrphanArchive{},
 		Strays:   []StrayShard{},
+
+		// A local directory read, before any account is asked anything. It is
+		// answered even on a vault with no clouds connected at all, which is
+		// the state a machine that has just been reinstalled is in — and the
+		// state a half-finished import leaves the most spools behind in.
+		Leftovers: v.ScanForLeftovers(),
 	}
 	if len(configs) == 0 {
 		return scan, nil

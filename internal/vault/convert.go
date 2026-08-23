@@ -118,10 +118,7 @@ func (v *Vault) Convert(ctx context.Context, id string) (*ConversionReport, erro
 	if err != nil {
 		return nil, fmt.Errorf("%s could not be converted: %w", stale.Path(), err)
 	}
-	defer func() {
-		spool.Close()
-		os.Remove(spool.Name())
-	}()
+	defer v.discardSpool(spool)
 
 	// Back to the accounts it was already on, so converting is not also a move.
 	current := make([]string, 0, len(stale.Shards))
@@ -225,9 +222,13 @@ func (v *Vault) rebuildLegacyToDisk(ctx context.Context, entry *Entry) (*os.File
 	if err != nil {
 		return nil, 0, hash, fmt.Errorf("creating a temporary file for the conversion: %w", err)
 	}
+	// Held while it is being written, so that a scan of the vault's own
+	// directory does not offer to erase the rebuild in progress. See
+	// leftovers.go.
+	v.holdSpool(f.Name())
+
 	if err := f.Chmod(0600); err != nil {
-		f.Close()
-		os.Remove(f.Name())
+		v.discardSpool(f)
 		return nil, 0, hash, fmt.Errorf("securing the temporary file: %w", err)
 	}
 
@@ -240,14 +241,12 @@ func (v *Vault) rebuildLegacyToDisk(ctx context.Context, entry *Entry) (*os.File
 	}
 	blobs = nil
 	if err != nil {
-		f.Close()
-		os.Remove(f.Name())
+		v.discardSpool(f)
 		return nil, 0, hash, err
 	}
 
 	if err := f.Sync(); err != nil {
-		f.Close()
-		os.Remove(f.Name())
+		v.discardSpool(f)
 		return nil, 0, hash, fmt.Errorf("writing the rebuilt file to disk: %w", err)
 	}
 
@@ -256,8 +255,7 @@ func (v *Vault) rebuildLegacyToDisk(ctx context.Context, entry *Entry) (*os.File
 	// checking it against the index too is what catches an index that has drifted
 	// from what is actually stored.
 	if entry.Hash != "" && hex.EncodeToString(meta.OriginalHash[:]) != entry.Hash {
-		f.Close()
-		os.Remove(f.Name())
+		v.discardSpool(f)
 		return nil, 0, hash, fmt.Errorf(
 			"%s does not match the hash the index recorded for it", entry.Path())
 	}

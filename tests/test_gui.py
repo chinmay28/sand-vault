@@ -12,6 +12,7 @@ browser on the machine.
 """
 import os
 import re
+import time
 
 import pytest
 import requests
@@ -3434,6 +3435,52 @@ class TestOrphanedParts:
 
         expect(page.get_by_text("Sand files detected")).to_be_visible(timeout=30000)
         assert page.get_by_text(re.compile(r"no file in this vault points at")).count() == 0
+
+    def test_the_vaults_own_folder_is_scanned_too(self, page, sand_bin, tmp_path, spawn_server):
+        """The same question, asked of the disk the vault file is on.
+
+        An upload is spooled to disk in full before it is sent — every chunk
+        has to carry the whole file's hash, and a stream only gives that up at
+        its last byte — and the spool is deleted on every way out of an upload
+        except the one that is not a way out at all: the process being killed.
+        What is left is the whole file that was being uploaded, sitting in
+        /var/lib/sand for nobody, and until now nothing ever looked there.
+        """
+        self.build_vault(sand_bin, tmp_path, "orphans-leftovers")
+
+        # What a killed upload leaves: SAND's own temporary name, some size,
+        # and nothing writing to it. Backdated out of the settling window,
+        # which is the only thing separating this from an upload in progress.
+        spool = tmp_path / ".sand-upload-1611628659"
+        spool.write_bytes(b"S" * 4096)
+        stale = time.time() - 3 * 60 * 60
+        os.utime(spool, (stale, stale))
+
+        self.unlock(page, spawn_server("orphans-leftovers"))
+
+        open_vault_setting(page, "Stray parts")
+        strays = page.get_by_role("dialog", name="Stray parts")
+        strays.wait_for(timeout=20000)
+
+        # Said as room on this machine, beside what the clouds are holding.
+        expect(strays.get_by_text(re.compile(r"working files sit in this vault"))).to_be_visible(
+            timeout=30000)
+
+        strays.get_by_role("button", name="Tidy up").click()
+        expect(page.get_by_text("Working files left behind")).to_be_visible(timeout=15000)
+        expect(page.get_by_text(".sand-upload-1611628659")).to_be_visible()
+
+        page.get_by_role("button", name=re.compile(r"^Erase 1 file")).click()
+        expect(page.get_by_text(re.compile(r"1 working file erased"))).to_be_visible(timeout=30000)
+        assert not spool.exists()
+
+        # And the vault file itself, in the same folder under a name that is
+        # not SAND's scratch, is exactly where it was.
+        assert (tmp_path / "orphans-leftovers.sand").exists()
+
+        page.get_by_role("button", name="Done").click()
+        strays.get_by_role("button", name="Done").click()
+        close_vault_settings(page)
 
 
 class TestMislaidShards:

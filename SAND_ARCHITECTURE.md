@@ -446,7 +446,10 @@ appeared. It runs its own scan on opening rather than reusing the app's, since
 the point of asking on purpose is to be told what is true now, and it reports
 nothing on its settings line until then — a listing per account is far too slow
 to run because a menu was opened. It hands what it finds to the same two panels
-the banners do: the sweep here, and the repair in §3.7.2.
+the banners do — the sweep here, and the repair in §3.7.2 — plus a third the
+banners never raise, because it is not about a cloud at all: the working files
+SAND has left in the vault's own directory (§3.7.3), which ride along with the
+same scan for the cost of one directory read.
 
 ### 3.7.2 Shards a disconnect mislaid, and putting them back
 
@@ -514,6 +517,53 @@ check is for. `entryForReattachLocked` re-checks under the write lock that the
 file still exists, still carries that archive, and is still short of that shard
 — the scan ran without the lock, and an upload, a relocation or a sub vault
 being shut in between each makes a row stale.
+
+### 3.7.3 Working files left in the vault's own directory
+
+The two sections above ask what the *clouds* are holding that no file wants.
+`Vault.ScanForLeftovers` asks the same question of the one disk SAND writes to
+itself — the folder the vault file lives in, `/var/lib/sand` under the service
+and `~/.sand` on a desktop — and the answer there is usually the bigger one. An
+abandoned part is a fraction of a file. An abandoned upload spool is the whole
+file, in plaintext, and there is one per upload that did not finish.
+
+They exist because the whole-file SHA-256 has to be known before the first chunk
+can be sealed (§7.1) and a stream only yields it after its last byte, so
+`UploadStream` writes the stream to a temporary file beside the vault before a
+byte of it is sent. That file is removed on every path out of the function
+including failure — but the process being killed is not a path out of it, and
+neither is the power going. The same is true in smaller amounts of the
+conversion spool, the two atomic writes (`writeStore` and `writeFileAtomically`
+each land through a temporary beside their target) and the workspace
+`gitWorkspace` packs a repository in.
+
+**Two facts before a file is offered**, covering the two ways of being wrong:
+
+| Test | What it rules out |
+|---|---|
+| The name matches `leftoverPattern` — one of the five prefixes SAND itself creates, followed by the digits `os.CreateTemp` appends, to the end | Everything SAND did not write. A vault directory somebody also keeps notes in never becomes a list of things to erase, and neither does the vault file, its read-history sidecar, or a provider's own scratch |
+| Nothing has written to it for `leftoverSettling` (one hour), and this process is not holding it | An upload that is still running. `Vault.spools` names exactly what this process is writing, so those are not reported at all; the window is for the writer it cannot see, since the CLI and the service share a vault directory by design |
+
+A live spool is fed continuously from the network, so an idle hour is what
+separates a copy in progress from a copy that stopped — not size, and not age,
+since an upload can legitimately run for hours. A file inside the window is
+still *shown*, with the reason beside it, because the disk it is filling is what
+somebody opened this to understand. A directory is weighed and dated by walking
+it, since its own mtime stops moving while a pack underneath it is still being
+written.
+
+`SweepLeftovers` erases what a scan reported, re-running the scan itself for the
+reason `SweepOrphans` does: a spool something has started writing to since is
+skipped and reported, never pulled out from under it. Only a name its own fresh
+scan produced is ever acted on, so a request naming anything outside the vault's
+directory reaches nothing.
+
+None of it touches the index or needs a password — these are SAND's scratch
+files, not anybody's data — which is why it is carried on `OrphanScan.Leftovers`
+rather than being a scan of its own: it costs one directory read beside the
+per-account listings, and it is the same question asked of the last place it had
+not been asked of. Erasing is its own `POST`, because looking is safe and
+erasing is not.
 
 ### 3.8 Searching is a property of the open vault
 
@@ -2177,6 +2227,7 @@ reveals only whether a vault exists.
 | GET | `/api/vault/orphans` | What the accounts hold that no index points at, per account and per archive (§3.7.1) |
 | POST | `/api/vault/orphans` | Erase it (`targets` — `{provider_id, archive_id}` pairs, empty for all; `dry_run`). Re-scans before deleting |
 | POST | `/api/vault/orphans/reattach` | Record back the shards a disconnect mislaid (`dry_run`). Moves no bytes (§3.7.2) |
+| POST | `/api/vault/orphans/leftovers` | Erase the working files left in the vault's own directory (`names`, empty for all; `dry_run`). The scan of them rides on the `GET` above (§3.7.3) |
 | GET | `/api/subvaults` | The vaults inside this one, and whether each is open (§3.8) |
 | POST | `/api/subvaults` | Make one, sealed under a password of its own |
 | POST | `/api/subvaults/{id}/unlock` | Open one — a second password on top of the session, never a way around it |
