@@ -385,6 +385,17 @@ GET    /api/remote/{id}/import        what that POST is doing right now → impo
 DELETE /api/remote/{id}/import/{run}  stop one, or dismiss a finished one's result
 ```
 
+Each entry in `imports[]` carries `at` — the file being worked on, its stage
+and how much of it has moved — and `rate`, that stage's speed in bytes per
+second. The speed is measured over the progress reports themselves rather than
+over successive polls: the server sees every few megabytes go past, a dialog
+sees one snapshot a second, and only the first has the resolution to divide by.
+It is a moving average (`rateWeight`) over samples at least `rateSample` apart,
+it starts over at each stage boundary because the fetch and the scatter are
+different pipes, and it is dropped rather than held once nothing has moved for
+`staleRateAfter` — a stalled transfer claiming 20 MB/s is worse than one
+claiming nothing.
+
 `POST` takes `detach: true` for an import that should outlive the page that
 asked for it. It answers `202` with the run to watch instead of the result, and
 the import goes on a context derived from `Background` rather than from the

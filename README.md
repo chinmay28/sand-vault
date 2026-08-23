@@ -264,7 +264,10 @@ for adding one.
 >
 > While an import runs, the dialog draws the file it is on: which file of how
 > many, whether it is coming down from the machine or going back up to the
-> clouds, and how far through.
+> clouds, how far through, how fast that half is moving and roughly how much
+> longer it leaves. The speed is per stage rather than per file, because the
+> two halves are two different pipes — the machine's upstream and yours — and
+> it says nothing at all rather than a stale number once a transfer stalls.
 >
 > By default that import is the request itself, so closing the page stops it —
 > which is the right answer for a folder of photographs and the wrong one for

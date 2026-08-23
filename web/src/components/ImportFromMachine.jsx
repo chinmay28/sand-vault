@@ -542,6 +542,16 @@ function ImportProgress({ run, onStop }) {
   const fraction = size > 0 ? Math.min(1, (at.done || 0) / size) : 0
   const scattering = at?.stage === 'scattering'
 
+  /* How fast, and how much longer. Both come from the server's own reading of
+     the stage it is on rather than from the difference between two polls — it
+     sees every few megabytes go past and this dialog sees one snapshot a
+     second, so its arithmetic is over the transfer rather than over the
+     polling. It reports nothing while a stage is starting and nothing once a
+     transfer has stalled, and both of those are drawn as nothing rather than
+     as zero. */
+  const rate = run?.rate || 0
+  const left = rate > 0 && size > 0 ? (size - (at?.done || 0)) / rate : 0
+
   /* Between the request going out and the first file being picked up, the
      server is walking the selection — one round trip per folder, and on a
      folder of ten thousand files that is a real wait. Until a file is named
@@ -594,15 +604,28 @@ function ImportProgress({ run, onStop }) {
         }} />
       </div>
 
-      {/* What the summary would say if it stopped here, which is also what a
-          second run would find already done. */}
-      {started && (at.imported > 0 || at.skipped > 0 || at.failed > 0) && (
+      {/* Under the bar: on the left what the summary would say if it stopped
+          here, which is also what a second run would find already done; on the
+          right how fast it is going and how much longer that leaves. */}
+      {started && (
         <div style={{
-          fontFamily: FONT.mono, fontSize: '10.5px', color: COLORS.textMuted, marginTop: '7px',
+          display: 'flex', justifyContent: 'space-between', gap: '10px', marginTop: '7px',
+          fontFamily: FONT.mono, fontSize: '10.5px', color: COLORS.textMuted,
         }}>
-          {at.imported} in
-          {at.skipped ? `, ${at.skipped} already here` : ''}
-          {at.failed ? `, ${at.failed} failed` : ''}
+          <span>
+            {(at.imported > 0 || at.skipped > 0 || at.failed > 0) && (
+              <>
+                {at.imported} in
+                {at.skipped ? `, ${at.skipped} already here` : ''}
+                {at.failed ? `, ${at.failed} failed` : ''}
+              </>
+            )}
+          </span>
+          {rate > 0 && (
+            <span style={{ flexShrink: 0 }}>
+              {formatBytes(rate)}/s{left > 0 ? ` · ${formatDuration(left)} left` : ''}
+            </span>
+          )}
         </div>
       )}
 
@@ -621,6 +644,22 @@ function ImportProgress({ run, onStop }) {
       )}
     </div>
   )
+}
+
+/* How much longer, in the roundest terms that are still true.
+
+   Rounded hard on purpose: the estimate is a current speed multiplied by what
+   is left, and a home connection does not hold one speed for an hour. "About
+   40 minutes" is honest about that in a way "38m 12s" is not, and the second
+   would tick down in a way that invites watching it. */
+function formatDuration(seconds) {
+  if (seconds < 60) return 'under a minute'
+  const minutes = Math.round(seconds / 60)
+  if (minutes < 60) return `about ${minutes} min`
+  const hours = seconds / 3600
+  if (hours < 2) return 'about an hour'
+  if (hours < 24) return `about ${Math.round(hours)} hours`
+  return 'over a day'
 }
 
 /* A detached import that is over, waiting to be read by whoever comes back.

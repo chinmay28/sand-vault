@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/chinmay28/sand-vault/internal/vault"
 )
@@ -202,5 +203,99 @@ func TestImportWatchStopAll(t *testing.T) {
 	w.stopAll()
 	if stopped != 3 {
 		t.Errorf("stopAll cancelled %d of 3", stopped)
+	}
+}
+
+// The speed reading: measured over the reports, per stage, and dropped rather
+// than held once nothing is moving behind it.
+func TestImportWatchMeasuresSpeed(t *testing.T) {
+	w := newImportWatch()
+	clock := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
+	w.now = func() time.Time { return clock }
+
+	ticket, err := w.start("vps", "/media", "", true, func() {})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	id := w.forSource("vps")[0].ID
+
+	fetching := func(done int64) vault.ImportProgress {
+		return vault.ImportProgress{File: 1, Files: 1, Name: "big.mp4", Stage: vault.StageFetching, Done: done, Size: 1 << 30}
+	}
+
+	// The first report of a stage is the starting line, not a measurement:
+	// nothing has moved yet to divide by anything.
+	ticket.update(fetching(0))
+	if rate := w.forRun(id).Rate; rate != 0 {
+		t.Errorf("the first report claimed %v bytes/s", rate)
+	}
+
+	// Two seconds and 20 MB later.
+	clock = clock.Add(2 * time.Second)
+	ticket.update(fetching(20 << 20))
+	if rate := w.forRun(id).Rate; rate != float64(10<<20) {
+		t.Errorf("speed came back as %v, want %v bytes/s", rate, float64(10<<20))
+	}
+
+	// A report too soon after the last one is not measured against it — a few
+	// megabytes over a few milliseconds is how a speed reading ends up
+	// swinging wildly while the transfer is steady.
+	clock = clock.Add(50 * time.Millisecond)
+	ticket.update(fetching(24 << 20))
+	if rate := w.forRun(id).Rate; rate != float64(10<<20) {
+		t.Errorf("a sample taken too soon moved the speed to %v", rate)
+	}
+
+	// A slower second later: the reading moves towards it rather than jumping.
+	clock = clock.Add(2 * time.Second)
+	ticket.update(fetching(28 << 20))
+	rate := w.forRun(id).Rate
+	if rate >= float64(10<<20) || rate <= float64(4<<20) {
+		t.Errorf("speed came back as %v, want it moved part of the way down from 10 MB/s", rate)
+	}
+
+	// The other half of the same file is a different pipe, and starts over.
+	clock = clock.Add(time.Second)
+	ticket.update(vault.ImportProgress{
+		File: 1, Files: 1, Name: "big.mp4", Stage: vault.StageScattering, Done: 0, Size: 1 << 30,
+	})
+	if got := w.forRun(id).Rate; got != 0 {
+		t.Errorf("the scatter inherited the fetch's speed: %v", got)
+	}
+
+	// Nothing for a while: a stalled transfer must stop claiming a speed.
+	clock = clock.Add(time.Second)
+	ticket.update(vault.ImportProgress{
+		File: 1, Files: 1, Name: "big.mp4", Stage: vault.StageScattering, Done: 8 << 20, Size: 1 << 30,
+	})
+	if got := w.forRun(id).Rate; got == 0 {
+		t.Fatal("the scatter never picked up a speed")
+	}
+	clock = clock.Add(staleRateAfter + time.Second)
+	if got := w.forRun(id).Rate; got != 0 {
+		t.Errorf("a stalled transfer still claims %v bytes/s", got)
+	}
+	ticket.done()
+}
+
+// A finished run has no speed. Whatever it was doing, it is not doing it now.
+func TestImportWatchDropsTheSpeedWhenItEnds(t *testing.T) {
+	w := newImportWatch()
+	ticket, err := w.start("vps", "/media", "", true, func() {})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	id := w.forSource("vps")[0].ID
+
+	ticket.update(vault.ImportProgress{File: 1, Files: 1, Name: "a.bin", Stage: vault.StageFetching})
+	time.Sleep(2 * rateSample)
+	ticket.update(vault.ImportProgress{File: 1, Files: 1, Name: "a.bin", Stage: vault.StageFetching, Done: 8 << 20, Size: 8 << 20})
+	if w.forRun(id).Rate == 0 {
+		t.Fatal("no speed was measured at all")
+	}
+
+	ticket.finish(&vault.ImportSummary{Imported: 1}, nil, false)
+	if got := w.forRun(id).Rate; got != 0 {
+		t.Errorf("a finished import still reports %v bytes/s", got)
 	}
 }
