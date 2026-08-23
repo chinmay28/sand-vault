@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { COLORS, FONT, accountColor, fileIcon, formatBytes, formatDate, isPlayable } from '../theme'
+import { COLORS, FONT, accountColor, fileIcon, formatBytes, formatDate, formatDay, isPlayable } from '../theme'
 import { api } from '../api'
 import { useDownload } from '../download'
 import { ActionSheet, Banner, Button, ConfirmDialog, IconButton, Modal } from './ui'
@@ -731,6 +731,61 @@ export function FileRow({
   )
 }
 
+/* The three figures a folder's menu leads with: how much is under it, in how
+   many files, and how many clouds those files' parts went to.
+
+   Everything at or below the folder rather than what is directly in it, which
+   is the `du -sh` reading and the only one worth showing — a folder of folders
+   holds nothing directly and is not empty. Nothing is drawn until the answer
+   arrives: figures that appear are read as figures, and figures that count up
+   from zero are read as a folder that just emptied itself. */
+function folderFigures(held) {
+  if (!held) return []
+  // A folder with nothing at all in it says so in the line below instead. Two
+  // zeroes under two labels is a slower way to read the same word.
+  if (held.files === 0 && held.folders === 0) return []
+  return [
+    { key: 'files', value: held.files, label: held.files === 1 ? 'file' : 'files' },
+    { key: 'bytes', value: formatBytes(held.bytes), label: 'in here' },
+    held.clouds?.length > 0 && {
+      key: 'clouds',
+      value: held.clouds.length,
+      label: held.clouds.length === 1 ? 'cloud' : 'clouds',
+      title: held.clouds.join(', '),
+    },
+  ]
+}
+
+/* The rest of it, in the one line under the figures.
+
+   What the parts weigh is a different number from what the folder holds — the
+   erasure coding sees to that, and it is the figure the accounts' free space is
+   actually spent in, so a folder of 4 GB costing 6 GB of cloud should not have
+   to be worked out from the placement policy. The folders inside and the last
+   thing to change are here because they are the two questions a folder row
+   leaves open and its own listing answers a level at a time. */
+function folderNote(held) {
+  if (!held) return null
+  if (held.files === 0 && held.folders === 0) return 'Empty — nothing in here yet'
+
+  const parts = []
+  if (held.stored_bytes > 0) parts.push(`${formatBytes(held.stored_bytes)} across the clouds`)
+  if (held.folders > 0) parts.push(`${held.folders} folder${held.folders === 1 ? '' : 's'} inside`)
+  if (held.newest) parts.push(`newest ${formatDay(held.newest)}`)
+  if (held.degraded > 0) {
+    parts.push(`${held.degraded} file${held.degraded === 1 ? '' : 's'} short of a part`)
+  }
+
+  /* Each phrase kept whole. The line is long enough to wrap on a phone, and a
+     wrap through the middle of "newest Aug 23" reads as two half-facts. */
+  return parts.map((part, i) => (
+    <React.Fragment key={part}>
+      {i > 0 && ' · '}
+      <span style={{ whiteSpace: 'nowrap' }}>{part}</span>
+    </React.Fragment>
+  ))
+}
+
 /* Everything a folder row or tile can do. Far shorter than a file's, because a
    folder is a name in the index rather than something stored: it can be walked
    into, moved onto other clouds wholesale, or deleted with what is inside it. */
@@ -746,6 +801,28 @@ function useFolderActions({
   const [assigning, setAssigning] = useState(false)
 
   const [busy, setBusy] = useState(false)
+
+  /* What the folder is holding, fetched when the menu opens and not before.
+     A folder row cannot say how big it is — the weight is in the levels below
+     it, and finding it is a walk of the index per folder, which is not a price
+     a listing of forty of them should pay on the chance somebody wonders. The
+     menu is where somebody has wondered, so it is asked there and the header
+     fills in a moment later.
+
+     A failure is left silent on purpose. This is the answer to a question
+     nobody typed; an error banner over an open menu would be louder than the
+     thing it is reporting, and every choice below still works without it. */
+  const [held, setHeld] = useState(null)
+
+  useEffect(() => {
+    if (!menu) return undefined
+    let live = true
+    setHeld(null)
+    api.folderStats(path, vault)
+      .then((stats) => { if (live) setHeld(stats) })
+      .catch(() => {})
+    return () => { live = false }
+  }, [menu, path, vault])
 
   const assignTargets = vault
     ? [{ id: '', label: 'the main vault' }]
@@ -774,6 +851,8 @@ function useFolderActions({
         <ActionSheet
           title={name}
           subtitle="Folder"
+          figures={folderFigures(held)}
+          note={folderNote(held)}
           onClose={() => setMenu(false)}
           items={[
             { key: 'open', glyph: '▸', label: 'Open folder', onSelect: open },

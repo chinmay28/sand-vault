@@ -196,17 +196,26 @@ export function formatBytes(bytes) {
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
 }
 
-export function formatDate(iso) {
+/* The day something happened, with the year only when it was not this one. A
+   date without a time, for the places where the time is noise — what a folder
+   full of files last changed is a day, not a minute. */
+export function formatDay(iso) {
   if (!iso) return '—'
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return '—'
-  const now = new Date()
-  const sameYear = d.getFullYear() === now.getFullYear()
+  const sameYear = d.getFullYear() === new Date().getFullYear()
   return d.toLocaleDateString(undefined, {
     month: 'short',
     day: 'numeric',
     ...(sameYear ? {} : { year: 'numeric' }),
-  }) + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+  })
+}
+
+export function formatDate(iso) {
+  const day = formatDay(iso)
+  if (day === '—') return day
+  const time = new Date(iso).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+  return `${day} ${time}`
 }
 
 /* Which preview a MIME type gets, if any. */

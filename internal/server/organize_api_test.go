@@ -368,3 +368,75 @@ func TestDuplicatesNeedASession(t *testing.T) {
 		t.Errorf("duplicates without a session answered %d, want 401", w.Code)
 	}
 }
+
+// The folder menu's figures, decoded the way the browser reads them.
+type folderStatsBody struct {
+	Path     string   `json:"path"`
+	Files    int      `json:"files"`
+	Folders  int      `json:"folders"`
+	Bytes    int64    `json:"bytes"`
+	Stored   int64    `json:"stored_bytes"`
+	Clouds   []string `json:"clouds"`
+	Degraded int      `json:"degraded"`
+	Newest   string   `json:"newest"`
+}
+
+func (c *testClient) folderStats(t *testing.T, dir string) folderStatsBody {
+	t.Helper()
+
+	w := c.do(http.MethodGet, "/api/folders/stats?path="+url.QueryEscape(dir), nil, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("stats %s: %d %s", dir, w.Code, w.Body.String())
+	}
+	var out folderStatsBody
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatalf("stats %s: %v", dir, err)
+	}
+	return out
+}
+
+// What the menu header shows: everything under the folder rather than what is
+// directly in it, weighed twice — once as the files and once as the parts.
+func TestFolderStatsAnswersWhatAFolderHolds(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("pw", 3)
+	c.grow(t,
+		"/films/loose.mkv",
+		"/films/2023/corfu/one.mkv",
+		"/photos/elsewhere.jpg",
+	)
+
+	s := c.folderStats(t, "/films")
+	if s.Path != "/films" {
+		t.Errorf("stats answer for %s, want /films", s.Path)
+	}
+	if s.Files != 2 {
+		t.Errorf("/films holds %d files, want 2 — the one in /photos is not under it", s.Files)
+	}
+	if s.Folders != 2 {
+		t.Errorf("/films holds %d folders, want 2", s.Folders)
+	}
+	if s.Bytes == 0 || s.Stored <= s.Bytes {
+		t.Errorf("/films is %d bytes stored as %d, want the parts to weigh more", s.Bytes, s.Stored)
+	}
+	if len(s.Clouds) != 3 {
+		t.Errorf("/films lives on %v, want all three accounts", s.Clouds)
+	}
+	if s.Newest == "" {
+		t.Error("/films holds files and reports no newest one")
+	}
+	if s.Degraded != 0 {
+		t.Errorf("%d files under /films are short a part, want none", s.Degraded)
+	}
+}
+
+// A folder that is not there is a refusal rather than a folder holding nothing.
+func TestFolderStatsRefusesAFolderThatIsNotThere(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("pw", 3)
+
+	w := c.do(http.MethodGet, "/api/folders/stats?path=/nowhere", nil, "")
+	if w.Code == http.StatusOK {
+		t.Errorf("stats for a folder that is not there: %d %s", w.Code, w.Body.String())
+	}
+}

@@ -1849,6 +1849,11 @@ pipe the password on stdin.
   index, so nothing is transferred — see [Renaming](#renaming)
 - **Row menu** — `⋯` on every row opens the same sheet a phone gets, so a desk
   reaches everything a file can do without the row growing a control per feature
+- **What a folder holds** — a folder's menu leads with the figures its row cannot
+  show: everything at or below it in files and bytes, how many clouds the parts
+  went to, what those parts weigh across the accounts, how many folders are
+  inside, and when the newest of them changed — see [What a folder is
+  holding](#what-a-folder-is-holding)
 - **Search** — a box in the toolbar finds a file or folder anywhere in the
   vault, each hit shown with the folder it lives in; searching inside a folder
   looks there first and offers to widen to the whole vault
@@ -2155,6 +2160,32 @@ did not move is still where it was, and organizing again picks up precisely
 what is left. There is no flatten endpoint to half-succeed with no way to
 report which half.
 
+### What a folder is holding
+
+A file's row says how big it is. A folder's cannot — a folder's size lives in
+the levels below it, and the listing only ever shows one of them. So the folder
+menu (`⋯` on the row) leads with the figures instead of a blank space:
+
+```
+Movies                                    5      28.1 MB          3
+Folder                                  FILES     IN HERE     CLOUDS
+42.2 MB across the clouds · 3 folders inside · newest Aug 23
+```
+
+**In here** is what a `du -sh` would tell you: everything at or below the
+folder, however deep. **Across the clouds** is what that costs, which is the
+larger figure — a file cut two-of-three is stored one and a half times over, and
+that is the number your accounts' free space is actually spent in. **Clouds** is
+how many accounts hold a part of something under here, named in full if you
+hover the figure. A folder with a file short a spare part says so too, in the
+same line, the same way the accounts panel does for the vault.
+
+The figures are asked for when the menu opens and not before. Working them out
+is a walk of the index for that one folder — cheap, and contacting no account —
+but a listing of forty folders would be forty walks for thirty-nine menus nobody
+opened. If the answer cannot be fetched the menu opens without it: every choice
+below still works, and this was a question nobody typed.
+
 ### Finding duplicates
 
 A vault fills up the way a drawer does. The same photograph arrives from the
@@ -2267,6 +2298,7 @@ one walk, so comparing them costs nothing.
 | DELETE | `/api/files/{id}` | Erase every part |
 | GET | `/api/folders` | Every folder in the vault, for a destination picker |
 | GET | `/api/folders/survey?path=` | Everything under a folder in one walk of the index — every file with its kind and depth, every folder with what it holds. What the organizer plans from |
+| GET | `/api/folders/stats?path=` | What one folder holds, counted rather than listed: files and bytes at or below it, folders under it, what the parts weigh across the accounts, which clouds they are on, files short a part, newest change. What the folder menu shows |
 | GET | `/api/folders/duplicates?path=` | Which files under a folder are copies of each other, asked three ways in one walk: the same bytes, the same size, or names a copy marker apart |
 | GET · POST | `/api/folders/art?path=` | Which file's thumbnail a folder is drawn with, and what else it could be (`id` to pick one, `""` for none) |
 | POST · DELETE | `/api/folders` | Create / delete folders |

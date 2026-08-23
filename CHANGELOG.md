@@ -12,6 +12,38 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### A folder's menu now says what the folder is holding
+
+Opening `⋯` on a folder showed its name, the word *Folder*, and a wide empty
+space where the useful part should have been. The list of things you could do to
+the folder was there — move it, scatter it to other clouds, delete everything
+inside it — with nothing to tell you how much *everything inside it* was.
+
+That space now carries the figures the row cannot show:
+
+```
+Movies                                    5      28.1 MB          3
+Folder                                  FILES     IN HERE     CLOUDS
+42.2 MB across the clouds · 3 folders inside · newest Aug 23
+```
+
+**In here** is the `du -sh` reading — everything at or below the folder, however
+deep it sits. **Across the clouds** is what that actually costs, which is the
+bigger number: a file cut two-of-three is stored one and a half times over, and
+that is the figure your accounts' free space is spent in. **Clouds** counts the
+accounts holding a part of something under there, and names them if you hover
+it. A folder holding a file that went out short of a part says so on the same
+line.
+
+It is worked out when the menu opens rather than carried on every row. Counting
+one folder is a walk of the encrypted index and contacts no account, but a
+listing of forty folders would have been forty walks for thirty-nine menus
+nobody opened. If it cannot be fetched the menu opens exactly as it did before —
+every choice still works, and this was a question nobody typed.
+
+`GET /api/folders/stats?path=` is the same answer for anything else that wants
+it.
+
 ### Stray parts now looks at the machine SAND is running on, too
 
 **Vault settings → Stray parts** asked every cloud what it was holding that no

@@ -465,7 +465,7 @@ export function IconButton({ glyph, label, title, tone = 'dim', size = 34, style
    is a mis-tap waiting to happen on a phone, so the row keeps a single button
    and the choices open down here, where each one is a full-width target with
    its name spelled out and the destructive one set apart at the bottom. */
-export function ActionSheet({ title, subtitle, items, onClose }) {
+export function ActionSheet({ title, subtitle, figures, note, items, onClose }) {
   const mobile = useIsMobile()
   const first = useRef(null)
 
@@ -477,6 +477,7 @@ export function ActionSheet({ title, subtitle, items, onClose }) {
   }, [onClose])
 
   const rows = items.filter(Boolean)
+  const stats = (figures || []).filter(Boolean)
 
   return createPortal(
     <div
@@ -519,14 +520,49 @@ export function ActionSheet({ title, subtitle, items, onClose }) {
         )}
 
         <div style={{ padding: mobile ? '8px 18px 12px' : '14px 18px 12px', borderBottom: `1px solid ${COLORS.border}` }}>
-          <div style={{
-            fontFamily: FONT.mono, fontSize: '13px', color: COLORS.text,
-            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-          }}>{title}</div>
-          {subtitle && (
-            <div style={{ marginTop: '4px', fontFamily: FONT.sans, fontSize: '11.5px', color: COLORS.textMuted }}>
-              {subtitle}
+          {/* The name on the left and the figures on the right: the space beside
+              a two-word title is the one place in the sheet where something can
+              be said about the thing without pushing a choice further down. */}
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: '14px' }}>
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <div style={{
+                fontFamily: FONT.mono, fontSize: '13px', color: COLORS.text,
+                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              }}>{title}</div>
+              {subtitle && (
+                <div style={{ marginTop: '4px', fontFamily: FONT.sans, fontSize: '11.5px', color: COLORS.textMuted }}>
+                  {subtitle}
+                </div>
+              )}
             </div>
+
+            {stats.length > 0 && (
+              <div style={{ display: 'flex', gap: '14px', flexShrink: 0, textAlign: 'right' }}>
+                {stats.map((f) => (
+                  <div key={f.key || f.label} title={f.title}>
+                    <div style={{
+                      fontFamily: FONT.mono, fontSize: '15px', fontWeight: 600,
+                      color: COLORS.text, lineHeight: 1.2, letterSpacing: '-0.5px',
+                      whiteSpace: 'nowrap',
+                    }}>{f.value}</div>
+                    <div style={{
+                      marginTop: '3px',
+                      fontFamily: FONT.mono, fontSize: '9px', fontWeight: 600,
+                      letterSpacing: '1.2px', textTransform: 'uppercase',
+                      color: COLORS.textMuted, whiteSpace: 'nowrap',
+                    }}>{f.label}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {note && (
+            <div style={{
+              marginTop: '8px',
+              fontFamily: FONT.mono, fontSize: '10px', lineHeight: 1.6,
+              color: COLORS.textMuted,
+            }}>{note}</div>
           )}
         </div>
 
