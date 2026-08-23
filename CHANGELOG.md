@@ -56,6 +56,20 @@ implementing only the old one stop interoperating. Because SAND drives Proton's
 own binary rather than reimplementing its cryptography, that migration is
 handled by updating the client — re-run the installer.
 
+### A door to the stray parts, not just a notice about them
+
+**Vault settings → Stray parts** opens what the tidy-up banners open. Until now
+those two panels — the sweep for parts nothing points at, and the repair for
+shards a disconnect mislaid — could only be reached from a banner the app raises
+by itself when the set of connected clouds changes. That banner is dismissible
+and only appears when there is something to say, so waving it away, or wanting
+to check before the app volunteers anything, left nothing to click.
+
+The new line runs its own scan when it is opened rather than reusing whatever
+the app last saw, and reports both halves of what that scan finds. It shows no
+figure until it is opened: the answer is a full listing of every account, which
+is not something a settings menu should quietly start.
+
 ## v2026.8 — calendar versioning
 
 The version is now `vYEAR.MONTH.PATCH`: the year and month the release line

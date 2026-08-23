@@ -1,7 +1,8 @@
-import React, { useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { COLORS, FONT, accountColor, formatBytes } from '../theme'
 import { api } from '../api'
 import { Banner, Button, Modal, Spinner } from './ui'
+import ReattachShards from './ReattachShards'
 
 /* Parts left on a cloud that no file points at any more.
 
@@ -23,7 +24,7 @@ import { Banner, Button, Modal, Spinner } from './ui'
    Everything the scan refuses to offer is shown all the same, greyed out and
    with its reason beside it. An account another vault has been writing to is
    the case that matters: its parts look exactly like orphans and are not. */
-export default function CleanOrphans({ scan: initialScan, onClose, onSwept }) {
+export default function CleanOrphans({ scan: initialScan, zIndex = 100, onClose, onSwept }) {
   const [scan, setScan] = useState(initialScan)
   const [excluded, setExcluded] = useState(() => new Set())
   const [busy, setBusy] = useState(false)
@@ -84,7 +85,7 @@ export default function CleanOrphans({ scan: initialScan, onClose, onSwept }) {
 
   if (report) {
     return (
-      <Modal title="Swept" onClose={onClose} width={560}>
+      <Modal title="Swept" onClose={onClose} width={560} zIndex={zIndex}>
         <Banner tone="success">
           {report.deleted} object{report.deleted === 1 ? '' : 's'} erased across{' '}
           {report.archives} archive{report.archives === 1 ? '' : 's'}, freeing{' '}
@@ -117,6 +118,7 @@ export default function CleanOrphans({ scan: initialScan, onClose, onSwept }) {
       subtitle="Storage your clouds are holding for files this vault no longer has."
       onClose={busy ? undefined : onClose}
       width={620}
+      zIndex={zIndex}
     >
       {error && <Banner tone="error" onDismiss={() => setError(null)}>{error}</Banner>}
 
@@ -205,6 +207,214 @@ export default function CleanOrphans({ scan: initialScan, onClose, onSwept }) {
         </div>
       </div>
     </Modal>
+  )
+}
+
+/* The same two panels, opened on purpose rather than when the app brings them up.
+
+   Everything above arrives as news. The app scans when the set of connected
+   clouds changes and puts what it found in a banner over the file list, which
+   is the right shape for news and the wrong shape for a door: a banner can be
+   waved away, and it is only ever there when there is something to say. After
+   either of those, these panels could not be reached at all — somebody who
+   dismissed the notice, or who simply wants to know whether anything is adrift
+   before the app volunteers it, had nothing to click.
+
+   So this is the door, and it hangs off the vault settings list. It runs its
+   own scan when it opens instead of reusing whatever the app last saw, because
+   the whole point of asking on purpose is to be told what is true now. That
+   scan is a listing per account and is slow enough to be worth not running
+   until it is asked for, which is why the line in the settings list reports no
+   figure of its own — it is a question, not a reading.
+
+   The listing answers two quite separate questions at once (§3.7.1 and §3.7.2),
+   so what is found is named here and handed to whichever panel already knows
+   what to do about it. Nothing is decided in this component. */
+export function StrayParts({ zIndex = 100, onClose, onChanged }) {
+  const [scan, setScan] = useState(null)
+  const [busy, setBusy] = useState(true)
+  const [error, setError] = useState(null)
+  const [open, setOpen] = useState(null)
+
+  /* Whether the panel that was open changed anything. Closing one that did
+     puts this back in front of a scan that is now wrong, so the scan is run
+     again; closing one that was only looked at leaves the figures alone rather
+     than spending another listing to confirm them. */
+  const acted = useRef(false)
+
+  const rescan = useCallback(async () => {
+    setError(null)
+    setBusy(true)
+    try {
+      setScan(await api.orphanScan())
+    } catch (err) {
+      setScan(null)
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }, [])
+
+  useEffect(() => { rescan() }, [rescan])
+
+  const back = () => {
+    setOpen(null)
+    if (!acted.current) return
+    acted.current = false
+    rescan()
+  }
+
+  const done = () => {
+    acted.current = true
+    onChanged?.()
+  }
+
+  if (open === 'sweep' && scan) {
+    return <CleanOrphans scan={scan} zIndex={zIndex} onClose={back} onSwept={done} />
+  }
+
+  if (open === 'reattach' && scan) {
+    return <ReattachShards scan={scan} zIndex={zIndex} onClose={back} onDone={done} />
+  }
+
+  /* An account that would not answer is not a small caveat here. A part is
+     abandoned only if every account agrees it is, so one silent cloud makes
+     "nothing adrift" a thing this cannot say. */
+  const unheard = (scan?.accounts || []).filter((account) => account.error)
+  const nothing = scan && !scan.found && scan.reattachable === 0
+
+  return (
+    <Modal
+      title="Stray parts"
+      subtitle="What your clouds are holding that this vault's index does not name"
+      onClose={onClose}
+      width={520}
+      zIndex={zIndex}
+    >
+      {error && <Banner tone="error">{error}</Banner>}
+
+      {busy && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: '10px',
+          padding: '18px 2px', fontFamily: FONT.sans, fontSize: '12px', color: COLORS.textMuted,
+        }}>
+          <Spinner size={14} />
+          Asking every connected cloud what it is holding. This is a full listing per account, so
+          it takes about as long as the slowest of them.
+        </div>
+      )}
+
+      {!busy && scan && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '16px' }}>
+          {/* The repair first, and the sweep second, on the two occasions both
+              are on offer: one adds a spare part back to a file that is short
+              of one, the other erases something. Putting the deletion at the
+              top of a list somebody opened out of curiosity is the wrong way
+              round. */}
+          {scan.reattachable > 0 && (
+            <Finding
+              icon="🧩"
+              title={`${scan.reattachable} part${scan.reattachable === 1 ? '' : 's'} of `
+                + `${scan.stray_files} file${scan.stray_files === 1 ? '' : 's'} `
+                + `${scan.reattachable === 1 ? 'is' : 'are'} on your clouds unrecorded`}
+              body={'A disconnected cloud takes its records with it, and reconnecting the storage '
+                + 'never brings them back on its own. Putting them back moves no data at all.'}
+              action="Put them back"
+              onClick={() => setOpen('reattach')}
+            />
+          )}
+
+          {scan.found && (
+            <Finding
+              icon="🧹"
+              title={`${formatBytes(scan.bytes)} across ${scan.objects} `
+                + `part${scan.objects === 1 ? '' : 's'} belongs to no file in this vault`}
+              body={'What each one used to be is not knowable — that lived in the index that '
+                + 'stopped naming it. All that can be said is how much room it is taking and '
+                + 'which cloud is holding it.'}
+              action="Take a look"
+              onClick={() => setOpen('sweep')}
+            />
+          )}
+
+          {nothing && unheard.length === 0 && (
+            <Banner tone="success">
+              Nothing adrift. Every part your clouds are holding belongs to a file this vault
+              still has.
+            </Banner>
+          )}
+
+          {nothing && unheard.length > 0 && (
+            <Banner tone="warn">
+              Nothing adrift on the clouds that answered — but these did not, and a part counts as
+              abandoned only when every account agrees it is:
+              <span style={preText}>
+                {unheard.map((account) => `• ${account.name} — ${account.error}`).join('\n')}
+              </span>
+            </Banner>
+          )}
+
+          {!nothing && unheard.length > 0 && (
+            <Banner tone="warn">
+              Some accounts could not be listed, so this is what the rest are holding rather than
+              the whole answer:
+              <span style={preText}>
+                {unheard.map((account) => `• ${account.name} — ${account.error}`).join('\n')}
+              </span>
+            </Banner>
+          )}
+
+          {scan.blocked?.length > 0 && (
+            <Banner tone="info">
+              Nothing will be offered for deletion while this holds:
+              <span style={preText}>{scan.blocked.map((reason) => `• ${reason}`).join('\n')}</span>
+            </Banner>
+          )}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' }}>
+        <Button variant="ghost" onClick={rescan} disabled={busy}>Scan again</Button>
+        <Button variant="ghost" onClick={onClose}>Done</Button>
+      </div>
+    </Modal>
+  )
+}
+
+/* One thing the listing turned up, and the button for the panel that deals
+   with it.
+
+   It leads on the same fact its banner over the file list leads on, and for the
+   same reason: room held for nothing, in the sweep's case, and files short of a
+   spare in the repair's. This is the same news reached a different way, and a
+   reader who has seen both should not have to work out that they are the same
+   news. */
+function Finding({ icon, title, body, action, onClick }) {
+  return (
+    <div style={{
+      display: 'flex',
+      alignItems: 'flex-start',
+      gap: '12px',
+      padding: '12px',
+      borderRadius: '8px',
+      background: COLORS.surfaceRaised,
+      border: `1px solid ${COLORS.border}`,
+    }}>
+      <span aria-hidden="true" style={{ fontSize: '16px', lineHeight: 1.2, flexShrink: 0 }}>
+        {icon}
+      </span>
+      <div style={{ minWidth: 0, flex: 1, display: 'flex', flexDirection: 'column', gap: '4px' }}>
+        <span style={{
+          fontFamily: FONT.mono, fontSize: '12px', fontWeight: 600, color: COLORS.text,
+        }}>{title}</span>
+        <span style={{
+          fontFamily: FONT.sans, fontSize: '11px', lineHeight: 1.5, color: COLORS.textMuted,
+        }}>{body}</span>
+        <div style={{ marginTop: '6px' }}>
+          <Button size="sm" variant="primary" onClick={onClick}>{action}</Button>
+        </div>
+      </div>
+    </div>
   )
 }
 

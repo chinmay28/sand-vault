@@ -3286,6 +3286,67 @@ class TestOrphanedParts:
         page.wait_for_timeout(500)
         assert page.get_by_text(re.compile(r"no file in this vault points at")).count() == 0
 
+    def test_the_settings_menu_is_the_way_back_in(self, page, sand_bin, tmp_path, spawn_server):
+        """The notice is dismissible, and dismissing it used to be final.
+
+        The banner is news: it is only there while there is something to say,
+        and it goes when it is waved away. That left the panel behind it with
+        no door at all — somebody who dismissed it, or who wanted to check
+        before the app volunteered anything, had nothing to click. **Vault
+        settings → Stray parts** is that door, and it runs its own scan rather
+        than reusing whatever the app happened to have seen.
+        """
+        clouds = self.build_vault(sand_bin, tmp_path, "orphans-settings")
+        before = self.parts_in(clouds[0])
+        assert len(before) == 2, before
+
+        self.unlock(page, spawn_server("orphans-settings"))
+        notice = page.get_by_text(re.compile(r"no file in this vault points at"))
+        expect(notice).to_be_visible(timeout=30000)
+
+        # Waved away, and gone for good — the app will not raise it again until
+        # the set of connected clouds changes.
+        page.get_by_role("button", name="Dismiss").last.click()
+        expect(notice).to_have_count(0)
+
+        open_vault_setting(page, "Stray parts")
+        strays = page.get_by_role("dialog", name="Stray parts")
+        strays.wait_for(timeout=20000)
+
+        # The scan starts when the line is clicked, not when the menu opened,
+        # and it reports both halves of what one listing turns up. This vault
+        # has one of each: the deleted file's part, which nothing points at,
+        # and the kept file's, which the disconnect stopped the index naming.
+        expect(strays.get_by_text(re.compile(r"belongs to no file in this vault"))).to_be_visible(
+            timeout=30000)
+        expect(strays.get_by_text(re.compile(r"on your clouds unrecorded"))).to_be_visible()
+
+        strays.get_by_role("button", name="Take a look").click()
+        expect(page.get_by_text("Parts nothing points at")).to_be_visible(timeout=15000)
+        page.get_by_role("button", name=re.compile(r"^Erase 1 object")).click()
+        expect(page.get_by_text(re.compile(r"1 object erased across 1 archive"))).to_be_visible(
+            timeout=30000)
+        assert len(self.parts_in(clouds[0])) == len(before) - 1
+
+        # Closing a panel that changed something lands back on a fresh scan
+        # rather than on the figures it was opened with — the sweep is gone
+        # from it and the repair, which nothing has been done about, is not.
+        page.get_by_role("button", name="Done").click()
+        expect(strays.get_by_text(re.compile(r"on your clouds unrecorded"))).to_be_visible(
+            timeout=30000)
+        expect(strays.get_by_text(re.compile(r"belongs to no file in this vault"))).to_have_count(0)
+
+        strays.get_by_role("button", name="Put them back").click()
+        expect(page.get_by_text("Parts your files have lost track of")).to_be_visible(timeout=15000)
+        page.get_by_role("button", name=re.compile(r"^Put 1 shard back")).click()
+        expect(page.get_by_text(re.compile(r"1 shard recorded again"))).to_be_visible(timeout=30000)
+
+        page.get_by_role("button", name="Done").click()
+        expect(strays.get_by_text(re.compile(r"Nothing adrift"))).to_be_visible(timeout=30000)
+
+        strays.get_by_role("button", name="Done").click()
+        close_vault_settings(page)
+
     def test_a_vault_waiting_to_be_recovered_is_not_offered_a_sweep(
         self, page, spawn_server, lost_vault,
     ):

@@ -7,6 +7,7 @@ import MountDrive from './MountDrive'
 import { FilmKeySettings } from './FilmDetails'
 import SubVaults from './SubVaults'
 import RecoveryKit from './RecoveryKit'
+import { StrayParts } from './CleanOrphans'
 import {
   DefaultClouds, PARTS_PER_FILE, defaultSchemeFor, parseScheme, schemeName,
 } from './CloudSelect'
@@ -28,7 +29,17 @@ import {
 
    What is *not* here is anything that is not a setting. Connecting a cloud is
    an action and stays a button of its own; an unfinished re-encryption is news
-   and stays a banner. A menu that mixes those in becomes a second home screen. */
+   and stays a banner. A menu that mixes those in becomes a second home screen.
+
+   The last line in the list breaks that rule, and the reason is worth writing
+   down so that the next exception has to earn its place the same way. Stray parts on the clouds are news
+   too — the app scans when the accounts change and says so in a banner — but
+   that banner is dismissible and only ever appears when there is something to
+   say, so the panels behind it could not be reached at all once it was gone or
+   had never come. That is not a menu deciding to hold an action; it is the
+   only door to a room the app otherwise reaches into and then locks. A line
+   here is admissible on exactly that ground and no other: not because
+   something was hard to find, but because there was no way in. */
 
 /* The dialogs this opens are opened over it rather than instead of it, so
    closing one puts you back on the list you chose it from. */
@@ -150,6 +161,21 @@ export default function VaultSettings({
             onClick={() => setOpen('mount')}
           />
         )}
+
+        {/* The one line here that is not a setting — see the note at the top
+            for why it is allowed to be. Alone in this list it reports nothing
+            on the right: the answer is a full listing of every account, slow
+            enough that opening a settings menu must not quietly start one. So
+            this line is a question rather than a reading, and the scan begins
+            when it is asked. */}
+        {providers.length > 0 && (
+          <Setting
+            icon="🧹"
+            label="Stray parts"
+            hint="What your clouds hold that no file here points at"
+            onClick={() => setOpen('strays')}
+          />
+        )}
       </div>
 
       {open === 'defaults' && (
@@ -204,6 +230,12 @@ export default function VaultSettings({
 
       {open === 'mount' && (
         <MountDrive path={webdav?.path} zIndex={CHILD_Z} onClose={close} />
+      )}
+
+      {/* A sweep changes what the accounts are holding and a reattach changes
+          the index, so both are `onChanged` rather than a quiet close. */}
+      {open === 'strays' && (
+        <StrayParts zIndex={CHILD_Z} onClose={close} onChanged={onChanged} />
       )}
     </Modal>
   )

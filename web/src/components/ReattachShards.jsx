@@ -20,7 +20,7 @@ import { Banner, Button, Modal, Spinner } from './ui'
    shard number, so the object is already exactly where the record says it is.
    That is why this has no per-row opt-out the way the sweep does — there is
    nothing to weigh up. It can only make files more recoverable than they are. */
-export default function ReattachShards({ scan, onClose, onDone }) {
+export default function ReattachShards({ scan, zIndex = 100, onClose, onDone }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const [report, setReport] = useState(null)
@@ -44,7 +44,7 @@ export default function ReattachShards({ scan, onClose, onDone }) {
 
   if (report) {
     return (
-      <Modal title="Back where they belong" onClose={onClose} width={560}>
+      <Modal title="Back where they belong" onClose={onClose} width={560} zIndex={zIndex}>
         <Banner tone="success">
           {report.shards} shard{report.shards === 1 ? '' : 's'} recorded again across{' '}
           {report.files} file{report.files === 1 ? '' : 's'}. No data was transferred —
@@ -86,6 +86,7 @@ export default function ReattachShards({ scan, onClose, onDone }) {
       subtitle="Still on your clouds, still readable — the index just stopped naming them."
       onClose={busy ? undefined : onClose}
       width={600}
+      zIndex={zIndex}
     >
       {error && <Banner tone="error" onDismiss={() => setError(null)}>{error}</Banner>}
 

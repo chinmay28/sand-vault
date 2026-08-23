@@ -1093,6 +1093,15 @@ folder and its date all lived in the index that stopped mentioning it — so the
 only honest figures are how big it is and where it sits, and those are what you
 get.
 
+**That notice is not the only way in.** It is news, so it can be dismissed and
+it only shows up when there is something to say. **Vault settings → Stray
+parts** is the door that is always there: it runs a fresh scan when you open it
+and reports both halves of what one listing turns up — the parts nothing points
+at, and the [shards a disconnect mislaid](#a-shard-a-disconnect-mislaid--put-it-back)
+— handing each to the panel that deals with it. It shows no figure until you
+open it, since the answer is a full listing of every account and a settings
+menu has no business starting one on its own.
+
 From the command line:
 
 ```bash
