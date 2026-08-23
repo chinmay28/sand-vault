@@ -84,10 +84,12 @@ from outside.
 
 It now draws the file it is on: which file of how many, whether it is **coming
 down from the machine** or **being split, encrypted and scattered** to the
-clouds, how far through that half it is, and what has already landed or been
-skipped. The two halves are named apart rather than added together, because
+clouds, how far through that half it is, how fast it is moving and roughly how
+much longer that leaves, and what has already landed or been skipped. The two halves are named apart rather than added together, because
 they are two passes over the same bytes and they are slow for different reasons
-— one is the machine's upstream, the other is yours.
+— one is the machine's upstream, the other is yours. The speed is per half for
+the same reason, and a transfer that stalls stops claiming one rather than
+holding the last good number.
 
 This is a view of the request that is running, not a job queue growing quietly
 in the corner. The server keeps it in memory for exactly as long as the import

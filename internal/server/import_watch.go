@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -54,6 +55,32 @@ const finishedImportTTL = 30 * time.Minute
 // first, so a night of hourly imports cannot grow the map without bound.
 const maxFinishedImports = 8
 
+// rateSample is how far apart two progress reports have to be before the speed
+// between them is worth believing.
+//
+// Progress arrives every few megabytes, which on a fast local transfer can be
+// several times a second — dividing a small distance by a small time is how a
+// speed reading ends up swinging between 40 MB/s and 900 MB/s while the
+// transfer itself is perfectly steady.
+const rateSample = 500 * time.Millisecond
+
+// rateWeight is how much of the newest sample goes into the speed shown.
+//
+// A quarter, so the number settles within a few seconds of a real change and
+// does not jitter with the ordinary unevenness of a network. It is a moving
+// average rather than an average since the file started, deliberately: what
+// somebody watching wants is what it is doing now, not what it managed
+// overall — the second is only interesting once it is over.
+const rateWeight = 0.25
+
+// staleRateAfter is how long a speed survives with nothing moving behind it.
+//
+// A transfer that has stalled must not go on claiming 20 MB/s: past this the
+// speed is dropped rather than held, and the bytes count — which has not moved
+// either — is what says where it got to. Long enough to ride out a slow chunk
+// on a wide erasure scheme.
+const staleRateAfter = 12 * time.Second
+
 // importRun is one import, running or lately finished.
 type importRun struct {
 	ID string `json:"id"`
@@ -75,6 +102,18 @@ type importRun struct {
 	// walked before anything moves.
 	At vault.ImportProgress `json:"at"`
 
+	// Rate is how fast the current stage is moving, in bytes per second, or
+	// zero when there is nothing to say yet — the file has just started, or
+	// nothing has moved for a while.
+	//
+	// Per stage rather than per file, because the two stages are two different
+	// speeds: coming down is the source's upstream and going up is this
+	// machine's, and averaging them would describe neither. It is what the
+	// stage is doing now rather than what it has averaged, since a number
+	// that spent the last minute wrong keeps saying so long after it stops
+	// being true.
+	Rate float64 `json:"rate,omitempty"`
+
 	// Done, and what it came to. A finished run is only ever a detached one:
 	// a foreground import's answer goes back down the request that started it,
 	// and is forgotten here the moment that request ends.
@@ -88,15 +127,31 @@ type importRun struct {
 type importWatch struct {
 	mu   sync.Mutex
 	runs map[string]*watchedImport
+
+	// now is time.Now everywhere but in the tests that have to drive the speed
+	// reading, which is arithmetic over timestamps and untestable against a
+	// clock that will not hold still.
+	now func() time.Time
 }
 
-// watchedImport is a run plus the handle to stop it.
+// watchedImport is a run plus the handle to stop it, and what the speed reading
+// is measured against.
 type watchedImport struct {
 	run    importRun
 	cancel func()
+
+	// The last sample the speed was worked out from: which stage of which file
+	// it was, how much had gone, and when. A new stage starts the measurement
+	// over rather than carrying a number across a boundary it does not
+	// describe.
+	stage string
+	done  int64
+	at    time.Time
 }
 
-func newImportWatch() *importWatch { return &importWatch{runs: map[string]*watchedImport{}} }
+func newImportWatch() *importWatch {
+	return &importWatch{runs: map[string]*watchedImport{}, now: time.Now}
+}
 
 // errTooManyImports is refusing to detach one more.
 type errTooManyImports struct{}
@@ -131,7 +186,7 @@ func (w *importWatch) start(source, dest, scope string, detached bool, cancel fu
 	w.runs[id] = &watchedImport{
 		run: importRun{
 			ID: id, Source: source, Dest: dest, Vault: scope,
-			Detached: detached, StartedAt: time.Now(),
+			Detached: detached, StartedAt: w.now(),
 		},
 		cancel: cancel,
 	}
@@ -144,18 +199,52 @@ type importTicket struct {
 	id    string
 }
 
-// update records where the import has got to. It is called from the goroutine
-// running the import, on every few megabytes, and does nothing but take a lock
-// and copy a small struct.
+// update records where the import has got to, and how fast it is getting
+// there. It is called from the goroutine running the import, on every few
+// megabytes, and does nothing but take a lock and do a little arithmetic.
 func (t *importTicket) update(at vault.ImportProgress) {
 	if t == nil {
 		return
 	}
 	t.watch.mu.Lock()
 	defer t.watch.mu.Unlock()
-	if entry, ok := t.watch.runs[t.id]; ok {
-		entry.run.At = at
+
+	entry, ok := t.watch.runs[t.id]
+	if !ok {
+		return
 	}
+	entry.run.At = at
+	entry.measure(at, t.watch.now())
+}
+
+// measure folds one progress report into the speed reading.
+func (e *watchedImport) measure(at vault.ImportProgress, now time.Time) {
+	stage := fmt.Sprintf("%d/%s", at.File, at.Stage)
+
+	// A new file, or the same file's other half. Neither continues the last
+	// measurement: the file that just started has moved nothing yet, and the
+	// scatter is a different pipe from the fetch.
+	if stage != e.stage {
+		e.stage, e.done, e.at = stage, at.Done, now
+		e.run.Rate = 0
+		return
+	}
+
+	elapsed := now.Sub(e.at).Seconds()
+	moved := at.Done - e.done
+	if elapsed < rateSample.Seconds() || moved <= 0 {
+		// Too soon, or nothing new. Leave the sample where it is so the next
+		// report measures against a wider window rather than a noisier one.
+		return
+	}
+
+	sample := float64(moved) / elapsed
+	if e.run.Rate == 0 {
+		e.run.Rate = sample
+	} else {
+		e.run.Rate = e.run.Rate*(1-rateWeight) + sample*rateWeight
+	}
+	e.done, e.at = at.Done, now
 }
 
 // done forgets the import. It is what a foreground import ends with, whether it
@@ -207,7 +296,7 @@ func (w *importWatch) forSource(source string) []importRun {
 	out := make([]importRun, 0, len(w.runs))
 	for _, entry := range w.runs {
 		if entry.run.Source == source {
-			out = append(out, entry.run)
+			out = append(out, w.snapshotLocked(entry))
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].StartedAt.Before(out[j].StartedAt) })
@@ -244,8 +333,23 @@ func (w *importWatch) forRun(id string) *importRun {
 	if !ok {
 		return nil
 	}
-	run := entry.run
+	run := w.snapshotLocked(entry)
 	return &run
+}
+
+// snapshotLocked copies one run for handing out, dropping a speed that nothing
+// has moved behind for a while. A stalled transfer saying it is doing 20 MB/s
+// is worse than one saying nothing: the bytes have stopped either way, and only
+// one of the two answers admits it.
+func (w *importWatch) snapshotLocked(entry *watchedImport) importRun {
+	run := entry.run
+	if !run.Done && !entry.at.IsZero() && w.now().Sub(entry.at) > staleRateAfter {
+		run.Rate = 0
+	}
+	if run.Done {
+		run.Rate = 0
+	}
+	return run
 }
 
 // stop cancels a running import and forgets a finished one, which are the same
