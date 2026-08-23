@@ -485,6 +485,19 @@ export const api = {
      is a handshake and a directory listing, browsing is a round trip a click,
      and importing can be a media library coming down a home connection and
      going back up to three clouds. Only the last one takes real time. */
+  /* A key pair for the two things here that sign in over SSH: a machine files
+     are imported from, and a connected account on a machine you have a login
+     on.
+
+     Note which half comes back. The public one — a line to paste into
+     authorized_keys, and not a secret — plus a handle standing in for the
+     private one, which stays on the server and is swapped back in when the
+     connect form is submitted. The browser never sees a private key it did not
+     already have, which is the whole reason this endpoint exists rather than
+     the form telling you to go and run ssh-keygen. */
+  generateSshKey: (comment = '') =>
+    request('/api/ssh/keypair', { method: 'POST', body: { comment } }),
+
   sources: () => request('/api/remote'),
   connectSource: (body, { signal } = {}) =>
     request('/api/remote', { method: 'POST', body, signal }),

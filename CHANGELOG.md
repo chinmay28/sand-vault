@@ -12,6 +12,46 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### SAND makes the SSH key, so nobody has to paste the wrong half
+
+Connecting a machine you have an SSH login on — as somewhere to keep parts, or
+as somewhere to bring files in from — used to start with homework. Run
+`ssh-keygen` somewhere else, work out which of the two files it wrote is the
+private one, paste **that** one into a browser, and install the other on the
+server. Three steps, each of them a chance to paste the wrong half, and the
+wrong half is the interesting one to get wrong.
+
+Both connect forms now open on **Generate a key pair** instead. SAND makes an
+Ed25519 key, keeps the private half, and gives you one line to add to
+`authorized_keys` on the server — with the command that appends it, for a box
+you reach through a shell rather than a web console. The paste runs the other
+way now, and the half that travels is the half that is meant to be handed out.
+
+The private half is never sent to the browser at all, not even to be shown.
+It is made on the machine SAND runs on, held there while you finish the form,
+and written into the encrypted vault when the connection is stored. What the
+form carries in the meantime is a handle standing in for it. That matters
+because SAND is usually reached over plain HTTP at a LAN or tailnet address,
+and an SSH private key is the one credential here that opens a shell rather
+than a bucket.
+
+**Your own key still works and is one word away.** *I have a key* puts the
+paste box back exactly as it was — a key you already have for the box, or one
+issued by a CA, is not something SAND can invent a replacement for.
+
+`POST /api/ssh/keypair` is the endpoint, and it answers with the public half, a
+fingerprint, and a handle that expires in half an hour. A form older than its
+key says so and offers a new one, rather than failing with "this does not look
+like a private key".
+
+**Fixed while building it:** locking the vault dropped its live backends
+without closing them. For every other kind of account that is the same thing —
+they share one HTTP transport — but an SSH backend holds a socket and a session
+on somebody else's machine, and letting go of it does not end either. A vault
+locked and unlocked a few times left a trail of sessions on the far end until
+sshd's own timeout noticed them. Disconnecting an account already closed
+properly; now locking does too.
+
 ### How much more fits on each cloud
 
 Every account card and every row of the upload picker said how much of the vault

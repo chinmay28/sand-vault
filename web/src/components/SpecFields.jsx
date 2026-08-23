@@ -2,6 +2,7 @@ import React, { useState } from 'react'
 import { COLORS, FONT } from '../theme'
 import { Input, PasswordInput, TextArea } from './ui'
 import DirectoryPicker from './DirectoryPicker'
+import SshKeyField from './SshKeyField'
 
 /* What a stored secret looks like once it has left the vault.
 
@@ -26,8 +27,13 @@ export const STORED_SECRET = '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022'
    not. A connected account's secrets never reach the browser, so a field for
    one starts empty and empty means "leave it alone" — the placeholder is what
    says so, in the box, instead of the field looking like a credential somebody
-   deleted. */
-export default function SpecFields({ fields, values, onChange, secretPlaceholder, disabled }) {
+   deleted.
+
+   `keyName` names the connection a generated SSH key is for, and ends up in
+   the key's comment on the far end. Optional, and the account's name is the
+   obvious thing to pass: a year later, authorized_keys should say which of the
+   things with a login here each line lets in. */
+export default function SpecFields({ fields, values, onChange, secretPlaceholder, disabled, keyName }) {
   return fields.map((field) => {
     if (field.directory) {
       return (
@@ -36,6 +42,25 @@ export default function SpecFields({ fields, values, onChange, secretPlaceholder
           field={field}
           value={values[field.key] || ''}
           disabled={disabled}
+          onChange={(value) => onChange(field.key, value)}
+        />
+      )
+    }
+
+    /* An SSH key is the one credential SAND can make for you rather than ask
+       for, so its field offers that first and keeps the paste box behind a
+       word. See SshKeyField for why that direction is worth the component. */
+    if (field.ssh_key) {
+      return (
+        <SshKeyField
+          key={field.key}
+          label={field.label + (field.required ? ' *' : '')}
+          help={field.help}
+          placeholder={field.placeholder}
+          secretPlaceholder={secretPlaceholder}
+          value={values[field.key] || ''}
+          disabled={disabled}
+          keyName={keyName}
           onChange={(value) => onChange(field.key, value)}
         />
       )

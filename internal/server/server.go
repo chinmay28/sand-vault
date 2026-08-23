@@ -70,6 +70,11 @@ type Server struct {
 	streams    *streamStore
 	oauthFlows *oauthFlowStore
 
+	// generatedKeys holds SSH key pairs SAND made for a connect form that has
+	// not been submitted yet. The private half never leaves this process — see
+	// handlers_sshkeys.go.
+	generatedKeys *generatedKeyStore
+
 	// externalActivity is when something outside the browser last read the
 	// vault — a mounted share, or a player following a stream link. Neither has
 	// a browser session to keep the vault alive, so without this it would lock
@@ -160,6 +165,9 @@ func (s *Server) Handler() (http.Handler, error) {
 	}
 	if s.oauthFlows == nil {
 		s.oauthFlows = newOAuthFlowStore()
+	}
+	if s.generatedKeys == nil {
+		s.generatedKeys = newGeneratedKeyStore()
 	}
 
 	mux := http.NewServeMux()
@@ -412,6 +420,13 @@ func (s *Server) Handler() (http.Handler, error) {
 		"POST /api/git/track":        s.handleGitTrack,
 		"POST /api/git/{id}/refresh": s.handleGitRefresh,
 		"DELETE /api/git/{id}":       s.handleGitUntrack,
+
+		// A key pair for the two things here that sign in over SSH: a
+		// connected account on a machine you have a login on, and a machine
+		// files are imported from. It answers with the public half, which is a
+		// line to install on the server, and keeps the private half here — see
+		// handlers_sshkeys.go for why that direction is the whole point of it.
+		"POST /api/ssh/keypair": s.handleGenerateSSHKey,
 
 		// The machines a vault imports files *from*, which is the opposite
 		// direction from a connected account and is deliberately not one: an

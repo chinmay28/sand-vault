@@ -312,6 +312,7 @@ export default function ConnectCloud({ onClose, onConnected }) {
             <SpecFields
               fields={settingFields(spec)}
               values={values}
+              keyName={name}
               onChange={(key, value) => setValues({ ...values, [key]: value })}
             />
 
@@ -359,6 +360,7 @@ export default function ConnectCloud({ onClose, onConnected }) {
         <SpecFields
           fields={spec.fields}
           values={values}
+          keyName={name}
           onChange={(key, value) => setValues({ ...values, [key]: value })}
         />
 

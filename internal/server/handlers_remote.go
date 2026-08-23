@@ -68,6 +68,23 @@ type sourceRequest struct {
 	RelearnHostKey bool `json:"relearn_host_key,omitempty"`
 }
 
+// sourceFrom turns a request into a source, swapping a handle for a key SAND
+// generated in place of the private key field.
+//
+// A generated key's private half is never sent to the browser, so what comes
+// back in that field is the handle standing in for it — see
+// handlers_sshkeys.go. Everything else, including a key somebody pasted in
+// themselves, passes through untouched.
+func (s *Server) sourceFrom(req sourceRequest) (vault.Source, error) {
+	source := req.toSource()
+	key, err := s.resolveGeneratedKey(source.PrivateKey)
+	if err != nil {
+		return vault.Source{}, err
+	}
+	source.PrivateKey = key
+	return source, nil
+}
+
 func (req sourceRequest) toSource() vault.Source {
 	return vault.Source{
 		Name:       strings.TrimSpace(req.Name),
@@ -102,11 +119,17 @@ func (s *Server) handleRemoteAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	added, err := s.sourceFrom(req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "KEY_EXPIRED")
+		return
+	}
+
 	ctx, cancel := contextWithTimeout(r, remoteConnectTimeout)
 	defer cancel()
 
 	v, _ := s.Vault()
-	source, err := v.AddSource(ctx, req.toSource())
+	source, err := v.AddSource(ctx, added)
 	if err != nil {
 		vaultErrorResponse(w, err)
 		return
@@ -124,11 +147,17 @@ func (s *Server) handleRemoteUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	edits, err := s.sourceFrom(req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "KEY_EXPIRED")
+		return
+	}
+
 	ctx, cancel := contextWithTimeout(r, remoteConnectTimeout)
 	defer cancel()
 
 	v, _ := s.Vault()
-	source, err := v.UpdateSource(ctx, id, req.toSource(), req.RelearnHostKey)
+	source, err := v.UpdateSource(ctx, id, edits, req.RelearnHostKey)
 	if err != nil {
 		vaultErrorResponse(w, err)
 		return

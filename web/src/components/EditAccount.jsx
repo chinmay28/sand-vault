@@ -634,6 +634,7 @@ function Connection({ provider, busy, setBusy, onClose, onChanged }) {
           values={values}
           disabled={busy}
           secretPlaceholder="unchanged"
+          keyName={provider.name}
           onChange={(key, value) => setValues((current) => ({ ...current, [key]: value }))}
         />
 
@@ -686,6 +687,7 @@ function Connection({ provider, busy, setBusy, onClose, onChanged }) {
                   values={values}
                   disabled={busy}
                   secretPlaceholder="unchanged"
+                  keyName={provider.name}
                   onChange={(key, value) => setValues((current) => ({ ...current, [key]: value }))}
                 />
                 {advanced.some((field) => field.secret) && (

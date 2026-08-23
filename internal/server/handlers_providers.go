@@ -85,6 +85,16 @@ func (s *Server) handleProviderAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A backend that signs in over SSH may have had its key made here rather
+	// than pasted, in which case the field carries a handle standing in for a
+	// private half the browser was never given. Swapped back before the
+	// settings reach the vault; anything else passes through untouched. See
+	// handlers_sshkeys.go.
+	if err := s.resolveGeneratedKeys(req.Options); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "KEY_EXPIRED")
+		return
+	}
+
 	ctx, cancel := contextWithTimeout(r, 60*time.Second)
 	defer cancel()
 
@@ -130,6 +140,11 @@ func (s *Server) handleProviderUpdate(w http.ResponseWriter, r *http.Request) {
 	var req editProviderRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
+		return
+	}
+
+	if err := s.resolveGeneratedKeys(req.Options); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "KEY_EXPIRED")
 		return
 	}
 
