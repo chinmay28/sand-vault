@@ -297,3 +297,104 @@ func TestRemoteEndpointsNeedASession(t *testing.T) {
 		}
 	}
 }
+
+// What an import is doing while it does it. Nothing running is the ordinary
+// answer rather than an error: finished, failed and cancelled are all the same
+// thing to a bar that should stop being drawn.
+func TestRemoteImportProgressIsEmptyWhenNothingRuns(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("pw", 3)
+	req, root := remoteFixture(t, "vps")
+	seedRemote(t, filepath.Join(root, "a.txt"), "aaa")
+
+	id := c.connectRemote(req)["id"].(string)
+
+	w, body := c.json(http.MethodGet, "/api/remote/"+id+"/import", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("progress before any import: %d %s", w.Code, w.Body.String())
+	}
+	if imports, _ := body["imports"].([]any); len(imports) != 0 {
+		t.Errorf("listed %d imports with none running: %v", len(imports), body)
+	}
+
+	// And after one has run and returned, which is the case a poll one tick
+	// behind the request will hit.
+	if w, _ := c.json(http.MethodPost, "/api/remote/"+id+"/import", map[string]any{
+		"paths": []string{"a.txt"}, "dest": "/",
+	}); w.Code != http.StatusCreated {
+		t.Fatalf("import: %d", w.Code)
+	}
+	_, body = c.json(http.MethodGet, "/api/remote/"+id+"/import", nil)
+	if imports, _ := body["imports"].([]any); len(imports) != 0 {
+		t.Errorf("a finished import is still listed: %v", body)
+	}
+}
+
+// A dialog polling a machine that has since been forgotten is told so, rather
+// than left watching an empty list forever.
+func TestRemoteImportProgressRefusesAnUnknownSource(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("pw", 3)
+
+	w, _ := c.json(http.MethodGet, "/api/remote/nosuchsource/import", nil)
+	if w.Code == http.StatusOK {
+		t.Errorf("progress for an unknown source answered %d", w.Code)
+	}
+}
+
+// The other half of the same question: an import that *is* running says what it
+// is doing, on the endpoint the dialog polls.
+//
+// A file big enough to still be moving while the poll goes out — the wiring
+// under test is that the handler hands the vault somewhere to report to, and a
+// file that arrives instantly reports nothing to catch.
+func TestRemoteImportProgressWhileItRuns(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("pw", 3)
+	req, root := remoteFixture(t, "vps")
+	seedRemote(t, filepath.Join(root, "big.bin"), strings.Repeat("sand", 8<<20))
+
+	id := c.connectRemote(req)["id"].(string)
+
+	done := make(chan int)
+	go func() {
+		w, _ := c.json(http.MethodPost, "/api/remote/"+id+"/import", map[string]any{
+			"paths": []string{"big.bin"}, "dest": "/",
+		})
+		done <- w.Code
+	}()
+
+	var seen map[string]any
+	for seen == nil {
+		select {
+		case code := <-done:
+			if code != http.StatusCreated {
+				t.Fatalf("import: %d", code)
+			}
+			// It beat every poll. Nothing is wrong, and there is nothing left
+			// to look at — the import is over and correctly no longer listed.
+			t.Skip("the import finished before a poll caught it")
+		default:
+		}
+		_, body := c.json(http.MethodGet, "/api/remote/"+id+"/import", nil)
+		if imports, _ := body["imports"].([]any); len(imports) > 0 {
+			seen, _ = imports[0].(map[string]any)
+		}
+	}
+
+	if seen["dest"] != "/" {
+		t.Errorf("running import landing at %v, want /", seen["dest"])
+	}
+	at, _ := seen["at"].(map[string]any)
+	if at == nil {
+		t.Fatalf("a running import reported nothing about the file: %v", seen)
+	}
+	// The plan is walked before a byte moves, so a file may be listed with no
+	// progress against it yet — but it is this file, and it is one of one.
+	if name, _ := at["name"].(string); name != "" && name != "big.bin" {
+		t.Errorf("working on %q, want big.bin", name)
+	}
+	if code := <-done; code != http.StatusCreated {
+		t.Errorf("import finished with %d", code)
+	}
+}

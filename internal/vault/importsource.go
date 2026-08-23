@@ -3,6 +3,7 @@ package vault
 import (
 	"context"
 	"fmt"
+	"io"
 	"path"
 	"strings"
 	"time"
@@ -43,6 +44,12 @@ type ImportRequest struct {
 	// beside it under a numbered name. It also overrides the skip below: a
 	// deliberate re-import is how somebody says "fetch it again anyway".
 	Overwrite bool
+
+	// OnProgress, when set, is called as files move, so a caller holding the
+	// request open can say where it is. It is called from the goroutine running
+	// the import and must not block: see ImportProgress for what it carries and
+	// why it is a view of a running request rather than state anybody keeps.
+	OnProgress func(ImportProgress)
 }
 
 // ImportResult is what became of one file. One line per file, so a partial
@@ -111,6 +118,15 @@ type importFile struct {
 // wrong: a file replaced on the source by a different file of the same length.
 // A source file newer than the import is fetched again rather than assumed.
 //
+// The granularity is worth being blunt about, because it is what the dialog has
+// to say out loud: **a file resumes, a transfer does not.** Interrupting an
+// 18 GB film halfway leaves no entry and no spool, and the next run starts it
+// again from the first byte. That is the cost of committing whole files only,
+// and it buys the property above — the vault holds the whole file or nothing,
+// never something that has to be checked before it can be trusted. It is also
+// why OnProgress exists: on a selection of one very large file, "nothing is
+// lost" and "nothing is happening" used to look identical from outside.
+//
 // # Direction
 //
 // Bytes go source → this machine → the connected accounts. They are compressed,
@@ -150,7 +166,7 @@ func (v *Vault) ImportFromSource(ctx context.Context, scope Scope, id string, re
 	// fetched. A folder that will not be made fails every file under it on its
 	// own line, which is what says how much of the selection actually arrived.
 	made[dest] = true
-	for _, f := range files {
+	for i, f := range files {
 		if err := v.ensureFolder(scope, f.dir, made); err != nil {
 			summary.Results = append(summary.Results, ImportResult{
 				Path:  f.remote,
@@ -161,7 +177,24 @@ func (v *Vault) ImportFromSource(ctx context.Context, scope Scope, id string, re
 			continue
 		}
 
-		result := v.importOne(ctx, scope, client, source, f, req)
+		// Fixed for this file, and filled in with a stage and a count as it
+		// moves. The tallies are of the files before this one, so what the bar
+		// says mid-flight is what the summary would say if it stopped here.
+		at := ImportProgress{
+			File: i + 1, Files: len(files),
+			Path: f.remote, Dest: path.Join(f.dir, f.name), Name: f.name,
+			Size:     f.size,
+			Imported: summary.Imported, Skipped: summary.Skipped, Failed: summary.Failed,
+		}
+		var report func(ImportStage, int64)
+		if req.OnProgress != nil {
+			report = func(stage ImportStage, done int64) {
+				at.Stage, at.Done = stage, done
+				req.OnProgress(at)
+			}
+		}
+
+		result := v.importOne(ctx, scope, client, source, f, req, report)
 		switch {
 		case result.OK:
 			summary.Imported++
@@ -184,7 +217,7 @@ func (v *Vault) ImportFromSource(ctx context.Context, scope Scope, id string, re
 
 // importOne fetches a single file, or says why it did not.
 func (v *Vault) importOne(ctx context.Context, scope Scope, client *sandsftp.Client,
-	source Source, f importFile, req ImportRequest) ImportResult {
+	source Source, f importFile, req ImportRequest, report func(ImportStage, int64)) ImportResult {
 
 	result := ImportResult{Path: f.remote, Dest: path.Join(f.dir, f.name)}
 
@@ -193,6 +226,14 @@ func (v *Vault) importOne(ctx context.Context, scope Scope, client *sandsftp.Cli
 			result.Skipped, result.Reason = true, why
 			return result
 		}
+	}
+
+	// Said before the first byte moves, so the file being worked on appears the
+	// moment it is picked up rather than once enough of it has arrived to
+	// report. A skipped file is passed over in silence for the same reason: it
+	// is over before there is anything to watch.
+	if report != nil {
+		report(StageFetching, 0)
 	}
 
 	remote, _, err := client.OpenUnder(source.Root, f.remote)
@@ -205,11 +246,18 @@ func (v *Vault) importOne(ctx context.Context, scope Scope, client *sandsftp.Cli
 	// Straight from the SFTP handle into the vault: an *sftp.File is an
 	// io.Reader, and UploadStream takes one. Nothing buffers the file, so a
 	// 40 GB film costs the chunk window rather than 40 GB.
-	entry, warnings, err := v.UploadStream(ctx, scope, f.dir, f.name, remote, UploadOptions{
-		Overwrite: req.Overwrite,
-		Accounts:  req.Accounts,
-		Scheme:    req.Scheme,
-	})
+	//
+	// Watching it is a counter in the middle of that stream and a callback out
+	// of the scatter, which is why the two stages report separately: the reader
+	// sees the file arrive, and only the upload can see it leave.
+	var src io.Reader = remote
+	opts := UploadOptions{Overwrite: req.Overwrite, Accounts: req.Accounts, Scheme: req.Scheme}
+	if report != nil {
+		src = &progressReader{r: remote, say: func(done int64) { report(StageFetching, done) }}
+		opts.OnScattered = func(done, _ int64) { report(StageScattering, done) }
+	}
+
+	entry, warnings, err := v.UploadStream(ctx, scope, f.dir, f.name, src, opts)
 	result.Warnings = warnings
 	if err != nil {
 		result.Error = err.Error()

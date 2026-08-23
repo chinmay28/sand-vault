@@ -255,10 +255,18 @@ for adding one.
 >
 > Nothing is removed from the machine, and nothing outside the folder you scope
 > it to can be seen — including through a symlink pointing out of it. **If an
-> import is interrupted, nothing is lost:** every file that arrived is already
-> scattered, and running the same import again skips those and carries on. That
-> is the whole of the resume story — there is no job to resume, only an import
-> to repeat.
+> import is interrupted, every file that arrived whole is kept:** it is already
+> scattered, and running the same import again skips those and carries on from
+> the next one. There is no job to resume, only an import to repeat. **A file
+> cut off partway is the exception** — nothing of it is kept, and the next run
+> fetches it again from the first byte, which on one very large file means
+> starting it over rather than continuing it.
+>
+> While an import runs, the dialog draws the file it is on: which file of how
+> many, whether it is coming down from the machine or going back up to the
+> clouds, and how far through. That is a view of the request that is running
+> and nothing more — it is held in memory for as long as the request is open
+> and disappears with it.
 
 > **The backends that take a path** — `local`, and the seven services whose
 > folders a desktop client syncs — are pointed at one rather than told it: the

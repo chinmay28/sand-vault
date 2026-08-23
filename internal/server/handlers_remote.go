@@ -242,13 +242,22 @@ func (s *Server) handleRemoteImport(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := contextWithTimeout(r, remoteImportTimeout)
 	defer cancel()
 
+	// Registered before the first byte moves and forgotten however this ends,
+	// so what GET /api/remote/{id}/import answers with is what is actually
+	// running. It is a place to write progress to and nothing the import reads
+	// back — see import_watch.go.
+	id := r.PathValue("id")
+	ticket := s.imports.start(id, req.Dest, req.Vault)
+	defer ticket.done()
+
 	v, _ := s.Vault()
-	summary, err := v.ImportFromSource(ctx, vault.Scope(req.Vault), r.PathValue("id"), vault.ImportRequest{
-		Paths:     req.Paths,
-		Dest:      req.Dest,
-		Accounts:  req.Accounts,
-		Scheme:    scheme,
-		Overwrite: req.Overwrite,
+	summary, err := v.ImportFromSource(ctx, vault.Scope(req.Vault), id, vault.ImportRequest{
+		Paths:      req.Paths,
+		Dest:       req.Dest,
+		Accounts:   req.Accounts,
+		Scheme:     scheme,
+		Overwrite:  req.Overwrite,
+		OnProgress: ticket.update,
 	})
 	if err != nil {
 		vaultErrorResponse(w, err)
@@ -263,4 +272,23 @@ func (s *Server) handleRemoteImport(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusCreated
 	}
 	writeJSON(w, status, summary)
+}
+
+// handleRemoteImportProgress answers with the imports running from one machine
+// right now, and an empty list when there are none.
+//
+// An empty list is the ordinary answer rather than an error: an import that has
+// finished, failed or was cancelled is not running, and those are the same
+// thing to a bar that should stop being drawn. What the import *did* comes back
+// from the POST that started it, which is the only place a result belongs.
+func (s *Server) handleRemoteImportProgress(w http.ResponseWriter, r *http.Request) {
+	// The source is checked against the vault so that a stale dialog polling a
+	// machine that has since been forgotten is told so, rather than being left
+	// watching an empty list forever.
+	v, _ := s.Vault()
+	if _, err := v.Source(r.PathValue("id")); err != nil {
+		vaultErrorResponse(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"imports": s.imports.forSource(r.PathValue("id"))})
 }

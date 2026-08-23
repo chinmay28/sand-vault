@@ -171,6 +171,20 @@ func (v *Vault) Sources() ([]Source, error) {
 	return out, nil
 }
 
+// Source returns one configured source with its secrets redacted, or an error
+// naming what is not there.
+//
+// For a caller that has an ID and wants to know whether it still means
+// anything — a dialog polling an import, most of all, since a source can be
+// forgotten while one is open in front of it.
+func (v *Vault) Source(id string) (Source, error) {
+	s, err := v.source(id)
+	if err != nil {
+		return Source{}, err
+	}
+	return s.Redacted(), nil
+}
+
 // source returns one source with its secrets intact, for the code that has to
 // connect with them.
 func (v *Vault) source(id string) (Source, error) {

@@ -134,7 +134,7 @@ func (v *Vault) Convert(ctx context.Context, id string) (*ConversionReport, erro
 	// the scheme from the account count would silently recode anything outside
 	// the default family.
 	placed, err := v.scatterStream(ctx, scope, stale.Name, spool, size, hash,
-		spread{preferred: current, scheme: stale.Scheme()}, v.uploadChunkSize())
+		spread{preferred: current, scheme: stale.Scheme()}, v.uploadChunkSize(), nil)
 	report := &ConversionReport{Path: stale.Path(), Size: size, Warnings: placed.warnings}
 	if err != nil {
 		return report, fmt.Errorf("storing the converted %s: %w", stale.Path(), err)

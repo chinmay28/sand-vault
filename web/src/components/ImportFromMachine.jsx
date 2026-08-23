@@ -22,11 +22,18 @@ import SshKeyField from './SshKeyField'
        connected to, because a rebuilt VPS and somebody answering in its place
        are indistinguishable from here — and only the person who owns the
        server can tell them apart.
-     · Interrupting an import loses nothing. Every file that arrived is
-       already scattered and committed, and running the same import again
-       skips those and carries on. There is no job to resume, only an import
-       to repeat, which is why this dialog can afford to have no progress bar
-       worth the name. */
+     · Interrupting an import loses whole files only where it has to. Every
+       file that arrived is already scattered and committed, and running the
+       same import again skips those and carries on; a file cut off partway is
+       not kept, and comes down again from the first byte. There is no job to
+       resume, only an import to repeat.
+
+   The progress bar is a view of the request that is running and not a step
+   towards a job framework: the server keeps it in memory for exactly as long
+   as the POST is open, this dialog polls it every second, and nothing is
+   written down. It earns its place on the one file the summary at the end is
+   useless for — a single very large one, which without it is indistinguishable
+   from a hang for an hour. */
 
 export function ImportFromMachine({ path, vault = '', onClose, onChanged }) {
   const [sources, setSources] = useState(null)
@@ -280,6 +287,7 @@ function SourceBrowser({ source, path, vault, onBack, onClose, onChanged }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const [summary, setSummary] = useState(null)
+  const [running, setRunning] = useState(null)
 
   useEffect(() => {
     let live = true
@@ -290,6 +298,39 @@ function SourceBrowser({ source, path, vault, onBack, onClose, onChanged }) {
       .catch((err) => { if (live) { setError(err.message); setListing({ entries: [] }) } })
     return () => { live = false }
   }, [source.id, cwd])
+
+  /* While the import request is open, ask the server every second what it is
+     doing with it.
+
+     A second, short request rather than anything pushed down the first one: the
+     import is a plain POST that answers when it is done, and this leaves it
+     exactly that. The server answers out of memory, so the poll costs nothing
+     and cannot slow the transfer it is watching.
+
+     It is worth having only because of the file this dialog is worst at: a
+     folder of small files reports itself in the summary, but one very large
+     file used to look identical to a hang for as long as it took. */
+  useEffect(() => {
+    if (!busy) {
+      setRunning(null)
+      return undefined
+    }
+    let live = true
+    const ask = async () => {
+      try {
+        const resp = await api.sourceImports(source.id)
+        // The first is this one: imports are listed oldest first, and starting
+        // a second from the same machine takes a second dialog.
+        if (live) setRunning((resp.imports || [])[0] || null)
+      } catch {
+        // A poll that failed says nothing about the import, which is still
+        // running behind its own request. Leave the last thing it said up.
+      }
+    }
+    ask()
+    const timer = setInterval(ask, 1000)
+    return () => { live = false; clearInterval(timer) }
+  }, [busy, source.id])
 
   const toggle = (entry) => {
     const full = cwd ? `${cwd}/${entry.name}` : entry.name
@@ -375,6 +416,8 @@ function SourceBrowser({ source, path, vault, onBack, onClose, onChanged }) {
         </Banner>
       )}
 
+      {busy && <ImportProgress run={running} />}
+
       <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
         <Button variant="primary" onClick={runImport} disabled={busy || picked.size === 0}>
           {busy ? 'Bringing them in…' : `Import ${picked.size || ''}`.trim()}
@@ -391,11 +434,96 @@ function SourceBrowser({ source, path, vault, onBack, onClose, onChanged }) {
         fontFamily: FONT.sans, fontSize: '11px', lineHeight: 1.55, color: COLORS.textMuted,
       }}>
         A folder brings everything under it, keeping its shape. Nothing is
-        removed from the machine. If this is interrupted, nothing is lost — every
-        file that arrived is already scattered, and running the same import again
-        skips those and carries on.
+        removed from the machine. If this is interrupted, every file that
+        arrived whole is already scattered, and running the same import again
+        skips those and carries on from the next one. A file cut off partway is
+        the exception: nothing of it is kept, and the next run fetches it again
+        from the first byte.
       </p>
     </Modal>
+  )
+}
+
+/* The file being worked on, while it is being worked on.
+
+   Two stages, named rather than merged, because they are two passes over the
+   same bytes and they are slow for different reasons: coming down is the
+   machine's upstream, going up is this one's. Adding them into a single
+   percentage would make a file look half done when it had only arrived, and
+   would hide which half of the trip is the slow one.
+
+   Nothing here is stored anywhere. It is a view of a request that is running,
+   and it disappears with it — see the note at the top of this file. */
+function ImportProgress({ run }) {
+  const at = run?.at
+  const size = at?.size || 0
+  const fraction = size > 0 ? Math.min(1, (at.done || 0) / size) : 0
+  const scattering = at?.stage === 'scattering'
+
+  /* Between the request going out and the first file being picked up, the
+     server is walking the selection — one round trip per folder, and on a
+     folder of ten thousand files that is a real wait. Until a file is named
+     there is nothing to count, so the bar says what is happening instead of
+     drawing 0 B of 0 B. */
+  const started = !!at?.name
+  const heading = started ? at.name : 'Looking over what was picked…'
+  const counted = started && at.files > 1 ? `${at.file} of ${at.files}` : ''
+
+  return (
+    <div style={{
+      padding: '11px 13px',
+      marginBottom: '12px',
+      background: COLORS.surface,
+      border: `1px solid ${COLORS.border}`,
+      borderRadius: '6px',
+    }}>
+      <div style={{
+        display: 'flex', justifyContent: 'space-between', gap: '10px',
+        fontFamily: FONT.mono, fontSize: '11px', color: COLORS.textDim, marginBottom: '6px',
+      }}>
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {heading}
+        </span>
+        {counted && <span style={{ flexShrink: 0 }}>{counted}</span>}
+      </div>
+
+      {started && (
+        <div style={{
+          display: 'flex', justifyContent: 'space-between', gap: '10px',
+          fontFamily: FONT.mono, fontSize: '10.5px', color: COLORS.textMuted, marginBottom: '8px',
+        }}>
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {scattering
+              ? 'splitting, encrypting and scattering…'
+              : 'coming down from the machine…'}
+          </span>
+          <span style={{ flexShrink: 0 }}>
+            {formatBytes(at.done || 0)} / {formatBytes(size)}
+          </span>
+        </div>
+      )}
+
+      <div style={{ height: '3px', background: COLORS.border, borderRadius: '2px', overflow: 'hidden' }}>
+        <div style={{
+          height: '100%',
+          width: `${Math.max(4, fraction * 100)}%`,
+          background: scattering ? COLORS.accent : COLORS.accentDim,
+          transition: 'width 0.3s ease',
+        }} />
+      </div>
+
+      {/* What the summary would say if it stopped here, which is also what a
+          second run would find already done. */}
+      {started && (at.imported > 0 || at.skipped > 0 || at.failed > 0) && (
+        <div style={{
+          fontFamily: FONT.mono, fontSize: '10.5px', color: COLORS.textMuted, marginTop: '7px',
+        }}>
+          {at.imported} in
+          {at.skipped ? `, ${at.skipped} already here` : ''}
+          {at.failed ? `, ${at.failed} failed` : ''}
+        </div>
+      )}
+    </div>
   )
 }
 
