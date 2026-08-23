@@ -436,6 +436,18 @@ The first two are per account and greyed out in the answer with the reason
 attached; the third withholds the sweep across the board. Nothing here runs
 without being asked, and nothing deletes without a second call.
 
+**How it is reached.** Two ways, deliberately. The app runs a scan of its own
+when the set of connected accounts changes — which is when the gap opens — and
+puts what it found in a dismissible banner over the file list. That is news, and
+news is the wrong shape for a door: it can be waved away, and it is only ever
+there when there is something to say. So **Vault settings → Stray parts** is the
+other way in, the one that works when the banner has been dismissed or has never
+appeared. It runs its own scan on opening rather than reusing the app's, since
+the point of asking on purpose is to be told what is true now, and it reports
+nothing on its settings line until then — a listing per account is far too slow
+to run because a menu was opened. It hands what it finds to the same two panels
+the banners do: the sweep here, and the repair in §3.7.2.
+
 ### 3.7.2 Shards a disconnect mislaid, and putting them back
 
 The subtraction above has three outcomes, not two, and only one of them is
