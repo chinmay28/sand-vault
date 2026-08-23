@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react'
 import { COLORS, FONT, formatBytes } from '../theme'
 import { api } from '../api'
-import { Banner, Button, Input, Modal, PasswordInput, Spinner, TextArea } from './ui'
+import { Banner, Button, Input, Modal, PasswordInput, Spinner } from './ui'
+import SshKeyField from './SshKeyField'
 
 /* Bringing files in from a machine you have an SSH login on.
 
@@ -155,12 +156,13 @@ function SourceRow({ source, onOpen, onForget }) {
 
 /* The connect form.
 
-   A private key gets a textarea rather than a single-line field, and that is
-   not a style choice: an <input> silently drops the line breaks out of a pasted
-   PEM block, so a key pasted into one arrives as one line and never parses.
-   It is not masked either — a key long enough to need a box this size is one
-   you check by looking at, and a wall of dots defeats the only reason the box
-   is that big. */
+   The key field is the interesting one, and it runs the opposite way from what
+   a connect form usually does. Rather than asking for a private key that was
+   made somewhere else, it offers to make the pair here and hands back the
+   public half to install on the server — so what gets pasted is the half it
+   does not matter about, in the direction where pasting the wrong one is
+   harmless. Pasting your own key is one word away and unchanged. See
+   SshKeyField. */
 function ConnectSource({ onCancel, onConnected }) {
   const [form, setForm] = useState({
     name: '', host: '', port: '22', user: '', root: '',
@@ -219,13 +221,17 @@ function ConnectSource({ onCancel, onConnected }) {
         onChange={set('root')}
         help="The folder this source can see. Nothing outside it can be browsed or read — including through a symlink pointing out of it." />
 
-      <TextArea label="Private key *" value={form.private_key} disabled={busy}
-        onChange={set('private_key')}
-        placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
-        help="The whole file, BEGIN and END lines included. Make one with ssh-keygen -t ed25519 and put its .pub half in the account's authorized_keys." />
+      <SshKeyField
+        label="Private key *"
+        value={form.private_key}
+        disabled={busy}
+        keyName={form.name.trim() || form.host.trim()}
+        onChange={(value) => setForm((current) => ({ ...current, private_key: value }))}
+      />
 
       <PasswordInput label="Key passphrase" value={form.passphrase} disabled={busy}
-        onChange={set('passphrase')} help="Only if the key is encrypted." />
+        onChange={set('passphrase')}
+        help="Only for a key you pasted that is encrypted. One SAND generated has no passphrase." />
 
       {advanced
         ? (

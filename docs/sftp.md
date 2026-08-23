@@ -85,23 +85,84 @@ impersonated, and nothing more. Pasting the fingerprint in is how you close it.
 
 ## Credentials
 
-The key is **pasted into the vault**, not referenced by a path on disk.
+The key is **held in the vault**, not referenced by a path on disk.
 `provider.Config` says a config is only ever written inside the encrypted vault
 *because* `Options` holds credentials, so this is consistent with every other
 backend, it survives a reinstall, and it travels in the recovery kit. A
 passphrase-protected key is supported and the passphrase is held only while the
 vault is open.
 
+### SAND makes the key, by default
+
+Asking somebody to run `ssh-keygen`, find the right one of the two files it
+wrote and paste **that** one into a browser is three chances to paste the wrong
+half — and the wrong half is the interesting one to get wrong. So both connect
+forms offer to make the pair instead, and that is what they open on:
+
+```
+POST /api/ssh/keypair   {comment} → {handle, public_key, fingerprint}
+```
+
+Note what is missing from that response. The private half is generated in
+`internal/sftp.GenerateKeyPair`, filed in a small in-memory store, and **never
+sent to the browser at all**. What comes back is the public half — one line for
+`authorized_keys`, which is not a secret and is meant to be handed out — and a
+`handle` that stands in for the private half in the form being filled in. When
+the connect request arrives carrying that handle, `resolveGeneratedKey` swaps
+the key back in on the way past and it goes straight into the vault. The paste
+is reversed, and the half that travels is the one it does not matter about.
+
+That is worth the small amount of state because SAND is normally reached over
+plain HTTP at a LAN or tailnet address, and an SSH private key is the one
+credential here that opens a shell rather than a bucket.
+
+Details that are decisions rather than mechanics:
+
+- **Ed25519, with no algorithm picker.** Every sshd since OpenSSH 6.5 accepts
+  it, the key is one line, and there is no key size to get wrong. The machine
+  old enough to need RSA is a machine to paste a key into.
+- **The generated key has no passphrase.** A passphrase protects a key sitting
+  on a disk somebody else might read; this one goes into the vault, and the
+  passphrase would have to be stored beside it in that same vault to be usable
+  by a daemon nobody is sitting in front of. That is a lock with its key taped
+  to it. The vault's encryption is the protection, and it is the same
+  protection every other credential gets.
+- **A handle is not consumed on first use.** Connecting is the step that fails
+  — wrong folder, wrong username, public half not installed yet — and every one
+  of those is fixed by editing the form and pressing the button again. A
+  one-shot handle would turn each retry into "generate a new key and install it
+  again". It ages out after 30 minutes instead, and a key nobody connected with
+  is a key nobody installed anywhere.
+- **A handle that has aged out is refused by name**, not passed through. Left
+  unrecognised it would reach the SSH client as a PEM block and come back as
+  "this does not look like a private key", which is true and explains nothing.
+- **Pasting your own key is one word away and unchanged.** Plenty of people
+  already have a key for the box, and a key held in an agent or issued by a CA
+  is not one SAND can invent a replacement for.
+- **The public half is shown once**, while the form is open, and is not stored
+  anywhere it can be read back. Known consequence: a server rebuilt a year
+  later needs a fresh pair rather than the old line put back. Deriving it from
+  the stored private key is a handful of lines — `ssh.MarshalAuthorizedKey` on
+  a parsed signer — and wants a place in the UI to live before it is worth
+  having, since the import-source side has no edit dialog at all.
+
 No agent support: the server is a daemon, there is nothing to forward to.
 Password auth exists for boxes whose web console will not let you install a key,
 and is not recommended for anything else.
 
-One consequence worth designing around: a private key is multi-line, and an
-HTML `<input>` silently drops the line breaks out of a pasted PEM block. That
-is why `FieldSpec` grew a `Multiline` flag and `SpecFields` grew a textarea
-branch — without it the field cannot be filled in at all. The textarea is not
-masked: a key long enough to need one is also one you check by looking at, and
-a wall of dots defeats the only reason the box is that big.
+One consequence worth designing around on the paste path: a private key is
+multi-line, and an HTML `<input>` silently drops the line breaks out of a
+pasted PEM block. That is why `FieldSpec` grew a `Multiline` flag and
+`SpecFields` grew a textarea branch — without it the field cannot be filled in
+at all. The textarea is not masked: a key long enough to need one is also one
+you check by looking at, and a wall of dots defeats the only reason the box is
+that big.
+
+`FieldSpec` grew an `SSHKey` flag alongside it, which is what tells the
+generated form that this field is one SAND can fill in itself. A flag on the
+field rather than a second field, because it is still one credential with one
+place to put it — `web/src/components/SshKeyField.jsx` is the whole of the
+difference, and both dialogs get it without knowing what SSH is.
 
 ---
 
@@ -216,8 +277,9 @@ nothing stops you connecting the same host twice.
 ## What is built
 
 ```
-internal/sftp/              dial, host-key policy (TOFU + pinning), key parsing,
-                            connection pooling, path confinement, browsing
+internal/sftp/              dial, host-key policy (TOFU + pinning), key parsing
+                            and key generation, connection pooling, path
+                            confinement, browsing
 internal/sftp/sftptest/     an in-process sshd, so the code that talks to a
                             server is tested against a server
 internal/provider/sftp.go   KindSFTP: Put/Get/Stat/Delete/List/Ping,
@@ -225,7 +287,10 @@ internal/provider/sftp.go   KindSFTP: Put/Get/Stat/Delete/List/Ping,
 internal/vault/source.go    a machine to import from: stored, connected, browsed
 internal/vault/importsource.go   planning a selection and pulling it in
 internal/server/handlers_remote.go   the five endpoints above
+internal/server/handlers_sshkeys.go  making a key pair, and holding the private
+                            half here rather than sending it to the browser
 web/src/components/ImportFromMachine.jsx   connect, browse, pick, import
+web/src/components/SshKeyField.jsx   generate or paste, in one field
 ```
 
 Notes on the backend that are not obvious from the interface:
@@ -250,11 +315,14 @@ Notes on the backend that are not obvious from the interface:
 - **Connections are pooled.** A scatter writes every shard of a chunk at once,
   and an SSH handshake is a round trip plus a key exchange. One session carries
   the lot, and is re-dialled when it dies.
-- **The vault now closes providers that hold something.** `resetLiveCache` and
-  `forgetProvider` call `Close` on any backend implementing `io.Closer`.
-  Nothing needed it before — HTTP backends share a transport — but an SSH
-  session left open sits on the far end until sshd's own timeout notices, and a
-  vault locked and unlocked a few times would leave a trail of them.
+- **The vault closes providers that hold something.** `resetLiveCache`,
+  `forgetProvider` and `lockLocked` — the three ways a live backend stops being
+  live — call `Close` on any backend implementing `io.Closer`. Nothing needed
+  it before, since HTTP backends share a transport, but an SSH session left
+  open sits on the far end until sshd's own timeout notices, and a vault locked
+  and unlocked a few times would leave a trail of them. The lock path was the
+  one that had been missed: it replaced the map without closing what was in it,
+  which is the case the sentence above was written about.
 
 ---
 
@@ -337,17 +405,22 @@ Build order:
 Nothing needs installing, but three things are worth doing on the server:
 
 ```bash
-# A key of its own, not the one you log in with.
-ssh-keygen -t ed25519 -f ~/.ssh/sand -C sand-vault
-
 # A user of its own, with a home SAND can write into and no shell.
 sudo useradd -m -s /usr/sbin/nologin sand
-sudo -u sand mkdir -p ~sand/.ssh && sudo -u sand tee -a ~sand/.ssh/authorized_keys < ~/.ssh/sand.pub
+
+# Then press "Generate a key pair" in the connect form and paste the line it
+# gives you here — that is the public half, and there is no private half to
+# go looking for.
+sudo -u sand mkdir -p ~sand/.ssh && sudo -u sand tee -a ~sand/.ssh/authorized_keys
 
 # The fingerprint to paste into the connect form, so even the first
 # connection is checked.
 ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
 ```
+
+If you would rather bring your own key, the field takes one — make it with
+`ssh-keygen -t ed25519 -f ~/.ssh/sand -C sand-vault`, install `~/.ssh/sand.pub`
+on the server as above, and paste `~/.ssh/sand` into the form.
 
 Worth considering beyond that: put the box on a **WireGuard** network and have
 sshd listen only on the tunnel interface. Nothing is then exposed to the public

@@ -63,16 +63,19 @@ func init() {
 			{Key: "port", Label: "Port", Placeholder: "22", Default: "22"},
 			{Key: "username", Label: "Username", Placeholder: "sand", Required: true},
 			{
-				Key:       "private_key",
-				Label:     "Private key",
-				Help:      "Paste an OpenSSH private key — the whole file, including the BEGIN and END lines. Generate one with ssh-keygen -t ed25519 and put its .pub half in the account's authorized_keys.",
+				Key:   "private_key",
+				Label: "Private key",
+				Help: "Have SAND make a key pair and install the public half on the server, or paste an " +
+					"OpenSSH private key you already have — the whole file, including the BEGIN and END lines.",
 				Secret:    true,
 				Multiline: true,
+				SSHKey:    true,
 			},
 			{
-				Key:    "passphrase",
-				Label:  "Key passphrase",
-				Help:   "Only if the key is encrypted. Held in memory while the vault is open and never written outside it.",
+				Key:   "passphrase",
+				Label: "Key passphrase",
+				Help: "Only for a key you pasted that is encrypted — one SAND generated has no passphrase. " +
+					"Held in memory while the vault is open and never written outside it.",
 				Secret: true,
 			},
 			{

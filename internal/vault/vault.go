@@ -557,9 +557,22 @@ func (v *Vault) lockLocked() {
 	v.forgetAllThumbs()
 	v.chunks.clear()
 
+	// Dropped *and* closed. A backend that holds nothing needs only the drop —
+	// an HTTP one shares a transport with every other — but one over SSH holds
+	// a socket and a session on somebody else's machine, and letting go of the
+	// last reference to it does not end either. It would sit there until
+	// sshd's own timeout noticed, so a vault locked and unlocked a few times
+	// would leave a trail of sessions behind it. Same reasoning as
+	// forgetProvider and resetLiveCache; this is the third way a live backend
+	// stops being live.
 	v.liveMu.Lock()
+	dropped := v.live
 	v.live = map[string]provider.Provider{}
 	v.liveMu.Unlock()
+
+	for _, p := range dropped {
+		closeProvider(p)
+	}
 }
 
 // adoptLocked installs the keys and sections a password just opened. The

@@ -180,7 +180,7 @@ Reads are a race, so a slow or offline account costs you nothing — it just los
 | `box` | Box | **Sign in** |
 | `s3` | Amazon S3, Cloudflare R2, Backblaze B2, Wasabi, MinIO | Bucket, keys, endpoint for non-AWS |
 | `webdav` | Nextcloud, ownCloud, pCloud, Koofr, Fastmail, anything behind `rclone serve webdav` | URL, username, app password |
-| `sftp` | Any machine you have an SSH login on — a VPS, a NAS, rsync.net, a Hetzner Storage Box | Host, username, private key |
+| `sftp` | Any machine you have an SSH login on — a VPS, a NAS, rsync.net, a Hetzner Storage Box | Host, username, **a key SAND generates** or your own |
 | `icloud` | iCloud Drive, through the folder macOS or iCloud for Windows syncs | A path |
 | `protoncli` | Proton Drive, through Proton's own client — no desktop app needed | **Sign in** |
 | `proton` | Proton Drive, through the folder its desktop app syncs | A path |
@@ -218,9 +218,13 @@ for adding one.
 > service](#local-folders-on-the-systemd-service).
 
 > **SSH / SFTP** needs nothing installed on the far end: if you can `sftp` to a
-> box, SAND can hold parts on it. Paste an OpenSSH private key — generate one
-> with `ssh-keygen -t ed25519` and put its `.pub` half in the account's
-> `authorized_keys` — and name a folder for the parts.
+> box, SAND can hold parts on it. Name a folder for the parts, and press
+> **Generate a key pair** — SAND makes an Ed25519 key, keeps the private half,
+> and gives you one line to add to the account's `authorized_keys`, with the
+> command that appends it. The private half is never shown in the browser and
+> never leaves the machine SAND runs on; it goes straight into the encrypted
+> vault. If you would rather use a key you already have, **I have a key** takes
+> a pasted OpenSSH private key exactly as before.
 >
 > The host key is checked, always. The first connection learns the server's
 > fingerprint and stores it; every connection after that requires the same one,
@@ -245,7 +249,9 @@ for adding one.
 > Two entries, even for the same box. A connected account is a place SAND
 > *writes* encrypted parts to. A source is a place it *reads* your own files
 > from, and never writes to. Keeping them apart is what stops an import browser
-> from seeing the shard store.
+> from seeing the shard store. Each gets its own key, and each connect form
+> offers to generate one — the same reversed paste as above, so what you carry
+> to the server is the public half.
 >
 > Nothing is removed from the machine, and nothing outside the folder you scope
 > it to can be seen — including through a symlink pointing out of it. **If an

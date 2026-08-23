@@ -445,6 +445,18 @@ type FieldSpec struct {
 	// one arrives as a single line and does not parse. The form has to render
 	// a textarea or the field cannot be filled in at all.
 	Multiline bool `json:"multiline,omitempty"`
+
+	// SSHKey marks a field that holds an SSH private key, and so is one SAND
+	// can fill in itself: the form offers to generate a pair, shows the public
+	// half to install on the server, and keeps the private half here rather
+	// than sending it to the browser at all.
+	//
+	// A flag on the field rather than a second field, because what is being
+	// described is still one credential with one place to put it. Pasting a
+	// key you already have is the same field and is not going anywhere — a key
+	// held in an agent or issued by a CA is not something SAND can invent a
+	// replacement for.
+	SSHKey bool `json:"ssh_key,omitempty"`
 }
 
 // Preset pre-fills a backend's form for one well-known service, so pCloud is
