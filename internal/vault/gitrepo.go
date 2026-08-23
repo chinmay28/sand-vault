@@ -413,7 +413,15 @@ func (v *Vault) gitWorkspace() (string, func(), error) {
 	if err != nil {
 		return "", nil, fmt.Errorf("making room to work on the repository: %w", err)
 	}
-	return dir, func() { os.RemoveAll(dir) }, nil
+	// Held while the work is going on, so the housekeeping scan of this same
+	// directory does not offer to erase a mirror that is still being cloned
+	// into. See leftovers.go.
+	v.holdSpool(dir)
+
+	return dir, func() {
+		os.RemoveAll(dir)
+		v.releaseSpool(dir)
+	}, nil
 }
 
 // ---------------------------------------------------------------------------

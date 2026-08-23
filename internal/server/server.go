@@ -262,6 +262,12 @@ func (s *Server) Handler() (http.Handler, error) {
 		"GET /api/vault/orphans":           s.handleOrphanScan,
 		"POST /api/vault/orphans":          s.handleOrphanSweep,
 		"POST /api/vault/orphans/reattach": s.handleOrphanReattach,
+		// The same question asked of the one disk SAND writes to itself. An
+		// interrupted upload leaves its spool in the vault's own directory at
+		// the full size of the file it was sending, and nothing goes back for
+		// it either. The scan rides along with the GET above; erasing them is
+		// its own POST, for the same reason the sweep is.
+		"POST /api/vault/orphans/leftovers": s.handleLeftoverSweep,
 		// The recovery kit: one sealed file that reconnects every cloud on a
 		// fresh install, rather than only rebuilding the index. Exporting one
 		// and testing one both need the vault open; reading and importing one

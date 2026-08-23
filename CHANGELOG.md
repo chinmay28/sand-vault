@@ -12,6 +12,38 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### Stray parts now looks at the machine SAND is running on, too
+
+**Vault settings → Stray parts** asked every cloud what it was holding that no
+file in your vault needs. It never asked the one disk SAND writes to itself —
+the folder your vault file lives in, `/var/lib/sand` for the service and
+`~/.sand` on a desktop — and that is where the bigger number usually is.
+
+An upload has to be written to that folder in full before any of it is sent:
+every chunk carries the whole file's hash, and a stream will not give up its
+hash until its last byte. SAND deletes that copy the moment the upload ends,
+however it ends — but a process that is killed, or a machine that loses power,
+never gets to that line. What is left is the whole file that was being
+uploaded, at full size, in a folder nobody thinks to look in. Four interrupted
+films is thirty gigabytes gone from a disk that was probably chosen for being
+small, and until now nothing in SAND would ever have reclaimed it.
+
+The scan now says so, beside what your clouds are holding, and **Tidy up** lists
+the files with their sizes and when anything last wrote to them. Erasing them
+frees room on the machine and changes nothing in the vault: these are SAND's own
+scratch copies, not your files.
+
+Two rules keep that promise. Only the temporary names SAND writes itself are
+ever looked at — your vault file, your own notes, and anything a provider keeps
+in the same folder are not listed and cannot be erased from here. And nothing is
+offered until it has been left alone for an hour, because a file still being
+written to is exactly what an upload running in another window looks like from
+the outside; those are shown with the reason beside them instead. Anything this
+SAND is writing right now is left out of the list entirely.
+
+`sand vault sweep` reports and erases them alongside the cloud half, and
+`--verbose` names each one.
+
 ### An import can be handed to the machine and left to it
 
 Bringing files in used to mean keeping the page open. The import *was* the

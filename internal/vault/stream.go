@@ -47,10 +47,7 @@ func (v *Vault) UploadStream(ctx context.Context, scope Scope, dir, name string,
 	if err != nil {
 		return nil, nil, err
 	}
-	defer func() {
-		spool.Close()
-		os.Remove(spool.Name())
-	}()
+	defer v.discardSpool(spool)
 
 	placed, err := v.scatterStream(ctx, scope, name, spool, size, hash,
 		spread{preferred: opts.Accounts, exact: true, scheme: opts.Scheme}, v.uploadChunkSize(),
@@ -130,22 +127,25 @@ func (v *Vault) spool(r io.Reader) (*os.File, int64, [32]byte, error) {
 	if err != nil {
 		return nil, 0, hash, fmt.Errorf("creating a temporary file for the upload: %w", err)
 	}
+	// Held from the moment it exists, so that the housekeeping scan in
+	// leftovers.go — which cannot tell a spool being filled from one a killed
+	// process abandoned — never offers this one for deletion while it is
+	// growing. Released by discardSpool, on every path out of the upload.
+	v.holdSpool(f.Name())
+
 	if err := f.Chmod(0600); err != nil {
-		f.Close()
-		os.Remove(f.Name())
+		v.discardSpool(f)
 		return nil, 0, hash, fmt.Errorf("securing the temporary upload file: %w", err)
 	}
 
 	digest := sha256.New()
 	size, err := io.Copy(io.MultiWriter(f, digest), r)
 	if err != nil {
-		f.Close()
-		os.Remove(f.Name())
+		v.discardSpool(f)
 		return nil, 0, hash, fmt.Errorf("reading the upload: %w", err)
 	}
 	if err := f.Sync(); err != nil {
-		f.Close()
-		os.Remove(f.Name())
+		v.discardSpool(f)
 		return nil, 0, hash, fmt.Errorf("writing the upload to disk: %w", err)
 	}
 

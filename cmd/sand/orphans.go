@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 
+	"github.com/chinmay28/sand-vault/internal/vault"
 	"github.com/spf13/cobra"
 )
 
@@ -39,7 +40,14 @@ It refuses to sweep at all in the cases where "no file points at it" is not the
 same as "nobody wants it": an account carrying an index this vault did not
 write, an account that would not answer, and a vault that holds no files of its
 own on accounts it has never written an index to — which is what a machine
-waiting to be recovered looks like.`,
+waiting to be recovered looks like.
+
+The same question is asked of the vault's own directory, which is where SAND
+writes its working files. An upload is spooled to disk before it is sent, so a
+process killed mid-upload leaves a file the size of whatever was being uploaded
+and nothing ever goes back for it. Only the names SAND writes are looked at, and
+only once nothing has written to one for an hour, so an upload running in
+another window is never taken out from under it.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			v, err := openVault(cmd)
 			if err != nil {
@@ -52,6 +60,12 @@ waiting to be recovered looks like.`,
 				return err
 			}
 			printWarnings(scan.Warnings)
+
+			// The local half, before the clouds: it is the same housekeeping,
+			// it is the bigger figure — an interrupted upload leaves the whole
+			// file it was sending — and it is the one thing here that can be
+			// acted on without asking a single account.
+			sweepLeftovers(v, scan.Leftovers, yes, verbose)
 
 			if scan.Reattachable > 0 {
 				// Said first, because it is the better news and the one that
@@ -194,4 +208,54 @@ really there.`,
 
 	cmd.Flags().BoolVar(&yes, "yes", false, "write the records back rather than only listing them")
 	return cmd
+}
+
+// sweepLeftovers reports the working files SAND left in its own directory, and
+// erases them when the command was asked to erase.
+//
+// The disk half of the same tidy-up. It is said first and separately because it
+// has nothing to do with the accounts: no cloud is asked anything, none of
+// orphanGuard's refusals apply, and the room it gives back is on the machine
+// the command is running on rather than on somebody's quota. Any error is the
+// scan's own, and a directory that would not be read is a warning rather than
+// a failure: it should not stop the accounts being asked their half of the same
+// question.
+func sweepLeftovers(v *vault.Vault, scan *vault.LeftoverScan, yes, verbose bool) {
+	if scan == nil || !scan.Found {
+		return
+	}
+	printWarnings(scan.Warnings)
+
+	fmt.Printf("%d working file(s) (%s) in %s that nothing is using:\n",
+		scan.Files, formatBytes(scan.Bytes), scan.Dir)
+	if verbose {
+		for _, item := range scan.Items {
+			fmt.Printf("    %-28s %8s  %s\n", item.Name, formatBytes(item.Bytes), item.What)
+			if item.Reason != "" {
+				fmt.Printf("      %s\n", item.Reason)
+			}
+		}
+		if scan.ItemsTruncated > 0 {
+			fmt.Printf("    …and %d more\n", scan.ItemsTruncated)
+		}
+	}
+
+	if scan.Deletable == 0 {
+		fmt.Println("  None of them has been idle long enough to be sure it is finished with.")
+		fmt.Println()
+		return
+	}
+	if !yes {
+		fmt.Printf("  Erasing %d of them would free %s on this machine. Run again with --yes to do it.\n",
+			scan.Deletable, formatBytes(scan.DeletableBytes))
+		fmt.Println()
+		return
+	}
+
+	report := v.SweepLeftovers(nil, false)
+	printWarnings(report.Warnings)
+	printWarnings(report.Skipped)
+	fmt.Printf("  Erased %d working file(s), freeing %s on this machine.\n",
+		report.Deleted, formatBytes(report.Bytes))
+	fmt.Println()
 }

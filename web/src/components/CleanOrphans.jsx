@@ -3,6 +3,7 @@ import { COLORS, FONT, accountColor, formatBytes } from '../theme'
 import { api } from '../api'
 import { Banner, Button, Modal, Spinner } from './ui'
 import ReattachShards from './ReattachShards'
+import CleanLeftovers from './CleanLeftovers'
 
 /* Parts left on a cloud that no file points at any more.
 
@@ -227,9 +228,16 @@ export default function CleanOrphans({ scan: initialScan, zIndex = 100, onClose,
    until it is asked for, which is why the line in the settings list reports no
    figure of its own — it is a question, not a reading.
 
-   The listing answers two quite separate questions at once (§3.7.1 and §3.7.2),
-   so what is found is named here and handed to whichever panel already knows
-   what to do about it. Nothing is decided in this component. */
+   The listing answers three separate questions at once (§3.7.1, §3.7.2 and
+   §3.7.3), so what is found is named here and handed to whichever panel already
+   knows what to do about it. Nothing is decided in this component.
+
+   The third of them is not about a cloud at all: SAND writes its working files
+   into the folder the vault file lives in, and an upload spool left by a
+   process that was killed is the whole file that was being uploaded. It rides
+   along with this scan because it is the same question — something is being
+   held that no file in this vault needs — and because it costs a directory
+   read, which is nothing beside the listings. */
 export function StrayParts({ zIndex = 100, onClose, onChanged }) {
   const [scan, setScan] = useState(null)
   const [busy, setBusy] = useState(true)
@@ -277,16 +285,21 @@ export function StrayParts({ zIndex = 100, onClose, onChanged }) {
     return <ReattachShards scan={scan} zIndex={zIndex} onClose={back} onDone={done} />
   }
 
+  if (open === 'leftovers' && scan?.leftovers) {
+    return <CleanLeftovers scan={scan.leftovers} zIndex={zIndex} onClose={back} onSwept={done} />
+  }
+
   /* An account that would not answer is not a small caveat here. A part is
      abandoned only if every account agrees it is, so one silent cloud makes
      "nothing adrift" a thing this cannot say. */
   const unheard = (scan?.accounts || []).filter((account) => account.error)
-  const nothing = scan && !scan.found && scan.reattachable === 0
+  const leftovers = scan?.leftovers
+  const nothing = scan && !scan.found && scan.reattachable === 0 && !leftovers?.found
 
   return (
     <Modal
       title="Stray parts"
-      subtitle="What your clouds are holding that this vault's index does not name"
+      subtitle="What your clouds — and this machine — are holding that no file in this vault needs"
       onClose={onClose}
       width={520}
       zIndex={zIndex}
@@ -299,8 +312,9 @@ export function StrayParts({ zIndex = 100, onClose, onChanged }) {
           padding: '18px 2px', fontFamily: FONT.sans, fontSize: '12px', color: COLORS.textMuted,
         }}>
           <Spinner size={14} />
-          Asking every connected cloud what it is holding. This is a full listing per account, so
-          it takes about as long as the slowest of them.
+          Asking every connected cloud what it is holding, and this machine what SAND has left in
+          the vault’s own folder. The clouds are a full listing per account, so it takes about as
+          long as the slowest of them.
         </div>
       )}
 
@@ -337,17 +351,36 @@ export function StrayParts({ zIndex = 100, onClose, onChanged }) {
             />
           )}
 
+          {/* Last of the three, and the only one that is not about a cloud.
+              It is said after them rather than before because it is SAND's own
+              mess rather than anything to do with the files — but it is very
+              often the biggest number on this screen, because one interrupted
+              upload leaves the whole file it was sending. */}
+          {leftovers?.found && (
+            <Finding
+              icon="🧽"
+              title={`${formatBytes(leftovers.bytes)} of working files sit in this vault’s own `
+                + 'folder on this machine'}
+              body={'An upload is spooled to disk in full before it is sent, and a process that '
+                + 'was killed never gets to delete its copy. These are SAND’s scratch files, not '
+                + 'your files: erasing them frees room here and changes nothing in the vault.'}
+              action="Tidy up"
+              onClick={() => setOpen('leftovers')}
+            />
+          )}
+
           {nothing && unheard.length === 0 && (
             <Banner tone="success">
               Nothing adrift. Every part your clouds are holding belongs to a file this vault
-              still has.
+              still has, and its own folder on this machine is clear of working files.
             </Banner>
           )}
 
           {nothing && unheard.length > 0 && (
             <Banner tone="warn">
-              Nothing adrift on the clouds that answered — but these did not, and a part counts as
-              abandoned only when every account agrees it is:
+              Nothing adrift on the clouds that answered, and nothing left lying about on this
+              machine — but these clouds did not answer, and a part counts as abandoned only when
+              every account agrees it is:
               <span style={preText}>
                 {unheard.map((account) => `• ${account.name} — ${account.error}`).join('\n')}
               </span>

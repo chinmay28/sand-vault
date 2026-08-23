@@ -1192,23 +1192,53 @@ get.
 **That notice is not the only way in.** It is news, so it can be dismissed and
 it only shows up when there is something to say. **Vault settings → Stray
 parts** is the door that is always there: it runs a fresh scan when you open it
-and reports both halves of what one listing turns up — the parts nothing points
-at, and the [shards a disconnect mislaid](#a-shard-a-disconnect-mislaid--put-it-back)
-— handing each to the panel that deals with it. It shows no figure until you
-open it, since the answer is a full listing of every account and a settings
-menu has no business starting one on its own.
+and reports everything one listing turns up — the parts nothing points at, the
+[shards a disconnect mislaid](#a-shard-a-disconnect-mislaid--put-it-back), and
+the [working files SAND has left on the machine
+itself](#working-files-left-on-the-machine) — handing each to the panel that
+deals with it. It shows no figure until you open it, since the answer is a full
+listing of every account and a settings menu has no business starting one on its
+own.
 
 From the command line:
 
 ```bash
-./sand vault sweep              # what is out there, per account
-./sand vault sweep --verbose    # every abandoned archive, not just the totals
+./sand vault sweep              # what is out there, per account, and on this disk
+./sand vault sweep --verbose    # every abandoned archive and working file, not just the totals
 ./sand vault sweep --yes        # erase it
 ```
 
 Nothing is erased without `--yes`, and the web sweep re-scans before it deletes,
 so an archive that has stopped being abandoned between being shown to you and
 being confirmed is skipped rather than erased.
+
+### Working files left on the machine
+
+The same scan asks one more question, of the disk SAND itself writes to: the
+folder your vault file lives in — `/var/lib/sand` for the service, `~/.sand` on
+a desktop.
+
+An upload has to be written to that folder in full before any of it is sent.
+Every chunk of a stored file carries the whole file's hash, and a stream will
+not tell you its hash until its last byte, so there is nowhere else for the
+first copy to go. SAND deletes it the moment the upload ends, however it ends —
+but a process that is killed, or a machine that loses power, never reaches that
+line. What is left behind is the whole file that was being uploaded, at full
+size, in a folder nobody thinks to look in. Four interrupted films is thirty
+gigabytes of a disk that was probably chosen for being small.
+
+> 31.6 GB of working files sit in this vault's own folder on this machine.
+> **Tidy up**
+
+Erasing them frees room on the machine and changes nothing in your vault: they
+are SAND's own scratch copies, not your files. Two rules keep that true. Only
+the temporary names SAND writes itself are looked at, so anything else in the
+folder — the vault file, your own notes, a provider's scratch — is not listed
+and cannot be erased from here. And nothing is offered until it has been left
+alone for an hour: a spool that is still being written to is what an upload
+running right now looks like from the outside, so it is shown with a reason
+beside it rather than offered. Whatever this SAND is writing itself is left out
+of the list entirely.
 
 ### What it will not touch
 
@@ -1524,7 +1554,7 @@ sand vault backup [--disable|--enable]        Write the encrypted index to every
 sand vault recover [--from ACCOUNT]           Rebuild a lost vault from an account's copy
 sand vault recover --resume                   Finish one, once the rest of the clouds are back
 sand vault reclaim [--account NAME]...        Re-encrypt recovered files under your own key
-sand vault sweep [--verbose] [--yes]          Find parts no file points at, and erase them
+sand vault sweep [--verbose] [--yes]          Find parts no file points at and working files left behind, and erase them
 sand vault reattach [--yes]                   Re-record shards your clouds still hold
 ```
 
