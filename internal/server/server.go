@@ -454,7 +454,12 @@ func (s *Server) Handler() (http.Handler, error) {
 		// asks a machine for files, the other asks how far that has got. It
 		// reads memory only and answers immediately, which is what lets a
 		// dialog poll it every second without slowing the transfer down.
-		"GET /api/remote/{id}/import": s.handleRemoteImportProgress,
+		//
+		// The DELETE is what a detached import needs and a foreground one
+		// never did: an import with no request behind it has to be stopped on
+		// purpose, and its result dismissed on purpose too.
+		"GET /api/remote/{id}/import":          s.handleRemoteImportProgress,
+		"DELETE /api/remote/{id}/import/{run}": s.handleRemoteImportStop,
 	}
 	for pattern, handler := range protected {
 		mux.HandleFunc(pattern, s.requireSession(handler))
@@ -607,7 +612,7 @@ func (s *Server) autoLockLoop() {
 		if err != nil || !v.Unlocked() {
 			continue
 		}
-		if s.sessions.sweep() > 0 || s.externalActive() {
+		if s.sessions.sweep() > 0 || s.externalActive() || s.imports.running() > 0 {
 			continue
 		}
 		v.Lock()

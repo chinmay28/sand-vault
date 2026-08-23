@@ -1,10 +1,12 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/chinmay28/sand-vault/internal/archive"
 	"github.com/chinmay28/sand-vault/internal/vault"
 )
 
@@ -216,16 +218,29 @@ type remoteImportRequest struct {
 	// beside it under a numbered name, and re-fetches what would otherwise be
 	// skipped as already imported.
 	Overwrite bool `json:"overwrite,omitempty"`
+
+	// Detach runs the import on a context of its own and answers at once,
+	// rather than holding the request open until it is done. Asked for, never
+	// assumed: an import that keeps running after the page is closed is a thing
+	// somebody should have decided, not something they discover later.
+	Detach bool `json:"detach,omitempty"`
 }
 
 // handleRemoteImport pulls files off a source into the vault.
 //
-// Synchronous, and deliberately. There is no background job machinery in this
-// server and this is not the feature that should introduce it: what makes that
-// affordable is that an interrupted import loses nothing — every file that
-// arrived is committed, and re-running the same request skips them and carries
-// on. The answer is one line per file so that a partial import is legible
-// rather than mysterious.
+// Synchronous unless asked otherwise, and that is still the default for a
+// reason: a request that holds the connection open is one whose cost is visible
+// while it is being paid, and closing the tab stops it. What makes it
+// affordable is that an interrupted import loses no whole file — every file
+// that arrived is committed, and re-running the same request skips them and
+// carries on. The answer is one line per file so that a partial import is
+// legible rather than mysterious.
+//
+// `detach` is the other half of that bargain, for the case the default is
+// wrong: one very large file, where the page would have to stay open for an
+// hour to fetch something the machine could fetch on its own. It answers 202
+// at once and runs on a context of its own — see startDetachedImport, and
+// import_watch.go for what "background" is allowed to mean here.
 func (s *Server) handleRemoteImport(w http.ResponseWriter, r *http.Request) {
 	var req remoteImportRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -239,6 +254,12 @@ func (s *Server) handleRemoteImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	id := r.PathValue("id")
+	if req.Detach {
+		s.startDetachedImport(w, id, req, scheme)
+		return
+	}
+
 	ctx, cancel := contextWithTimeout(r, remoteImportTimeout)
 	defer cancel()
 
@@ -246,19 +267,15 @@ func (s *Server) handleRemoteImport(w http.ResponseWriter, r *http.Request) {
 	// so what GET /api/remote/{id}/import answers with is what is actually
 	// running. It is a place to write progress to and nothing the import reads
 	// back — see import_watch.go.
-	id := r.PathValue("id")
-	ticket := s.imports.start(id, req.Dest, req.Vault)
+	ticket, err := s.imports.start(id, req.Dest, req.Vault, false, cancel)
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error(), "IMPORT_BUSY")
+		return
+	}
 	defer ticket.done()
 
 	v, _ := s.Vault()
-	summary, err := v.ImportFromSource(ctx, vault.Scope(req.Vault), id, vault.ImportRequest{
-		Paths:      req.Paths,
-		Dest:       req.Dest,
-		Accounts:   req.Accounts,
-		Scheme:     scheme,
-		Overwrite:  req.Overwrite,
-		OnProgress: ticket.update,
-	})
+	summary, err := v.ImportFromSource(ctx, vault.Scope(req.Vault), id, s.importRequest(req, scheme, ticket))
 	if err != nil {
 		vaultErrorResponse(w, err)
 		return
@@ -274,13 +291,92 @@ func (s *Server) handleRemoteImport(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, status, summary)
 }
 
-// handleRemoteImportProgress answers with the imports running from one machine
-// right now, and an empty list when there are none.
+// importRequest is the vault-level request both paths run, so a detached import
+// is the same import and differs only in what is holding its context.
+func (s *Server) importRequest(req remoteImportRequest, scheme archive.Scheme, ticket *importTicket) vault.ImportRequest {
+	return vault.ImportRequest{
+		Paths:     req.Paths,
+		Dest:      req.Dest,
+		Accounts:  req.Accounts,
+		Scheme:    scheme,
+		Overwrite: req.Overwrite,
+		OnProgress: func(at vault.ImportProgress) {
+			ticket.update(at)
+			// A transfer with nobody watching is still use, and without saying
+			// so the idle timer would lock the vault out from under it — the
+			// keys it is sealing chunks with are the ones auto-locking takes
+			// away. The share and the stream links say it the same way.
+			s.noteExternalActivity()
+		},
+	}
+}
+
+// startDetachedImport answers 202 and lets the import run without a request
+// behind it.
 //
-// An empty list is the ordinary answer rather than an error: an import that has
-// finished, failed or was cancelled is not running, and those are the same
-// thing to a bar that should stop being drawn. What the import *did* comes back
-// from the POST that started it, which is the only place a result belongs.
+// The context is derived from Background rather than from r: that is the whole
+// difference, and it is what makes closing the page harmless instead of fatal.
+// The ceiling is the same one a foreground import gets, so a detached import
+// cannot outlive the day either.
+func (s *Server) startDetachedImport(w http.ResponseWriter, id string, req remoteImportRequest, scheme archive.Scheme) {
+	// Refused before anything is started, so a bad source ID or a locked sub
+	// vault comes back as an error on this request rather than as a run that
+	// appears and immediately fails. Everything after this is the import's own
+	// business to report.
+	v, _ := s.Vault()
+	if _, err := v.Source(id); err != nil {
+		vaultErrorResponse(w, err)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), remoteImportTimeout)
+	ticket, err := s.imports.start(id, req.Dest, req.Vault, true, cancel)
+	if err != nil {
+		cancel()
+		writeError(w, http.StatusConflict, err.Error(), "IMPORT_BUSY")
+		return
+	}
+
+	go func() {
+		defer cancel()
+		summary, err := v.ImportFromSource(ctx, vault.Scope(req.Vault), id, s.importRequest(req, scheme, ticket))
+		// A cancelled import is not a failed one. It stopped because somebody
+		// stopped it, and what it had already brought in is in the vault — the
+		// summary says how much, which is exactly what the next run will skip.
+		cancelled := ctx.Err() != nil
+		if err != nil && cancelled {
+			err = nil
+		}
+		var result *vault.ImportSummary
+		if err == nil {
+			result = &summary
+		}
+		ticket.finish(result, err, cancelled)
+	}()
+
+	writeJSON(w, http.StatusAccepted, map[string]any{"run": s.imports.forRun(ticket.id)})
+}
+
+// handleRemoteImportStop cancels a running import, or forgets a finished one's
+// result. Both are the same gesture: stop showing me this.
+func (s *Server) handleRemoteImportStop(w http.ResponseWriter, r *http.Request) {
+	if !s.imports.stop(r.PathValue("run")) {
+		writeError(w, http.StatusNotFound, "no import by that name is running", "NOT_FOUND")
+		return
+	}
+	// 200 with what is left rather than 204, so the dialog that asked redraws
+	// from the answer instead of from a guess about what it did.
+	writeJSON(w, http.StatusOK, map[string]any{"imports": s.imports.forSource(r.PathValue("id"))})
+}
+
+// handleRemoteImportProgress answers with what one machine has running, and
+// what a detached import lately finished with.
+//
+// An empty list is the ordinary answer rather than an error. A foreground
+// import that is over is not listed at all — its answer went back down the
+// request that started it, which is the only place a result belongs when there
+// is a request to put it in. A detached one has no such request, so its summary
+// waits here until it is dismissed or goes stale.
 func (s *Server) handleRemoteImportProgress(w http.ResponseWriter, r *http.Request) {
 	// The source is checked against the vault so that a stale dialog polling a
 	// machine that has since been forgotten is told so, rather than being left

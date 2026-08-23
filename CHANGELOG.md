@@ -12,6 +12,35 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### An import can be handed to the machine and left to it
+
+Bringing files in used to mean keeping the page open. The import *was* the
+request, so navigating away, letting a phone sleep, or closing the tab stopped
+it — and stopped it with the browser's own unhelpful "load failed" as the only
+explanation.
+
+**Keep going if I close this page**, next to the Import button, hands the
+transfer to the machine instead. It runs with nothing behind it, the dialog
+picks the progress up again whenever you come back to that machine, and the
+result waits there to be read. A running one can be stopped from the same
+place, and stopping keeps every file that already landed — it is closer to a
+pause than a cancel, since running the same import again skips those and
+carries on.
+
+It is opt-in, and stays that way. An import that keeps running after the page
+is closed is something to have decided, not to discover. Up to four can be
+going at once; past that they only slow each other down.
+
+Two limits worth knowing. Restarting SAND stops a detached import: nothing
+about a transfer in flight is written down, deliberately — re-running the
+import is still the whole of the resume story. And locking the vault stops
+one too, since the keys its chunks are being sealed with are exactly what
+locking takes away. While one runs, the vault will not idle-lock out from
+under it.
+
+When a foreground import does lose its connection, the dialog now says what
+happened and what to do about it, instead of passing on "load failed".
+
 ### An import you can watch, and an honest sentence about interrupting one
 
 Bringing files in from a machine used to go quiet. The dialog said *Bringing
