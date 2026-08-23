@@ -142,6 +142,53 @@ func TestProviderUpdateLeavesUnnamedFieldsAlone(t *testing.T) {
 	}
 }
 
+// A quota is typed, so it arrives as text and comes back as bytes — and it
+// arrives on the listing the picker and the sidebar are drawn from, together
+// with the room it leaves.
+func TestProviderUpdateSetsAQuota(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("draw a line through the clouds", 1)
+	id := c.providerIDs()[0]
+
+	w, body := c.json(http.MethodPatch, "/api/providers/"+id, map[string]any{"quota": "10 GB"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("PATCH quota: %d %s", w.Code, w.Body.String())
+	}
+	if got := body["provider"].(map[string]any)["quota"]; got != float64(10<<30) {
+		t.Errorf("quota = %v, want %d bytes", got, int64(10<<30))
+	}
+
+	// The listing carries both halves: the line, and how much of the account is
+	// left under it. A local folder reports a real figure of its own, and a
+	// 10 GB quota on a test machine's disk is the smaller of the two.
+	_, listing := c.json(http.MethodGet, "/api/providers", nil)
+	for _, raw := range listing["providers"].([]any) {
+		account := raw.(map[string]any)
+		if account["id"] != id {
+			continue
+		}
+		space, ok := account["space"].(map[string]any)
+		if !ok {
+			t.Fatalf("the listing says nothing about room left: %v", account)
+		}
+		if space["source"] != "quota" {
+			t.Errorf("room left comes from %v, want the quota: %v", space["source"], space)
+		}
+		if space["total"] != float64(10<<30) {
+			t.Errorf("room left is measured against %v", space["total"])
+		}
+	}
+
+	// Cleared, and refused when it is not a size.
+	_, cleared := c.json(http.MethodPatch, "/api/providers/"+id, map[string]any{"quota": ""})
+	if quota, ok := cleared["provider"].(map[string]any)["quota"]; ok && quota != float64(0) {
+		t.Errorf("quota = %v after being cleared", quota)
+	}
+	if w, _ := c.json(http.MethodPatch, "/api/providers/"+id, map[string]any{"quota": "lots"}); w.Code != http.StatusBadRequest {
+		t.Errorf("PATCH a quota of \"lots\": %d", w.Code)
+	}
+}
+
 // The vault is the only thing that may answer this. A PATCH without a session
 // is rejected exactly like every other write, so an account cannot be renamed
 // through a locked vault.

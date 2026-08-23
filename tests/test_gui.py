@@ -549,6 +549,51 @@ class TestEditingAnAccount:
         app.get_by_role("button", name="Save").click()
         app.wait_for_selector("text=ui-editable", timeout=20000)
 
+    def test_a_quota_caps_what_sand_may_fill(self, app, clouds, tmp_path):
+        """The line you draw through a cloud, and what it changes.
+
+        A capacity is how big an account is; a quota is how much of it SAND may
+        fill. It is offered on every account — a cloud reporting terabytes free
+        is still one you might only want a slice of — and the room left becomes
+        whichever of the two leaves less."""
+        connect_cloud(app, "ui-capped", clouds)
+
+        self.open_editor(app, "ui-capped")
+        # Small enough to be under whatever the drive under it reports, on any
+        # machine the suite runs on.
+        app.get_by_label("Quota").fill("16 MB")
+        app.get_by_role("button", name="Save").click()
+        app.wait_for_selector("text=Edit account", state="detached", timeout=20000)
+
+        # The card keeps the drive's own bar — the folder sits on a real disk
+        # and that is a real figure — and gains the line that binds.
+        app.wait_for_selector("text=16 MB left under your quota", timeout=20000)
+
+        # Stored in the vault, not held in the tab.
+        app.reload()
+        app.wait_for_selector("text=16 MB left under your quota", timeout=20000)
+
+        # And the picker ranks the cloud by that figure rather than the drive's,
+        # saying whose number it is.
+        source = tmp_path / "capped.txt"
+        source.write_text("where does this fit")
+        app.set_input_files(FILE_INPUT, str(source))
+        app.wait_for_selector("text=/Upload to \\d+ cloud/", timeout=20000)
+        row = app.get_by_role("checkbox").filter(has_text="ui-capped")
+        assert "16 MB free (quota)" in row.inner_text(), row.inner_text()
+        app.get_by_role("button", name="Cancel").click()
+        app.wait_for_selector("text=/Upload to \\d+ cloud/", state="detached", timeout=20000)
+
+        # The dialog reopens on the figure that was typed.
+        self.open_editor(app, "ui-capped")
+        expect(app.get_by_label("Quota")).to_have_value("16 MB")
+
+        # Cleared, the account goes back to the drive's own answer.
+        app.get_by_label("Quota").fill("")
+        app.get_by_role("button", name="Save").click()
+        app.wait_for_selector("text=Edit account", state="detached", timeout=20000)
+        app.wait_for_selector("text=16 MB left under your quota", state="detached", timeout=20000)
+
     def test_the_full_palette_is_one_disclosure_away(self, app, clouds):
         """Twelve named colours are the shortlist. Every shade of every hue is
         behind a disclosure, and the dialog reopens on whatever was picked
@@ -1235,6 +1280,21 @@ class TestChoosingClouds:
         # are connected — and the button says which it is going to.
         assert app.get_by_role("checkbox", checked=True).count() == 3
         assert app.get_by_role("button", name="↑ Upload to 3 clouds").count() == 1
+
+    def test_every_row_says_how_much_more_fits(self, app, tmp_path):
+        """The figure that makes the choice a choice.
+
+        What a cloud is already holding is the same number on a drive with room
+        to spare and one with none, so each row says the room left beside it. A
+        local folder reports the drive under it, so all three answer here."""
+        self._open_picker(app, tmp_path, "room.txt")
+        try:
+            for name in ("ui-one", "ui-two", "ui-three"):
+                row = app.get_by_role("checkbox").filter(has_text=name)
+                assert re.search(r"[\d.]+ [KMGT]?B free", row.inner_text()), row.inner_text()
+        finally:
+            app.get_by_role("button", name="Cancel").click()
+            app.wait_for_selector("text=/Upload to \\d+ cloud/", state="detached", timeout=20000)
 
     def test_nothing_is_uploaded_until_the_picker_is_confirmed(self, app, tmp_path):
         self._open_picker(app, tmp_path, "cancelled.txt")

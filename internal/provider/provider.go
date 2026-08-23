@@ -79,18 +79,43 @@ type Config struct {
 	// crossing it: it is the denominator the usage bar is drawn against, and
 	// an account over the figure reads as full rather than as an error.
 	Capacity int64 `json:"capacity,omitempty"`
+
+	// Quota is how much of this account SAND itself may fill, in bytes. Zero
+	// means nobody has set one.
+	//
+	// Where Capacity says how big the account is, this says how much of it is
+	// ours to use — a line drawn through somebody else's storage. The two are
+	// answers to different questions and an account can carry both: a 5 TB
+	// drive shared with a film library can have 200 GB of it set aside for
+	// parts, and the room left is then the smaller of what the drive reports
+	// and what the quota leaves.
+	//
+	// It is the figure that makes "how much more fits here" answerable at all
+	// on the backends that report nothing and cannot be counted. A Drive says
+	// how full it is, a bucket can be listed, and a folder on a disk knows the
+	// filesystem underneath it — but where none of those work, what SAND wrote
+	// is the only number anyone has, and a quota is what turns it into a
+	// fraction.
+	//
+	// A warning, not a wall. An upload that takes an account past its quota
+	// still stores: it is reported as a warning on the upload and the account
+	// reads as over from then on, because the parts of a file are placed
+	// together and refusing one of them mid-scatter would leave the file
+	// less durable than the code it was cut with promises.
+	Quota int64 `json:"quota,omitempty"`
 }
 
-// ParseCapacity reads a declared capacity as somebody would write it — "10 GB",
-// "1.5t", "500 MiB", or a bare byte count — and returns it in bytes. An empty
-// string, a zero, or a dash is "nobody has said" rather than "an account with
-// no room", and returns zero.
+// ParseSize reads a size as somebody would write it — "10 GB", "1.5t",
+// "500 MiB", or a bare byte count — and returns it in bytes. An empty string, a
+// zero, or a dash is "nobody has said" rather than "no room at all", and
+// returns zero. It reads both the figures a person types about an account: the
+// capacity it holds, and the quota of it SAND may fill.
 //
 // The units are the ones the rest of SAND prints: a GB here is 1024³, the same
-// figure the file list and the account cards mean by GB, so a capacity typed to
+// figure the file list and the account cards mean by GB, so a size typed to
 // match what the browser shows does not come back a few percent different. GiB
 // is accepted and means the same thing.
-func ParseCapacity(value string) (int64, error) {
+func ParseSize(value string) (int64, error) {
 	text := strings.ToLower(strings.TrimSpace(value))
 	if text == "" || text == "-" || text == "—" {
 		return 0, nil
@@ -105,7 +130,7 @@ func ParseCapacity(value string) (int64, error) {
 		return 0, fmt.Errorf("%q is not a size — write it like 10 GB", value)
 	}
 	if size < 0 {
-		return 0, fmt.Errorf("%q is not a size — a capacity cannot be negative", value)
+		return 0, fmt.Errorf("%q is not a size — it cannot be negative", value)
 	}
 
 	scale := float64(1)

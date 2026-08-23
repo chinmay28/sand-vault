@@ -12,6 +12,54 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### How much more fits on each cloud
+
+Every account card and every row of the upload picker said how much of the vault
+that cloud is holding. None of them said how much more it would take — and
+284.9 GB of parts is the same figure on a drive with four terabytes free and on
+one with forty megabytes. Only one of those is somewhere to put the next file.
+
+Room left is now named beside what is stored, everywhere the clouds are listed:
+the sidebar, the *Stats* panel, the upload and default-clouds pickers, and the
+`FREE` column of `sand remote list`. So is where the figure came from, because
+the three sources are not the same kind of claim — the account's own live
+reading, a capacity you typed against a count of a bucket, or a quota you set.
+Where two of them have an opinion the room left is whichever leaves less: a
+spent quota leaves nothing on a half-empty drive, and a full drive leaves
+nothing whatever the quota says.
+
+**A quota you set, for the accounts nothing else can answer for.** A capacity
+says how big an account is; a quota says how much of it is SAND's to fill, which
+is a different question and often the only one with an answer. Between a Drive's
+own quota call, a filesystem's free blocks and a listed bucket there are still
+accounts whose only known figure is what SAND itself wrote — and against a line
+you draw, that figure becomes a fraction, a usage bar and a place in the picker's
+ranking. It is offered on every account rather than only the silent ones: a cloud
+reporting two terabytes free is still a cloud you might only want two hundred
+gigabytes of parts on.
+
+```bash
+sand remote edit gdrive --quota '200 GB'
+sand remote edit gdrive --quota none
+```
+
+or **Edit account → Quota** in the browser; `PATCH /api/providers/{id}` takes
+`quota` as typed text alongside `capacity`.
+
+**Crossing it warns rather than refuses**, and the reason is durability. The
+parts of a file are placed together, so dropping the one part that would cross a
+quota leaves the file on fewer clouds than the erasure code it was cut with
+promises — a quiet loss of margin traded for a line nobody else can see. The
+upload stores and says what it did. It says it once, by the file that crossed;
+the four hundred behind it in the same batch do not repeat it, because being over
+is a state rather than an event and the card, the panel and the `FREE` column all
+carry it until the line is raised or files are moved off.
+
+**Before the bytes move**, the upload dialog checks the share of the file each
+chosen cloud is about to receive — about a kth of it under a k-of-n cut — against
+the room that cloud has, and names the ones it will not fit on. Clouds that
+cannot say are counted rather than passed: silence is not an all-clear.
+
 ### Proton Drive without the desktop app
 
 Proton Drive gains a second backend, `protoncli`, that talks to Proton rather

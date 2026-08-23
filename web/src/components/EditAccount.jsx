@@ -51,7 +51,7 @@ export default function EditAccount({ provider, providers = [], initialTab, onCl
     <Modal
       title="Edit account"
       subtitle={tab === 'look'
-        ? 'What this cloud is called, the colour it wears here, and — where the backend cannot say — how big it is. None of them touches its credentials or the parts stored on it.'
+        ? 'What this cloud is called, the colour it wears here, how big it is where the backend cannot say, and how much of it SAND may fill. None of them touches its credentials or the parts stored on it.'
         : 'How this account reaches the backend. Changing any of it is checked against the cloud before it is stored, so settings SAND cannot connect with are refused rather than saved.'}
       onClose={busy ? undefined : onClose}
       width={480}
@@ -149,6 +149,14 @@ function Appearance({ provider, providers, busy, setBusy, onClose, onChanged }) 
   const [capacity, setCapacity] = useState(
     () => (provider.capacity > 0 ? formatBytes(provider.capacity) : ''),
   )
+  // The other figure a person types about an account, and a different question:
+  // not how big it is, but how much of it is SAND's to fill. Offered on every
+  // account rather than only the ones that cannot answer for themselves — a
+  // Drive that reports 2 TB free still might not be somewhere you want two
+  // terabytes of parts.
+  const [quota, setQuota] = useState(
+    () => (provider.quota > 0 ? formatBytes(provider.quota) : ''),
+  )
   const [error, setError] = useState(null)
   // The full palette opens on its own when the account is already wearing a
   // shade the named row does not show — otherwise the dialog would open with
@@ -177,9 +185,12 @@ function Appearance({ provider, providers, busy, setBusy, onClose, onChanged }) 
   // 36,401,835,212 bytes would quietly move it every time the dialog is opened.
   const declaredCapacity = provider.capacity > 0 ? formatBytes(provider.capacity) : ''
   const capacityChanged = capacity.trim() !== declaredCapacity
+  const setQuotaText = provider.quota > 0 ? formatBytes(provider.quota) : ''
+  const quotaChanged = quota.trim() !== setQuotaText
   const unchanged = trimmed === (provider.name || '')
     && color === normalizeHex(provider.color)
     && !capacityChanged
+    && !quotaChanged
 
   const submit = async (e) => {
     e.preventDefault()
@@ -192,6 +203,7 @@ function Appearance({ provider, providers, busy, setBusy, onClose, onChanged }) 
         name: trimmed,
         color,
         ...(capacityChanged ? { capacity: capacity.trim() } : null),
+        ...(quotaChanged ? { quota: quota.trim() } : null),
       })
       onChanged()
       onClose()
@@ -244,6 +256,35 @@ function Appearance({ provider, providers, busy, setBusy, onClose, onChanged }) 
           onChange={(e) => setCapacity(e.target.value)}
         />
       )}
+
+      {/* How much of it is ours to fill.
+
+          The account card and the upload picker both want to say how much more
+          fits here, and on a good few backends there is nothing to say it
+          with: a synced folder knows the disk underneath it, a Drive knows its
+          quota, a bucket can be counted — but between them that still leaves
+          accounts whose only known figure is what SAND itself wrote. A quota
+          is what turns that figure into a fraction, and it is the reason the
+          picker can rank clouds by room at all.
+
+          Offered on every account, not only those. A cloud that reports two
+          terabytes free is still a cloud you might only want to put two
+          hundred gigabytes of parts on, and where both figures exist the room
+          left is whichever leaves less. */}
+      <Input
+        label="Quota"
+        value={quota}
+        spellCheck={false}
+        disabled={busy}
+        maxLength={24}
+        placeholder="200 GB"
+        help={'How much of this account SAND may fill, as against how big it is. '
+          + 'It is what says how much more fits where the backend cannot. '
+          + 'Nothing is refused for crossing it — an upload past it stores and warns, '
+          + 'and the account reads as over until you raise the line or move parts off. '
+          + 'Blank means nobody is watching this account\'s share.'}
+        onChange={(e) => setQuota(e.target.value)}
+      />
 
       <span style={{
         display: 'block',

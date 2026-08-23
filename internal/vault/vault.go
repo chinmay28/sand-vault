@@ -978,9 +978,14 @@ type ProviderEdit struct {
 	// account goes back to reporting no capacity at all.
 	Capacity *int64
 
+	// Quota is how much of the account SAND may fill, in bytes. Zero clears it
+	// and nothing is watching the account's share any more. It is a warning
+	// rather than a wall — see provider.Config.Quota.
+	Quota *int64
+
 	// Options is how the account reaches the backend: its keys, its secrets,
-	// the bucket or folder it writes into. Unlike the three fields above this
-	// one does touch the account — an edit here is verified against the
+	// the bucket or folder it writes into. Unlike the fields above this one
+	// does touch the account — an edit here is verified against the
 	// backend before it is stored, and a set of credentials the provider will
 	// not accept is refused rather than saved.
 	//
@@ -991,11 +996,14 @@ type ProviderEdit struct {
 }
 
 // UpdateProvider changes a connected account: what it is called, what colour
-// it wears, how big its holder says it is, and how it reaches the backend.
+// it wears, how big its holder says it is, how much of it SAND may fill, and
+// how it reaches the backend.
 //
-// The first three are yours alone. None of them touches the credentials, the
+// All but the last are yours alone. None of them touches the credentials, the
 // backend or the parts sitting on it — nothing is uploaded, downloaded or
-// re-encrypted by renaming an account or recolouring it.
+// re-encrypted by renaming an account, recolouring it or setting a quota on
+// it, and a quota set below what is already there is a warning rather than a
+// deletion.
 //
 // Settings are the exception, and are treated like a connection rather than
 // like a label: rotated keys, a re-pasted refresh token or a moved bucket are
@@ -1058,6 +1066,13 @@ func (v *Vault) UpdateProvider(ctx context.Context, id string, edit ProviderEdit
 		after.Capacity = *edit.Capacity
 	}
 
+	if edit.Quota != nil {
+		if *edit.Quota < 0 {
+			return provider.Config{}, errors.New("a quota cannot be a negative number of bytes")
+		}
+		after.Quota = *edit.Quota
+	}
+
 	reconnected := false
 	if len(edit.Options) > 0 {
 		merged, err := provider.MergeOptions(before.Kind, before.Options, edit.Options)
@@ -1071,7 +1086,7 @@ func (v *Vault) UpdateProvider(ctx context.Context, id string, edit ProviderEdit
 	}
 
 	if after.Name == before.Name && after.Color == before.Color &&
-		after.Capacity == before.Capacity && !reconnected {
+		after.Capacity == before.Capacity && after.Quota == before.Quota && !reconnected {
 		return after.Redacted(), nil
 	}
 
@@ -1389,6 +1404,12 @@ type ProviderStatus struct {
 	// makes a declared capacity worth offering: without a used figure from
 	// somewhere, a capacity is a denominator with no numerator.
 	Measurable bool `json:"measurable,omitempty"`
+
+	// Space is how much more this account will take, from whichever of the
+	// three possible sources can say — see space.go. Stored above says what is
+	// already here; this is the other half, and the half that decides where the
+	// next file should go.
+	Space Space `json:"space"`
 }
 
 // ProviderStatuses pings every connected account in parallel and reports how
@@ -1416,31 +1437,12 @@ func (v *Vault) ProviderStatuses(ctx context.Context) ([]ProviderStatus, error) 
 	for i := range statuses {
 		byID[statuses[i].ID] = &statuses[i]
 	}
-	for _, m := range v.manifestsLocked() {
-		for _, e := range m.Entries {
-			for _, s := range e.Shards {
-				if st, ok := byID[s.ProviderID]; ok {
-					st.Shards++
-					st.Stored += s.Size
-				}
-			}
-		}
-	}
-	// What a shut sub vault put on each account counts too. Leaving it out
-	// would draw an account as emptier than it is, and the amount missing would
-	// change with which sub vault happened to be open — a usage bar that moves
-	// when you type a password is worse than no usage bar.
-	for _, meta := range v.manifest.SubVaults {
-		if _, open := v.subs[meta.ID]; open {
-			continue
-		}
-		for _, item := range meta.Inventory {
-			for _, part := range item.Parts {
-				if st, ok := byID[part.ProviderID]; ok {
-					st.Shards++
-					st.Stored += part.Size
-				}
-			}
+	// Every vault inside this one counts towards an account's load, shut ones
+	// included — see loadByProviderLocked.
+	for id, load := range v.loadByProviderLocked() {
+		if st, ok := byID[id]; ok {
+			st.Shards = load.Shards
+			st.Stored = load.Stored
 		}
 	}
 	v.mu.RUnlock()
@@ -1470,6 +1472,14 @@ func (v *Vault) ProviderStatuses(ctx context.Context) ([]ProviderStatus, error) 
 		}(i)
 	}
 	wg.Wait()
+
+	// Worked out last, because it needs both halves: what the account said when
+	// it was pinged, and what the index says SAND has put there. An account
+	// that did not answer keeps whatever its quota leaves — a cloud being
+	// unreachable for a moment does not change how much of it is spoken for.
+	for i := range statuses {
+		statuses[i].Space = spaceFor(statuses[i].Usage, statuses[i].Quota, statuses[i].Stored)
+	}
 
 	return statuses, nil
 }

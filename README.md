@@ -409,9 +409,11 @@ you could pick and then not be able to read.
 ./sand remote edit r2-cold --color auto            # back to the browser's pick
 ./sand remote edit b2-cold --capacity '10 GB'      # how big the bucket is
 ./sand remote edit b2-cold --capacity none         # back to saying nothing
+./sand remote edit gdrive --quota '200 GB'         # how much of it SAND may fill
+./sand remote edit gdrive --quota none             # back to no line at all
 ```
 
-Neither of the first two fields reaches the cloud, and nor does the third. Nothing is uploaded, downloaded or
+None of those four fields reaches the cloud. Nothing is uploaded, downloaded or
 re-encrypted, no credential is touched, and not one part moves — the account
 answers to exactly what it did before. A rename does travel through the index:
 every part records the name of the account holding it, which is what the file
@@ -419,6 +421,71 @@ list, the health read-out and a recovery from a `manifest.sand` all read, so
 the new name lands on all of them in the same write.
 
 Two accounts may not share a name, whether it is set at connect time or later.
+
+---
+
+## How much more fits here
+
+Every account card and every cloud in the upload picker says how much of the
+vault it is holding. On its own that figure cannot answer the question the
+picker is actually asking: 284.9 GB of parts is the same number on a drive with
+four terabytes free and on one with forty megabytes, and only one of those is
+somewhere to put the next file.
+
+So the room left is named beside it, and where the figure came from is named
+with it, because they are not the same kind of claim:
+
+| Source | Where the number comes from |
+| --- | --- |
+| **reported** | The account itself. A Drive knows its quota, a filesystem knows its free blocks, and both are live figures |
+| **declared** | The capacity you typed, less what a count of the account found in it. What a bucket gets, since the S3 API has never had a quota call |
+| **quota** | The line *you* drew, less what the index says SAND has put there. The only answer available on a backend that reports nothing and cannot be listed |
+
+An account can have two of them at once, and then the room left is whichever
+leaves less: a quota that has run out leaves nothing on a half-empty drive, and
+a full drive leaves nothing whatever the quota says.
+
+### Setting a quota
+
+A quota answers a different question from a capacity. A capacity is how big the
+account is; a quota is how much of it is SAND's to fill — a line through
+somebody else's storage. Set it from **Edit account → Quota** in the browser, or
+from the command line:
+
+```bash
+./sand remote edit gdrive --quota '200 GB'
+./sand remote edit gdrive --quota none
+```
+
+It is offered on every account rather than only the silent ones. A cloud that
+reports two terabytes free is still a cloud you might only want two hundred
+gigabytes of parts on, and a shared drive is usually somewhere you have agreed
+to take a share of rather than all of.
+
+What it changes:
+
+- **The picker ranks clouds by room.** Every row says what is left on the cloud
+  and, before you press Upload, whether the share of the file each chosen cloud
+  is about to receive actually fits. A file cut 2-of-3 leaves about half of
+  itself on each cloud, so that is what is checked — per cloud, not per file
+- **A silent account gets a usage bar at last.** Where nothing else can say how
+  full an account is, what SAND wrote against the quota is a real fraction, and
+  the card and the *Stats* panel draw it
+- **Crossing it warns.** The upload that takes an account past its quota says so
+  and stores anyway
+
+### Why crossing it is a warning and not a refusal
+
+The parts of a file are placed together. Dropping the one part that would cross
+a quota mid-scatter leaves the file stored on fewer clouds than the code it was
+cut with promises — a 2-of-3 file written to two clouds survives nothing going
+away — and a quiet loss of durability is a far worse outcome than a cloud filling
+up. So the upload completes and reports what it did.
+
+The warning is said once, by the file that crosses the line, and not again by
+the four hundred behind it in the same batch. Being over is a state rather than
+an event, and the account's card, the *Stats* panel and the `FREE` column of
+`sand remote list` all carry it until the line is raised or files are moved off.
 
 ---
 
@@ -501,6 +568,13 @@ cannot go to five places.
 Every upload can choose for itself, and the browser asks before a single byte
 leaves the machine: the dialog opens on the clouds the file is about to be
 scattered over, and any of them can be swapped for another account.
+
+Each row says how much of the vault that cloud is already holding *and* how much
+more will fit on it, so the choice is made against something. Before the upload
+goes, the dialog checks the share of the file each chosen cloud is about to
+receive — about a kth of it, for a file cut k-of-n — against the room that cloud
+has, and says which of them it will not fit on. See [How much more fits
+here](#how-much-more-fits-here).
 
 A vault-wide default sets what that dialog opens on. With no default set, each
 file gets three clouds picked at random, which is what spreads a vault evenly
@@ -1492,18 +1566,21 @@ sand remote kinds                             List backends and their settings
 sand remote add <kind> --name N --set k=v …   Connect an account (pings first)
 sand remote list                              Status, parts held, bytes stored, room left, colour
 sand remote edit <name-or-id> [--name N] [--color '#38bdf8'|auto] [--capacity '10 GB'|none]
-                              [--set k=v …]   Rename it, recolour it, say how big it is,
-                                              or change what it connects with
+                              [--quota '200 GB'|none] [--set k=v …]
+                                              Rename it, recolour it, say how big it is,
+                                              cap how much of it SAND may fill, or change
+                                              what it connects with
 sand remote test <name-or-id>                 Re-check reachability
 sand remote measure <name-or-id>              Count what is on it, for backends that cannot say
 sand remote remove <name-or-id> [--force]     Disconnect
 ```
 
 `sand remote edit` changes what an account is called, the colour it wears in the
-browser, and — for the backends that report no quota — how big you say it is.
-None of those three reaches the cloud: no credential is touched and not one part
-moves. See [Naming an account and choosing its
-colour](#naming-an-account-and-choosing-its-colour).
+browser, how big you say it is where the backend reports no quota, and how much
+of it SAND may fill. None of those four reaches the cloud: no credential is
+touched and not one part moves. See [Naming an account and choosing its
+colour](#naming-an-account-and-choosing-its-colour) and [How much more fits
+here](#how-much-more-fits-here).
 
 `--set` is the exception, and the way to repair an account whose credentials
 have stopped working: it changes the settings the connection is made from, and
@@ -1653,6 +1730,13 @@ pipe the password on stdin.
   already lives on the account, and from the room that is left. Local folders
   report the drive they sit on, so a disk shared with the rest of the machine
   says how much of itself is actually free
+- **Room left, and whose number it is** — every account says how much more fits,
+  from whichever of three sources can answer: the account itself, a capacity you
+  declared against a count of it, or a quota you set on how much of it SAND may
+  fill. The last is the only answer a backend that reports nothing and cannot be
+  listed will ever have, and it is what gives such an account a usage bar at all.
+  Crossing a quota warns rather than refuses. See [How much more fits
+  here](#how-much-more-fits-here)
 - **Account stats** — *Stats* on any account card opens the breakdown behind
   that bar: capacity against SAND's own share, what the parts belong to by kind
   and by folder, the month they arrived in, the heaviest files, and how many
@@ -2100,9 +2184,9 @@ one walk, so comparing them costs nothing.
 | POST | `/api/vault/recovery/resume` | Re-point the index at accounts reconnected since (`dry_run`; no password) |
 | POST | `/api/vault/reclaim` | Re-encrypt recovered files under this vault's own key, onto `accounts` |
 | GET | `/api/providers/specs` | Backend descriptions for the connect form |
-| GET · POST | `/api/providers` | List / connect accounts |
+| GET · POST | `/api/providers` | List / connect accounts. A listed account carries what it holds, what the backend reported, and `space` — how much more fits, with the `source` that answered: `reported`, `declared` or `quota` |
 | POST | `/api/providers/{id}/test` | Re-check an account |
-| PATCH | `/api/providers/{id}` | Rename it / set its colour / declare its capacity (`name`, `color` — `""` for automatic — `capacity`), or change what it connects with (`options`, which is pinged before it is stored) |
+| PATCH | `/api/providers/{id}` | Rename it / set its colour / declare its capacity / cap how much of it SAND may fill (`name`, `color` — `""` for automatic — `capacity`, `quota` — both as text like `"10 GB"`, `""` to clear), or change what it connects with (`options`, which is pinged before it is stored) |
 | POST | `/api/providers/oauth/start` | Begin a sign-in (`kind`), or a reauthorization of one already connected (`provider_id`) |
 | POST | `/api/providers/oauth/complete` | Turn a finished sign-in into a new account |
 | POST | `/api/providers/oauth/reauthorize` | Spend a finished sign-in on an account already connected: new credentials, same ID and parts |

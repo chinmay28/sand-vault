@@ -297,5 +297,10 @@ func (v *Vault) commitUpload(ctx context.Context, scope Scope, dir, name string,
 			stored, placed.scheme.Total, placed.scheme, spare))
 	}
 
+	// Said once the file is safely down rather than before a byte of it moves:
+	// a quota is a line somebody drew through their own storage, not a reason
+	// to store a file on fewer clouds than it was cut for. See quotaWarnings.
+	warnings = append(warnings, v.quotaWarnings(shardBytesByProvider(shards))...)
+
 	return entry, warnings, nil
 }
