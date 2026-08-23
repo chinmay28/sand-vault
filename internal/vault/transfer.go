@@ -47,6 +47,19 @@ type UploadOptions struct {
 	// attacker needs together, and a folder of holiday photos and a folder of
 	// tax records do not have to answer that question the same way.
 	Scheme archive.Scheme
+
+	// OnScattered, when set, is called as the file's bytes leave for the
+	// accounts, with how many have gone out of how many there are.
+	//
+	// It counts bytes read out of the spool on their way to being sealed, which
+	// runs at most a chunk window ahead of what has actually landed — tens of
+	// megabytes on a file worth watching, and the alternative is a bar that
+	// only moves when a whole chunk finishes. It is called from the goroutine
+	// driving the upload and must not block.
+	//
+	// Only the paths that stream honour it: an upload with no reader behind it
+	// has nothing to report between "started" and "done".
+	OnScattered func(done, size int64)
 }
 
 // Upload encodes data into encrypted parts, scatters them across the accounts

@@ -75,6 +75,11 @@ type Server struct {
 	// handlers_sshkeys.go.
 	generatedKeys *generatedKeyStore
 
+	// imports is where the imports running right now say how far they have
+	// got, so the dialog that started one can draw it. It is a view of the
+	// requests in flight and dies with them — see import_watch.go.
+	imports *importWatch
+
 	// externalActivity is when something outside the browser last read the
 	// vault — a mounted share, or a player following a stream link. Neither has
 	// a browser session to keep the vault alive, so without this it would lock
@@ -168,6 +173,9 @@ func (s *Server) Handler() (http.Handler, error) {
 	}
 	if s.generatedKeys == nil {
 		s.generatedKeys = newGeneratedKeyStore()
+	}
+	if s.imports == nil {
+		s.imports = newImportWatch()
 	}
 
 	mux := http.NewServeMux()
@@ -441,6 +449,12 @@ func (s *Server) Handler() (http.Handler, error) {
 		"DELETE /api/remote/{id}":      s.handleRemoteRemove,
 		"GET /api/remote/{id}/files":   s.handleRemoteBrowse,
 		"POST /api/remote/{id}/import": s.handleRemoteImport,
+		// What that import is doing while it does it. A GET beside the POST
+		// rather than a route of its own, because it is the same noun: one
+		// asks a machine for files, the other asks how far that has got. It
+		// reads memory only and answers immediately, which is what lets a
+		// dialog poll it every second without slowing the transfer down.
+		"GET /api/remote/{id}/import": s.handleRemoteImportProgress,
 	}
 	for pattern, handler := range protected {
 		mux.HandleFunc(pattern, s.requireSession(handler))

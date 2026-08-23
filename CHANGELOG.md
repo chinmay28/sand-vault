@@ -12,6 +12,37 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### An import you can watch, and an honest sentence about interrupting one
+
+Bringing files in from a machine used to go quiet. The dialog said *Bringing
+them in…* and then said nothing at all until the whole selection had landed —
+which is fine for a folder of photographs and useless for the case people
+actually reach for it: one very large file. An 18 GB film looks exactly like a
+hung request for the hour it takes, and there was no way to tell the difference
+from outside.
+
+It now draws the file it is on: which file of how many, whether it is **coming
+down from the machine** or **being split, encrypted and scattered** to the
+clouds, how far through that half it is, and what has already landed or been
+skipped. The two halves are named apart rather than added together, because
+they are two passes over the same bytes and they are slow for different reasons
+— one is the machine's upstream, the other is yours.
+
+This is a view of the request that is running, not a job queue growing quietly
+in the corner. The server keeps it in memory for exactly as long as the import
+request is open, the dialog asks for it once a second, and nothing is written
+down: an import that finishes, fails or is cancelled simply stops being listed.
+Re-running an import is still the whole of the resume story.
+
+**And the sentence about interrupting one has been corrected.** It used to say
+that if an import is interrupted, nothing is lost. That is true of files and
+was never true of a file: every file that arrived *whole* is scattered and
+committed, and re-running skips it — but a file cut off partway is not kept,
+and the next run fetches it again from the first byte. On a selection of two
+hundred files that distinction hardly shows. On a selection of one 18 GB film
+it is the entire answer, and the old wording promised the opposite of what
+happens. Both the dialog and the README now say which one it is.
+
 ### SAND makes the SSH key, so nobody has to paste the wrong half
 
 Connecting a machine you have an SSH login on — as somewhere to keep parts, or

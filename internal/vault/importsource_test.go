@@ -328,3 +328,120 @@ func TestImportIntoASubVault(t *testing.T) {
 		t.Errorf("sub vault holds %+v", listing.Files)
 	}
 }
+
+// The progress a caller can draw while an import runs: every file it picks up,
+// both halves of the trip, and the tallies as they stand.
+func TestImportReportsProgress(t *testing.T) {
+	v, id, root := importFixture(t)
+	seed(t, filepath.Join(root, "a.txt"), "aaa")
+	seed(t, filepath.Join(root, "b.txt"), "bbbb")
+
+	var seen []ImportProgress
+	req := ImportRequest{
+		Paths:      []string{"a.txt", "b.txt"},
+		Dest:       "/",
+		OnProgress: func(at ImportProgress) { seen = append(seen, at) },
+	}
+	if _, err := v.ImportFromSource(context.Background(), MainScope, id, req); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if len(seen) == 0 {
+		t.Fatal("an import with a progress callback reported nothing")
+	}
+
+	// A file is announced before a byte of it moves, so what is being worked
+	// on shows up at once rather than once enough of it has arrived.
+	first := seen[0]
+	if first.Stage != StageFetching || first.Done != 0 {
+		t.Errorf("first report was %s at %d bytes, want fetching at 0", first.Stage, first.Done)
+	}
+	if first.Name != "a.txt" || first.File != 1 || first.Files != 2 {
+		t.Errorf("first report was %+v, want a.txt as 1 of 2", first)
+	}
+
+	// Both halves of the trip are reported, and named apart: coming down from
+	// the source and going back up to the accounts are slow for different
+	// reasons and one is not the other's second half.
+	stages := map[ImportStage]bool{}
+	for _, at := range seen {
+		stages[at.Stage] = true
+		if at.Done > at.Size {
+			t.Errorf("%s reported %d of %d bytes", at.Name, at.Done, at.Size)
+		}
+		if at.Size == 0 {
+			t.Errorf("%s reported no size at all", at.Name)
+		}
+	}
+	if !stages[StageFetching] || !stages[StageScattering] {
+		t.Errorf("stages reported were %v, want both fetching and scattering", stages)
+	}
+
+	// The second file knows the first one landed, which is what makes the
+	// counts readable mid-flight: they are what the summary would say if the
+	// import stopped here.
+	var second *ImportProgress
+	for i := range seen {
+		if seen[i].Name == "b.txt" {
+			second = &seen[i]
+			break
+		}
+	}
+	if second == nil {
+		t.Fatal("the second file was never reported")
+	}
+	if second.File != 2 || second.Imported != 1 {
+		t.Errorf("b.txt was reported as file %d with %d imported, want 2 and 1", second.File, second.Imported)
+	}
+}
+
+// A file already in the vault is passed over in silence: it is over before
+// there is anything to watch, and a bar that flashed up per skipped file would
+// be noise on the run where everything is already here.
+func TestImportReportsNothingForASkippedFile(t *testing.T) {
+	v, id, root := importFixture(t)
+	seed(t, filepath.Join(root, "a.txt"), "aaa")
+
+	req := ImportRequest{Paths: []string{"a.txt"}, Dest: "/"}
+	if _, err := v.ImportFromSource(context.Background(), MainScope, id, req); err != nil {
+		t.Fatalf("first import: %v", err)
+	}
+
+	var seen []ImportProgress
+	req.OnProgress = func(at ImportProgress) { seen = append(seen, at) }
+	again, err := v.ImportFromSource(context.Background(), MainScope, id, req)
+	if err != nil {
+		t.Fatalf("second import: %v", err)
+	}
+	if again.Skipped != 1 {
+		t.Fatalf("the second run fetched the file again: %+v", again.Results)
+	}
+	if len(seen) != 0 {
+		t.Errorf("a skipped file reported %d times: %+v", len(seen), seen)
+	}
+}
+
+// The bytes reported are the file's own, all of them, and the last read is not
+// swallowed — a bar that stopped at 99% because the tail was short would look
+// stuck exactly where it matters.
+func TestImportProgressCountsEveryByte(t *testing.T) {
+	v, id, root := importFixture(t)
+	body := strings.Repeat("x", 5000)
+	seed(t, filepath.Join(root, "big.bin"), body)
+
+	var fetched int64
+	req := ImportRequest{
+		Paths: []string{"big.bin"},
+		Dest:  "/",
+		OnProgress: func(at ImportProgress) {
+			if at.Stage == StageFetching && at.Done > fetched {
+				fetched = at.Done
+			}
+		},
+	}
+	if _, err := v.ImportFromSource(context.Background(), MainScope, id, req); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if fetched != int64(len(body)) {
+		t.Errorf("fetching reported %d bytes, want %d", fetched, len(body))
+	}
+}

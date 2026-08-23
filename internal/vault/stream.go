@@ -53,7 +53,8 @@ func (v *Vault) UploadStream(ctx context.Context, scope Scope, dir, name string,
 	}()
 
 	placed, err := v.scatterStream(ctx, scope, name, spool, size, hash,
-		spread{preferred: opts.Accounts, exact: true, scheme: opts.Scheme}, v.uploadChunkSize())
+		spread{preferred: opts.Accounts, exact: true, scheme: opts.Scheme}, v.uploadChunkSize(),
+		opts.OnScattered)
 	if err != nil {
 		return nil, placed.warnings, err
 	}
@@ -108,7 +109,8 @@ func (v *Vault) UploadStreamAt(ctx context.Context, scope Scope, dir, name strin
 	}
 
 	placed, err := v.scatterStream(ctx, scope, name, readerAt, size, hash,
-		spread{preferred: opts.Accounts, exact: true, scheme: opts.Scheme}, v.uploadChunkSize())
+		spread{preferred: opts.Accounts, exact: true, scheme: opts.Scheme}, v.uploadChunkSize(),
+		opts.OnScattered)
 	if err != nil {
 		return nil, placed.warnings, err
 	}
@@ -154,7 +156,10 @@ func (v *Vault) spool(r io.Reader) (*os.File, int64, [32]byte, error) {
 // scatterStream is scatterChunked reading from a file rather than a slice. The
 // two differ only in where a chunk's plaintext comes from; everything about
 // placement, per-part all-or-nothing and rollback is the same.
-func (v *Vault) scatterStream(ctx context.Context, scope Scope, name string, src io.ReaderAt, size int64, hash [32]byte, sp spread, chunkSize uint32) (placement, error) {
+//
+// onScattered may be nil, and is the only way anything watching a long upload
+// learns it is moving. See UploadOptions.OnScattered for what it counts.
+func (v *Vault) scatterStream(ctx context.Context, scope Scope, name string, src io.ReaderAt, size int64, hash [32]byte, sp spread, chunkSize uint32, onScattered func(done, size int64)) (placement, error) {
 	target, err := v.snapshotTarget(scope, sp)
 	if err != nil {
 		return placement{}, err
@@ -195,6 +200,9 @@ func (v *Vault) scatterStream(ctx context.Context, scope Scope, name string, src
 			return nil, fmt.Errorf("reading chunk %d back from the spool: %w", next, err)
 		}
 		next++
+		if onScattered != nil {
+			onScattered(min(int64(next)*int64(chunks.ChunkSize), size), size)
+		}
 		return buf, nil
 	})
 	if err != nil {

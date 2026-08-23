@@ -210,13 +210,40 @@ the keys are deterministic and `Put` is idempotent.
 Import gets the same property one level up, for free:
 
 > **A file already in the vault at the destination path, with the same size and
-> hash, is not fetched again.**
+> untouched on the source since it was imported, is not fetched again.**
+
+(Size and modification time rather than a hash: reading the source file to hash
+it would transfer the very bytes the check exists to avoid. The modification
+time is what covers the one case size alone gets wrong — a file replaced by a
+different file of the same length.)
 
 Re-running an import *is* the resume mechanism. No job state, no partial-file
 bookkeeping, correct if the server is killed mid-import.
 
+**The granularity is the whole file, and that is not a detail the UI may
+mumble.** `UploadStream` commits an entry only once the file is spooled,
+scattered and placed, so an interrupted import leaves whole files and nothing
+else: no half entry to validate, and no partial spool to continue from. A
+selection of two hundred files resumes almost perfectly. A selection of one
+18 GB film does not resume at all — the next run starts it again from the first
+byte. Both dialogs that say so now say it that way.
+
+Chunk-level resume *is* reachable from here — the shard keys are deterministic,
+so a re-run could `List` what is already on the accounts and skip it — but not
+without an archive ID that survives the interruption, and today's is minted
+fresh per upload. That is the v2 this section is about, and it needs its own
+design rather than being smuggled in behind a progress bar.
+
 This matters because **there is no background job framework**, and v1 should not
-build one. Every handler in `internal/server` is synchronous under a
+build one. What v1 *does* have, since a synchronous request that says nothing
+for an hour is indistinguishable from a hang, is a view onto the request while
+it runs: `GET /api/remote/{id}/import` answers out of a map in memory that the
+running handler writes to and nothing reads back
+(`internal/server/import_watch.go`). It is registered when the POST starts and
+forgotten however that POST ends, so an empty list covers finished, failed and
+cancelled alike, and a restart takes it with the import it described. That is
+the line between a progress bar and a job framework, and it is worth keeping:
+nothing here is durable, authoritative, or consulted by an import. Every handler in `internal/server` is synchronous under a
 `contextWithTimeout` — uploads get 30 minutes — and the closest thing to
 progress reporting anywhere is `rekey.go`'s `ProgressFunc`. A 200 GB media tree
 does not fit in a request, and the honest answer is to scope v1 so it does not
@@ -335,6 +362,7 @@ PATCH  /api/remote/{id}               edit one
 DELETE /api/remote/{id}               forget one
 GET    /api/remote/{id}/files?path=   one directory
 POST   /api/remote/{id}/import        {paths[], dest, accounts, scheme} → results[]
+GET    /api/remote/{id}/import        what that POST is doing right now → imports[]
 ```
 
 The seam that makes the import itself small was already there:

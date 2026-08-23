@@ -519,6 +519,16 @@ export const api = {
      of the resume story — there is no job to resume, only an import to repeat. */
   importFromSource: (id, body, { signal } = {}) =>
     request(`/api/remote/${encodeURIComponent(id)}/import`, { method: 'POST', body, signal }),
+  /* Where the imports running from one machine have got to, right now.
+
+     A GET beside the POST above, and a poll rather than anything pushed: the
+     import is one long request, and this is a second, short one asking what
+     that first one is doing. It answers out of memory and knows nothing once an
+     import is over — an empty list means nothing is running, which is the same
+     answer for finished, failed and cancelled. What an import *did* comes back
+     from the POST itself. */
+  sourceImports: (id, { signal } = {}) =>
+    request(`/api/remote/${encodeURIComponent(id)}/import`, { signal }),
 
   /* The picture a folder is drawn with, and what else it could be drawn with:
      every file under it that has a thumbnail, films first. What comes back is a
