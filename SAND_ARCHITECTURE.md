@@ -882,6 +882,36 @@ through the delete confirmation, one file at a time, or to the selection bar to
 be moved or scattered instead — the same composition every other organizer tool
 makes.
 
+#### What a folder holds, in the figures its menu leads with
+
+A folder row can say its name and nothing else. Its size is not a property it
+has — it is the sum of the levels below it — so the one question anybody asks
+about a folder before moving, scattering or deleting it is the one question the
+listing cannot answer.
+
+`Vault.FolderStats` (`folderstats.go`), answered by `GET /api/folders/stats`, is
+that answer: how many files sit at or below the folder and what they weigh, how
+many folders are under it, what the parts of those files weigh across the
+accounts, which accounts those are, how many of the files are short a shard, and
+when the newest of them last changed. The folder menu asks when it opens and
+draws the figures in the space beside the title.
+
+Two figures for the weight rather than one, because they answer different
+questions: what is *in* the folder is what a `du -sh` would say, and what it
+*costs* is that widened by the erasure coding — the number an account's free
+space is actually spent in (§4.1). The clouds are named from the shard records
+rather than from the connected accounts, so a folder whose parts sit on an
+account that has since been disconnected still says so; where the account is
+still connected it is named by the name it answers to now rather than the one
+recorded when its parts went up.
+
+A third read beside the survey and the duplicates, for the same reason those two
+are separate from each other. The survey could be counted for every one of these
+figures — it walks the same index — but it would carry ten thousand file names
+back to a menu header to do it. This one counts as it walks and returns a
+struct. It is asked per folder and only when a menu opens: a listing of forty
+folders is not forty walks, because thirty-nine of those menus are never opened.
+
 ### 3.14 The files that went out short, and the way back to whole
 
 An upload commits on two of three parts (§4.1). A cloud that is not answering at
@@ -2267,6 +2297,7 @@ reveals only whether a vault exists.
 | DELETE | `/api/files/{id}` | Erase every part, drop the entry |
 | GET | `/api/folders` | Every folder in the vault, root first — the whole tree in one answer, for a destination picker |
 | GET | `/api/folders/survey?path=` | Everything under a folder in one walk of the index: every file with its kind and depth, every folder with what it holds. Read-only — the organizer plans from it and then runs the move/delete endpoints per item (§3.13) |
+| GET | `/api/folders/stats?path=` | What one folder holds, counted rather than listed: files and bytes at or below it, folders under it, what the parts weigh across the accounts, which accounts hold them, how many files are short a shard, and the newest change. What the folder menu draws in its header (§3.13) |
 | GET | `/api/folders/duplicates?path=` | Which files under a folder are copies of each other, three ways from one walk: same SHA-256, same size, or names a copy marker apart. Read-only; what is removed goes through `DELETE /api/files/{id}` (§3.13) |
 | GET | `/api/folders/art?path=` | Which file's thumbnail a folder is drawn with, if any, and every file under it that could be (§3.12) |
 | POST | `/api/folders/art` | Give it a picture (`path`, `id`), or take it away again with an empty `id` |

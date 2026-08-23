@@ -841,6 +841,30 @@ func (s *Server) handleFolderSurvey(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, survey)
 }
 
+// handleFolderStats answers what one folder is holding: how much is under it,
+// in how many files and folders, what those files weigh once split, and which
+// accounts their parts went to.
+//
+// Separate from the survey next door because the two are asked at different
+// moments for different reasons. The survey is what the organizer plans a run
+// from and names every file to do it; this is what the folder menu puts in its
+// header the moment somebody opens it, and a header is not worth ten thousand
+// names. Both are one walk of an index already in memory. See vault.FolderStats.
+func (s *Server) handleFolderStats(w http.ResponseWriter, r *http.Request) {
+	dir := r.URL.Query().Get("path")
+	if dir == "" {
+		dir = "/"
+	}
+
+	v, _ := s.Vault()
+	stats, err := v.FolderStats(requestScope(r), dir)
+	if err != nil {
+		vaultErrorResponse(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, stats)
+}
+
 // handleFolderDuplicates answers which files under a folder are copies of each
 // other — by content, by size, and by name, all three from one walk.
 //

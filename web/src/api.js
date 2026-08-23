@@ -440,6 +440,15 @@ export const api = {
   survey: (path, vault = '') =>
     request(`/api/folders/survey?path=${encodeURIComponent(path)}${vaultParam(vault)}`),
 
+  /* What a folder is holding, in the few figures its menu can show: the size
+     of everything at or below it, how many files and folders that is, what the
+     parts of those files weigh across the accounts, and which accounts they
+     are. Asked when the menu opens rather than carried on every folder row —
+     it is one walk of the index per folder, and a listing of forty of them
+     would be forty walks nobody asked for. */
+  folderStats: (path, vault = '') =>
+    request(`/api/folders/stats?path=${encodeURIComponent(path)}${vaultParam(vault)}`),
+
   /* Which files under a folder are copies of each other, asked three ways from
      one walk of the index: the same bytes (one SHA-256, which is proof), the
      same length (which is a question), and names alike enough to be copies of

@@ -1635,6 +1635,67 @@ class TestRenaming:
         app.wait_for_selector("text=inside.txt", timeout=20000)
 
 
+class TestWhatAFolderIsHolding:
+    """A folder's menu leads with the figures its row cannot show.
+
+    A file's row says how big it is; a folder's cannot, because a folder's size
+    is the sum of the levels below it. The menu is where somebody has asked, so
+    that is where it is counted.
+    """
+
+    def test_the_menu_says_what_is_under_the_folder(self, app, tmp_path):
+        make_folder(app, "held-outer")
+        app.get_by_text("held-outer").first.click()
+        app.wait_for_load_state("networkidle")
+
+        top = tmp_path / "top.txt"
+        top.write_text("x" * 4096)
+        upload_and_settle(app, top)
+
+        # One level down, so the figures have something the listing cannot show.
+        make_folder(app, "held-inner")
+        app.get_by_text("held-inner").first.click()
+        app.wait_for_load_state("networkidle")
+        deep = tmp_path / "deep.txt"
+        deep.write_text("y" * 8192)
+        upload_and_settle(app, deep)
+
+        # Back out to where the folder itself is a row: one level for the inner
+        # folder, one for the outer.
+        app.locator('button[aria-label="Up"]').click()
+        app.wait_for_selector("text=held-inner", timeout=20000)
+        app.locator('button[aria-label="Up"]').click()
+        app.wait_for_selector('button[aria-label="Actions for held-outer"]', timeout=20000)
+
+        app.locator('button[aria-label="Actions for held-outer"]').click()
+        sheet = app.get_by_role("dialog", name="held-outer")
+        sheet.wait_for(timeout=20000)
+
+        # Both files, however deep they sit — not just the one in the folder.
+        # The labels are drawn uppercase by the stylesheet; the text is not.
+        expect(sheet.get_by_text("files", exact=True)).to_have_count(1, timeout=20000)
+        expect(sheet.get_by_text("2", exact=True)).to_have_count(1)
+
+        # What it costs on the accounts is the other figure, and the larger one:
+        # a file cut two-of-three is stored one and a half times over.
+        expect(sheet.get_by_text("across the clouds", exact=False).first).to_be_visible()
+        expect(sheet.get_by_text("1 folder inside", exact=False).first).to_be_visible()
+        expect(sheet.get_by_text("clouds", exact=True)).to_have_count(1)
+
+        # And the choices are all still there under it.
+        expect(sheet.get_by_text("Delete folder", exact=True)).to_have_count(1)
+
+    def test_an_empty_folder_says_so_instead_of_counting_zeroes(self, app):
+        make_folder(app, "held-empty")
+
+        app.locator('button[aria-label="Actions for held-empty"]').click()
+        sheet = app.get_by_role("dialog", name="held-empty")
+        sheet.wait_for(timeout=20000)
+
+        expect(sheet.get_by_text("nothing in here yet", exact=False).first).to_be_visible(timeout=20000)
+        expect(sheet.get_by_text("files", exact=True)).to_have_count(0)
+
+
 class TestFolderPictures:
     """A folder can be given a picture of something inside it.
 

@@ -387,6 +387,13 @@ func (s *Server) Handler() (http.Handler, error) {
 		// organizer's four tools plan from this answer and then run over the
 		// move, delete and remove-folder endpoints above, one item at a time.
 		"GET /api/folders/survey": s.handleFolderSurvey,
+		// What a folder is holding, in the few figures its menu shows before
+		// anything is done to it: the size of everything under it, how many
+		// files and folders that is, and which accounts hold the parts. The
+		// survey above could be counted for the same answer, and is a list of
+		// every name under the folder to get it.
+		"GET /api/folders/stats": s.handleFolderStats,
+
 		// The copies under a folder, asked three ways in one walk: the same
 		// bytes, the same length, or names alike enough to be copies of each
 		// other. Read-only like the survey, and for the same reason — what is
