@@ -1,11 +1,16 @@
 package server
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/chinmay28/sand-vault/internal/sftp/sftptest"
 )
@@ -396,5 +401,207 @@ func TestRemoteImportProgressWhileItRuns(t *testing.T) {
 	}
 	if code := <-done; code != http.StatusCreated {
 		t.Errorf("import finished with %d", code)
+	}
+}
+
+// An import can be asked to keep going without a page in front of it. The
+// request answers at once; the transfer carries on behind it.
+func TestRemoteImportDetaches(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("pw", 3)
+	req, root := remoteFixture(t, "vps")
+	seedRemote(t, filepath.Join(root, "films", "one.mp4"), "a film")
+	seedRemote(t, filepath.Join(root, "films", "two.mp4"), "another film")
+
+	id := c.connectRemote(req)["id"].(string)
+
+	w, body := c.json(http.MethodPost, "/api/remote/"+id+"/import", map[string]any{
+		"paths": []string{"films"}, "dest": "/media", "detach": true,
+	})
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("detached import: %d %s, want 202", w.Code, w.Body.String())
+	}
+	run, _ := body["run"].(map[string]any)
+	if run == nil || run["id"] == "" {
+		t.Fatalf("202 carried no run to watch: %v", body)
+	}
+	if detached, _ := run["detached"].(bool); !detached {
+		t.Errorf("the run does not say it is detached: %v", run)
+	}
+
+	// The answer came back before the files did, so the result is not in it —
+	// it is on the endpoint the dialog polls, once the import gets there.
+	finished := waitForImport(t, c, id, run["id"].(string))
+	if errText, _ := finished["error"].(string); errText != "" {
+		t.Fatalf("the detached import failed: %s", errText)
+	}
+	summary, _ := finished["summary"].(map[string]any)
+	if summary == nil {
+		t.Fatalf("a finished detached import kept no summary: %v", finished)
+	}
+	if got := number(t, summary, "imported"); got != 2 {
+		t.Errorf("imported %v, want 2: %v", got, summary)
+	}
+
+	// And the files really are in the vault, in the shape they had.
+	_, listing := c.json(http.MethodGet, "/api/files?path=/media/films", nil)
+	if files, _ := listing["files"].([]any); len(files) != 2 {
+		t.Errorf("vault holds %d files under /media/films: %v", len(files), listing)
+	}
+
+	// The result waits to be read and is dismissed on purpose, since nothing
+	// else is going to carry it away.
+	w, after := c.json(http.MethodDelete, "/api/remote/"+id+"/import/"+run["id"].(string), nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("dismissing the result: %d %s", w.Code, w.Body.String())
+	}
+	if imports, _ := after["imports"].([]any); len(imports) != 0 {
+		t.Errorf("a dismissed result is still listed: %v", after)
+	}
+}
+
+// Stopping one is the same request as dismissing one, and what it had already
+// brought in stays — which is what the next run will skip.
+func TestRemoteImportStopKeepsWhatArrived(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("pw", 3)
+	req, root := remoteFixture(t, "vps")
+	seedRemote(t, filepath.Join(root, "big.bin"), strings.Repeat("sand", 8<<20))
+
+	id := c.connectRemote(req)["id"].(string)
+
+	_, body := c.json(http.MethodPost, "/api/remote/"+id+"/import", map[string]any{
+		"paths": []string{"big.bin"}, "dest": "/", "detach": true,
+	})
+	run, _ := body["run"].(map[string]any)
+	if run == nil {
+		t.Fatalf("detached import carried no run: %v", body)
+	}
+
+	w, _ := c.json(http.MethodDelete, "/api/remote/"+id+"/import/"+run["id"].(string), nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("stopping the import: %d %s", w.Code, w.Body.String())
+	}
+
+	stopped := waitForImport(t, c, id, run["id"].(string))
+	// It may have finished before the stop landed — the file is not large
+	// enough to guarantee otherwise on a fast machine — but it must not be
+	// reported as a failure either way.
+	if errText, _ := stopped["error"].(string); errText != "" {
+		t.Errorf("a stopped import was recorded as a failure: %s", errText)
+	}
+}
+
+// Stopping something that is not running says so rather than pretending.
+func TestRemoteImportStopUnknownRun(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("pw", 3)
+	req, _ := remoteFixture(t, "vps")
+	id := c.connectRemote(req)["id"].(string)
+
+	w, _ := c.json(http.MethodDelete, "/api/remote/"+id+"/import/nosuchrun", nil)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("stopping an unknown run answered %d, want 404", w.Code)
+	}
+}
+
+// A detached import against a machine that is not there is refused on the
+// request that asked for it, rather than becoming a run that appears and
+// immediately fails.
+func TestRemoteImportDetachRefusesAnUnknownSource(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("pw", 3)
+
+	w, _ := c.json(http.MethodPost, "/api/remote/nosuchsource/import", map[string]any{
+		"paths": []string{"a.txt"}, "dest": "/", "detach": true,
+	})
+	if w.Code == http.StatusAccepted {
+		t.Error("a detached import was accepted for a source that does not exist")
+	}
+}
+
+// waitForImport polls until the named run says it is done, and hands back what
+// it said. The endpoint is the same one the dialog watches.
+func waitForImport(t *testing.T, c *testClient, source, run string) map[string]any {
+	t.Helper()
+
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		_, body := c.json(http.MethodGet, "/api/remote/"+source+"/import", nil)
+		imports, _ := body["imports"].([]any)
+		for _, raw := range imports {
+			entry, _ := raw.(map[string]any)
+			if entry == nil || entry["id"] != run {
+				continue
+			}
+			if done, _ := entry["done"].(bool); done {
+				return entry
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("import %s never finished", run)
+	return nil
+}
+
+// The whole point of detaching: the request that started it goes away — the tab
+// is closed, the laptop lid comes down — and the transfer carries on.
+//
+// The request is made with a context of its own and that context is cancelled
+// the moment the 202 comes back, which is what a closed page does to a request
+// in flight. A foreground import dies there; a detached one has to not.
+func TestDetachedImportSurvivesTheRequestGoingAway(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("pw", 3)
+	req, root := remoteFixture(t, "vps")
+	seedRemote(t, filepath.Join(root, "one.mp4"), strings.Repeat("film", 1<<20))
+
+	id := c.connectRemote(req)["id"].(string)
+
+	body, err := json.Marshal(map[string]any{
+		"paths": []string{"one.mp4"}, "dest": "/", "detach": true,
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	request := httptest.NewRequest(http.MethodPost, "/api/remote/"+id+"/import", bytes.NewReader(body)).WithContext(ctx)
+	request.Host = "example.test"
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Origin", c.origin)
+	for _, cookie := range c.cookies {
+		request.AddCookie(cookie)
+	}
+
+	w := httptest.NewRecorder()
+	c.handler.ServeHTTP(w, request)
+	// The page is gone from here on.
+	cancel()
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("detached import: %d %s", w.Code, w.Body.String())
+	}
+	var answer struct {
+		Run struct {
+			ID string `json:"id"`
+		} `json:"run"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &answer); err != nil {
+		t.Fatalf("decoding the answer: %v", err)
+	}
+
+	finished := waitForImport(t, c, id, answer.Run.ID)
+	if errText, _ := finished["error"].(string); errText != "" {
+		t.Fatalf("the import died with its request: %s", errText)
+	}
+	if cancelled, _ := finished["cancelled"].(bool); cancelled {
+		t.Error("the import was recorded as cancelled when only its request went away")
+	}
+
+	_, listing := c.json(http.MethodGet, "/api/files?path=/", nil)
+	files, _ := listing["files"].([]any)
+	if len(files) != 1 {
+		t.Fatalf("the vault holds %d files, want the one that was imported: %v", len(files), listing)
 	}
 }

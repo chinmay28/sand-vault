@@ -514,9 +514,14 @@ export const api = {
   /* Pull a selection into a folder of the vault. A folder in the selection
      brings everything under it, keeping its shape.
 
-     Interrupting this loses nothing: every file that arrived is committed, and
-     running the same import again skips those and carries on. That is the whole
-     of the resume story — there is no job to resume, only an import to repeat. */
+     Interrupting this loses no whole file: every file that arrived is
+     committed, and running the same import again skips those and carries on.
+     That is the whole of the resume story — there is no job to resume, only an
+     import to repeat. A file cut off partway is fetched again from the start.
+
+     `detach` answers 202 with the run to watch instead of holding the request
+     open for the result: the import carries on with no page behind it, and what
+     it came to arrives on sourceImports below. */
   importFromSource: (id, body, { signal } = {}) =>
     request(`/api/remote/${encodeURIComponent(id)}/import`, { method: 'POST', body, signal }),
   /* Where the imports running from one machine have got to, right now.
@@ -529,6 +534,15 @@ export const api = {
      from the POST itself. */
   sourceImports: (id, { signal } = {}) =>
     request(`/api/remote/${encodeURIComponent(id)}/import`, { signal }),
+  /* Stop one that is running, or forget the result of one that has finished.
+
+     The same request for both, because from here they are the same gesture:
+     stop showing me this. Stopping keeps every file that already arrived — it
+     is closer to a pause than a cancel, since running the same import again
+     skips those and carries on. */
+  stopImport: (id, run) =>
+    request(`/api/remote/${encodeURIComponent(id)}/import/${encodeURIComponent(run)}`,
+      { method: 'DELETE' }),
 
   /* The picture a folder is drawn with, and what else it could be drawn with:
      every file under it that has a thumbnail, films first. What comes back is a

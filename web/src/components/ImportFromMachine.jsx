@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { COLORS, FONT, formatBytes } from '../theme'
 import { api } from '../api'
 import { Banner, Button, Input, Modal, PasswordInput, Spinner } from './ui'
@@ -30,10 +30,17 @@ import SshKeyField from './SshKeyField'
 
    The progress bar is a view of the request that is running and not a step
    towards a job framework: the server keeps it in memory for exactly as long
-   as the POST is open, this dialog polls it every second, and nothing is
-   written down. It earns its place on the one file the summary at the end is
-   useless for — a single very large one, which without it is indistinguishable
-   from a hang for an hour. */
+   as the import does, this dialog polls it, and nothing is written down. It
+   earns its place on the one file the summary at the end is useless for — a
+   single very large one, which without it is indistinguishable from a hang for
+   an hour.
+
+   An import can also be detached, which is the one thing here that outlives the
+   page. It is opt-in and stays that way: the transfer runs on the machine with
+   nothing behind it, this dialog shows it again on the way back, and stopping
+   it is a button rather than a closed tab. Restarting SAND still ends it, and
+   the answer to that is the answer to everything else in this file — run the
+   same import again. */
 
 export function ImportFromMachine({ path, vault = '', onClose, onChanged }) {
   const [sources, setSources] = useState(null)
@@ -287,7 +294,8 @@ function SourceBrowser({ source, path, vault, onBack, onClose, onChanged }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const [summary, setSummary] = useState(null)
-  const [running, setRunning] = useState(null)
+  const [runs, setRuns] = useState([])
+  const [detach, setDetach] = useState(false)
 
   useEffect(() => {
     let live = true
@@ -299,38 +307,62 @@ function SourceBrowser({ source, path, vault, onBack, onClose, onChanged }) {
     return () => { live = false }
   }, [source.id, cwd])
 
-  /* While the import request is open, ask the server every second what it is
-     doing with it.
+  /* Ask the server what this machine has going, and keep asking.
 
-     A second, short request rather than anything pushed down the first one: the
-     import is a plain POST that answers when it is done, and this leaves it
-     exactly that. The server answers out of memory, so the poll costs nothing
-     and cannot slow the transfer it is watching.
+     A second, short request rather than anything pushed down the import's own:
+     an import is a plain POST, and this leaves it exactly that. The server
+     answers out of memory, so the poll costs nothing and cannot slow the
+     transfer it is watching.
 
-     It is worth having only because of the file this dialog is worst at: a
-     folder of small files reports itself in the summary, but one very large
-     file used to look identical to a hang for as long as it took. */
+     It runs whenever this view is open rather than only while this dialog is
+     the one that started something, because a detached import outlives the page
+     — coming back to a machine has to show what it is doing, and the result of
+     what it did. Once a second while something is moving, every five when
+     nothing is: an idle browser left open overnight should not be a request a
+     second. */
   useEffect(() => {
-    if (!busy) {
-      setRunning(null)
-      return undefined
-    }
     let live = true
     const ask = async () => {
       try {
         const resp = await api.sourceImports(source.id)
-        // The first is this one: imports are listed oldest first, and starting
-        // a second from the same machine takes a second dialog.
-        if (live) setRunning((resp.imports || [])[0] || null)
+        if (live) setRuns(resp.imports || [])
       } catch {
-        // A poll that failed says nothing about the import, which is still
-        // running behind its own request. Leave the last thing it said up.
+        // A poll that failed says nothing about an import, which is running
+        // behind its own request either way. Leave the last answer up.
       }
     }
     ask()
-    const timer = setInterval(ask, 1000)
+    const timer = setInterval(ask, busy || runs.some((run) => !run.done) ? 1000 : 5000)
     return () => { live = false; clearInterval(timer) }
-  }, [busy, source.id])
+  }, [source.id, busy, runs.some((run) => !run.done)]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* A detached import that has just finished has put files in the vault that
+     the browser behind this dialog knows nothing about. Refreshing on the
+     transition — rather than on every poll — is what keeps that from being a
+     list that redraws itself once a second all night. */
+  const finished = useRef(new Set())
+  useEffect(() => {
+    let landed = false
+    for (const run of runs) {
+      if (run.done && !finished.current.has(run.id)) {
+        finished.current.add(run.id)
+        landed = true
+      }
+    }
+    if (landed) onChanged?.()
+  }, [runs, onChanged])
+
+  // Stopping a running import and dismissing a finished one's result are the
+  // same request, because they are the same gesture: stop showing me this.
+  const stopRun = async (id) => {
+    setError(null)
+    try {
+      const resp = await api.stopImport(source.id, id)
+      setRuns(resp.imports || [])
+    } catch (err) {
+      setError(err.message)
+    }
+  }
 
   const toggle = (entry) => {
     const full = cwd ? `${cwd}/${entry.name}` : entry.name
@@ -348,12 +380,28 @@ function SourceBrowser({ source, path, vault, onBack, onClose, onChanged }) {
         vault,
         paths: [...picked],
         dest: path,
+        detach,
       })
-      setSummary(resp)
+      // Detached, the answer is the run rather than the result: the transfer
+      // has not happened yet, and what it comes to arrives on the poll. The
+      // summary banner is for the request that waited for its own answer.
+      if (detach) setRuns((current) => [...current, resp.run].filter(Boolean))
+      else setSummary(resp)
       setPicked(new Set())
       onChanged?.()
     } catch (err) {
-      setError(err.message)
+      /* A dropped connection is not an error about the import. It is the
+         import's own request having gone away — the page navigated, the phone
+         put the browser to sleep — which on a foreground import takes the
+         transfer with it. The browser's word for that is "load failed", which
+         explains nothing and suggests something is broken. Say what happened
+         and what the box above is for. */
+      setError(err instanceof api.ApiError
+        ? err.message
+        : 'The connection to SAND dropped, so this import stopped. Every file '
+          + 'that arrived whole is in the vault — run the same import again to '
+          + 'carry on from there, or tick "Keep going if I close this page" to '
+          + 'have the machine finish it without the browser.')
     } finally {
       setBusy(false)
     }
@@ -416,7 +464,39 @@ function SourceBrowser({ source, path, vault, onBack, onClose, onChanged }) {
         </Banner>
       )}
 
-      {busy && <ImportProgress run={running} />}
+      {/* Everything this machine has going, and what it lately finished. A
+          foreground import is drawn from the same list as a detached one —
+          the only difference between them is what happens to this page. */}
+      {runs.map((run) => (run.done
+        ? <FinishedImport key={run.id} run={run} onDismiss={() => stopRun(run.id)} />
+        : <ImportProgress key={run.id} run={run} onStop={() => stopRun(run.id)} />))}
+      {busy && runs.length === 0 && <ImportProgress run={null} />}
+
+      {/* Asked for, never assumed. An import that keeps running after the page
+          is closed is a thing to have decided, not to discover. */}
+      <label style={{
+        display: 'flex', gap: '8px', alignItems: 'flex-start', marginBottom: '12px',
+        cursor: busy ? 'default' : 'pointer',
+      }}>
+        <input
+          type="checkbox"
+          checked={detach}
+          disabled={busy}
+          onChange={(e) => setDetach(e.target.checked)}
+          style={{ marginTop: '2px' }}
+        />
+        <span style={{
+          fontFamily: FONT.sans, fontSize: '12px', lineHeight: 1.5, color: COLORS.textDim,
+        }}>
+          Keep going if I close this page
+          <span style={{ display: 'block', fontSize: '11px', color: COLORS.textMuted }}>
+            The machine carries on fetching on its own, and this dialog shows how
+            far it has got whenever you come back to it. Restarting SAND still
+            stops it — run the same import again and it picks up from the files
+            that already landed.
+          </span>
+        </span>
+      </label>
 
       <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
         <Button variant="primary" onClick={runImport} disabled={busy || picked.size === 0}>
@@ -452,9 +532,11 @@ function SourceBrowser({ source, path, vault, onBack, onClose, onChanged }) {
    percentage would make a file look half done when it had only arrived, and
    would hide which half of the trip is the slow one.
 
-   Nothing here is stored anywhere. It is a view of a request that is running,
-   and it disappears with it — see the note at the top of this file. */
-function ImportProgress({ run }) {
+   A detached import says so, and can be stopped from here — there is no page to
+   close that would stop it, which is the point of it. Stopping keeps whatever
+   arrived whole, so it is a pause as much as a cancel: the same import run
+   again skips those files and carries on. */
+function ImportProgress({ run, onStop }) {
   const at = run?.at
   const size = at?.size || 0
   const fraction = size > 0 ? Math.min(1, (at.done || 0) / size) : 0
@@ -523,7 +605,52 @@ function ImportProgress({ run }) {
           {at.failed ? `, ${at.failed} failed` : ''}
         </div>
       )}
+
+      {run?.detached && (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          gap: '10px', marginTop: '9px',
+        }}>
+          <span style={{
+            fontFamily: FONT.sans, fontSize: '11px', color: COLORS.textMuted,
+          }}>
+            Running on the machine — you can close this page.
+          </span>
+          {onStop && <Button size="sm" variant="ghost" onClick={onStop}>Stop</Button>}
+        </div>
+      )}
     </div>
+  )
+}
+
+/* A detached import that is over, waiting to be read by whoever comes back.
+
+   It says the same thing the summary of a foreground import says, because it is
+   the same summary — the only difference is that nobody was holding a request
+   open to receive it, so it waited here instead. It goes when it is dismissed,
+   or when it goes stale.
+
+   Stopped is reported as an outcome rather than as a failure. It was asked for,
+   and what it had already brought in is in the vault. */
+function FinishedImport({ run, onDismiss }) {
+  if (run.error) {
+    return (
+      <Banner tone="error" onDismiss={onDismiss}>
+        <div>That import stopped: {run.error}</div>
+        <div style={{ marginTop: '4px' }}>
+          Whatever arrived whole is in the vault. Running the same import again
+          skips those and carries on.
+        </div>
+      </Banner>
+    )
+  }
+
+  return (
+    <ImportSummary
+      summary={run.summary || {}}
+      lead={run.cancelled ? 'Stopped.' : 'Finished in the background.'}
+      onDismiss={onDismiss}
+    />
   )
 }
 
@@ -579,12 +706,13 @@ function RemoteEntry({ entry, checked, disabled, onOpen, onToggle }) {
    Skipped is reported as loudly as imported, because on a second run it is the
    answer: it says the files are already here rather than that nothing
    happened. */
-function ImportSummary({ summary, onDismiss }) {
+function ImportSummary({ summary, lead = '', onDismiss }) {
   const failures = (summary.results || []).filter((r) => r.error)
 
   return (
     <Banner tone={failures.length ? 'warn' : 'info'} onDismiss={onDismiss}>
       <div>
+        {lead && `${lead} `}
         {summary.imported} brought in
         {summary.skipped ? `, ${summary.skipped} already here` : ''}
         {failures.length ? `, ${failures.length} failed` : ''}.

@@ -157,9 +157,14 @@ func (s *Server) handleVaultLock(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Locking is global: the keys leave memory, so every session goes with it —
-	// and so does every stream link, which was minted against those keys.
+	// and so does every stream link, which was minted against those keys, and
+	// every import still running. An import that carried on would be sealing
+	// chunks with a key that is about to be zeroed, and would fail further in
+	// having spent the bandwidth first; stopping it costs only what it had not
+	// fetched yet, since what it did fetch is already committed.
 	s.sessions.clear()
 	s.streams.clear()
+	s.imports.stopAll()
 	v.Lock()
 	clearSessionCookie(w, isSecureRequest(r))
 

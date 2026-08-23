@@ -234,16 +234,35 @@ without an archive ID that survives the interruption, and today's is minted
 fresh per upload. That is the v2 this section is about, and it needs its own
 design rather than being smuggled in behind a progress bar.
 
-This matters because **there is no background job framework**, and v1 should not
-build one. What v1 *does* have, since a synchronous request that says nothing
-for an hour is indistinguishable from a hang, is a view onto the request while
-it runs: `GET /api/remote/{id}/import` answers out of a map in memory that the
-running handler writes to and nothing reads back
-(`internal/server/import_watch.go`). It is registered when the POST starts and
-forgotten however that POST ends, so an empty list covers finished, failed and
-cancelled alike, and a restart takes it with the import it described. That is
-the line between a progress bar and a job framework, and it is worth keeping:
-nothing here is durable, authoritative, or consulted by an import. Every handler in `internal/server` is synchronous under a
+This matters because **there is still no background job framework**, and what
+grew here instead is worth stating precisely, because it is one step across a
+line that used to be absolute.
+
+`internal/server/import_watch.go` holds the imports in flight, in memory, keyed
+by source. The running handler writes progress to it and nothing reads that back
+— it exists to be shown. `GET /api/remote/{id}/import` answers out of it.
+
+An import may also be *detached* (`detach: true`), which changes exactly one
+thing: its context comes from `context.Background()` rather than from the
+request, so closing the page no longer cancels it. That buys three obligations,
+and they are the whole of the machinery:
+
+- **It has to be stoppable.** A request that has gone away takes its transfer
+  with it; a detached one has to be cancelled on purpose. `DELETE …/import/{run}`
+  does it, and so does locking the vault — those chunks are being sealed with
+  keys that are about to leave memory.
+- **It has to keep the vault awake.** Progress touches the same
+  external-activity clock the share and the stream links use, and the auto-lock
+  also refuses to fire while any import is running. Otherwise the idle timer
+  would lock the keys out from under a transfer nobody was watching.
+- **Its result has to wait somewhere.** Nobody is holding a request for it, so
+  the summary stays on the run for `finishedImportTTL` or until dismissed.
+
+What it deliberately does *not* buy: durability. Nothing is written down, so a
+restart takes every in-flight import with it, and there is no queue, no retry,
+no schedule. The reason that is affordable is unchanged — re-running an import
+is how it resumes, at whole-file granularity — and it is what keeps this a
+detached request rather than a job system with one job type. Every handler in `internal/server` is synchronous under a
 `contextWithTimeout` — uploads get 30 minutes — and the closest thing to
 progress reporting anywhere is `rekey.go`'s `ProgressFunc`. A 200 GB media tree
 does not fit in a request, and the honest answer is to scope v1 so it does not
@@ -363,7 +382,15 @@ DELETE /api/remote/{id}               forget one
 GET    /api/remote/{id}/files?path=   one directory
 POST   /api/remote/{id}/import        {paths[], dest, accounts, scheme} → results[]
 GET    /api/remote/{id}/import        what that POST is doing right now → imports[]
+DELETE /api/remote/{id}/import/{run}  stop one, or dismiss a finished one's result
 ```
+
+`POST` takes `detach: true` for an import that should outlive the page that
+asked for it. It answers `202` with the run to watch instead of the result, and
+the import goes on a context derived from `Background` rather than from the
+request. Everything else about it is identical — same walk, same skip, same
+per-file results, which then wait on the `GET` because there is no longer a
+request for them to be the answer to.
 
 The seam that makes the import itself small was already there:
 

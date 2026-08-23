@@ -264,9 +264,17 @@ for adding one.
 >
 > While an import runs, the dialog draws the file it is on: which file of how
 > many, whether it is coming down from the machine or going back up to the
-> clouds, and how far through. That is a view of the request that is running
-> and nothing more — it is held in memory for as long as the request is open
-> and disappears with it.
+> clouds, and how far through.
+>
+> By default that import is the request itself, so closing the page stops it —
+> which is the right answer for a folder of photographs and the wrong one for
+> one 18 GB film. **Keep going if I close this page** hands it to the machine
+> instead: the transfer carries on with no browser behind it, the dialog picks
+> the progress back up whenever you return to that machine, and the result
+> waits there to be read. It can be stopped from the same place, and stopping
+> keeps every file that already landed. Restarting SAND does stop it — nothing
+> is written down about a transfer in flight — and the way to carry on is the
+> same as it ever was: run the import again.
 
 > **The backends that take a path** — `local`, and the seven services whose
 > folders a desktop client syncs — are pointed at one rather than told it: the
