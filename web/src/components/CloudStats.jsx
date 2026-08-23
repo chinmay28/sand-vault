@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react'
 import { COLORS, FONT, KIND_ICONS, accountColor, formatBytes, formatDate } from '../theme'
 import { api } from '../api'
 import { Banner, Button, Modal, Spinner } from './ui'
+import { SPACE_QUOTA, spaceOf, spaceTitle } from '../space'
 import { useIsMobile } from '../hooks'
 
 /* One account, taken apart.
@@ -29,11 +30,22 @@ import { useIsMobile } from '../hooks'
    a much larger disk down to size, so what is used and what can be written can
    fall well short of the whole between them. That difference is named — it is
    the fourth figure, `reserved` — rather than being folded into free space
-   somebody cannot actually use. */
+   somebody cannot actually use.
+
+   Where the account says nothing at all, the quota set on it answers instead —
+   see `space.js`. That bar is a different picture and says so: it is not the
+   account, it is SAND's own corner of it measured against the line somebody
+   drew, and everything else in there is outside the frame. It is the only bar
+   an account that reports nothing and cannot be counted will ever have. */
 export function usageBreakdown(provider) {
   const usage = provider?.usage || {}
   const total = usage.total > 0 ? usage.total : 0
   const stored = Math.max(0, provider?.stored || 0)
+  const quota = Math.max(0, provider?.quota || 0)
+  // How far past the line the account is, whichever picture the bar is drawing.
+  // A drive with room to spare can still be over a quota, and that is the half
+  // of the account's state a usage bar cannot show.
+  const over = quota > 0 ? Math.max(0, stored - quota) : 0
   // Where the two figures came from, which the panel says out loud. A bucket
   // has no quota call, so what is in it was counted by listing it and the
   // capacity it is drawn against was typed by whoever pays for the bucket —
@@ -43,12 +55,35 @@ export function usageBreakdown(provider) {
   const countedAt = usage.measured_at || ''
 
   if (!total) {
+    // Nothing to measure the account against — but if somebody has said how
+    // much of it SAND may fill, there is a line to measure *our* share against,
+    // and that is a bar. What else is in there is not part of that picture:
+    // a quota is about how much of somebody else's storage we are taking, not
+    // about how full it is.
+    if (quota > 0) {
+      return {
+        known: true,
+        quota: true,
+        counted,
+        declared,
+        countedAt,
+        total: quota,
+        used: Math.min(stored, quota),
+        sand: Math.min(stored, quota),
+        other: 0,
+        free: Math.max(0, quota - stored),
+        reserved: 0,
+        over,
+      }
+    }
+
     // Counted but with nothing to measure it against: how full the account is
     // has no answer, and how much is on it does. Saying the second is the whole
     // point of having counted.
     const measured = counted ? Math.max(0, usage.used || 0) : 0
     return {
       known: false,
+      quota: false,
       counted,
       declared,
       countedAt,
@@ -58,6 +93,7 @@ export function usageBreakdown(provider) {
       other: counted ? Math.max(0, measured - stored) : 0,
       free: 0,
       reserved: 0,
+      over,
     }
   }
 
@@ -66,6 +102,7 @@ export function usageBreakdown(provider) {
   const free = usage.free > 0 ? Math.min(usage.free, total - used) : Math.max(0, total - used)
   return {
     known: true,
+    quota: false,
     counted,
     declared,
     countedAt,
@@ -75,6 +112,7 @@ export function usageBreakdown(provider) {
     other: Math.max(0, used - sand),
     free,
     reserved: Math.max(0, total - used - free),
+    over,
   }
 }
 
@@ -143,26 +181,54 @@ export function UsageBar({ provider, height = 6, gap = 2 }) {
 }
 
 /* The line under the bar on an account card: how full the account is, and how
-   much room is left on it. */
+   much room is left on it.
+
+   Being over a quota gets a line of its own, in the warning shade. It is the
+   one thing here that is not a neutral fact about an account — a drive fills up
+   on its own, but a quota is crossed, and the card should say so where the eye
+   lands rather than leave it to be worked out from two figures. */
 export function UsageLine({ provider }) {
-  const { known, counted, total, used, free } = usageBreakdown(provider)
+  const { known, counted, quota, total, used, free, over } = usageBreakdown(provider)
+  const crossed = over > 0 && (
+    <div style={{ color: COLORS.warn }}>{formatBytes(over)} over the quota you set</div>
+  )
+
+  // A drive with room to spare can still be nearly out of the share of it SAND
+  // was given, and then the drive's own free figure is the wrong answer to
+  // "how much more fits here". Said as its own line rather than folded into the
+  // one above, which is about the account and not about our corner of it.
+  const bound = spaceOf(provider)
+  const capped = !quota && over === 0 && bound.source === SPACE_QUOTA && (
+    <div>{formatBytes(bound.free)} left under your quota</div>
+  )
+
   if (!known) {
     // Counted, with no capacity to measure it against. It is still worth a
     // line: the account card's other figure is what SAND put there, and this
     // is what is there — the gap between the two is somebody else's files.
-    if (!counted) return null
-    return <div>{formatBytes(used)} on the account</div>
+    if (!counted) return crossed || capped || null
+    return <>{crossed}<div>{formatBytes(used)} on the account</div>{capped}</>
   }
 
   // What SAND's own share of that is stays on the line above, which already
   // says how many parts are here and what they weigh. Two figures fit the
   // drawer's width; a third wraps it onto a third line to say what the two
   // together already said.
+  //
+  // Against a quota it is the other way round: the figure above *is* the used
+  // half, so the line names what it is being measured against rather than
+  // repeating it.
   return (
-    <div>
-      {formatBytes(used)} / {formatBytes(total)} used
-      {free > 0 ? ` · ${formatBytes(free)} free` : ''}
-    </div>
+    <>
+      {crossed}
+      <div>
+        {quota
+          ? `${formatBytes(used)} of your ${formatBytes(total)} quota`
+          : `${formatBytes(used)} / ${formatBytes(total)} used`}
+        {free > 0 ? ` · ${formatBytes(free)} free` : ''}
+      </div>
+      {capped}
+    </>
   )
 }
 
@@ -341,9 +407,9 @@ function Section({ title, hint, children }) {
 }
 
 /* One number and what it counts, for the row across the top. */
-function Stat({ value, label, tone }) {
+function Stat({ value, label, tone, title }) {
   return (
-    <div style={{ minWidth: '72px' }}>
+    <div title={title} style={{ minWidth: '72px' }}>
       <div style={{
         fontFamily: FONT.mono,
         fontSize: '16px',
@@ -403,6 +469,12 @@ function Key({ color, label, title, bytes, share, outline }) {
    counted has no denominator at all. And a backend that can do neither is where
    this panel has always shrugged. */
 function capacityHint(space, measurable) {
+  if (space.quota) {
+    return 'Measured against the quota you set for this account rather than against the '
+      + 'account, which reports nothing to measure against. This is SAND\'s own corner of it: '
+      + 'whatever else is in there is outside the frame, and crossing the line warns rather '
+      + 'than refuses.'
+  }
   if (space.known && space.declared) {
     return 'Measured against the capacity you set for this account, since a bucket reports none of its own — so the whole is your figure rather than the service\'s, and what is in it was counted by listing it.'
   }
@@ -415,7 +487,9 @@ function capacityHint(space, measurable) {
   if (measurable) {
     return 'A bucket reports no quota — S3 has never had a call for it — so what is in one has to be counted by listing it.'
   }
-  return 'This backend reports no quota, so there is nothing to measure the parts against — a bucket or a share is as big as whoever runs it says.'
+  return 'This backend reports no quota, so there is nothing to measure the parts against — a bucket '
+    + 'or a share is as big as whoever runs it says. Edit the account to set a quota of your own, '
+    + 'and what SAND has put here becomes a fraction rather than a bare figure.'
 }
 
 export default function CloudStats({ provider, onClose, onChanged }) {
@@ -483,6 +557,7 @@ export default function CloudStats({ provider, onClose, onChanged }) {
     ? { ...(stats || provider), usage: counted }
     : (stats || provider)
   const space = usageBreakdown(account)
+  const room = spaceOf(account)
 
   return (
     <Modal
@@ -507,9 +582,13 @@ export default function CloudStats({ provider, onClose, onChanged }) {
           value={stats && stats.vault_stored > 0 ? percent(stats.stored, stats.vault_stored) : '—'}
           label="of the vault"
         />
+        {/* The binding figure rather than the bar's: an account can be a long
+            way from full and still have nothing left of the quota set on it,
+            and this is the number that decides whether the next file fits. */}
         <Stat
-          value={space.known ? formatBytes(space.free) : '—'}
+          value={room.known ? formatBytes(room.free) : '—'}
           label="room left"
+          title={spaceTitle(account)}
         />
       </div>
 
@@ -528,13 +607,29 @@ export default function CloudStats({ provider, onClose, onChanged }) {
         title="Capacity"
         hint={capacityHint(space, provider.measurable)}
       >
+        {/* A line crossed rather than a drive filled, so it is said in words
+            before the bar rather than left to be read off it — and it is said
+            wherever it is true, including on an account whose own figures are
+            perfectly healthy. */}
+        {space.over > 0 && (
+          <Banner tone="warn">
+            {formatBytes(account.stored || 0)} of parts are on this account, against the{' '}
+            {formatBytes(account.quota || 0)} quota you set for it — {formatBytes(space.over)} past
+            it. Nothing was refused: uploads past a quota store and warn. Raise the line from
+            Edit account, or move files to another cloud.
+          </Banner>
+        )}
+
         {space.known ? (
           <>
             <UsageBar provider={account} height={14} />
             <div style={{ display: 'flex', flexDirection: 'column', gap: '7px', marginTop: '12px' }}>
               <Key color={color} label="SAND's parts" bytes={space.sand} share={percent(space.sand, space.total)} />
-              <Key color={COLORS.textMuted} label="everything else on it" bytes={space.other} share={percent(space.other, space.total)} />
-              <Key color={COLORS.borderBright} label="free" bytes={space.free} share={percent(space.free, space.total)} />
+              {!space.quota && (
+                <Key color={COLORS.textMuted} label="everything else on it" bytes={space.other} share={percent(space.other, space.total)} />
+              )}
+              <Key color={COLORS.borderBright} label={space.quota ? 'left under your quota' : 'free'}
+                bytes={space.free} share={percent(space.free, space.total)} />
               {space.reserved > space.total * 0.01 && (
                 <Key color={COLORS.surfaceRaised} outline label="reserved"
                   title="A filesystem reserve, or a quota that cuts this account down from the disk it sits on — space the account has but cannot write to."

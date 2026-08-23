@@ -166,11 +166,24 @@ func remoteListCmd() *cobra.Command {
 				// What is left on the account, which is a different question
 				// from what SAND has put there: a local folder answers with the
 				// drive it sits on, shared with everything else on the machine.
-				// A backend that reports no quota says nothing rather than
+				// An account nothing can say anything about — no quota call, no
+				// count, no quota set — says nothing rather than
 				// nothing-in-particular.
+				//
+				// Where the figure is a quota you set rather than one the
+				// backend reports, the column says so: "12.4 GB (quota)" and
+				// "0 B (2.1 GB over quota)" are both your own line rather than
+				// the account's, and the difference matters when the number
+				// looks wrong.
 				free := "—"
-				if room := s.Usage.Remaining(); room > 0 {
-					free = formatBytes(room)
+				if s.Space.Known() {
+					free = formatBytes(s.Space.Free)
+					switch {
+					case s.Space.Over > 0:
+						free = fmt.Sprintf("0 B (%s over quota)", formatBytes(s.Space.Over))
+					case s.Space.Source == vault.SpaceQuota:
+						free += " (quota)"
+					}
 				}
 				fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\n",
 					s.Name, s.Kind, status, s.Shards, formatBytes(s.Stored), free, colour, s.ID)
@@ -185,15 +198,16 @@ func remoteEditCmd() *cobra.Command {
 		name     string
 		color    string
 		capacity string
+		quota    string
 		settings []string
 	)
 
 	cmd := &cobra.Command{
 		Use:     "edit <name-or-id>",
 		Aliases: []string{"rename", "set"},
-		Short:   "Change an account's name, colour, declared capacity, or settings",
+		Short:   "Change an account's name, colour, declared capacity, quota, or settings",
 		Long: `Change what a connected account is called, the colour it wears, how big
-you say it is, or how it reaches the backend.
+you say it is, how much of it SAND may fill, or how it reaches the backend.
 
 The colour is the stripe down the account's card in the browser and the shade
 of every part badge for a file it holds, which is what makes "which clouds is
@@ -213,8 +227,24 @@ with 'sand remote measure', which counts what is actually in there.
   sand remote edit b2-cold --capacity '10 GB'
   sand remote edit b2-cold --capacity none
 
-None of those three touches the credentials or the parts on the account:
-nothing is uploaded, downloaded or re-encrypted by renaming a cloud.
+The quota is the other half, and answers a different question: not how big the
+account is, but how much of it is SAND's to fill. It is the only figure a
+backend that reports nothing and cannot be listed can be measured against — the
+index always knows what SAND wrote, so a quota is what turns that into a
+fraction and gives 'sand remote list' a FREE column to print. Where the backend
+does report, the room left is whichever of the two leaves less.
+
+Nothing is refused for crossing it. An upload that takes an account past its
+quota still stores and says so afterwards, because the parts of a file are
+placed together and dropping the one that crossed the line would leave the file
+less durable than the code it was cut with promises.
+
+  sand remote edit gdrive-photos --quota '200 GB'
+  sand remote edit gdrive-photos --quota none
+
+None of those four touches the credentials or the parts on the account: nothing
+is uploaded, downloaded or re-encrypted by renaming a cloud, and a quota set
+below what is already there warns rather than deletes anything.
 
 --set is the exception, and is the one edit that reaches the account: it
 changes the settings the connection is made from — a rotated access key, a
@@ -237,8 +267,9 @@ token by hand.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !cmd.Flags().Changed("name") && !cmd.Flags().Changed("color") &&
-				!cmd.Flags().Changed("capacity") && !cmd.Flags().Changed("set") {
-				return fmt.Errorf("nothing to change — pass --name, --color, --capacity, or --set")
+				!cmd.Flags().Changed("capacity") && !cmd.Flags().Changed("quota") &&
+				!cmd.Flags().Changed("set") {
+				return fmt.Errorf("nothing to change — pass --name, --color, --capacity, --quota, or --set")
 			}
 
 			v, err := openVault(cmd)
@@ -272,11 +303,22 @@ token by hand.`,
 				if strings.EqualFold(strings.TrimSpace(typed), "none") {
 					typed = ""
 				}
-				bytes, err := provider.ParseCapacity(typed)
+				bytes, err := provider.ParseSize(typed)
 				if err != nil {
 					return err
 				}
 				edit.Capacity = &bytes
+			}
+			if cmd.Flags().Changed("quota") {
+				typed := quota
+				if strings.EqualFold(strings.TrimSpace(typed), "none") {
+					typed = ""
+				}
+				bytes, err := provider.ParseSize(typed)
+				if err != nil {
+					return err
+				}
+				edit.Quota = &bytes
 			}
 			if len(settings) > 0 {
 				if edit.Options, err = parseSettings(settings); err != nil {
@@ -297,7 +339,11 @@ token by hand.`,
 			if updated.Capacity > 0 {
 				held = "holds " + formatBytes(updated.Capacity)
 			}
-			fmt.Printf("%s (%s) — colour %s, %s\n", updated.Name, updated.Kind, shade, held)
+			limit := "no quota"
+			if updated.Quota > 0 {
+				limit = "quota " + formatBytes(updated.Quota)
+			}
+			fmt.Printf("%s (%s) — colour %s, %s, %s\n", updated.Name, updated.Kind, shade, held, limit)
 
 			// The settings by name only. Half of them are credentials, and a
 			// command that echoes a freshly pasted secret back onto the screen
@@ -318,6 +364,8 @@ token by hand.`,
 	cmd.Flags().StringVar(&color, "color", "", "hex colour such as '#38bdf8', or 'auto' to let the browser pick")
 	cmd.Flags().StringVar(&capacity, "capacity", "",
 		"how big this account is, for backends that do not report it — '10 GB', or 'none' to clear it")
+	cmd.Flags().StringVar(&quota, "quota", "",
+		"how much of this account SAND may fill before it warns — '200 GB', or 'none' to clear it")
 	cmd.Flags().StringArrayVar(&settings, "set", nil,
 		"a connection setting as key=value, repeatable — see 'sand remote kinds' for the keys")
 	return cmd

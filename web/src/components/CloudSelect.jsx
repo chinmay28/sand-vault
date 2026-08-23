@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { COLORS, FONT, KIND_ICONS, accountColor, formatBytes } from '../theme'
 import { api } from '../api'
 import { Banner, Button, Modal, Spinner } from './ui'
+import { SPACE_QUOTA, spaceLabel, spaceOf, spaceTitle, tightClouds } from '../space'
 import { describePicks, totalBytes } from '../upload'
 
 /* Choosing where a file's shards go, and how it is cut.
@@ -167,6 +168,18 @@ function shuffle(items) {
   return out
 }
 
+/* The shade the room-left figure is printed in. Grey while it is just a fact,
+   the warning colour once it is one: an account over its quota, or one with
+   less than a fiftieth of itself left, is something to notice while choosing
+   rather than after uploading. An unknown figure stays grey — not knowing is
+   not bad news. */
+function spaceTone(space) {
+  if (!space.known) return COLORS.textMuted
+  if (space.over > 0) return COLORS.warn
+  if (space.total > 0 && space.free < space.total / 50) return COLORS.warn
+  return COLORS.textMuted
+}
+
 /* The rows themselves.
 
    `cap` is how many clouds may be picked. A dialog that can name a scheme
@@ -191,13 +204,15 @@ export function CloudChoice({ providers, selected, onChange, cap: capProp }) {
         // is how the server numbers them too. Six clouds read 1 to 6, and the
         // first four to answer a read are the four the file comes back from.
         const part = chosen ? selected.indexOf(provider.id) + 1 : null
+        const space = spaceOf(provider)
         return (
           <button
             key={provider.id}
             type="button"
             role="checkbox"
             aria-checked={chosen}
-            title={chosen ? `Shard ${part} of ${selected.length}` : undefined}
+            title={[chosen ? `Shard ${part} of ${selected.length}` : null, spaceTitle(provider)]
+              .filter(Boolean).join('\n')}
             onClick={() => toggle(provider.id)}
             disabled={!chosen && full}
             style={{
@@ -245,6 +260,16 @@ export function CloudChoice({ providers, selected, onChange, cap: capProp }) {
                 textOverflow: 'ellipsis',
                 whiteSpace: 'nowrap',
               }}>{provider.name}</span>
+              {/* What is on the account, and what will still fit on it. The
+                  second half is the half that answers the question this row is
+                  actually asking — 284.8 GB of parts is the same figure on a
+                  drive with four terabytes free and on one with forty
+                  megabytes, and only one of those is somewhere to put a file.
+
+                  Room left is the one part of the line that can be bad news, so
+                  it is the one part that is ever coloured: an account past the
+                  quota you set for it says so in the warning shade rather than
+                  in the same grey as its own name. */}
               <span style={{
                 display: 'block',
                 fontFamily: FONT.mono,
@@ -253,6 +278,8 @@ export function CloudChoice({ providers, selected, onChange, cap: capProp }) {
                 marginTop: '2px',
               }}>
                 {provider.kind} · {provider.shards} shard{provider.shards === 1 ? '' : 's'} · {formatBytes(provider.stored)}
+                {' · '}
+                <span style={{ color: spaceTone(space) }}>{spaceLabel(provider)}</span>
               </span>
             </span>
 
@@ -424,6 +451,75 @@ function SelectionNote({ providers, selected, scheme, moving = false }) {
   )
 }
 
+/* Whether what is about to go up actually fits where it is going.
+
+   A file cut k-of-n leaves about a kth of itself on each cloud, so this is not
+   "is there room for the file" on any one of them — it is "is there room for a
+   kth of it", asked once per chosen cloud. A cloud that has none is not a
+   refusal: the parts of a file are placed together, and dropping the one that
+   would not fit stores the file on fewer clouds than the code it was cut with
+   promises. It is said here instead, while the choice is still a click away.
+
+   Two different pieces of bad news, and they are worth telling apart. A cloud
+   that is genuinely full is somebody else's problem to solve — buy more, delete
+   something, pick a different cloud. A cloud that is only past the quota you
+   set for it is your own line, and raising it is a legitimate answer.
+
+   Clouds nothing can say anything about are counted rather than warned about.
+   Silence is not an all-clear, and a dialog that implied it was would be worse
+   than one that admits what it does not know. */
+function SpaceNote({ providers, selected, scheme, bytes }) {
+  const { share, tight, unknown } = useMemo(
+    () => tightClouds(providers, selected, scheme, bytes),
+    [providers, selected, scheme, bytes],
+  )
+
+  if (!tight.length) {
+    if (!unknown || !share) return null
+    return (
+      <p style={unknownNoteStyle}>
+        {unknown} of the chosen cloud{unknown === 1 ? '' : 's'} cannot say how much room
+        {unknown === 1 ? ' it has' : ' they have'} left. Set a quota on
+        {unknown === 1 ? ' it' : ' them'} from Edit account and this dialog can check.
+      </p>
+    )
+  }
+
+  const overQuota = tight.filter(({ space }) => space.source === SPACE_QUOTA)
+  const full = tight.filter(({ space }) => space.source !== SPACE_QUOTA)
+
+  return (
+    <Banner tone="warn">
+      About {formatBytes(share)} goes to each cloud, which is more than{' '}
+      {tight.map(({ provider, space }, i) => (
+        <React.Fragment key={provider.id}>
+          {i > 0 ? (i === tight.length - 1 ? ' and ' : ', ') : ''}
+          <strong>{provider.name}</strong> ({space.over > 0
+            ? `${formatBytes(space.over)} over quota`
+            : `${formatBytes(space.free)} left`})
+        </React.Fragment>
+      ))}
+      {' '}
+      {tight.length === 1 ? 'has' : 'have'} room for.{' '}
+      {full.length > 0 && 'The upload will still be attempted, and a shard that will not store '
+        + 'costs the file some of its margin. '}
+      {overQuota.length > 0 && (full.length > 0
+        ? 'The quota is your own line rather than the cloud\'s, and can be raised from Edit account.'
+        : 'That is the quota you set rather than the cloud being full: the upload stores and '
+          + 'warns, and the line can be raised from Edit account.')}
+      {unknown > 0 && ` ${unknown} other chosen cloud${unknown === 1 ? '' : 's'} could not be checked.`}
+    </Banner>
+  )
+}
+
+const unknownNoteStyle = {
+  margin: '12px 0 0',
+  fontFamily: FONT.mono,
+  fontSize: '10px',
+  lineHeight: 1.6,
+  color: COLORS.textMuted,
+}
+
 /* The dialog every upload passes through: what is going up, which three clouds
    it is being scattered over, and the chance to change that before a single
    byte leaves the machine.
@@ -522,6 +618,8 @@ export function UploadDestination({
       <div style={{ marginTop: '14px' }}>
         <SelectionNote providers={providers} selected={selected} scheme={scheme} />
       </div>
+
+      <SpaceNote providers={providers} selected={selected} scheme={scheme} bytes={total} />
 
       <label style={{
         display: 'flex',

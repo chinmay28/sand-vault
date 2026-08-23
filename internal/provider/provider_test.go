@@ -532,9 +532,10 @@ func TestCoversNameTheServicesBehindAProtocol(t *testing.T) {
 	}
 }
 
-// A capacity is typed, so it is read the way it is written: with a unit, with
-// a decimal point, or as the bare byte count an API client sends.
-func TestParseCapacity(t *testing.T) {
+// A capacity and a quota are both typed, so a size is read the way it is
+// written: with a unit, with a decimal point, or as the bare byte count an API
+// client sends.
+func TestParseSize(t *testing.T) {
 	for _, tc := range []struct {
 		in   string
 		want int64
@@ -552,25 +553,25 @@ func TestParseCapacity(t *testing.T) {
 		{"500 MB", 500 << 20},
 		{"2 PB", 2 << 50},
 	} {
-		got, err := ParseCapacity(tc.in)
+		got, err := ParseSize(tc.in)
 		if err != nil {
-			t.Errorf("ParseCapacity(%q): %v", tc.in, err)
+			t.Errorf("ParseSize(%q): %v", tc.in, err)
 			continue
 		}
 		if got != tc.want {
-			t.Errorf("ParseCapacity(%q) = %d, want %d", tc.in, got, tc.want)
+			t.Errorf("ParseSize(%q) = %d, want %d", tc.in, got, tc.want)
 		}
 	}
 
 	// The units are the ones the rest of SAND prints, so a figure copied off a
 	// card comes back as the same number of bytes.
-	if got, _ := ParseCapacity("10 GB"); got != 10*1024*1024*1024 {
+	if got, _ := ParseSize("10 GB"); got != 10*1024*1024*1024 {
 		t.Errorf("a GB here is %d bytes, want 1024³", got/10)
 	}
 
 	for _, bad := range []string{"lots", "10 furlongs", "-5 GB", "GB"} {
-		if _, err := ParseCapacity(bad); err == nil {
-			t.Errorf("ParseCapacity(%q) was accepted", bad)
+		if _, err := ParseSize(bad); err == nil {
+			t.Errorf("ParseSize(%q) was accepted", bad)
 		}
 	}
 }

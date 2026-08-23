@@ -246,12 +246,13 @@ export const api = {
   measureProvider: (id) =>
     request(`/api/providers/${encodeURIComponent(id)}/measure`, { method: 'POST' }),
   /* What an account is called, what colour it wears, how big its holder says it
-     is, and how it reaches the backend. Only the fields passed change — an
-     absent one is left alone. A color of '' hands the choice back to the
-     browser, and a capacity of '' is nobody declaring one.
+     is, how much of it SAND may fill, and how it reaches the backend. Only the
+     fields passed change — an absent one is left alone. A color of '' hands the
+     choice back to the browser, a capacity of '' is nobody declaring one, and a
+     quota of '' is nobody watching this account's share.
 
-     The first three never leave the process: nothing is uploaded, downloaded or
-     re-encrypted by renaming a cloud. `options` is the exception and the only
+     The first four never leave the process: nothing is uploaded, downloaded or
+     re-encrypted by renaming a cloud or by drawing a line through it. `options` is the exception and the only
      part of this that touches the account — rotated keys, a re-pasted token, a
      moved bucket — so the server connects with them before storing them, and a
      PATCH carrying them takes as long as a Test does and fails the same way.
@@ -259,13 +260,14 @@ export const api = {
      Only the settings named are changed, and a secret handed back as the
      placeholder the server showed means "keep the one you have": the browser is
      never given a stored secret to send back. */
-  updateProvider: (id, { name, color, capacity, options } = {}) =>
+  updateProvider: (id, { name, color, capacity, quota, options } = {}) =>
     request(`/api/providers/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       body: {
         ...(name === undefined ? null : { name }),
         ...(color === undefined ? null : { color }),
         ...(capacity === undefined ? null : { capacity }),
+        ...(quota === undefined ? null : { quota }),
         ...(options === undefined ? null : { options }),
       },
     }),

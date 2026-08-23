@@ -127,6 +127,52 @@ class TestVaultLifecycle:
         assert len(providers) >= 3
         assert all(p["online"] for p in providers), providers
 
+    def test_every_account_says_how_much_more_fits(self, server, unlocked):
+        """The figure the upload picker ranks clouds by.
+
+        A local folder reports the drive under it, so every account here answers
+        for itself — and a quota below what the drive reports takes over, because
+        the room left is whichever of the two leaves less."""
+        providers = unlocked.get(f"{server}/api/providers", timeout=30).json()["providers"]
+        for account in providers:
+            space = account.get("space") or {}
+            assert space.get("source") == "reported", account
+            assert space.get("free", 0) > 0, account
+
+        account = providers[0]
+        patched = unlocked.patch(f"{server}/api/providers/{account['id']}",
+                                 json={"quota": "1 GB"}, timeout=30)
+        assert patched.status_code == 200, patched.text
+        assert patched.json()["provider"]["quota"] == 1 << 30
+
+        after = unlocked.get(f"{server}/api/providers", timeout=30).json()["providers"]
+        capped = next(p for p in after if p["id"] == account["id"])
+        assert capped["space"]["source"] == "quota", capped
+        assert capped["space"]["total"] == 1 << 30, capped
+
+        # And it is a warning rather than a wall: a quota under what is already
+        # there does not stop the next file storing, it reports itself.
+        unlocked.patch(f"{server}/api/providers/{account['id']}",
+                       json={"quota": "1"}, timeout=30)
+        r = upload(unlocked, server, "past-the-line.txt", b"x" * 4096,
+                   accounts=[p["id"] for p in providers[:3]])
+        assert r.status_code == 201, r.text
+        results = r.json()["results"]
+        assert results[0]["ok"] is True, results
+        assert any("past the" in w for w in results[0].get("warnings") or []), results
+
+        # The vault is shared with every other test in the session, so the file
+        # this one needed goes away again.
+        unlocked.delete(f"{server}/api/files/{results[0]['file']['id']}",
+                        headers={"Origin": server}, timeout=60)
+
+        # Cleared, and the account goes back to the drive's own figure.
+        unlocked.patch(f"{server}/api/providers/{account['id']}",
+                       json={"quota": ""}, timeout=30)
+        restored = unlocked.get(f"{server}/api/providers", timeout=30).json()["providers"]
+        assert next(p for p in restored
+                    if p["id"] == account["id"])["space"]["source"] == "reported"
+
     def test_provider_specs_describe_every_backend(self, server):
         specs = requests.get(f"{server}/api/providers/specs", timeout=10).json()["specs"]
         kinds = {s["kind"] for s in specs}
@@ -614,6 +660,36 @@ class TestCLI:
         counted = cli(sand_bin, vault_dir, "remote", "measure", "cli-capacity", check=False)
         assert counted.returncode != 0
         assert "cannot be counted" in (counted.stderr + counted.stdout)
+
+    def test_a_quota_caps_what_sand_may_fill(self, sand_bin, vault_dir):
+        """The other figure a person types about an account, and a warning.
+
+        A capacity is how big the account is; a quota is how much of it SAND may
+        fill. The quota is the one that binds when it is the smaller, which is
+        what the FREE column prints, and crossing it warns rather than refuses."""
+        path = os.path.join(vault_dir, "cli-clouds", "cli-quota")
+        cli(sand_bin, vault_dir, "remote", "add", "local", "--name", "cli-quota",
+            "--set", f"path={path}")
+
+        # Small enough to be the smaller of the two on any machine the tests run
+        # on: a local folder reports the whole drive under it, and the room left
+        # is whichever of the drive and the line leaves less.
+        said = cli(sand_bin, vault_dir, "remote", "edit", "cli-quota", "--quota", "16 MB")
+        assert "quota 16.0 MB" in said.stdout, said.stdout
+
+        # So the column prints the quota's figure, and says whose it is.
+        listed = next(line for line in
+                      cli(sand_bin, vault_dir, "remote", "list").stdout.splitlines()
+                      if "cli-quota" in line)
+        assert "(quota)" in listed, listed
+
+        cleared = cli(sand_bin, vault_dir, "remote", "edit", "cli-quota", "--quota", "none")
+        assert "no quota" in cleared.stdout, cleared.stdout
+
+        nonsense = cli(sand_bin, vault_dir, "remote", "edit", "cli-quota",
+                       "--quota", "lots", check=False)
+        assert nonsense.returncode != 0
+        assert "not a size" in (nonsense.stderr + nonsense.stdout)
 
     def test_put_get_round_trip(self, sand_bin, vault_dir, tmp_path):
         source = tmp_path / "cli-round-trip.bin"

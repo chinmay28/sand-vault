@@ -2098,12 +2098,44 @@ has not been created yet. Deliberately the drive and not the folder: what SAND
 put there is already known from the index, and the number the index cannot
 supply is the 800 GB of other things on the same disk. Nothing walks the tree.
 
+**A quota, for the accounts none of that reaches.** Between them the paths above
+still leave accounts whose only known figure is what SAND itself wrote — a
+backend with no quota call that cannot be listed either. `Config.Quota` is the
+line somebody draws through such an account: how much of it SAND may fill, as
+against `Config.Capacity`'s how big it is. Two different questions, and an
+account may carry both.
+
+`spaceFor(usage, quota, stored)` (`internal/vault/space.go`) folds all of it into
+one `Space` — `free`, `used`, `total` and the `source` that answered:
+`reported`, `declared`, `quota`, or empty for an account nobody can say anything
+about. Where two sources have an opinion the binding one wins, which is whichever
+leaves less: a spent quota leaves no room on a half-empty drive, and a full drive
+leaves none whatever the quota says. `Over` is how far past its quota an account
+already is, and only a quota produces it — a backend's own figures reach zero
+rather than going past it. It rides on every `ProviderStatus` as `space`, so the
+sidebar, the upload picker, `ProviderStats` and `sand remote list` all read one
+figure rather than each deriving their own.
+
+The quota is a warning, not a wall. `commitUpload` calls `quotaWarnings` once the
+file is safely in the index and reports the accounts this file took *past* their
+line, which the API returns per file in `results[].warnings`. Refusing the part
+that would cross a quota mid-scatter is the one thing that must not happen: the
+parts of a file are placed together, and dropping one leaves the file on fewer
+accounts than its erasure code promises — a quiet loss of durability in exchange
+for a line nobody else can see. Crossing is reported as an event and reported
+once, by the file that crossed; being over is a state, and the account's card,
+the stats panel and the `FREE` column carry that until it is resolved. Ahead of
+all of it, the upload picker checks each chosen cloud's `space.free` against the
+share of the file it is about to take — about a kth of it under a k-of-n cut —
+which is where the choice can still be changed for free.
+
 `ProviderStats` is that account taken apart, and every figure in it is read off
 the index — no listing, no traversal, so the panel costs one ping:
 
 | | |
 |---|---|
-| capacity | `Usage` against `Stored`: SAND's parts, everything else on the account, what is free, what is reserved |
+| capacity | `Usage` against `Stored`: SAND's parts, everything else on the account, what is free, what is reserved — or, where the account reports nothing, `Stored` against the quota |
+| `Space` | how much more fits, and which of the three sources said so |
 | `Files` / `Sole` | files with a part here, and those that could not be rebuilt without it — counted against the accounts that would survive the disconnect, exactly as the guard in §3.9 counts |
 | `Kinds` / `Folders` / `Largest` / `Months` | what the parts belong to, weighed by what each thing left *here* rather than by its own size |
 | `SubVaults` | one line: parts and bytes, from the inventory |
@@ -2167,7 +2199,7 @@ reveals only whether a vault exists.
 | POST | `/api/providers/oauth/complete` | Turn a finished sign-in into an account |
 | POST | `/api/providers/oauth/reauthorize` | Spend a finished sign-in on an account already connected: new credentials, same ID, same parts (§3.10) |
 | POST | `/api/providers/{id}/test` | Re-check one account |
-| PATCH | `/api/providers/{id}` | Rename it / set its colour / declare its capacity — index only, the backend is never contacted (§3.9). Also its `options`, which is the one field here that does reach the backend: it is pinged with the new settings before they are stored (§3.10) |
+| PATCH | `/api/providers/{id}` | Rename it / set its colour / declare its capacity / set the quota of it SAND may fill — index only, the backend is never contacted (§3.9). `capacity` and `quota` arrive as typed text and are read by `provider.ParseSize`. Also its `options`, which is the one field here that does reach the backend: it is pinged with the new settings before they are stored (§3.10) |
 | DELETE | `/api/providers/{id}` | Disconnect (`?force=1` to override the guard) |
 | GET | `/api/files?path=` | List a folder (`&vault=` for a sub vault; absent is the main one) |
 | GET | `/api/search?q=` | Find files and folders by name (`&path=` scopes to a subtree, `&vault=`, `&type=file\|folder`, `&limit=`) |
