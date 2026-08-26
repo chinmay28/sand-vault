@@ -12,6 +12,27 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### The connected clouds panel now starts folded away on a desktop too
+
+On a phone the sidebar has always been a drawer: the file list is what you came
+for, and the accounts are a place you visit. On a desktop the same panel was
+simply always there, taking 286px off the file browser for the whole session
+whether anybody was reading it or not — a status board for something that
+changes when you connect a cloud and then does not change again.
+
+It now starts folded away at every window size, and `☰` in the header brings it
+out. That button is no longer a phone affordance: it is the switch for a pane
+that is off by default, and pressing it again puts the panel back. On a desktop
+the panel folds to nothing beside the file browser rather than sliding over it,
+so bringing it out costs the browser its 286px and nothing else — no overlay, no
+dimmed background, and the file list stays where it was. The `✕` in the panel's
+own corner does the same thing from the inside.
+
+Nothing about the panel's contents changed, and neither did the phone: below
+860px it is still a drawer over the file list, because there is no room to stand
+one pane next to the other. A folded panel is hidden rather than merely narrow,
+so nothing in it can be reached by tab while it is shut.
+
 ### A folder's menu now says what the folder is holding
 
 Opening `⋯` on a folder showed its name, the word *Folder*, and a wide empty

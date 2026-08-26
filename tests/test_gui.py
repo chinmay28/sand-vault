@@ -45,7 +45,7 @@ def app(page, server, vault_password, clouds):
         page.locator('input[type="password"]').first.fill(vault_password)
         page.get_by_text("▶ Unlock").click()
 
-    page.wait_for_selector("text=Connected clouds", timeout=20000)
+    open_accounts(page)
 
     # Make sure at least three accounts exist, connecting any that are missing.
     for name in ("ui-one", "ui-two", "ui-three"):
@@ -63,10 +63,33 @@ def app(page, server, vault_password, clouds):
     return page
 
 
+def open_accounts(page, timeout=20000):
+    """Bring the connected-clouds sidebar out, and wait until it is there.
+
+    The panel starts minimised at every width — on a desktop as well as on a
+    phone — so anything that reaches into it (an account card, "+ Connect a
+    cloud", the vault settings tile) has to open it first. Idempotent: called
+    with the sidebar already out it does nothing, so it is safe to put in front
+    of any helper that needs the panel.
+
+    Doubles as the "the vault is unlocked and the browser has rendered" wait it
+    replaced: the ☰ is only in the header once there is a vault open behind it.
+    """
+    toggle = page.locator('button[aria-label="Connected clouds"]').first
+    toggle.wait_for(state="visible", timeout=timeout)
+
+    heading = page.get_by_text("Connected clouds", exact=True).first
+    if not heading.is_visible():
+        toggle.click()
+    heading.wait_for(state="visible", timeout=timeout)
+    return page
+
+
 def connect_cloud(page, name, clouds):
     """Connect one more local-folder account through the UI, if it is not
     already there. Moving something between clouds needs somewhere to move it
     to that it is not already on."""
+    open_accounts(page)
     if page.get_by_text(name, exact=True).count() > 0:
         return
     page.get_by_text("+ Connect a cloud").click()
@@ -87,6 +110,7 @@ def open_vault_setting(page, label):
     opens. Each still opens the dialog it always did, over the list rather than
     instead of it, so `close_vault_settings` is what puts the app back.
     """
+    open_accounts(page)
     page.get_by_role("button", name=re.compile(r"^Vault settings")).click()
     menu = page.get_by_role("dialog", name="Vault settings")
     menu.wait_for(timeout=20000)
@@ -757,7 +781,7 @@ class TestABucketWithNoQuota:
         else:
             page.locator('input[type="password"]').first.fill(vault_password)
             page.get_by_text("▶ Unlock").click()
-        page.wait_for_selector("text=Connected clouds", timeout=20000)
+        open_accounts(page)
         return page
 
     def test_the_panel_counts_the_bucket_it_cannot_ask(self, page, bucket_server, vault_password):
@@ -1883,7 +1907,7 @@ class TestViewAndSort:
         app.wait_for_timeout(300)
 
         app.reload()
-        app.wait_for_selector("text=Connected clouds", timeout=20000)
+        open_accounts(app)
         # It opens back on the grid, so the toggle offers the list.
         app.wait_for_selector('button[aria-label="Show as a list"]', timeout=20000)
 
@@ -2484,7 +2508,7 @@ class TestMobileLayout:
         app.set_viewport_size(PHONE)
         app.wait_for_timeout(300)
 
-        heading = app.get_by_text("Connected clouds")
+        heading = app.get_by_text("Connected clouds", exact=True)
         assert not heading.is_visible(), "the sidebar should be closed on a phone"
 
         app.locator('button[aria-label="Connected clouds"]').click()
@@ -2496,9 +2520,42 @@ class TestMobileLayout:
         app.wait_for_timeout(400)
         assert not heading.is_visible()
 
-    def test_sidebar_is_always_open_on_a_wide_screen(self, app):
-        assert app.get_by_text("Connected clouds").is_visible()
-        assert app.locator('button[aria-label="Connected clouds"]').count() == 0
+    def test_sidebar_starts_minimised_on_a_wide_screen(self, app):
+        """Room for both panes is not a reason to spend it on the sidebar.
+
+        The clouds start folded away on a desktop exactly as they do on a
+        phone, and the same ☰ brings them out — and puts them back, which is
+        the one thing the phone's drawer does differently (it has an ✕ of its
+        own, because the drawer covers the header).
+        """
+        # The fixture opened the panel for everything that comes after it, so
+        # a reload is what a first look at the app actually looks like.
+        app.reload()
+        toggle = app.locator('button[aria-label="Connected clouds"]')
+        toggle.wait_for(state="visible", timeout=20000)
+
+        heading = app.get_by_text("Connected clouds", exact=True)
+        assert not heading.is_visible(), "the sidebar should start minimised"
+        # Folded away, not merely scrolled off: nothing in it is tabbable.
+        assert app.get_by_text("+ Connect a cloud").count() > 0
+        assert not app.get_by_text("+ Connect a cloud").is_visible()
+
+        toggle.click()
+        app.wait_for_timeout(400)
+        assert heading.is_visible()
+
+        toggle.click()
+        app.wait_for_timeout(400)
+        assert not heading.is_visible()
+
+    def test_the_sidebar_folds_back_from_inside_on_a_wide_screen(self, app):
+        open_accounts(app)
+        heading = app.get_by_text("Connected clouds", exact=True)
+        assert heading.is_visible()
+
+        app.locator('button[aria-label="Minimise"]').click()
+        app.wait_for_timeout(400)
+        assert not heading.is_visible()
 
     def test_modal_opened_from_the_drawer_covers_the_viewport(self, app):
         """The drawer slides in on a transform, which makes it — not the
@@ -2564,7 +2621,7 @@ class TestDisasterRecovery:
         boxes.nth(0).fill(password)
         boxes.nth(1).fill(password)
         page.get_by_text("▶ Create vault").click()
-        page.wait_for_selector("text=Connected clouds", timeout=20000)
+        open_accounts(page)
 
     def fill_cloud_form(self, page, name, path):
         """Complete whichever connect-a-cloud dialog is already open."""
@@ -2804,7 +2861,7 @@ class TestDiscardingAFoundVault:
         boxes.nth(0).fill("a-brand-new-passphrase")
         boxes.nth(1).fill("a-brand-new-passphrase")
         page.get_by_text("▶ Create vault").click()
-        page.wait_for_selector("text=Connected clouds", timeout=20000)
+        open_accounts(page)
 
         page.get_by_text("+ Connect a cloud").click()
         page.wait_for_selector("text=Local folder", timeout=15000)
@@ -3011,7 +3068,7 @@ class TestSubVaultVisibility:
         # It is a preference of this browser rather than a thing the app is
         # holding in memory, so a reload is the only proof it was written down.
         app.reload()
-        app.wait_for_selector("text=Connected clouds", timeout=20000)
+        open_accounts(app)
         expect(app.get_by_title("Open seen-vault")).to_be_visible(timeout=20000)
         expect(app.get_by_title("Open unseen-vault")).to_have_count(0)
 
@@ -3210,7 +3267,7 @@ def _shorten(page, base, password, tmp_path, files):
 
     # All of it happened while the page was looking away.
     page.reload()
-    page.wait_for_selector("text=Connected clouds", timeout=20000)
+    open_accounts(page)
     return names
 
 
@@ -3240,7 +3297,7 @@ class TestFilesMissingAPart:
         boxes.nth(0).fill(self.PASSWORD)
         boxes.nth(1).fill(self.PASSWORD)
         page.get_by_text("▶ Create vault").click()
-        page.wait_for_selector("text=Connected clouds", timeout=20000)
+        open_accounts(page)
 
     def test_the_count_is_a_button_that_lists_the_files(self, page, spawn_server, tmp_path):
         base = spawn_server("short-one")
@@ -3371,7 +3428,7 @@ class TestOrphanedParts:
         page.goto(base_url)
         page.locator('input[type="password"]').first.fill(self.PASSWORD)
         page.get_by_text("▶ Unlock").click()
-        page.wait_for_selector("text=Connected clouds", timeout=20000)
+        open_accounts(page)
 
     def test_the_app_says_so_without_being_asked(self, page, sand_bin, tmp_path, spawn_server):
         self.build_vault(sand_bin, tmp_path, "orphans-notice")
@@ -3484,7 +3541,7 @@ class TestOrphanedParts:
         boxes.nth(0).fill("a-brand-new-passphrase")
         boxes.nth(1).fill("a-brand-new-passphrase")
         page.get_by_text("▶ Create vault").click()
-        page.wait_for_selector("text=Connected clouds", timeout=20000)
+        open_accounts(page)
 
         page.get_by_text("+ Connect a cloud").click()
         page.wait_for_selector("text=Local folder", timeout=15000)
@@ -3601,7 +3658,7 @@ class TestMislaidShards:
         page.goto(base_url)
         page.locator('input[type="password"]').first.fill(self.PASSWORD)
         page.get_by_text("▶ Unlock").click()
-        page.wait_for_selector("text=Connected clouds", timeout=20000)
+        open_accounts(page)
 
     def test_the_app_offers_to_put_them_back(self, page, sand_bin, tmp_path, spawn_server):
         clouds = self.build_vault(sand_bin, tmp_path, "mislaid-notice")
