@@ -544,6 +544,9 @@ class TestEditingAnAccount:
         # Stored in the vault rather than held in the tab: both survive a
         # reload, which is the only proof the server was told.
         app.reload()
+        # A reload puts the sidebar back the way it opens: folded away. The
+        # card being looked at is inside it.
+        open_accounts(app)
         app.wait_for_selector("text=ui-renamed", timeout=20000)
         assert app.get_by_text("ui-editable", exact=True).count() == 0
         assert self.stripe_colour(app, "ui-renamed") == "rgb(52, 211, 153)"
@@ -561,6 +564,7 @@ class TestEditingAnAccount:
         app.wait_for_selector("text=Edit account", state="detached", timeout=20000)
 
         app.reload()
+        open_accounts(app)
         app.wait_for_selector("text=ui-renamed", timeout=20000)
         self.open_editor(app, "ui-renamed")
         expect(app.get_by_role("radio", name="Automatic")).to_have_attribute("aria-checked", "true")
@@ -596,6 +600,7 @@ class TestEditingAnAccount:
 
         # Stored in the vault, not held in the tab.
         app.reload()
+        open_accounts(app)
         app.wait_for_selector("text=16 MB left under your quota", timeout=20000)
 
         # And the picker ranks the cloud by that figure rather than the drive's,
@@ -685,6 +690,7 @@ class TestEditingAnAccount:
         # Stored in the vault, so it survives a reload — and it is the same
         # account throughout, not a second one beside it.
         app.reload()
+        open_accounts(app)
         app.wait_for_selector("text=ui-rewired", timeout=20000)
         assert app.get_by_text("ui-rewired", exact=True).count() == 1
 
@@ -2270,6 +2276,7 @@ class TestReadSpeed:
     """
 
     def _open(self, app):
+        open_accounts(app)
         app.get_by_role("button", name=re.compile(r"^Read speed")).click()
         panel = app.get_by_role("dialog", name="Read speed")
         panel.wait_for(timeout=20000)
