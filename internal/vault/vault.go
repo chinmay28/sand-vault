@@ -151,6 +151,20 @@ type Vault struct {
 	// and before the recorder's own. See readstats.go and readhistory.go.
 	reads   *readStats
 	readsMu sync.Mutex
+
+	// healthSeen is what each connected account said the last time anything
+	// pinged it, and healthSweptAt is when the last ping of *every* account
+	// finished — the clock the hourly check is measured from. See health.go.
+	//
+	// Another leaf lock, taken on its own and never while holding mu, because
+	// it is written from the ping paths: the sidebar's own refresh files its
+	// results here on the way past, and it must not be able to deadlock
+	// against the index to do it. In memory rather than in the vault file: a
+	// ping result expires within the hour, and a locked vault should report
+	// nothing rather than something stale.
+	healthMu      sync.Mutex
+	healthSeen    map[string]CloudHealth
+	healthSweptAt time.Time
 }
 
 // Open returns a handle to the vault at path. The vault starts locked; if no
@@ -569,6 +583,12 @@ func (v *Vault) lockLocked() {
 	v.forgetAllThumbs()
 	v.chunks.clear()
 
+	// What the clouds last said about themselves goes too. It names accounts
+	// whose names live in the section that just went away, and a figure kept
+	// across a lock would be reporting an hour-old ping to somebody who has
+	// only just unlocked.
+	v.forgetAllHealth()
+
 	// Dropped *and* closed. A backend that holds nothing needs only the drop —
 	// an HTTP one shares a transport with every other — but one over SSH holds
 	// a socket and a session on somebody else's machine, and letting go of the
@@ -875,6 +895,11 @@ func (v *Vault) forgetProvider(id string) {
 	dropped := v.live[id]
 	delete(v.live, id)
 	v.liveMu.Unlock()
+
+	// And what the health check last found out about it, so a disconnected
+	// account stops being counted the moment it goes rather than at the next
+	// sweep. See health.go.
+	v.forgetHealth(id)
 
 	closeProvider(dropped)
 }
@@ -1407,11 +1432,26 @@ func (v *Vault) TestProvider(ctx context.Context, id string) error {
 		return fmt.Errorf("no connected account with id %s", id)
 	}
 
+	// Whatever this finds is filed with the health check, so pressing Test on
+	// an account that has come back puts the sidebar's figure right without
+	// waiting for the next sweep. One account, so the sweep clock is left where
+	// it is — see rememberOne.
+	started := time.Now()
+	record := CloudHealth{ID: cfg.ID, Name: cfg.Name, Kind: cfg.Kind, Checked: true}
+	defer func() { v.rememberOne(record) }()
+
 	p, err := v.buildProvider(cfg)
+	if err == nil {
+		err = p.Ping(ctx)
+	}
+	record.CheckedAt = time.Now()
+	record.Took = time.Since(started).Milliseconds()
 	if err != nil {
+		record.Error = err.Error()
 		return err
 	}
-	return p.Ping(ctx)
+	record.Healthy = true
+	return nil
 }
 
 // ProviderStatus is the health and load of one connected account.
@@ -1505,6 +1545,11 @@ func (v *Vault) ProviderStatuses(ctx context.Context) ([]ProviderStatus, error) 
 	for i := range statuses {
 		statuses[i].Space = spaceFor(statuses[i].Usage, statuses[i].Quota, statuses[i].Stored)
 	}
+
+	// This just pinged every connected account, which is precisely what the
+	// scheduled health check does — so it counts as one, both for what it found
+	// and for when the next one is due. See health.go.
+	v.recordSweep(time.Now(), healthFromStatuses(statuses))
 
 	return statuses, nil
 }

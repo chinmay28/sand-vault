@@ -3,6 +3,7 @@ import { COLORS, FONT, KIND_ICONS, accountColor, formatBytes } from '../theme'
 import { api } from '../api'
 import { pendingOAuthFlow } from '../oauth'
 import { Banner, Button, IconButton, Spinner } from './ui'
+import CloudHealth, { CloudHealthLine } from './CloudHealth'
 import CloudStats, { UsageBar, UsageLine, usageBreakdown } from './CloudStats'
 import ConnectCloud from './ConnectCloud'
 import EditAccount from './EditAccount'
@@ -18,7 +19,10 @@ import { DevMark } from './Brand'
    small enough to stay out of the way once you know which is which. */
 function Figure({ value, label }) {
   return (
-    <div>
+    // Never broken across lines. "580.4 GB" split after the 580.4, or a label
+    // reading "IN THE / VAULT", is a figure that has stopped being glanceable —
+    // so the figure keeps its width and whatever is beside it gives way.
+    <div style={{ whiteSpace: 'nowrap' }}>
       <div style={{
         fontFamily: FONT.mono,
         fontSize: '17px',
@@ -158,7 +162,7 @@ function ActionTile({ icon, label, hint, onClick }) {
    two-pane breakpoint it comes out as a drawer over the file browser rather
    than as a pane beside it: there is no room to stand one next to the other. */
 export default function AccountsPanel({
-  providers, loading, status, stats, webdav, mobile, open,
+  providers, loading, status, stats, webdav, mobile, open, health, onHealthChanged,
   subVaults = [], showSubVaults, subVaultShown, onToggleSubVaults, onToggleSubVault, onOpenSubVault,
   onClose, onRefresh, onChanged,
 }) {
@@ -171,6 +175,7 @@ export default function AccountsPanel({
   const [connecting, setConnecting] = useState(() => Boolean(pending && !pending.provider_id))
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [readsOpen, setReadsOpen] = useState(false)
+  const [healthOpen, setHealthOpen] = useState(false)
   const [missingOpen, setMissingOpen] = useState(false)
   const [reclaiming, setReclaiming] = useState(false)
   const [error, setError] = useState(null)
@@ -345,9 +350,30 @@ export default function AccountsPanel({
             labels under them are only there to say which number is which. */}
         {stats && (
           <div style={{ marginTop: '16px' }}>
-            <div style={{ display: 'flex', gap: '18px' }}>
+            {/* Wrapping, deliberately. The two figures are as wide as the
+                vault makes them — "2671" and "580.4 GB" is most of a 286px
+                drawer — so on the vaults where the health line does not fit
+                beside them it takes the row underneath rather than squeezing
+                them into "580.4 / GB". It stays right-aligned either way, which
+                is where it was read from. */}
+            <div style={{
+              display: 'flex',
+              alignItems: 'flex-start',
+              flexWrap: 'wrap',
+              columnGap: '18px',
+              rowGap: '10px',
+            }}>
               <Figure value={stats.files} label={stats.files === 1 ? 'file' : 'files'} />
               <Figure value={formatBytes(stats.bytes)} label="in the vault" />
+              {/* The room beside the two figures, which was empty, and the one
+                  question about the accounts that nothing else here answers:
+                  are they all still there. Every other reading in this drawer
+                  is about what the clouds are holding — this is whether they
+                  are answering at all, which is the thing that goes wrong
+                  silently. See CloudHealth. */}
+              <span style={{ marginLeft: 'auto', flexShrink: 0, paddingTop: '2px' }}>
+                <CloudHealthLine health={health} onClick={() => setHealthOpen(true)} />
+              </span>
             </div>
             <div style={{
               marginTop: '8px',
@@ -445,6 +471,14 @@ export default function AccountsPanel({
 
       {readsOpen && <ReadStats onClose={() => setReadsOpen(false)} />}
 
+      {healthOpen && (
+        <CloudHealth
+          health={health}
+          onClose={() => setHealthOpen(false)}
+          onChanged={onHealthChanged}
+        />
+      )}
+
       {missingOpen && (
         <MissingParts
           providers={providers}
@@ -458,6 +492,8 @@ export default function AccountsPanel({
           providers={providers}
           stats={stats}
           webdav={webdav}
+          health={health}
+          onHealthChanged={onHealthChanged}
           subVaults={subVaults}
           showSubVaults={showSubVaults}
           subVaultShown={subVaultShown}

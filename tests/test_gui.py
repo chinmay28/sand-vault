@@ -3724,3 +3724,124 @@ class TestMislaidShards:
         page.get_by_role("button", name="Put them back").click()
         page.get_by_role("button", name=re.compile(r"^Put 1 shard back")).click()
         expect(page.get_by_text(re.compile(r"1 shard recorded again"))).to_be_visible(timeout=30000)
+
+
+class TestCloudHealthLine:
+    """Whether the clouds are still answering, said at the foot of the panel.
+
+    The figure is not news the app waits to be asked for: the server pings
+    every account on a schedule of its own, and this line is where the answer
+    is read. What these tests are about is the line telling the truth on both
+    sides of a cloud going dark — and the panel behind it naming which one, and
+    holding the schedule.
+
+    Own server and own vault per test, because one of them switches a cloud off
+    and the shared session vault is what every other test in this file stands
+    on.
+    """
+
+    PASSWORD = "still-answering-passphrase"
+
+    def new_vault(self, page, base):
+        page.goto(base)
+        page.wait_for_selector("text=Create your vault", timeout=20000)
+        boxes = page.locator('input[autocomplete="new-password"]')
+        boxes.nth(0).fill(self.PASSWORD)
+        boxes.nth(1).fill(self.PASSWORD)
+        page.get_by_text("▶ Create vault").click()
+        open_accounts(page)
+
+    def connect(self, base, tmp_path, count, prefix):
+        """Wire up `count` local folders behind the open app, and hand back the
+        paths so a test can switch one off."""
+        session = requests.Session()
+        headers = {"Origin": base}
+        r = session.post(f"{base}/api/vault/unlock", json={"password": self.PASSWORD},
+                         headers=headers, timeout=60)
+        assert r.status_code == 200, r.text
+
+        paths = []
+        for i in range(count):
+            path = tmp_path / f"{prefix}-clouds" / f"cloud-{i}" / "store"
+            path.mkdir(parents=True, exist_ok=True)
+            r = session.post(f"{base}/api/providers",
+                             json={"kind": "local", "name": f"{prefix}-{i}",
+                                   "options": {"path": str(path)}},
+                             headers=headers, timeout=60)
+            assert r.status_code == 201, r.text
+            paths.append(path)
+        return session, paths
+
+    @staticmethod
+    def switch_off(path):
+        """Make a connected folder unreachable, the way a NAS that has been
+        switched off is: the account is still configured and there is nothing
+        usable at the end of the path.
+
+        The folder is moved aside and a plain file left in its place, rather
+        than deleted — a rename is one atomic step, and the vault is pushing
+        its index backup into that folder in the background while this runs.
+        """
+        os.rename(path, str(path) + "-moved")
+        with open(path, "w") as blocked:
+            blocked.write("not a folder")
+
+    def test_the_line_says_every_cloud_is_answering(self, page, spawn_server, tmp_path):
+        base = spawn_server("health-ok")
+        self.new_vault(page, base)
+        self.connect(base, tmp_path, 3, "ok")
+
+        page.get_by_role("button", name="Re-check every account").click()
+        expect(page.get_by_text("3 clouds healthy")).to_be_visible(timeout=30000)
+
+    def test_a_cloud_that_stops_answering_is_counted_and_named(
+        self, page, spawn_server, tmp_path
+    ):
+        base = spawn_server("health-dark")
+        self.new_vault(page, base)
+        _, paths = self.connect(base, tmp_path, 3, "dark")
+
+        self.switch_off(paths[1])
+
+        page.get_by_role("button", name="Re-check every account").click()
+        line = page.get_by_role("button", name=re.compile(r"1 of 3 unhealthy"))
+        expect(line).to_be_visible(timeout=30000)
+
+        # And the line is a door: which cloud, and what it actually said.
+        line.click()
+        dialog = page.get_by_role("dialog", name="Cloud health")
+        dialog.wait_for(timeout=20000)
+        expect(dialog.get_by_text("dark-1", exact=True)).to_be_visible(timeout=20000)
+        expect(dialog.get_by_text(re.compile(r"^Not answering"))).to_be_visible()
+        expect(dialog.get_by_text("not a directory")).to_be_visible()
+
+    def test_the_schedule_is_set_from_the_panel(self, page, spawn_server, tmp_path):
+        base = spawn_server("health-schedule")
+        self.new_vault(page, base)
+        session, _ = self.connect(base, tmp_path, 2, "sched")
+
+        page.get_by_role("button", name="Re-check every account").click()
+        page.get_by_role("button", name=re.compile(r"2 clouds healthy")).click(timeout=30000)
+
+        dialog = page.get_by_role("dialog", name="Cloud health")
+        dialog.wait_for(timeout=20000)
+        dialog.get_by_role("button", name="6 hours").click()
+
+        # Not merely lit in the dialog — the vault is what keeps this, and the
+        # server is what acts on it.
+        def schedule():
+            return session.get(f"{base}/api/providers/health", timeout=30).json()[
+                "health"]["schedule"]
+
+        for _ in range(30):
+            if schedule()["interval_minutes"] == 360:
+                break
+            page.wait_for_timeout(500)
+        assert schedule() == {"enabled": True, "interval_minutes": 360}
+
+        # Off is a real answer, and the line stops promising a freshness
+        # nothing is maintaining.
+        dialog.get_by_role("button", name="Off").click()
+        expect(page.get_by_text("checks off")).to_be_visible(timeout=20000)
+        assert schedule()["enabled"] is False
+

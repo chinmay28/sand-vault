@@ -514,6 +514,95 @@ an event, and the account's card, the *Stats* panel and the `FREE` column of
 
 ---
 
+## Are the clouds still there?
+
+Every other ping in SAND is one you started. The accounts panel pings when you
+open it, **Test** pings one account, a folder's sweep pings them all before it
+checks anything under it. Each of those needs somebody sitting in front of the
+app, and the failure worth catching is the one nobody is sitting in front of: a
+refresh token revoked in March, an access key rotated by somebody else on the
+team, a NAS that has been off since the power cut.
+
+None of that makes anything look broken. Files still read — a file needs `k` of
+its `n` parts and the clouds still answering carry it — right up until a second
+one goes and the file does not come back at all.
+
+So SAND asks them itself, once an hour, for as long as the vault is unlocked.
+The foot of the connected clouds panel says what it found:
+
+```
+2671    580.4 GB                  ● 1 of 17 unhealthy
+FILES   IN THE VAULT                 checked 12m ago
+```
+
+Press it for the panel behind it: every cloud worst-first, what the unreachable
+ones actually said, and how long each has been failing — *not answering for 3
+days* is a different problem from *not answering*, and only one of them is worth
+getting out of bed for. **Check now** asks them all again, which is what you
+want after fixing one rather than waiting an hour to find out whether the fix
+took.
+
+### It is a ping, and nothing more
+
+One small request per cloud — "answer me" — and how long it took. Nothing is
+listed, nothing is downloaded, and no data moves. A check that walked a bucket
+would cost real money at the providers that bill for listing, every hour,
+forever, and it would not answer a different question: an account that cannot be
+pinged cannot be listed either.
+
+Whether the *parts of a particular file* are still where the index says they
+went is the other question, and it is a folder's [standing
+instruction](#a-folder-that-looks-after-itself) — that one reads the index and
+asks after parts by name, which is why it is opt-in per folder and this is on by
+default.
+
+### How often, and where to change it
+
+**Vault settings → Cloud health**, or the same panel from the line in the
+drawer: 15 minutes, hourly, 6 hours, daily, or off.
+
+```bash
+./sand remote health              # check them all now, and print what they said
+./sand remote health --every 6h   # ask every six hours from now on
+./sand remote health --off        # stop asking on a schedule
+```
+
+Off is a real answer. Somebody metered by the request, or running SAND on a
+laptop that is asleep most of the day, should be able to say so — and the panel
+then stops claiming a freshness nothing is maintaining. The clouds are still
+pinged whenever the accounts are listed, so the figure is never wrong; it is
+only ever as old as the last time anything asked.
+
+### Only while the vault is unlocked
+
+The accounts and their credentials live in the encrypted index, so a locked
+vault has nothing to ping and nothing to ping it with. A slot that passes while
+it is locked is not lost: *due* is a comparison against the last check rather
+than a timer that has to have been running, so a vault opened at nine after
+being shut all night is checked at nine. A machine meant to keep this schedule
+wants a long `--idle-timeout`, the same as one meant to keep folder policies.
+
+The check itself never counts as use, which is the deliberate opposite of a
+folder sweep: a sweep that rebuilds files must not be locked out half way
+through, and an hourly ping that renewed the idle timer would mean the vault
+never auto-locked again.
+
+What it finds is kept in the server's memory rather than written into the vault
+file — a ping result expires within the hour, and it goes when the vault locks.
+Something changing is logged, once:
+
+```
+cloud health: Elements (dial tcp 192.168.1.40:445: no route to host) — 1 of 17 not answering
+cloud health: Elements answering again
+```
+
+`GET /api/providers/health` is the same answer for anything else that wants it,
+and reads from memory rather than contacting anybody; `POST
+/api/providers/health/check` runs one now, and `POST
+/api/providers/health/schedule` is the setting.
+
+---
+
 ## Repairing an account that has stopped answering
 
 Credentials do not last forever. An access key gets rotated, a refresh token
@@ -1626,6 +1715,8 @@ sand remote edit <name-or-id> [--name N] [--color '#38bdf8'|auto] [--capacity '1
                                               cap how much of it SAND may fill, or change
                                               what it connects with
 sand remote test <name-or-id>                 Re-check reachability
+sand remote health [--every 6h] [--off]       Check every account now, and set how often
+                                              SAND checks on its own
 sand remote measure <name-or-id>              Count what is on it, for backends that cannot say
 sand remote remove <name-or-id> [--force]     Disconnect
 ```
@@ -1645,6 +1736,12 @@ account you sign in to, the browser's **Edit → How it connects** can put it
 through the provider's consent screen again instead of asking you to find a
 refresh token by hand. See [Repairing an account that has stopped
 answering](#repairing-an-account-that-has-stopped-answering).
+
+`sand remote health` is `sand remote test` asked of every account at once, plus
+the schedule the server keeps asking on — hourly by default, for as long as the
+vault is unlocked. It belongs here as much as in the browser because the machine
+running the check is usually the one with no browser on it. See [Are the clouds
+still there?](#are-the-clouds-still-there).
 
 `sand remote measure` is the other half of that, and the one call here that does
 reach the cloud: a bucket reports no quota and no total, so what is in it has to
@@ -1804,6 +1901,16 @@ pipe the password on stdin.
   counts what is in the bucket instead, by listing it — once, on the way in, and
   again on request — and *Edit* takes the capacity you know it has, so the two
   together draw the same split every other account gets
+- **Cloud health** — a line at the foot of the sidebar, beside the vault's own
+  figures: `● 1 of 17 unhealthy`, and when it was last asked. SAND pings every
+  connected account on a schedule of its own — hourly unless you say otherwise,
+  and only while the vault is unlocked — so a cloud whose token expired
+  overnight is noticed rather than discovered months later by somebody opening
+  the drawer. Pressing the line opens every cloud worst-first with what the
+  unreachable ones said and how long each has been failing, a *Check now*, and
+  the schedule itself: 15 minutes, hourly, 6 hours, daily, or off. It is a ping
+  and nothing else — no listing, no download, no data moved. See [Are the clouds
+  still there?](#are-the-clouds-still-there)
 - **Read speed** — beside *Vault settings* at the foot of the sidebar. Opening a
   file is a race between the accounts holding its shards, and the losers are
   never mentioned anywhere else, so a cloud can stop pulling its weight without

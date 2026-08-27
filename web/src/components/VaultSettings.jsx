@@ -3,6 +3,7 @@ import { COLORS, FONT } from '../theme'
 import { api } from '../api'
 import { Modal } from './ui'
 import ChangePassword from './ChangePassword'
+import CloudHealth from './CloudHealth'
 import MountDrive from './MountDrive'
 import { FilmKeySettings } from './FilmDetails'
 import SubVaults from './SubVaults'
@@ -46,7 +47,8 @@ import {
 const CHILD_Z = 110
 
 export default function VaultSettings({
-  providers, stats, webdav, subVaults = [], showSubVaults, subVaultShown,
+  providers, stats, webdav, health, onHealthChanged,
+  subVaults = [], showSubVaults, subVaultShown,
   onToggleSubVaults, onToggleSubVault, onOpenSubVault, onClose, onChanged,
 }) {
   const [open, setOpen] = useState(null)
@@ -94,6 +96,25 @@ export default function VaultSettings({
                 parseScheme(stats?.default_scheme) || defaultSchemeFor(defaults.length))}`
               : `${PARTS_PER_FILE} per upload`}
             onClick={() => setOpen('defaults')}
+          />
+        )}
+
+        {/* How often the clouds are asked whether they are still there, which
+            is a setting on the vault in exactly the way the placement policy
+            is: it belongs to no one account and to no one folder. The line
+            reports the schedule rather than the finding — the drawer's own
+            line does the finding, and this menu is where somebody comes to
+            change how often it is refreshed. It borrows the warning colour
+            when something is actually down, because a settings list that knew
+            and said nothing would be the wrong kind of quiet. */}
+        {providers.length > 0 && (
+          <Setting
+            icon="📡"
+            label="Cloud health"
+            hint="How often SAND checks that every cloud is still answering"
+            status={healthStatusLine(health)}
+            tone={health?.unhealthy > 0 ? COLORS.error : undefined}
+            onClick={() => setOpen('health')}
           />
         )}
 
@@ -228,6 +249,15 @@ export default function VaultSettings({
         />
       )}
 
+      {open === 'health' && (
+        <CloudHealth
+          health={health}
+          zIndex={CHILD_Z}
+          onClose={close}
+          onChanged={onHealthChanged}
+        />
+      )}
+
       {open === 'mount' && (
         <MountDrive path={webdav?.path} zIndex={CHILD_Z} onClose={close} />
       )}
@@ -239,6 +269,27 @@ export default function VaultSettings({
       )}
     </Modal>
   )
+}
+
+/* What the cloud health line says on the right: the schedule, or what is wrong.
+
+   The schedule most of the time, because that is the setting this line is for.
+   The finding takes over when there is one, since a menu that shows "Hourly"
+   beside a cloud that has been dark for two days is technically answering the
+   question and practically misleading. */
+function healthStatusLine(health) {
+  if (!health) return null
+  if (health.unhealthy > 0) return `${health.unhealthy} unhealthy`
+  if (!health.schedule?.enabled) return 'Off'
+
+  const minutes = health.schedule.interval_minutes || 60
+  if (minutes < 60) return `Every ${minutes} min`
+  if (minutes === 60) return 'Hourly'
+  if (minutes % (24 * 60) === 0) {
+    const days = minutes / (24 * 60)
+    return days === 1 ? 'Daily' : `Every ${days} days`
+  }
+  return `Every ${Math.round(minutes / 60)} hours`
 }
 
 /* What the recovery kit's line says on the right.

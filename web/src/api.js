@@ -234,6 +234,30 @@ export const api = {
   addProvider: (kind, name, options) =>
     request('/api/providers', { method: 'POST', body: { kind, name, options } }),
   testProvider: (id) => request(`/api/providers/${encodeURIComponent(id)}/test`, { method: 'POST' }),
+  /* Whether every cloud is still answering.
+
+     The read is a look at what the last check found and contacts nobody, so it
+     costs a loopback request against a map in memory — which is what makes it
+     safe for the accounts panel to poll while it is open, and why the browser
+     never pings seventeen clouds on a timer of its own. The server does that,
+     on the vault's own schedule, whether or not anybody has the app open; this
+     only reads the answer.
+
+     checkClouds() is the "check now" button: it pings every account and comes
+     back with what they said, so it takes as long as the slowest of them. */
+  cloudHealth: () => request('/api/providers/health'),
+  checkClouds: () => request('/api/providers/health/check', { method: 'POST' }),
+  /* How often that happens, or never. Omitting either half leaves it alone —
+     switching the check off keeps the interval, so switching it back on
+     returns to the schedule that was chosen rather than to the default. */
+  setCloudHealthSchedule: ({ enabled, minutes } = {}) =>
+    request('/api/providers/health/schedule', {
+      method: 'POST',
+      body: {
+        ...(enabled === undefined ? null : { enabled }),
+        ...(minutes === undefined ? null : { interval_minutes: minutes }),
+      },
+    }),
   /* One account taken apart: its quota against what SAND actually put there,
      what the parts belong to, and how many files could not be rebuilt without
      it. Re-pings the account on the way, so it takes as long as a Test does.
