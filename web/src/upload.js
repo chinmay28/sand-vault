@@ -121,3 +121,50 @@ export function describePicks({ files, dirs }) {
 export function totalBytes({ files }) {
   return files.reduce((sum, { file }) => sum + file.size, 0)
 }
+
+/* How much of a choice one request carries.
+ *
+ * Everything picked used to go up as a single multipart request, which is fine
+ * for a file and quietly wrong for a folder: a hundred photos and a gigabyte
+ * and a half became one body that had to arrive whole before any of it was
+ * stored, spooled to a temp file on the server before a byte of it was looked
+ * at, and failed as one thing when it failed at all. Sending it in batches
+ * bounds all three — what has arrived is stored and listed while the rest is
+ * still going, and what fails takes only its own batch down with it.
+ *
+ * The byte budget is well under the server's own ceiling on a request
+ * (DefaultMaxUploadSize), so a batch is never refused for its size; the file
+ * count keeps a batch of small files from being a thousand of them. */
+export const BATCH_BYTES = 256 * 1024 * 1024
+export const BATCH_FILES = 24
+
+/* Cuts the files of a choice into the requests that will carry them, in the
+   order they were chosen so a folder arrives roughly top-down.
+
+   A file bigger than the whole budget still goes — alone, in a batch of its
+   own, because splitting a single file across requests is not something this
+   endpoint can do and refusing it here would be refusing the one upload most
+   worth having. */
+export function batchPicks(files, { bytes = BATCH_BYTES, count = BATCH_FILES } = {}) {
+  const batches = []
+  let batch = []
+  let size = 0
+
+  for (const pick of files) {
+    const cost = pick.file?.size || 0
+    if (batch.length && (batch.length >= count || size + cost > bytes)) {
+      batches.push(batch)
+      batch = []
+      size = 0
+    }
+    batch.push(pick)
+    size += cost
+  }
+  if (batch.length) batches.push(batch)
+  return batches
+}
+
+/* What a batch weighs, for working out how far along a run of them is. */
+export function batchBytes(batch) {
+  return batch.reduce((sum, { file }) => sum + (file?.size || 0), 0)
+}

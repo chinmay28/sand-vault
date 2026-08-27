@@ -12,6 +12,48 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### Uploading a folder of any size no longer takes the tab with it
+
+Picking seventy-nine files, or a folder holding a gigabyte and a half, did
+nothing. No error, no progress, no partly-filled folder — the window went away,
+and a window that has gone away has nowhere to put a message saying why.
+
+Everything picked went up as **one** request. That is fine for a file and
+quietly wrong for a folder, and it put three ceilings on an upload at once:
+
+- **The tab made every thumbnail before it sent anything.** Thumbnails are made
+  in the browser, because that is the only place your file exists in the clear.
+  A decoded photo is its pixels, not its file: a 20 MB picture off a phone is a
+  couple of hundred megabytes once the browser has unpacked it, and asking for
+  eighty of them at the same time asks the tab to hold all eighty at once. That
+  is what was killing it.
+- **Nothing was stored until all of it had arrived.** The server cannot start on
+  a multipart body until it has the whole thing, so a long upload showed an
+  empty folder throughout and then everything at the end — or, if anything went
+  wrong on the way, nothing at all.
+- **The whole choice was written to a temp file first.** On a Raspberry Pi with
+  a small `/tmp`, an upload could run out of room for a copy nobody knew it was
+  making.
+
+Now a choice goes up in batches. Each is bounded in size and in file count, its
+pictures are made a few at a time just before it leaves rather than all of them
+up front, and **the files appear in the folder as they land** instead of after
+the last byte of the last one. The progress card says which batch of how many it
+is on, so a long upload reads as one upload making its way through rather than
+as nothing happening.
+
+A batch that fails now takes only its own files down with it: the other seventy
+still store, and the ones that did not are named one by one, exactly as a
+handful of files dropped together always were. A locked vault or a cancelled
+upload still stops the rest — there is nothing to be gained from sending the
+remaining gigabyte to a vault that will not take it — and says how many files
+were not sent.
+
+None of this changes what is stored or how. A batch is an ordinary upload
+request; the server is unchanged apart from the one reply it could not give
+before: a single file over the 2 GiB a request may carry now comes back saying
+so and naming the limit, rather than as "could not read the upload".
+
 ### SAND now checks that your clouds are still answering, hourly
 
 Every ping SAND made was one you started. Opening the accounts drawer pinged

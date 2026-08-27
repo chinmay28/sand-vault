@@ -222,3 +222,59 @@ func TestUploadWithoutAPathIsStillAPlainFile(t *testing.T) {
 		t.Errorf("folders = %q, want just the root", got)
 	}
 }
+
+// A request bigger than the ceiling has to say that is what happened.
+//
+// The browser cuts a big choice into requests small enough that it never meets
+// this, so what reaches it is a single file too large to go through a browser
+// at all — and the reply is the only thing that will tell anybody so. Before,
+// it came back as "could not read the upload: multipart: NextPart: http:
+// request body too large", which names neither the limit nor the way round it.
+func TestUploadOverTheCeilingSaysSoRatherThanFailingToParse(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("pw", 3)
+	c.server.MaxUploadSize = 4 << 10
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	part, err := mw.CreateFormFile("files[]", "film.bin")
+	if err != nil {
+		t.Fatalf("CreateFormFile: %v", err)
+	}
+	part.Write(bytes.Repeat([]byte("x"), 32<<10))
+	mw.WriteField("path", "/")
+	mw.Close()
+
+	w := c.do(http.MethodPost, "/api/files", &buf, mw.FormDataContentType())
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusRequestEntityTooLarge)
+	}
+
+	var body APIError
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if body.Code != "TOO_LARGE" {
+		t.Errorf("code = %q, want TOO_LARGE", body.Code)
+	}
+	if !strings.Contains(body.Error, "4.0 KB") {
+		t.Errorf("error = %q, want it to name the 4.0 KB ceiling it met", body.Error)
+	}
+}
+
+// The size an error names is the one a person would recognise from the file
+// list, not a byte count they have to divide down themselves.
+func TestFormatBytesMatchesTheFiguresTheBrowserShows(t *testing.T) {
+	for _, tc := range []struct {
+		in   int64
+		want string
+	}{
+		{512, "512 B"},
+		{4 << 10, "4.0 KB"},
+		{DefaultMaxUploadSize, "2.0 GB"},
+	} {
+		if got := formatBytes(tc.in); got != tc.want {
+			t.Errorf("formatBytes(%d) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}

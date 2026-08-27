@@ -120,6 +120,20 @@ func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 	// Keep only a modest amount in RAM; the rest spills to a temp file that
 	// ParseMultipartForm cleans up when the request ends.
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		// A request over the ceiling arrives here as a parse failure, and
+		// "multipart: NextPart: http: request body too large" is not something
+		// to put in front of somebody who dropped a folder on the window. The
+		// browser sends a big choice in batches small enough that it never
+		// reaches this, so anything that does is a single file too large to go
+		// through the browser at all — say which limit it met and what else
+		// there is, rather than that the upload could not be read.
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf(
+				"that upload is over the %s a single request may carry — import it from the machine running SAND instead",
+				formatBytes(maxUpload)), "TOO_LARGE")
+			return
+		}
 		writeError(w, http.StatusBadRequest,
 			fmt.Sprintf("could not read the upload: %v", err), "PARSE_ERROR")
 		return
@@ -248,6 +262,21 @@ func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusBadGateway
 	}
 	writeJSON(w, status, map[string]any{"results": results, "stored": stored})
+}
+
+// formatBytes writes a size the way the rest of SAND does, so a limit named in
+// an error reads like the figures the browser shows beside it.
+func formatBytes(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit && exp < 4; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTP"[exp])
 }
 
 // parseSchemeField reads a "k-of-n" scheme out of a JSON field, treating empty
