@@ -2338,7 +2338,7 @@ reveals only whether a vault exists.
 | DELETE | `/api/providers/{id}` | Disconnect (`?force=1` to override the guard) |
 | GET | `/api/files?path=` | List a folder (`&vault=` for a sub vault; absent is the main one) |
 | GET | `/api/search?q=` | Find files and folders by name (`&path=` scopes to a subtree, `&vault=`, `&type=file\|folder`, `&limit=`) |
-| POST | `/api/files` | Upload (multipart `files[]`, `path`, `overwrite`, `accounts`). A whole folder goes up as its files, each with the path it had inside it under `rel-N`, plus `dirs` for the folders holding no file; the tree is rebuilt under `path` and every segment is checked as a typed name is |
+| POST | `/api/files` | Upload (multipart `files[]`, `path`, `overwrite`, `accounts`). A whole folder goes up as its files, each with the path it had inside it under `rel-N`, plus `dirs` for the folders holding no file; the tree is rebuilt under `path` and every segment is checked as a typed name is. One request is capped at `MaxUploadSize` (2 GiB), and the browser sends a bigger choice as several (§9.2.1) |
 | GET | `/api/files/{id}` | Metadata including part placement |
 | GET | `/api/files/{id}/content` | **Serve at an offset** through `ChunkedReader` (`?download=1` to save) |
 | GET | `/api/conversions` | Files still in the pre-chunking format |
@@ -2405,6 +2405,43 @@ Deletes behave the same way: an unreachable account produces a warning, and the
 index entry is dropped regardless, so a dead provider cannot pin a file in the
 browser forever.
 
+#### 9.2.1 A choice bigger than a request
+
+The endpoint takes as many files as fit in one request, and a folder is not one
+request. Everything picked used to be sent as a single multipart body, which put
+three ceilings on an upload at once and hid all three:
+
+- **Nothing was stored until all of it had arrived.** A gigabyte and a half went
+  up with nothing appearing in the folder, because the handler cannot start
+  until `ParseMultipartForm` has finished, and that does not finish until the
+  last byte of the last file.
+- **The body was spooled whole before it was looked at.** `ParseMultipartForm`
+  keeps 32 MiB in memory and puts the rest in a temp file, so the machine
+  running SAND needed room for the entire choice in `TMPDIR` — on a Raspberry Pi
+  with a tmpfs, an upload that failed for want of space it never said it wanted.
+- **The tab made every thumbnail first.** Thumbnails are made in the browser
+  (§3.12's cousin: the plaintext only exists there), and a decoded image is its
+  pixels rather than its file — a folder of phone photos decoded all at once is
+  gigabytes of bitmaps, which killed the tab. A dead tab reports nothing, so
+  from the outside the window simply vanished.
+
+The client therefore cuts a choice into batches — bounded in bytes and in file
+count, both well inside the request ceiling — and sends them one after another
+(`web/src/upload.js`, `batchPicks`). Each batch makes its own thumbnails, a few
+files at a time, just before it leaves. The server is unchanged by this: a batch
+is an ordinary upload request, and the per-file results (§9.2) are accumulated
+across batches by the caller.
+
+What that buys is the three ceilings gone and one more thing: a batch that fails
+is reported per file and the rest still go, so ninety files do not stay on the
+machine because the tenth would not store. The folders of a tree that hold no
+file (`dirs`) ride with the first batch that lands, since they have to exist
+before anything under them can.
+
+A request that does exceed the ceiling — a single file too large to go through a
+browser at all — comes back `413` with `TOO_LARGE` naming the limit, rather than
+as the `PARSE_ERROR` that `http.MaxBytesReader` produces on its own.
+
 ### 9.3 Error codes
 
 ```json
@@ -2412,8 +2449,8 @@ browser forever.
 ```
 
 `LOCKED · WRONG_PASSWORD · NO_VAULT · NOT_FOUND · CROSS_ORIGIN · VAULT_ERROR ·
-PARSE_ERROR · MISSING_FILE · BAD_PATH · NEEDS_CONVERSION · NO_MOVIE_KEY ·
-BAD_MOVIE_KEY · MOVIE_LOOKUP_OFF`
+PARSE_ERROR · TOO_LARGE · MISSING_FILE · BAD_PATH · NEEDS_CONVERSION ·
+NO_MOVIE_KEY · BAD_MOVIE_KEY · MOVIE_LOOKUP_OFF`
 
 ### 9.4 The WebDAV share
 

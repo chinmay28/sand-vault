@@ -1384,6 +1384,61 @@ class TestFolders:
         app.wait_for_selector("text=gui-folder", timeout=10000)
 
 
+class TestUploadingMoreThanOneRequestCarries:
+    """A choice too big for one request goes up as several.
+
+    Everything picked used to go in a single multipart body: a folder of a
+    hundred photos was one request that had to arrive whole before any of it
+    was stored, one failure lost all of it, and every thumbnail in it was made
+    before a byte was sent — which on a folder of any size took the tab down
+    with it, and a tab that is gone has nowhere to put an error. Now it goes in
+    batches, and what these prove is that the seam does not lose anything: the
+    same files arrive, in the right folder, and it really did take more than
+    one request to put them there.
+    """
+
+    def files(self, tmp_path, count):
+        """`count` small files, named so the last one to arrive is knowable."""
+        made = []
+        for i in range(count):
+            f = tmp_path / f"page-{i:02d}.txt"
+            f.write_text(f"page {i}")
+            made.append(str(f))
+        return made
+
+    def test_every_file_arrives_and_it_took_several_requests(self, app, tmp_path):
+        make_folder(app, "batched")
+        app.get_by_text("batched", exact=True).first.click()
+        app.wait_for_load_state("networkidle")
+
+        # More than the per-request file count the client cuts at (upload.js:
+        # BATCH_FILES), so the choice cannot go up as one request.
+        sources = self.files(tmp_path, 30)
+
+        posts = []
+        app.on("request", lambda r: (
+            posts.append(r.url)
+            if r.method == "POST" and "/api/files" in r.url else None))
+
+        app.set_input_files(FILE_INPUT, sources)
+        confirm = app.get_by_role("button", name=re.compile(r"Upload to \d+ cloud"))
+        confirm.wait_for(timeout=20000)
+        confirm.click()
+
+        app.wait_for_selector('button[aria-label="Download page-29.txt"]', timeout=180000)
+        app.wait_for_load_state("networkidle")
+
+        # All thirty, and nothing tipped out into the folder above.
+        assert sorted(listed_files(app)) == sorted(os.path.basename(f) for f in sources)
+        assert len(posts) > 1, "thirty files went up as one request — the batching is gone"
+
+        # And they are real files on the clouds, not index rows: one of them
+        # rebuilds off the parts.
+        app.locator('button[title="Open"]', has_text="page-17.txt").click()
+        app.wait_for_selector("text=page 17", timeout=60000)
+        app.keyboard.press("Escape")
+
+
 class TestUploadingAFolder:
     """A folder can be uploaded, not only the files inside one.
 

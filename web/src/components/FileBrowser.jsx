@@ -4,8 +4,10 @@ import { api, joinPath } from '../api'
 import { sortFiles, sortFolders, sortHits, useViewPrefs } from '../view'
 import { ActionSheet, Banner, Button, Empty, Modal, Spinner } from './ui'
 import { UploadDestination, RelocateClouds } from './CloudSelect'
-import { makeThumbnail } from '../thumbs'
-import { describePicks, emptyDirs, picksFromDrop, picksFromInput } from '../upload'
+import { makeThumbnails } from '../thumbs'
+import {
+  batchBytes, batchPicks, describePicks, emptyDirs, picksFromDrop, picksFromInput, totalBytes,
+} from '../upload'
 import {
   COLUMNS, FILM_COLUMNS, TILE_POSTER, TILE_SQUARE,
   FileRow, FileTile, FolderRow, FolderTile, SelectBox,
@@ -364,42 +366,105 @@ export default function FileBrowser({
     setPending(picks)
   }, [canUpload, onError, onRefresh, path, vault])
 
+  /* Sends a choice, in as many requests as it takes.
+
+     Everything picked used to go in one request, which for a folder meant a
+     body of every byte in it: nothing was stored until all of it had arrived,
+     one failure lost the lot, and the thumbnails for all of it were made at
+     once before any of it was sent — enough, for a folder of photos, to take
+     the tab down with no error anywhere, because there is no error to be had
+     when the window itself is gone.
+
+     So it goes in batches: each is bounded in bytes and in files, its pictures
+     are made just before it leaves rather than all of them up front, and what
+     it stored is listed while the next one is still going. A batch that fails
+     is reported per file and the rest carry on — there is no sense in throwing
+     away the ninety files that would have worked because the tenth would
+     not. */
   const uploadFiles = useCallback(async (picks, accounts, scheme = '') => {
-    const { files } = picks
+    const batches = batchPicks(picks.files)
+    if (!batches.length) return
+
     // What is going up, said the way it was chosen: one file by its name, a
     // folder by the folder rather than by the four hundred files inside it.
-    const batch = { id: Math.random().toString(36).slice(2), label: describePicks(picks), progress: 0 }
-    setUploads((prev) => [...prev, batch])
+    const card = {
+      id: Math.random().toString(36).slice(2),
+      label: describePicks(picks),
+      progress: 0,
+      note: batches.length > 1 ? `1 of ${batches.length}` : '',
+    }
+    setUploads((prev) => [...prev, card])
+
+    const track = (fields) => setUploads((prev) =>
+      prev.map((u) => (u.id === card.id ? { ...u, ...fields } : u)))
+
+    // Bytes rather than batches, so the bar moves at the rate the network is
+    // actually going and not in equal steps over unequal batches.
+    const total = totalBytes(picks) || 1
+    let done = 0
+    // The corners of the tree no file would make on the way past. They ride
+    // with the first request that lands, and are only let go once it has.
+    let folders = emptyDirs(picks)
+    const failures = []
+    const notes = []
 
     try {
-      /* Made here, before anything is sent, because this is the only place the
-         plaintext file exists in a browser. Each one resolves to null rather
-         than throwing, so a format we cannot draw never holds up its upload. */
-      const thumbnails = await Promise.all(
-        files.map(({ file }) => makeThumbnail(file, file.type, file.name)))
+      for (let i = 0; i < batches.length; i++) {
+        const group = batches[i]
+        const weight = batchBytes(group)
+        if (batches.length > 1) track({ note: `${i + 1} of ${batches.length}` })
 
-      const resp = await api.upload(files, path, {
-        vault,
-        accounts,
-        scheme,
-        thumbs: thumbnails,
-        // Only the folders that no file's own path already names.
-        dirs: emptyDirs(picks),
-        onProgress: (fraction) => setUploads((prev) =>
-          prev.map((u) => (u.id === batch.id ? { ...u, progress: fraction } : u))),
-      })
+        try {
+          /* Made here, before this batch is sent and not before the whole
+             upload, because this is the only place the plaintext file exists
+             in a browser — and a few at a time, because decoding all of them
+             at once is what made the tab disappear. Each resolves to null
+             rather than throwing, so a format we cannot draw never holds up
+             its upload. */
+          const thumbnails = await makeThumbnails(group.map(({ file }) => file))
 
-      const failures = (resp.results || []).filter((r) => !r.ok)
-      const notes = (resp.results || []).flatMap((r) => (r.warnings || []).map((w) => `${r.name}: ${w}`))
-      if (failures.length) {
-        onError(failures.map((f) => `${f.name}: ${f.error}`).join('\n'))
+          const resp = await api.upload(group, path, {
+            vault,
+            accounts,
+            scheme,
+            thumbs: thumbnails,
+            dirs: folders,
+            onProgress: (fraction) => track({ progress: (done + fraction * weight) / total }),
+          })
+          folders = []
+
+          const results = resp.results || []
+          for (const r of results) {
+            if (!r.ok) failures.push(`${r.name}: ${r.error}`)
+            for (const w of r.warnings || []) notes.push(`${r.name}: ${w}`)
+          }
+          // Listed as it arrives: on a long upload the folder fills up while
+          // the rest of it is still going, which is also the only sign from
+          // out here that anything is happening at all.
+          onRefresh()
+        } catch (err) {
+          // The request did not land, so nothing in it did — say so of each
+          // file rather than once, since the rest of the upload continues and
+          // the list would otherwise be the only record of what is missing.
+          for (const { file, path: rel } of group) failures.push(`${rel || file.name}: ${err.message}`)
+          // Unless it was never about this batch. A locked vault or a
+          // cancelled request fails everything after it the same way, and
+          // grinding through the remaining gigabyte to prove it helps nobody.
+          if (err.code === 'ABORTED' || err.status === 401 || err.status === 403) {
+            const left = batches.slice(i + 1).reduce((n, g) => n + g.length, 0)
+            if (left) failures.push(`${left} more file${left === 1 ? '' : 's'} were not sent.`)
+            break
+          }
+        }
+
+        done += weight
+        track({ progress: done / total })
       }
+
+      if (failures.length) onError(failures.join('\n'))
       if (notes.length) setWarnings((prev) => [...prev, ...notes])
-      onRefresh()
-    } catch (err) {
-      onError(err.message)
     } finally {
-      setUploads((prev) => prev.filter((u) => u.id !== batch.id))
+      setUploads((prev) => prev.filter((u) => u.id !== card.id))
     }
   }, [path, vault, onError, onRefresh])
 
@@ -648,6 +713,10 @@ export default function FileBrowser({
             }}>
               <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {upload.label}
+                {/* Which batch of how many, when it takes more than one — so a
+                    folder that goes up in six requests reads as one upload
+                    making its way through rather than six of them. */}
+                {upload.note && <span style={{ color: COLORS.textMuted }}> · {upload.note}</span>}
               </span>
               <span>{upload.progress >= 1
                 ? 'splitting, encrypting and scattering…'

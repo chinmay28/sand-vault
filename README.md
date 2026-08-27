@@ -1932,7 +1932,10 @@ pipe the password on stdin.
   backends appear without frontend changes
 - **Browser** — folders, breadcrumbs, drag-and-drop upload with progress.
   A folder can be uploaded as well as a file, from the picker or by dropping
-  it: everything under it goes up keeping its shape, however deep
+  it: everything under it goes up keeping its shape, however deep. A big one
+  goes up in batches rather than as one request — the files appear in the
+  folder as they land instead of after the last byte of the last one, and a
+  file that will not store takes only its own batch down with it
 - **Navigation** — Back, Forward and Up lead the toolbar and step along the
   trail of folders you have walked through, as does `Alt+←` / `Alt+→` / `Alt+↑`.
   The trail is held in memory only and goes when the vault locks
@@ -2390,7 +2393,7 @@ one walk, so comparing them costs nothing.
 | DELETE | `/api/providers/{id}` | Disconnect (`?force=1`) |
 | GET | `/api/files?path=` | List a folder |
 | GET | `/api/search?q=` | Find files and folders by name (`&path=` to scope, `&type=file\|folder`, `&limit=`) |
-| POST | `/api/files` | Upload (`files[]`, `path`, `overwrite`, `thumb-N` per file, `rel-N` for the path a file had inside an uploaded folder, `dirs` for the folders of one that hold no file) |
+| POST | `/api/files` | Upload (`files[]`, `path`, `overwrite`, `thumb-N` per file, `rel-N` for the path a file had inside an uploaded folder, `dirs` for the folders of one that hold no file). One request is capped at 2 GiB, and the browser cuts a bigger choice into several |
 | GET | `/api/files/{id}/content` | Serve at an offset — a range costs the chunks it covers, not the file (`?download=1`) |
 | GET | `/api/conversions` | Files still in the pre-chunking format |
 | POST | `/api/files/{id}/convert` | Move one out of it |

@@ -135,3 +135,35 @@ function encode(canvas) {
     )
   })
 }
+
+/* How many files are decoded at once when a whole folder was chosen.
+ *
+ * Making a thumbnail decodes the source, and a decoded image is its pixels, not
+ * its file: a 20 MB photo off a modern phone is a couple of hundred megabytes
+ * once it is a bitmap. Asking for all of them at the same time — which is what
+ * mapping an upload straight through Promise.all does — is asking the tab to
+ * hold every one of those bitmaps at once, and a folder of a hundred photos
+ * killed the tab outright, which from the other side of the screen is the
+ * window simply disappearing with nothing said. A few lanes at a time is as
+ * fast in practice, since the work is decode-bound either way. */
+export const THUMBNAIL_LANES = 3
+
+/* Thumbnails for a list of files, in the same order, a few at a time. Each is
+   null where no picture could be made, exactly as makeThumbnail leaves it. */
+export async function makeThumbnails(files, lanes = THUMBNAIL_LANES) {
+  const out = new Array(files.length).fill(null)
+  let next = 0
+
+  const lane = async () => {
+    for (;;) {
+      const i = next
+      next += 1
+      if (i >= files.length) return
+      const file = files[i]
+      out[i] = await makeThumbnail(file, file?.type, file?.name)
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(lanes, files.length) }, lane))
+  return out
+}
