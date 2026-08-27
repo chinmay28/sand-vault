@@ -45,6 +45,11 @@ export default function App() {
   const path = nav.path
   const [listing, setListing] = useState(null)
   const [providers, setProviders] = useState([])
+  /* Whether every connected cloud is still answering. The server checks them on
+     the vault's own schedule whether or not this app is open; what the browser
+     does is read the answer, which is a look at a map in memory and costs
+     nothing. See CloudHealth. */
+  const [health, setHealth] = useState(null)
   const [loadingList, setLoadingList] = useState(false)
   const [loadingProviders, setLoadingProviders] = useState(false)
   const [error, setError] = useState(null)
@@ -127,18 +132,33 @@ export default function App() {
     })
   }, [])
 
+  const refreshHealth = useCallback(async () => {
+    try {
+      const resp = await api.cloudHealth()
+      setHealth(resp.health || null)
+    } catch {
+      // A vault that locked under us is the lock screen's news to break, and a
+      // reading nobody asked for has no business raising an error over an
+      // otherwise working app.
+    }
+  }, [])
+
   const refreshProviders = useCallback(async () => {
     setLoadingProviders(true)
     try {
       const resp = await api.providers()
       setProviders(resp.providers || [])
+      // That listing pinged every account on its way here, which the server
+      // files as a check — so read the standing back rather than leaving the
+      // drawer showing what the last one found.
+      refreshHealth()
     } catch (err) {
       if (err.code === 'LOCKED') setStatus((s) => ({ ...s, unlocked: false }))
       else setError(err.message)
     } finally {
       setLoadingProviders(false)
     }
-  }, [])
+  }, [refreshHealth])
 
   /* Which listing the browser is actually showing. A folder listing is a
      round-trip, and walking into a sub vault changes where you are while one
@@ -195,6 +215,22 @@ export default function App() {
     if (!unlocked) return
     refreshProviders()
   }, [unlocked, refreshProviders])
+
+  /* And the standing of the clouds, on a timer of its own.
+
+     A minute, which is nothing: this is a loopback request against a map in
+     memory, and it contacts no cloud at all — the checking happens on the
+     server, on the vault's schedule, whether this tab is open or shut. Polling
+     it is what makes the drawer's line go red within a minute of a scheduled
+     check finding something rather than the next time somebody happens to
+     refresh the accounts. */
+  useEffect(() => {
+    if (!unlocked) return
+
+    refreshHealth()
+    const timer = setInterval(refreshHealth, 60_000)
+    return () => clearInterval(timer)
+  }, [unlocked, refreshHealth])
 
   /* Disaster recovery starts here, without being asked for.
 
@@ -268,6 +304,7 @@ export default function App() {
     setStatus((s) => ({ ...s, unlocked: false, stats: null }))
     setListing(null)
     setProviders([])
+    setHealth(null)
     setPreview(null)
     setInspecting(null)
     setFilming(null)
@@ -478,6 +515,8 @@ export default function App() {
             webdav={status.webdav}
             mobile={mobile}
             open={accountsOpen}
+            health={health}
+            onHealthChanged={setHealth}
             subVaults={subVaults}
             showSubVaults={showSubVaults}
             subVaultShown={subVaultShown}

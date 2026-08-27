@@ -284,6 +284,15 @@ func (s *Server) Handler() (http.Handler, error) {
 		"GET /api/providers":            s.handleProvidersList,
 		"POST /api/providers":           s.handleProviderAdd,
 		"POST /api/providers/{id}/test": s.handleProviderTest,
+		// Whether every account is still answering, asked on a schedule so that
+		// a cloud going dark is noticed by the app rather than by the person who
+		// happens to open the drawer next month. The GET is a read of what the
+		// last check found and contacts nobody, which is what lets the panel
+		// poll it; the check itself pings every account; the schedule is how
+		// often that happens, or never. See handlers_health.go.
+		"GET /api/providers/health":           s.handleCloudHealth,
+		"POST /api/providers/health/check":    s.handleCloudHealthCheck,
+		"POST /api/providers/health/schedule": s.handleCloudHealthSchedule,
 		// One account taken apart: its quota against what SAND actually put
 		// there, and what the rest of its load is made of.
 		//
@@ -579,6 +588,10 @@ func (s *Server) Start() error {
 	// The folder policies. Nothing happens on a tick with nothing due, and
 	// nothing happens at all while the vault is locked — see automationLoop.
 	go s.automationLoop()
+	// And the question the folder policies do not answer for the vault as a
+	// whole: are the clouds themselves still there. A ping each, on the vault's
+	// own schedule, and nothing at all while it is locked — see healthLoop.
+	go s.healthLoop()
 
 	addr := net.JoinHostPort(s.Bind, fmt.Sprint(s.Port))
 	v, _ := s.Vault()

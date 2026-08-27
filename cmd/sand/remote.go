@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -21,7 +22,8 @@ func remoteCmd() *cobra.Command {
 		Short:   "Connect and manage cloud accounts",
 	}
 	cmd.AddCommand(remoteKindsCmd(), remoteAddCmd(), remoteListCmd(), remoteEditCmd(),
-		remoteTestCmd(), remoteMeasureCmd(), remoteRemoveCmd(), remoteProtonCmd())
+		remoteTestCmd(), remoteHealthCmd(), remoteMeasureCmd(), remoteRemoveCmd(),
+		remoteProtonCmd())
 	return cmd
 }
 
@@ -458,6 +460,136 @@ func remoteTestCmd() *cobra.Command {
 			fmt.Printf("%s is online\n", cfg.Name)
 			return nil
 		},
+	}
+}
+
+// remoteHealthCmd is `sand remote test` asked of every account at once, plus
+// the schedule the server keeps asking on.
+//
+// It belongs on the CLI rather than only in the browser because the machine
+// that actually runs the check is usually the one with no browser on it: a
+// server or a Pi running `sand serve` for months. This is how somebody on that
+// machine sets how often it looks, and how they see what it last found without
+// opening the app from another room.
+func remoteHealthCmd() *cobra.Command {
+	var (
+		every string
+		off   bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "health",
+		Short: "Check that every account is answering, and how often SAND asks",
+		Long: `Ping every connected account and report which ones answered.
+
+SAND does this on its own, hourly by default, for as long as the vault is
+unlocked — so a cloud whose token expires overnight is noticed rather than
+discovered the next time somebody looks. --every and --off change that
+schedule; with neither, this runs one check now and prints what it found.
+
+  sand remote health              # check them all now
+  sand remote health --every 6h   # ask every six hours from now on
+  sand remote health --off        # stop asking on a schedule`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			v, err := openVault(cmd)
+			if err != nil {
+				return err
+			}
+			defer closeVault(v)
+
+			// The schedule first, so that `--every 15m` prints the check it
+			// just scheduled rather than the one it replaced.
+			if off || every != "" {
+				schedule := vault.HealthSchedule{Enabled: !off}
+				if every != "" {
+					interval, err := time.ParseDuration(every)
+					if err != nil {
+						return fmt.Errorf("--every takes a duration like 15m, 1h or 24h: %w", err)
+					}
+					schedule.Minutes = int(interval / time.Minute)
+					schedule.Enabled = true
+				}
+				saved, err := v.SetHealthSchedule(schedule)
+				if err != nil {
+					return err
+				}
+				if !saved.Enabled {
+					fmt.Println("Scheduled checks are off. The clouds are still pinged " +
+						"whenever the accounts are listed.")
+				} else {
+					fmt.Printf("Checking every %s from now on.\n", formatInterval(saved.Interval()))
+				}
+			}
+
+			report, err := v.CheckClouds(context.Background())
+			if err != nil {
+				return err
+			}
+			if report.Accounts == 0 {
+				fmt.Println("No accounts connected. Add one with 'sand remote add'.")
+				return nil
+			}
+
+			tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(tw, "NAME\tKIND\tHEALTH\tANSWERED IN\tSINCE")
+			for _, cloud := range report.Clouds {
+				health, since := "healthy", "—"
+				if !cloud.Healthy {
+					health = "UNHEALTHY: " + firstLine(cloud.Error)
+					if !cloud.FailingSince.IsZero() {
+						since = cloud.FailingSince.Local().Format("2 Jan 15:04")
+					}
+				}
+				took := "—"
+				if cloud.Took > 0 {
+					took = (time.Duration(cloud.Took) * time.Millisecond).String()
+				}
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", cloud.Name, cloud.Kind, health, took, since)
+			}
+			if err := tw.Flush(); err != nil {
+				return err
+			}
+
+			schedule := v.HealthSchedule()
+			switch {
+			case report.Unhealthy > 0:
+				fmt.Printf("\n%d of %d not answering.\n", report.Unhealthy, report.Accounts)
+			default:
+				fmt.Printf("\nAll %d answering.\n", report.Accounts)
+			}
+			if schedule.Enabled {
+				fmt.Printf("Checked again every %s while the vault is unlocked.\n",
+					formatInterval(schedule.Interval()))
+			} else {
+				fmt.Println("Scheduled checks are off — 'sand remote health --every 1h' turns them back on.")
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&every, "every", "", "How often to check, as a duration (15m, 1h, 24h)")
+	cmd.Flags().BoolVar(&off, "off", false, "Stop checking on a schedule")
+	return cmd
+}
+
+// formatInterval writes a schedule the way somebody would say it. Go's own
+// duration printing gives "1h0m0s", which is exact and reads like a fault.
+func formatInterval(d time.Duration) string {
+	switch {
+	case d%(24*time.Hour) == 0 && d >= 24*time.Hour:
+		days := int(d / (24 * time.Hour))
+		if days == 1 {
+			return "24 hours"
+		}
+		return fmt.Sprintf("%d days", days)
+	case d%time.Hour == 0:
+		hours := int(d / time.Hour)
+		if hours == 1 {
+			return "hour"
+		}
+		return fmt.Sprintf("%d hours", hours)
+	default:
+		return fmt.Sprintf("%d minutes", int(d/time.Minute))
 	}
 }
 

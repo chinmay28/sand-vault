@@ -2228,6 +2228,57 @@ row came from. Its parts still count towards the capacity figures and towards
 `Sole`, from the same inventory `ProviderStatuses` uses, so a locked sub vault
 does not make an account look emptier than it is.
 
+### 8.8 Whether the account is still there at all
+
+Every other ping is user-initiated: `ProviderStatuses` when the panel is drawn,
+`TestProvider` when somebody presses Test, `probeAccounts` at the head of a
+folder sweep. The failure that catches nobody's eye is the one with nobody
+looking — a revoked refresh token, a rotated access key, a NAS off since the
+power cut. Nothing about the vault looks wrong while it happens, because a file
+reads from any `k` of its `n` shards and the accounts still answering carry it
+until the second one goes.
+
+`Vault.CheckClouds` is the sweep: one `Ping` per account, all at once, twenty
+seconds each, and nothing else — no listing, no usage call, no transfer. What is
+on an account and whether particular shards are still there is §3.15's job,
+which reads the index and costs accordingly; this only asks whether the account
+answers, which is the precondition for all of it.
+
+**The results live in memory** (`Vault.healthSeen`, under its own leaf lock) and
+go when the vault locks, along with the account names they refer to. A ping
+result expires within the hour, so writing it into a file that has to be
+re-sealed to change would be paying a disk write for a fact with an hour to
+live. `Vault.CloudHealth` builds the report against the accounts as they are
+*now* rather than as they were when the check ran: an account connected since is
+`Checked: false` — neither healthy nor unhealthy — and a disconnected one stops
+being counted the moment `forgetProvider` runs. `FailingSince` is the one thing
+carried across checks, because "unreachable for three days" and "unreachable"
+are not the same news.
+
+**Every ping feeds it.** `ProviderStatuses` files its results through
+`recordSweep`, which also moves the clock the next scheduled check is measured
+from — it *is* a ping of every account, and treating it otherwise would mean
+pinging seventeen clouds twice in a minute. `TestProvider` files one result
+through `rememberOne` and deliberately does not touch that clock: one account
+answering says nothing about the other sixteen.
+
+**The schedule** is `HealthCheckMinutes` / `HealthCheckOff` in the store's clear
+section, beside the placement policy and giving away less: how often this
+machine talks to storage it is already known to use. Stored as the negative so
+that a vault written before this existed reads as switched on. Bounded to
+between 5 minutes and 7 days — below the floor a cloud's occasional missed
+answer turns the panel into a flicker, above the ceiling "checked recently"
+stops being a claim.
+
+`Server.healthLoop` mirrors `automationLoop`: a tick a minute, arithmetic over
+one timestamp, and nothing contacted unless `HealthCheckDue` says so. Two
+differences, both deliberate. It never calls `noteExternalActivity` — a sweep
+that rebuilds files must not be locked out half way through, but an hourly ping
+that renewed the idle timer would mean no machine running SAND ever auto-locked
+again. And it logs only changes, one line when an account stops answering and
+one when it comes back: this runs on every install by default, so a line an hour
+saying everything is fine would bury the one that matters.
+
 ---
 
 ## 9. HTTP API
@@ -2280,6 +2331,9 @@ reveals only whether a vault exists.
 | POST | `/api/providers/oauth/complete` | Turn a finished sign-in into an account |
 | POST | `/api/providers/oauth/reauthorize` | Spend a finished sign-in on an account already connected: new credentials, same ID, same parts (§3.10) |
 | POST | `/api/providers/{id}/test` | Re-check one account |
+| GET | `/api/providers/health` | What the last check found: every connected account with whether it answered, when, how long it took, and how long a failing one has been failing, plus the schedule and when it next comes round (§8.8). A read of memory — nothing is contacted, which is what lets the accounts panel poll it |
+| POST | `/api/providers/health/check` | Ping every account now and answer with the same report |
+| POST | `/api/providers/health/schedule` | How often that happens: `interval_minutes` (5 min to 7 days) and `enabled`. Omitting either leaves it alone, so switching the check off keeps the interval it had |
 | PATCH | `/api/providers/{id}` | Rename it / set its colour / declare its capacity / set the quota of it SAND may fill — index only, the backend is never contacted (§3.9). `capacity` and `quota` arrive as typed text and are read by `provider.ParseSize`. Also its `options`, which is the one field here that does reach the backend: it is pinged with the new settings before they are stored (§3.10) |
 | DELETE | `/api/providers/{id}` | Disconnect (`?force=1` to override the guard) |
 | GET | `/api/files?path=` | List a folder (`&vault=` for a sub vault; absent is the main one) |
@@ -2565,7 +2619,8 @@ sand/
 │   │                          #   relocate (moving parts between accounts), rekey,
 │   │                          #   backup (writing the index out), recovery (reading it
 │   │                          #   back), reclaim (onto a key of your own),
-│   │                          #   subvault (vaults inside the vault), discover (import)
+│   │                          #   subvault (vaults inside the vault), discover (import),
+│   │                          #   health (are the clouds still answering, §8.8)
 │   └── server/                # sessions, handlers, embedded SPA
 ├── web/src/                   # React file browser
 │   ├── api.js  theme.js  App.jsx
@@ -2594,6 +2649,10 @@ sand/
   commit. Browsing stays responsive while a large upload is in flight.
 - `liveMu` is a separate leaf lock over the cache of constructed providers, so
   warming that cache can never deadlock against `mu`.
+- `healthMu` is another, over what each account said the last time anything
+  pinged it (§8.8). It is written from the ping paths — including the one that
+  draws the accounts panel — so it must never be able to wait on the index to
+  record a result.
 - The chunk cache, the per-chunk single-flight and the background rechunk queue
   each carry their own leaf lock, on the same terms: taken after `mu` and never
   around a call that takes it. The rechunk queue follows the manifest backup
@@ -2609,6 +2668,10 @@ sand/
 
 - `sand check --all` stats every part of every file and exits non-zero if
   anything is degraded or unrecoverable — suitable for a cron job.
+- The connected accounts are pinged hourly while the vault is unlocked, and a
+  cloud that stops or starts answering is one log line either way (§8.8).
+  `sand remote health` is the same check from a terminal, and `--every` / `--off`
+  set the schedule on a machine with no browser on it.
 - Disconnecting an account is refused when it would leave any file with fewer
   than two reachable parts, unless forced. Either way the shard records
   pointing at that account are pruned so the index keeps telling the truth.

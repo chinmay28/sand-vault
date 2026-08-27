@@ -159,6 +159,22 @@ type storeFile struct {
 	// produce a vault that cannot read anything re-encrypted since.
 	BackupNeedsForce bool `json:"backup_needs_force,omitempty"`
 
+	// HealthCheckMinutes is how often the connected accounts are pinged in the
+	// background to see whether they are still answering, and HealthCheckOff
+	// switches that off. Zero minutes means the default — an hour.
+	//
+	// Stored as the negative, the way ManifestBackupDisabled below is and for
+	// the same reason: a vault written before this existed has no field at all,
+	// and the absence of it has to mean the check is on.
+	//
+	// In the clear beside the policy, and it gives away less than the policy
+	// does: an interval says how often this machine talks to storage it has
+	// already been established it uses. Nothing about which accounts, or what
+	// they hold, or whether any of them is currently down — those live in the
+	// encrypted section and in memory respectively. See health.go.
+	HealthCheckMinutes int  `json:"health_check_minutes,omitempty"`
+	HealthCheckOff     bool `json:"health_check_off,omitempty"`
+
 	// ManifestBackupDisabled turns off replicating the manifest to the
 	// connected accounts. Stored as the negative so that the absence of the
 	// field — an older vault, or one written by a build that predates the

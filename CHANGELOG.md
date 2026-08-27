@@ -12,6 +12,68 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### SAND now checks that your clouds are still answering, hourly
+
+Every ping SAND made was one you started. Opening the accounts drawer pinged
+them, **Test** pinged one, a folder's sweep pinged them all before checking
+anything under it — and every one of those needed somebody sitting in front of
+the app. The failure that matters is the one nobody is sitting in front of: a
+refresh token revoked in March, an access key rotated by somebody else on the
+team, a NAS that has been off since the power cut.
+
+None of that makes anything look broken. Files still read, because a file needs
+`k` of its `n` parts and the clouds still answering carry it — right up until a
+second one goes and the file does not come back at all.
+
+The server now asks them itself, once an hour, for as long as the vault is
+unlocked. The foot of the connected clouds panel says what it found, in the
+space beside the vault's own figures that was empty:
+
+```
+2671    580.4 GB                  ● 1 of 17 unhealthy
+FILES   IN THE VAULT                 checked 12m ago
+```
+
+Pressing that line opens every cloud worst-first: what the unreachable ones
+actually said, how long each has been failing — *not answering for 3 days* is a
+different problem from *not answering* — and how quickly the healthy ones came
+back, which is where a cloud on its way out shows up first. **Check now** asks
+them all again, for when you have just fixed one.
+
+**Vault settings → Cloud health** is the same panel, and where the schedule
+lives: 15 minutes, hourly, 6 hours, daily, or off. Off is a real answer —
+somebody metered by the request should be able to say so, and the panel then
+stops claiming a freshness nothing is maintaining.
+
+It is a ping and nothing more: one small request per cloud, no listing, no
+download, no data moved. Whether the parts of a particular file are still where
+the index says they went is the other question, and stays what it was — a
+folder's standing instruction, opt-in per folder, because that one reads the
+index and asks after parts by name.
+
+Two things follow from where it runs. It only runs while the vault is unlocked,
+since the credentials live in the encrypted index — but a slot that passes while
+the vault is shut is not lost, because *due* is measured against the last check
+rather than by a timer that has to have been running. And it never counts as
+use: an hourly ping that renewed the idle timer would mean the vault never
+auto-locked again.
+
+Drawing the accounts panel pings every account, so it counts as a check — the
+figure stays fresh while you are looking, and the scheduled one does not go out
+and repeat what just happened. Something changing is logged once, rather than a
+line an hour saying everything is fine:
+
+```
+cloud health: Elements (dial tcp 192.168.1.40:445: no route to host) — 1 of 17 not answering
+cloud health: Elements answering again
+```
+
+On a headless machine — which is usually the one actually running the check —
+`sand remote health` does the same from a terminal, with `--every 6h` and
+`--off` for the schedule. `GET /api/providers/health` reads what the last check
+found without contacting anybody, `POST /api/providers/health/check` runs one
+now, and `POST /api/providers/health/schedule` is the setting.
+
 ### The connected clouds panel now starts folded away on a desktop too
 
 On a phone the sidebar has always been a drawer: the file list is what you came

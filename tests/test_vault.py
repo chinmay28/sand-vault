@@ -1511,3 +1511,128 @@ class TestReattachMislaidShards:
         # Nothing left to do.
         again = sub_cli(sand_bin, root, "vault", "reattach")
         assert "already has a record pointing at it" in again.stdout, again.stdout
+
+
+# ---------------------------------------------------------------------------
+# Are the clouds still there?
+# ---------------------------------------------------------------------------
+
+class TestCloudHealth:
+    """The hourly check, and the line the accounts drawer draws from it.
+
+    Every other ping in SAND is one somebody started, so a cloud that quietly
+    stops answering stays quiet until the next person opens the drawer. These
+    tests are about the answer being there without anybody having asked.
+    """
+
+    def health(self, server, session):
+        r = session.get(f"{server}/api/providers/health", timeout=30)
+        assert r.status_code == 200, r.text
+        return r.json()["health"]
+
+    def test_reading_the_standing_contacts_nobody(self, server, unlocked):
+        health = self.health(server, unlocked)
+        assert health["accounts"] >= 3
+        # Whatever it says about them, it says something about all of them.
+        assert len(health["clouds"]) == health["accounts"]
+        assert (health["healthy"] + health["unhealthy"] + health["unchecked"]
+                == health["accounts"])
+
+    def test_a_check_finds_every_account_answering(self, server, unlocked):
+        r = unlocked.post(f"{server}/api/providers/health/check", timeout=120)
+        assert r.status_code == 200, r.text
+        health = r.json()["health"]
+        assert health["unhealthy"] == 0, health["clouds"]
+        assert health["healthy"] == health["accounts"]
+        assert health["checked_at"]
+        # And the schedule says when it will happen again on its own.
+        assert health["schedule"]["enabled"] is True
+        assert health["next_check_at"]
+
+    def test_a_cloud_that_stops_answering_is_counted(self, server, unlocked, clouds):
+        """A folder that turns into a file is a NAS that has been switched off:
+        the account is still configured and there is nothing at the end of it.
+
+        The folder is moved aside rather than deleted — one atomic step, while
+        the vault is pushing its index backup into it in the background.
+        """
+        path = os.path.join(clouds("cloud-flaky"), "store")
+        os.makedirs(path, exist_ok=True)
+        r = unlocked.post(
+            f"{server}/api/providers",
+            json={"kind": "local", "name": "cloud-flaky", "options": {"path": path}},
+            timeout=60,
+        )
+        assert r.status_code == 201, r.text
+        account = r.json()["provider"]["id"]
+
+        try:
+            before = self.health(server, unlocked)["accounts"]
+            os.rename(path, path + "-moved")
+            with open(path, "w") as blocked:
+                blocked.write("not a folder")
+
+            health = unlocked.post(
+                f"{server}/api/providers/health/check", timeout=120).json()["health"]
+            assert health["unhealthy"] == 1, health["clouds"]
+            assert health["accounts"] == before
+
+            # Worst first, with the reason — the panel leads with the account
+            # that needs attention rather than burying it among the healthy.
+            worst = health["clouds"][0]
+            assert worst["name"] == "cloud-flaky"
+            assert worst["healthy"] is False
+            assert worst["error"]
+            assert worst["failing_since"]
+
+            # The read that costs nothing says the same thing.
+            assert self.health(server, unlocked)["unhealthy"] == 1
+        finally:
+            os.remove(path)
+            unlocked.delete(f"{server}/api/providers/{account}",
+                            params={"force": "1"}, timeout=60)
+
+        # A cloud that is no longer connected cannot be unhealthy.
+        assert self.health(server, unlocked)["unhealthy"] == 0
+
+    def test_the_schedule_is_a_setting(self, server, unlocked):
+        try:
+            r = unlocked.post(f"{server}/api/providers/health/schedule",
+                              json={"interval_minutes": 360}, timeout=30)
+            assert r.status_code == 200, r.text
+            assert r.json()["schedule"]["interval_minutes"] == 360
+
+            # Switching it off keeps the interval, so switching it back on
+            # returns to the schedule that was chosen.
+            off = unlocked.post(f"{server}/api/providers/health/schedule",
+                                json={"enabled": False}, timeout=30).json()["schedule"]
+            assert off == {"enabled": False, "interval_minutes": 360}
+            # And nothing is promised while it is off.
+            assert "next_check_at" not in self.health(server, unlocked)
+
+            refused = unlocked.post(f"{server}/api/providers/health/schedule",
+                                    json={"enabled": True, "interval_minutes": 1},
+                                    timeout=30)
+            assert refused.status_code == 400, refused.text
+        finally:
+            unlocked.post(f"{server}/api/providers/health/schedule",
+                          json={"enabled": True, "interval_minutes": 60}, timeout=30)
+
+    def test_the_cli_asks_the_same_question(self, sand_bin, tmp_path, clouds):
+        root = tmp_path / "health-vault"
+        os.makedirs(root, exist_ok=True)
+        sub_cli(sand_bin, root, "vault", "init")
+        for name in ("one", "two"):
+            sub_cli(sand_bin, root, "remote", "add", "local",
+                    "--name", f"health-{name}",
+                    "--set", f"path={clouds('health-' + name)}")
+
+        out = sub_cli(sand_bin, root, "remote", "health").stdout
+        assert "All 2 answering." in out, out
+        assert "every hour" in out, out
+
+        out = sub_cli(sand_bin, root, "remote", "health", "--every", "6h").stdout
+        assert "Checking every 6 hours from now on." in out, out
+
+        out = sub_cli(sand_bin, root, "remote", "health", "--off").stdout
+        assert "Scheduled checks are off" in out, out
