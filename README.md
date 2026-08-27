@@ -1780,11 +1780,14 @@ pipe the password on stdin.
 `sand serve` puts a file browser at `http://<host>:8123`:
 
 - **Lock screen** — nothing can be listed or fetched until the vault is open
-- **Sidebar** — every connected account, live status, how many parts it holds,
-  and how full it is: a bar splitting what SAND put there from whatever else
-  already lives on the account, and from the room that is left. Local folders
-  report the drive they sit on, so a disk shared with the rest of the machine
-  says how much of itself is actually free
+- **Sidebar** — folded away to begin with, at every window size, and brought
+  out by `☰` in the header: the file browser is what the app is for, and the
+  clouds are somewhere you visit. It stays out until you fold it again, with the
+  same `☰` or the `✕` on the panel itself. Inside it, every connected account,
+  live status, how many parts it holds, and how full it is: a bar splitting what
+  SAND put there from whatever else already lives on the account, and from the
+  room that is left. Local folders report the drive they sit on, so a disk
+  shared with the rest of the machine says how much of itself is actually free
 - **Room left, and whose number it is** — every account says how much more fits,
   from whichever of three sources can answer: the account itself, a capacity you
   declared against a count of it, or a quota you set on how much of it SAND may
@@ -1941,7 +1944,8 @@ paying for a re-download when nothing has changed.
 
 A vault you reach over Tailscale or a reverse proxy gets opened from a phone as
 often as from a desk, so the layout folds rather than shrinks. Under 860px wide
-the sidebar becomes a drawer behind `☰`, the file table drops its columns for
+the sidebar — folded away on a desktop too — comes out as a drawer over the file
+list rather than as a pane beside it, the file table drops its columns for
 stacked rows — the thumbnail or icon down the left, the name beside it, and
 size, date and part badges underneath — and the toolbar gives the breadcrumb
 trail a row of its own, under the row carrying Back, Forward, Up and the view

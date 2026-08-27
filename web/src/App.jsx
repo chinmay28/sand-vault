@@ -114,9 +114,11 @@ export default function App() {
   // the render that owns the list, before any of them draw a badge.
   assignAccountColors(providers)
 
-  // On a phone the accounts panel is a drawer over the browser; once there is
-  // room for both panes again it is simply always there, so drop the flag.
-  useEffect(() => { if (!mobile) setAccountsOpen(false) }, [mobile])
+  // The panel folds away whenever the layout changes shape under it: the pane
+  // it was drawn into on one side of the breakpoint is not the pane on the
+  // other, and a drawer left open over a phone's file list is in the way of
+  // the thing somebody just resized to see.
+  useEffect(() => { setAccountsOpen(false) }, [mobile])
 
   useEffect(() => {
     api.vaultStatus().then(setStatus).catch((err) => {
@@ -361,16 +363,24 @@ export default function App() {
           background: COLORS.surface,
           flexShrink: 0,
         }}>
-          {mobile && (
-            <Button
-              size="sm"
-              variant="ghost"
-              aria-label="Connected clouds"
-              data-icon-button="true"
-              onClick={() => setAccountsOpen(true)}
-              style={{ fontSize: '17px', padding: '4px 8px', minWidth: '44px', justifyContent: 'center' }}
-            >☰</Button>
-          )}
+          {/* The way in to the clouds, at every width. The panel starts folded
+              away on a desktop as well as a phone — the file browser is what
+              the app is for, and the accounts are a place you visit — so this
+              is not a phone affordance any more but the switch for a pane
+              that is off by default. It toggles: the same button that brought
+              the sidebar out puts it back. */}
+          <Button
+            size="sm"
+            variant="ghost"
+            aria-label="Connected clouds"
+            aria-expanded={accountsOpen}
+            title="Connected clouds"
+            data-icon-button="true"
+            onClick={() => setAccountsOpen((open) => !open)}
+            style={mobile
+              ? { fontSize: '17px', padding: '4px 8px', minWidth: '44px', justifyContent: 'center' }
+              : { fontSize: '15px', padding: '4px 10px' }}
+          >☰</Button>
 
           <Brand />
 

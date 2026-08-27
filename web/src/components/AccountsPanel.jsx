@@ -152,9 +152,11 @@ function ActionTile({ icon, label, hint, onClick }) {
 }
 
 /* The sidebar: every cloud account SAND is wired into, whether it is answering,
-   and how much of the vault it is carrying. Below the two-pane breakpoint the
-   same panel becomes a drawer over the file browser — the file list is what you
-   came for on a phone, and the accounts are a place you visit. */
+   and how much of the vault it is carrying. It starts folded away at every
+   width — the file list is what somebody came here for, and the accounts are a
+   place you visit — and the header's ☰ is what brings it out. Below the
+   two-pane breakpoint it comes out as a drawer over the file browser rather
+   than as a pane beside it: there is no room to stand one next to the other. */
 export default function AccountsPanel({
   providers, loading, status, stats, webdav, mobile, open,
   subVaults = [], showSubVaults, subVaultShown, onToggleSubVaults, onToggleSubVault, onOpenSubVault,
@@ -221,7 +223,7 @@ export default function AccountsPanel({
 
   const panel = (
     <aside style={{
-      width: mobile ? 'min(320px, 86vw)' : '286px',
+      width: mobile ? 'min(320px, 86vw)' : (open ? '286px' : 0),
       flexShrink: 0,
       borderRight: `1px solid ${COLORS.border}`,
       background: COLORS.surface,
@@ -241,7 +243,18 @@ export default function AccountsPanel({
         visibility: open ? 'visible' : 'hidden',
         transition: 'transform 200ms ease, visibility 200ms',
         boxShadow: '0 0 40px rgba(0,0,0,0.5)',
-      } : null),
+      } : {
+        /* Room for both panes and the sidebar is still a pane you ask for: it
+           folds to nothing beside the file browser rather than sliding over
+           it, so bringing it out costs the browser 286px and nothing else.
+           The border goes with it — under border-box a 1px edge is all a
+           zero-width panel would have left to show. Hidden as well as narrow,
+           for the same reason as the drawer: a folded panel must not be
+           somewhere the tab key can go. */
+        borderRight: open ? `1px solid ${COLORS.border}` : 'none',
+        visibility: open ? 'visible' : 'hidden',
+        transition: 'width 200ms ease, visibility 200ms',
+      }),
     }}>
       <div style={{
         display: 'flex',
@@ -270,9 +283,17 @@ export default function AccountsPanel({
               onClick={onRefresh}
             />
           )}
-          {mobile && (
-            <IconButton glyph="✕" label="Close" tone="muted" size={44} onClick={onClose} />
-          )}
+          {/* Shut from inside as well as from the header's ☰: on a phone
+              because the drawer covers the button that opened it, and on a
+              desktop because the fold belongs beside the thing being
+              folded. */}
+          <IconButton
+            glyph="✕"
+            label={mobile ? 'Close' : 'Minimise'}
+            tone="muted"
+            size={mobile ? 44 : 28}
+            onClick={onClose}
+          />
         </span>
       </div>
 
