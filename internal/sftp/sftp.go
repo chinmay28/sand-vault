@@ -234,7 +234,15 @@ func Dial(ctx context.Context, cfg Config) (*Client, error) {
 	_ = conn.SetDeadline(time.Time{})
 
 	sshClient := ssh.NewClient(sshConn, chans, reqs)
-	session, err := pkgsftp.NewClient(sshClient)
+	// Concurrent writes, to match the concurrent reads pkg/sftp already does
+	// by default. Without them a multi-megabyte Write is one 32 KiB packet
+	// per network round trip — about 200 KB/s to a server 150 ms away — and
+	// with them the requests overlap and the link is the limit. The option is
+	// off by default because an error mid-write can leave a hole before the
+	// reported length; every write this package's callers make goes to a
+	// temporary name that is discarded on error, so a torn file is never left
+	// where anything will read it.
+	session, err := pkgsftp.NewClient(sshClient, pkgsftp.UseConcurrentWrites(true))
 	if err != nil {
 		sshClient.Close()
 		return nil, fmt.Errorf("opening the sftp subsystem on %s: %w"+subsystemHint(err), cfg.Addr(), err)
