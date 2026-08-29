@@ -80,19 +80,70 @@ type progressReader struct {
 
 func (p *progressReader) Read(b []byte) (int, error) {
 	n, err := p.r.Read(b)
-	if n > 0 {
-		p.done += int64(n)
-		p.since += int64(n)
-		if p.since >= progressEvery {
-			p.since = 0
-			p.say(p.done)
-		}
-	}
+	p.count(int64(n))
 	// The end of the file is worth saying whatever the count is at: a bar that
 	// stops at 99% because the last read was short is a bar that looks stuck.
-	if err != nil && p.since > 0 {
+	if err != nil {
+		p.flush()
+	}
+	return n, err
+}
+
+// WriteTo hands the whole copy to the source when the source has a faster way
+// to move bytes than Read, and counts them as they land.
+//
+// This method existing is what an import's speed rests on. io.Copy prefers a
+// source's WriteTo over calling Read in a loop, and for an *sftp.File the two
+// are not the same operation at different spellings: WriteTo keeps dozens of
+// requests on the wire at once, where Read is one 32 KiB packet per network
+// round trip — a hard ceiling of about 200 KB/s to a server 150 ms away,
+// however fast the link. Without this method the wrapper hides the file's
+// WriteTo from io.Copy, and watching the transfer silently costs the very
+// speed that made it worth watching.
+func (p *progressReader) WriteTo(w io.Writer) (int64, error) {
+	wt, ok := p.r.(io.WriterTo)
+	if !ok {
+		// Nothing faster underneath. The bare-Reader wrapper keeps io.Copy
+		// from landing straight back here.
+		return io.Copy(w, struct{ io.Reader }{p})
+	}
+	n, err := wt.WriteTo(&progressWriter{w: w, count: p})
+	p.flush()
+	return n, err
+}
+
+// count tallies bytes that moved, reporting every progressEvery of them.
+func (p *progressReader) count(n int64) {
+	if n <= 0 {
+		return
+	}
+	p.done += n
+	p.since += n
+	if p.since >= progressEvery {
 		p.since = 0
 		p.say(p.done)
 	}
+}
+
+// flush reports whatever the throttle is still holding.
+func (p *progressReader) flush() {
+	if p.since > 0 {
+		p.since = 0
+		p.say(p.done)
+	}
+}
+
+// progressWriter is the receiving end of a delegated WriteTo: the bytes are
+// counted as they are written rather than as they are read, which is the same
+// moment — the source hands them over in order, however many requests it has
+// in flight behind the scenes.
+type progressWriter struct {
+	w     io.Writer
+	count *progressReader
+}
+
+func (pw *progressWriter) Write(b []byte) (int, error) {
+	n, err := pw.w.Write(b)
+	pw.count.count(int64(n))
 	return n, err
 }

@@ -1,12 +1,12 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path"
 	"strconv"
@@ -305,11 +305,21 @@ func (p *sftpProvider) Get(ctx context.Context, key string) ([]byte, error) {
 	}
 	defer f.Close()
 
-	data, err := io.ReadAll(f)
-	if err != nil {
+	// The file's own WriteTo rather than io.ReadAll, because on an *sftp.File
+	// they differ by an order of magnitude on a distant server: WriteTo keeps
+	// many requests in flight at once, where ReadAll's Read loop starts as one
+	// packet per round trip and only overlaps requests once its buffer has
+	// grown. A shard is a few megabytes, so the difference is the fetch taking
+	// a moment rather than half a minute. Grown to the shard's size up front so
+	// the buffer is allocated once instead of doubled into place.
+	var buf bytes.Buffer
+	if info, err := f.Stat(); err == nil && info.Size() > 0 {
+		buf.Grow(int(info.Size()))
+	}
+	if _, err := f.WriteTo(&buf); err != nil {
 		return nil, fmt.Errorf("sftp: reading %s: %w", key, err)
 	}
-	return data, nil
+	return buf.Bytes(), nil
 }
 
 func (p *sftpProvider) Stat(ctx context.Context, key string) (ObjectInfo, error) {
