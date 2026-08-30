@@ -38,9 +38,9 @@ quietly wrong for a folder, and it put three ceilings on an upload at once:
 Now a choice goes up in batches. Each is bounded in size and in file count, its
 pictures are made a few at a time just before it leaves rather than all of them
 up front, and **the files appear in the folder as they land** instead of after
-the last byte of the last one. The progress card says which batch of how many it
-is on, so a long upload reads as one upload making its way through rather than
-as nothing happening.
+the last byte of the last one. The progress card follows the whole run, so a
+long upload reads as one upload making its way through rather than as nothing
+happening.
 
 A batch that fails now takes only its own files down with it: the other seventy
 still store, and the ones that did not are named one by one, exactly as a
@@ -53,6 +53,27 @@ None of this changes what is stored or how. A batch is an ordinary upload
 request; the server is unchanged apart from the one reply it could not give
 before: a single file over the 2 GiB a request may carry now comes back saying
 so and naming the limit, rather than as "could not read the upload".
+
+### The upload card now says what it is waiting for
+
+A seventy-nine-file upload read `79 files · 1 of 6` and `18%`, and neither
+number answered the question being asked of it. "1 of 6" counted requests — the
+batches above are how an upload travels, not anything that was chosen — so
+there was no way to read off how many **files** were done (the answer at that
+moment: none yet, since a batch only counts when the server answers for it).
+And the percentage measured bytes handed to the server, so once a batch had
+fully left the device it sat still — for minutes, on slow clouds — while the
+server split, encrypted and scattered that batch, which looks exactly like a
+hang.
+
+Now the card counts the thing that was picked: `12 of 79 stored`, moving each
+time the server answers for a batch, where *stored* means what it claims — the
+file's parts are on the clouds. The percentage says what it measures, `18%
+sent`, and when nothing is moving because the work is elsewhere, the card names
+the work instead of holding a number still: `making previews…` while the next
+batch's thumbnails are drawn, `splitting, encrypting and scattering…` while the
+server is putting a batch onto the clouds. Stuck and busy no longer look the
+same.
 
 ### SAND now checks that your clouds are still answering, hourly
 
