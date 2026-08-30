@@ -541,7 +541,7 @@ export default function App() {
             shownSubVaults={shownSubVaults}
             onOpenSubVault={openSubVault}
             onRefresh={refreshAll}
-            onPreview={(file, hasThumb, film) => setPreview({ file, hasThumb, film })}
+            onPreview={(file, hasThumb, film, gallery) => setPreview({ file, hasThumb, film, gallery })}
             onInspect={setInspecting}
             onFilm={setFilming}
             onError={setError}
@@ -551,10 +551,20 @@ export default function App() {
 
       {preview && (
         <PreviewModal
+          /* Keyed so that walking to another image inside the full-screen
+             viewer opens a clean dialog for it, rather than the old one's
+             errors and half-loaded state wearing a new file's name. */
+          key={preview.file.id}
           file={preview.file}
           hasThumb={preview.hasThumb}
           film={preview.film}
+          gallery={preview.gallery || []}
           onClose={() => setPreview(null)}
+          /* The viewer closed on a different image than it opened on, so that
+             image is what the dialog is now about. */
+          onNavigate={(entry) => setPreview({
+            file: entry.file, hasThumb: entry.hasThumb, gallery: preview.gallery,
+          })}
           /* A file that had no picture in the list has one now. */
           onThumbStored={() => refreshListing()}
           /* And a match made from in there changes the same listing. */

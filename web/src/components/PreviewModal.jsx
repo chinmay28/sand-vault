@@ -1,9 +1,10 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { COLORS, FONT, accountColor, formatBytes, isPlayable, previewKind } from '../theme'
 import { useIsMobile } from '../hooks'
 import { api } from '../api'
 import { useDownload } from '../download'
 import { thumbnailFromElement } from '../thumbs'
+import ImageViewer from './ImageViewer'
 import PdfPreview from './PdfPreview'
 import StreamLink from './StreamLink'
 import { RelocateClouds, fileScheme, schemeName, storedParts } from './CloudSelect'
@@ -17,11 +18,33 @@ const PREVIEW_MAX = 'calc(var(--app-height) * 0.62)'
 /* Opening a file here is the whole point of the design: the server gathers two
    of its three parts from separate accounts, rebuilds the plaintext in memory
    and streams it back. Nothing decrypted is ever written to disk. */
-export default function PreviewModal({ file, hasThumb, film, onClose, onThumbStored, onFilmChanged }) {
+export default function PreviewModal({
+  file, hasThumb, film, gallery = [], onClose, onNavigate, onThumbStored, onFilmChanged,
+}) {
   const kind = previewKind(file.mime, file.name)
   const url = api.contentURL(file.id)
   const mobile = useIsMobile()
   const captured = useRef(false)
+
+  /* The full-screen viewer, for images: the same rebuilt bytes, with the
+     dialog's chrome out of the way and the folder's other images an arrow
+     away. */
+  const [viewer, setViewer] = useState(false)
+
+  /* Every image in the folder this one was opened from, in the order the list
+     draws them — the pages the full-screen viewer turns through. The file
+     itself is the fallback: a viewer must always have at least the image that
+     was asked for, whatever the listing said. */
+  const images = useMemo(() => {
+    if (kind !== 'image') return []
+    const list = gallery.some((entry) => entry.file.id === file.id) ? gallery : [{ file, hasThumb }]
+    return list
+  }, [kind, gallery, file, hasThumb])
+  const viewerStart = Math.max(0, images.findIndex((entry) => entry.file.id === file.id))
+
+  /* Which files the viewer has already stored a picture for, so a slide show
+     looping a folder does not upload the same thumbnail every lap. */
+  const galleryCaptured = useRef(new Set())
 
   const [text, setText] = useState(null)
   const [error, setError] = useState(null)
@@ -117,6 +140,7 @@ export default function PreviewModal({ file, hasThumb, film, onClose, onThumbSto
        nothing and is the difference between a picture and a black square. */
     if (el.currentTime !== undefined && el.duration && el.currentTime < Math.min(1.5, el.duration / 4)) return
     captured.current = true
+    galleryCaptured.current.add(file.id)
 
     const blob = await thumbnailFromElement(el)
     if (!blob) return
@@ -126,6 +150,23 @@ export default function PreviewModal({ file, hasThumb, film, onClose, onThumbSto
     } catch {
       // The preview is what was asked for and it is on screen. Failing to
       // keep a copy of it is not worth interrupting anyone over.
+    }
+  }
+
+  /* The same backfill, for the images the viewer walks past. A slide show
+     decodes every image in the folder anyway, which is exactly the moment the
+     ones uploaded before thumbnails existed can be given theirs for free. */
+  const captureViewerThumb = async (entry, el) => {
+    if (entry.hasThumb || galleryCaptured.current.has(entry.file.id)) return
+    galleryCaptured.current.add(entry.file.id)
+
+    const blob = await thumbnailFromElement(el)
+    if (!blob) return
+    try {
+      await api.putThumb(entry.file.id, blob)
+      onThumbStored?.()
+    } catch {
+      // Same as above: a missing thumbnail is never worth an interruption.
     }
   }
 
@@ -162,8 +203,10 @@ export default function PreviewModal({ file, hasThumb, film, onClose, onThumbSto
           <img
             src={url}
             alt={file.name}
-            style={{ maxWidth: '100%', maxHeight: PREVIEW_MAX, display: 'block' }}
+            title="View full screen"
+            style={{ maxWidth: '100%', maxHeight: PREVIEW_MAX, display: 'block', cursor: 'zoom-in' }}
             onLoad={(e) => captureThumb(e.currentTarget)}
+            onClick={() => setViewer(true)}
             onError={() => setError('This file could not be rebuilt or is not a readable image.')}
           />
         )}
@@ -294,6 +337,19 @@ export default function PreviewModal({ file, hasThumb, film, onClose, onThumbSto
           <Button variant="ghost" onClick={onClose}
             style={mobile ? { flex: 1, justifyContent: 'center' } : null}>Close</Button>
         )}
+        {/* The picture above is capped at part of a screen so the dialog fits;
+            this is the rest of the screen, plus zoom and the folder's other
+            images. Tapping the image itself does the same — the button says
+            it is there. */}
+        {kind === 'image' && !error && (
+          <Button
+            onClick={() => setViewer(true)}
+            title={images.length > 1
+              ? 'Full screen — zoom, and step through the folder as a slide show'
+              : 'Full screen, with zoom'}
+            style={mobile ? { flex: 1, justifyContent: 'center' } : null}
+          >⛶ Full screen</Button>
+        )}
         {/* A player for the files a player is for; for everything else the
             same dialog, opened for the address it is really wanted for. */}
         {!filmShown && (
@@ -317,6 +373,23 @@ export default function PreviewModal({ file, hasThumb, film, onClose, onThumbSto
             : '↓ Download decrypted'}
         </Button>
       </div>
+
+      {viewer && (
+        <ImageViewer
+          images={images}
+          start={viewerStart}
+          onShown={captureViewerThumb}
+          onClose={(at) => {
+            setViewer(false)
+            /* Whatever image the viewer was left on is the one this dialog
+               should be about now — coming back to the photo you started
+               twelve slides ago reads as the viewer having thrown the walk
+               away. */
+            const landed = images[at]
+            if (landed && landed.file.id !== file.id) onNavigate?.(landed)
+          }}
+        />
+      )}
 
       {streaming && (
         <StreamLink
