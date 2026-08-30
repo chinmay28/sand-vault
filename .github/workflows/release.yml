@@ -1,0 +1,105 @@
+# Build and publish a GitHub release for the commit this is dispatched on.
+#
+# The tag is computed, not typed: scripts/version.mjs renders vYEAR.MONTH.PATCH
+# with PATCH = the commit count, so the full history matters (fetch-depth: 0 —
+# a shallow checkout reports patch 0 and the run refuses to release it). The
+# release body is the CHANGELOG.md section whose heading names the tag exactly,
+# which the changelog's own rules require to exist before a tag is published.
+name: release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+    branches:
+      - claude/august-2026-sand-vault-j1wg8e
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the patch number is the commit count; shallow = 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Compute version
+        id: version
+        run: |
+          VERSION="$(node scripts/version.mjs)"
+          PATCH="$(node scripts/version.mjs --patch)"
+          if [ "${PATCH}" = "0" ]; then
+            echo "patch is 0 — unstamped build, refusing to release" >&2
+            exit 1
+          fi
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "${VERSION}" ]; then
+            echo "tag ${GITHUB_REF_NAME} names a commit that builds ${VERSION} — refusing to publish it" >&2
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "patch=${PATCH}" >> "$GITHUB_OUTPUT"
+
+      # The changelog heading is the release gate: a branch push whose version
+      # has no section is an ordinary commit, not a release, and is skipped —
+      # so only a commit that names its own version in CHANGELOG.md publishes.
+      # A tag or manual dispatch without the section is an error outright.
+      - name: Release notes from CHANGELOG.md
+        id: notes
+        run: |
+          awk -v tag="${{ steps.version.outputs.version }}" '
+            $0 == "## " tag { found = 1; next }
+            /^## / && found { exit }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          if ! grep -q '[^[:space:]]' notes.md; then
+            if [ "${GITHUB_REF_TYPE}" = "branch" ] && [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+              echo "no '## ${{ steps.version.outputs.version }}' section in CHANGELOG.md — not a release commit, skipping"
+              echo "release=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "CHANGELOG.md has no '## ${{ steps.version.outputs.version }}' section — a tag the changelog does not name must not be published" >&2
+            exit 1
+          fi
+          echo "release=true" >> "$GITHUB_OUTPUT"
+
+      - name: Build frontend
+        if: steps.notes.outputs.release == 'true'
+        run: cd web && npm ci && npm run build
+
+      - name: Build sand-linux-arm64
+        if: steps.notes.outputs.release == 'true'
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath \
+            -ldflags="-s -w -X github.com/chinmay28/sand-vault/internal/version.Patch=${{ steps.version.outputs.patch }}" \
+            -o "dist/sand-${VERSION}-linux-arm64" ./cmd/sand
+          (cd dist && sha256sum sand-* > SHA256SUMS)
+
+      - name: Publish release
+        if: steps.notes.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          if gh release view "${VERSION}" --json tagName >/dev/null 2>&1; then
+            echo "release ${VERSION} already exists — nothing to publish"
+            exit 0
+          fi
+          gh release create "${VERSION}" \
+            "dist/sand-${VERSION}-linux-arm64" \
+            dist/SHA256SUMS \
+            --target "${GITHUB_SHA}" \
+            --title "${VERSION}" \
+            --notes-file notes.md
