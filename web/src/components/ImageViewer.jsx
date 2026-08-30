@@ -308,7 +308,10 @@ export default function ImageViewer({ images, start = 0, onClose, onShown }) {
         zIndex: 130,
         display: 'flex',
         flexDirection: 'column',
-        background: 'rgba(2, 4, 9, 0.97)',
+        /* Opaque, unlike the dialogs' backdrops: this is a photo viewer, and
+           the dialog's text ghosting through the letterbox reads as a defect
+           in the photograph rather than as depth. */
+        background: '#04070d',
       }}
     >
       <div style={{
