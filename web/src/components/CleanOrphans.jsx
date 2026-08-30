@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { COLORS, FONT, accountColor, formatBytes } from '../theme'
 import { api } from '../api'
+import { useOrphanEraseProgress } from '../hooks'
 import { Banner, Button, Modal, Spinner } from './ui'
 import ReattachShards from './ReattachShards'
 import CleanLeftovers from './CleanLeftovers'
@@ -29,8 +30,18 @@ export default function CleanOrphans({ scan: initialScan, zIndex = 100, onClose,
   const [scan, setScan] = useState(initialScan)
   const [excluded, setExcluded] = useState(() => new Set())
   const [busy, setBusy] = useState(false)
+  const [sweeping, setSweeping] = useState(false)
   const [error, setError] = useState(null)
   const [report, setReport] = useState(null)
+
+  /* The sweep is one POST that answers only at the end — for a vault where
+     somebody has been deleting films, minutes of it. The server counts the
+     objects beside the running request, and this is the asking end, polling
+     only while the sweep is in flight. Null until the first answer; a total
+     of 0 means the sweep is still listing every account to decide what goes,
+     which it does before its first delete so that what is erased is what is
+     abandoned now. */
+  const at = useOrphanEraseProgress(sweeping)
 
   const offered = useMemo(() => (scan?.items || []).filter((item) => item.deletable), [scan])
   const withheld = useMemo(() => (scan?.items || []).filter((item) => !item.deletable), [scan])
@@ -52,6 +63,7 @@ export default function CleanOrphans({ scan: initialScan, zIndex = 100, onClose,
   const sweep = async () => {
     setError(null)
     setBusy(true)
+    setSweeping(true)
     try {
       /* Nothing unticked means "all of it", and is sent as an empty list rather
          than as the rows on screen — the list is capped for reading, and naming
@@ -67,6 +79,7 @@ export default function CleanOrphans({ scan: initialScan, zIndex = 100, onClose,
       setError(err.message)
     } finally {
       setBusy(false)
+      setSweeping(false)
     }
   }
 
@@ -191,6 +204,35 @@ export default function CleanOrphans({ scan: initialScan, zIndex = 100, onClose,
         </Banner>
       )}
 
+      {/* What the button used to hide: how far the erasing has got, against
+          how much there is. The first stretch has no denominator — the sweep
+          lists every account again before its first delete, so that what it
+          erases is what is abandoned now rather than when the scan ran — and
+          saying so beats a bar pretending to know. */}
+      {sweeping && (
+        <div style={{ marginBottom: '16px' }}>
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px',
+            fontFamily: FONT.mono, fontSize: '11.5px', color: COLORS.textDim,
+          }}>
+            <Spinner size={11} />
+            <span>
+              {at?.total > 0
+                ? `Erased ${at.done} of ${at.total} objects`
+                : 'Checking every cloud once more, so what goes is what is abandoned now…'}
+            </span>
+          </div>
+          <div style={{ height: '3px', background: COLORS.border, borderRadius: '2px', overflow: 'hidden' }}>
+            <div style={{
+              height: '100%',
+              width: `${at?.total > 0 ? Math.max(4, Math.min(100, (at.done / at.total) * 100)) : 4}%`,
+              background: COLORS.accent,
+              transition: 'width 0.2s ease',
+            }} />
+          </div>
+        </div>
+      )}
+
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' }}>
         <Button variant="ghost" onClick={rescan} disabled={busy}>Scan again</Button>
         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
@@ -200,9 +242,9 @@ export default function CleanOrphans({ scan: initialScan, zIndex = 100, onClose,
             onClick={sweep}
             disabled={busy || chosen.length === 0 || scan?.blocked?.length > 0}
           >
-            {busy ? <Spinner size={12} color={COLORS.bg} /> : null}
-            {busy
-              ? 'Erasing…'
+            {sweeping ? <Spinner size={12} color={COLORS.bg} /> : null}
+            {sweeping
+              ? (at?.total > 0 ? `Erasing ${at.done} of ${at.total}…` : 'Erasing…')
               : `Erase ${chosenObjects} object${chosenObjects === 1 ? '' : 's'} · ${formatBytes(chosenBytes)}`}
           </Button>
         </div>

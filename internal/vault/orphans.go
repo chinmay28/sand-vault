@@ -835,7 +835,16 @@ type OrphanSweepReport struct {
 // figure and agreeing to it: a file uploaded in between, a sub vault opened, an
 // account reconnected — each of those changes the answer, and each of them
 // would otherwise be a deletion of something live.
-func (v *Vault) SweepOrphans(ctx context.Context, targets []OrphanTarget, dryRun bool) (*OrphanSweepReport, error) {
+//
+// onProgress, when given, is told how many of the doomed objects have been
+// dealt with so far — once with (0, total) the moment the re-scan has decided
+// what goes, then once per object, erased or failed alike, since a failure is
+// dealt with too: it is reported at the end, not waited on. The total is the
+// fresh scan's count and the erase lists each account once more on its way in,
+// so the last call can land slightly off it — the report is the exact answer.
+// It is a window for whoever is waiting on the request, nothing more: no job
+// state, nothing written down. Calls arrive in order.
+func (v *Vault) SweepOrphans(ctx context.Context, targets []OrphanTarget, dryRun bool, onProgress func(done, total int)) (*OrphanSweepReport, error) {
 	// The untrimmed scan: the preview cap bounds what a client is shown, and
 	// sweeping only what fitted on the screen would leave the rest behind
 	// silently.
@@ -897,6 +906,30 @@ func (v *Vault) SweepOrphans(ctx context.Context, targets []OrphanTarget, dryRun
 		byAccount[item.ProviderID] = append(byAccount[item.ProviderID], item)
 	}
 
+	// The denominator, announced before the first delete: the re-scan above is
+	// a listing of every account, and whoever is watching has been looking at a
+	// bare "running" for the length of the slowest of them.
+	var advance func()
+	if onProgress != nil {
+		total := 0
+		for _, item := range wanted {
+			total += item.Objects
+		}
+		onProgress(0, total)
+
+		var progressMu sync.Mutex
+		done := 0
+		advance = func() {
+			progressMu.Lock()
+			done++
+			// Under the lock, so the counts leave in the order they were
+			// taken — the accounts erase in parallel, and a bar that steps
+			// backwards reads as a bug in whatever is drawing it.
+			onProgress(done, total)
+			progressMu.Unlock()
+		}
+	}
+
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	for id, items := range byAccount {
@@ -911,7 +944,7 @@ func (v *Vault) SweepOrphans(ctx context.Context, targets []OrphanTarget, dryRun
 		wg.Add(1)
 		go func(cfg provider.Config, items []OrphanArchive) {
 			defer wg.Done()
-			erased, objects, bytes, warnings := v.eraseOrphans(ctx, cfg, items)
+			erased, objects, bytes, warnings := v.eraseOrphans(ctx, cfg, items, advance)
 
 			mu.Lock()
 			defer mu.Unlock()
@@ -936,10 +969,15 @@ const orphanEraseWindow = 8
 
 // eraseOrphans deletes every object belonging to the named archives from one
 // account, listing it once more so that what is erased is what is there.
+//
+// advance, when given, is called once per object dealt with — erased, already
+// gone, or failed and reported — which is what keeps a watcher's count moving
+// against the total SweepOrphans announced.
 func (v *Vault) eraseOrphans(
 	ctx context.Context,
 	cfg provider.Config,
 	items []OrphanArchive,
+	advance func(),
 ) (archives, objects int, bytes int64, warnings []string) {
 	p, err := v.buildProvider(cfg)
 	if err != nil {
@@ -982,6 +1020,9 @@ func (v *Vault) eraseOrphans(
 
 			mu.Lock()
 			defer mu.Unlock()
+			if advance != nil {
+				advance()
+			}
 			if err != nil && !errors.Is(err, provider.ErrNotFound) {
 				warnings = append(warnings,
 					fmt.Sprintf("could not erase %s from %s: %v", obj.Key, cfg.Name, err))

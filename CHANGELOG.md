@@ -12,6 +12,19 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### Erasing abandoned parts counts itself down instead of hanging
+
+**Parts nothing points at** erased with nothing on screen but a button saying
+"Erasing…" — for a vault where somebody had been deleting films, minutes of
+it, indistinguishable from a hang. The dialog now draws the same bar a big
+folder delete gets: how many objects have been erased out of how many, counted
+by the server beside the running request and read once a second. Even the
+opening stretch says what it is doing — the sweep lists every account again
+before its first delete, so that what it erases is what is abandoned *now*
+rather than when the scan ran, and that check used to pass in silence too.
+`sand vault sweep --yes` counts the same way on stderr, and says nothing when
+piped, exactly like the upload's progress line.
+
 ### Moving files between clouds can be watched, and handed to the machine
 
 Moving a folder of films onto other clouds is a copy between two accounts for

@@ -66,6 +66,37 @@ export function useEraseProgress(path, vault, active) {
   return at
 }
 
+/* The same window, opened onto the orphan sweep. Erasing the abandoned parts
+   is one POST that answers only at the end — for a vault where somebody has
+   been deleting films, minutes of a button saying "Erasing…" — and the server
+   counts objects beside it (see /api/vault/orphans/erasing). A total of 0
+   while running is its own kind of news: the sweep lists every account again
+   before its first delete, so the button is not stuck, the clouds are being
+   asked. The count holds rather than blinking empty when the last poll races
+   the sweep finishing, for the reason above. */
+export function useOrphanEraseProgress(active) {
+  const [at, setAt] = useState(null)
+
+  useEffect(() => {
+    setAt(null)
+    if (!active) return undefined
+
+    let live = true
+    const ask = () => api.orphanErasing()
+      .then((resp) => {
+        if (live && resp.running) setAt({ done: resp.done, total: resp.total })
+      })
+      // Silence on purpose, as above: the sweep reports its own failures.
+      .catch(() => {})
+
+    ask()
+    const timer = setInterval(ask, 900)
+    return () => { live = false; clearInterval(timer) }
+  }, [active])
+
+  return at
+}
+
 /* Where the two-pane layout gives up: a 286px sidebar plus a file table whose
    fixed columns already eat 480px leaves nothing for a filename below this. */
 export const MOBILE_QUERY = '(max-width: 860px)'

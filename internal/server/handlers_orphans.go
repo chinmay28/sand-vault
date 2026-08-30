@@ -127,6 +127,12 @@ func (s *Server) handleLeftoverSweep(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, v.SweepLeftovers(req.Names, req.DryRun))
 }
 
+// orphanSweepKey is the erase watch's slot for the orphan sweep. Folder
+// deletes key their windows by scope and path, and every one of those keys
+// carries a NUL between the two (see eraseKey), so this name cannot collide
+// with any of them.
+const orphanSweepKey = "orphan-sweep"
+
 // handleOrphanSweep erases the parts nothing points at.
 //
 // The sweep re-scans before it deletes, so a target that has stopped being
@@ -145,11 +151,43 @@ func (s *Server) handleOrphanSweep(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := contextWithTimeout(r, 10*time.Minute)
 	defer cancel()
 
+	// Counted as it goes, so GET /api/vault/orphans/erasing can answer whoever
+	// is waiting on this request — which for that same vault runs for minutes
+	// and says nothing until the end. The window opens at (0, 0), which reads
+	// as "running, still deciding what goes": the sweep lists every account
+	// again before its first delete, and that stretch deserves to look like
+	// work rather than like a hang. Cleared however the sweep comes out. A dry
+	// run opens no window at all — it erases nothing, and a browser asking
+	// what a sweep would do must not make one that is running look finished.
+	var onProgress func(done, total int)
+	if !req.DryRun {
+		s.erases.set(orphanSweepKey, folderErase{})
+		defer s.erases.clear(orphanSweepKey)
+		onProgress = func(done, total int) {
+			s.erases.set(orphanSweepKey, folderErase{Done: done, Total: total})
+		}
+	}
+
 	v, _ := s.Vault()
-	report, err := v.SweepOrphans(ctx, req.Targets, req.DryRun)
+	report, err := v.SweepOrphans(ctx, req.Targets, req.DryRun, onProgress)
 	if err != nil {
 		vaultErrorResponse(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, report)
+}
+
+// handleOrphanErasing answers with where a running sweep has got to — the same
+// window handleFolderErasing opens onto a recursive folder delete, for the
+// same reason: the POST it watches can only answer at the end. Not running is
+// an ordinary answer rather than an error, because the poller and the sweep it
+// watches race. While running, a total of zero means the sweep is still
+// listing the accounts to decide what goes.
+func (s *Server) handleOrphanErasing(w http.ResponseWriter, r *http.Request) {
+	at, ok := s.erases.get(orphanSweepKey)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"running": ok,
+		"done":    at.Done,
+		"total":   at.Total,
+	})
 }
