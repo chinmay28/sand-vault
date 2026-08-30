@@ -532,7 +532,7 @@ export function FilmKeySettings({ onClose, onChanged, zIndex }) {
    setting and sends nothing; sweeping is what actually puts a list of your
    filenames in front of somebody else's server, and it should be a thing
    somebody pressed. */
-export function FilmLookupSettings({ path, lookup, onClose, onChanged }) {
+export function FilmLookupSettings({ path, vault = '', lookup, onClose, onChanged }) {
   const mobile = useIsMobile()
   const [settings, setSettings] = useState(null)
   const [busy, setBusy] = useState(null)
@@ -553,7 +553,7 @@ export function FilmLookupSettings({ path, lookup, onClose, onChanged }) {
     setBusy('toggle')
     setError(null)
     try {
-      await api.setMovieLookup(path, enabled)
+      await api.setMovieLookup(path, enabled, vault)
       onChanged?.()
     } catch (err) {
       setError(err.message)
@@ -567,7 +567,7 @@ export function FilmLookupSettings({ path, lookup, onClose, onChanged }) {
     setError(null)
     setReport(null)
     try {
-      setReport(await api.scanMovies(path, { refresh }))
+      setReport(await api.scanMovies(path, { refresh, vault }))
       onChanged?.()
     } catch (err) {
       setError(err.message)

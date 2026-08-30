@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/chinmay28/sand-vault/internal/archive"
 	"github.com/chinmay28/sand-vault/internal/provider"
@@ -112,6 +113,37 @@ func (o relocationOptions) countReachable(e *Entry) int {
 		}
 	}
 	return len(seen)
+}
+
+// RelocationProgress is where a running relocation has got to, for whoever is
+// watching it — a dialog held open, or one reopened on a move that was handed
+// to the machine.
+//
+// Bytes against Total is the honest bar: a relocation's cost is bytes copied
+// between clouds, not files ticked off, and a folder is usually one big file
+// and many small ones. Total is the plan's estimate, so the fraction can
+// finish slightly off when a copy finds a part a different size than the index
+// recorded — the report at the end is the exact answer.
+type RelocationProgress struct {
+	// Path is the file being worked on, File its 1-based place among Files.
+	Path  string `json:"path"`
+	File  int    `json:"file"`
+	Files int    `json:"files"`
+
+	// Done counts the files already dealt with — moved, rebuilt, skipped
+	// because they were in place, or failed and reported.
+	Done int `json:"done"`
+
+	// Bytes is what has been copied between accounts so far; Total what the
+	// plan said the whole move would copy.
+	Bytes int64 `json:"bytes"`
+	Total int64 `json:"total"`
+
+	// Recoding marks the file being rebuilt — gathered, cut again and written
+	// out whole — rather than having its shards carried across. Its bytes land
+	// when it finishes, because the rebuild reuses the migration machinery and
+	// that reports nothing until it commits.
+	Recoding bool `json:"recoding,omitempty"`
 }
 
 // PartMove is one copy of one part of one file changing accounts.
@@ -298,7 +330,7 @@ func (v *Vault) PlanRelocation(scope Scope, target string, accounts []string, sc
 // planRelocation is PlanRelocation with every file's row kept, which is what
 // the relocation itself walks.
 func (v *Vault) planRelocation(scope Scope, target string, accounts []string, scheme archive.Scheme, opts relocationOptions) (*RelocationPlan, error) {
-	entries, dir, folder, err := v.relocationScope(scope, target)
+	entries, dir, folder, scope, err := v.relocationScope(scope, target)
 	if err != nil {
 		return nil, err
 	}
@@ -417,14 +449,36 @@ func (v *Vault) planRelocation(scope Scope, target string, accounts []string, sc
 // A file whose account is offline is reported and left alone rather than holding
 // up the rest. progress may be nil.
 func (v *Vault) Relocate(ctx context.Context, scope Scope, target string, accounts []string, scheme archive.Scheme, progress ProgressFunc) (*RelocationReport, error) {
-	return v.relocate(ctx, scope, target, accounts, scheme, relocationOptions{}, progress)
+	return v.relocate(ctx, scope, target, accounts, scheme, relocationOptions{}, progress, nil)
+}
+
+// RelocateWatched is Relocate reporting as it goes: which file it is on, and —
+// what a progress bar actually wants — how many bytes have crossed between
+// accounts, against the plan's estimate of the whole. watch is called from the
+// goroutines doing the copying and must not block.
+func (v *Vault) RelocateWatched(ctx context.Context, scope Scope, target string, accounts []string, scheme archive.Scheme, watch func(RelocationProgress)) (*RelocationReport, error) {
+	return v.relocate(ctx, scope, target, accounts, scheme, relocationOptions{}, nil, watch)
 }
 
 // relocate is Relocate with the assumptions spelled out — see relocationOptions.
-func (v *Vault) relocate(ctx context.Context, scope Scope, target string, accounts []string, scheme archive.Scheme, opts relocationOptions, progress ProgressFunc) (*RelocationReport, error) {
+func (v *Vault) relocate(ctx context.Context, scope Scope, target string, accounts []string, scheme archive.Scheme, opts relocationOptions, progress ProgressFunc, watch func(RelocationProgress)) (*RelocationReport, error) {
 	plan, err := v.planRelocation(scope, target, accounts, scheme, opts)
 	if err != nil {
 		return nil, err
+	}
+
+	// The whole bill up front, so the bar has a denominator before the first
+	// byte moves. Bytes is the shard copies and RecodeBytes the rebuilds — a
+	// watcher is not asked to care which is which until a file is on screen.
+	var copied atomic.Int64
+	watchTotal := plan.Bytes + plan.RecodeBytes
+	say := func(at RelocationProgress) {
+		if watch != nil {
+			at.Bytes = copied.Load()
+			at.Total = watchTotal
+			at.Files = len(plan.Files)
+			watch(at)
+		}
 	}
 
 	report := &RelocationReport{
@@ -447,16 +501,29 @@ func (v *Vault) relocate(ctx context.Context, scope Scope, target string, accoun
 			if progress != nil {
 				progress(fp.Path, i+1, len(plan.Files))
 			}
+			say(RelocationProgress{Path: fp.Path, File: i + 1, Done: i + 1})
 			continue
 		}
 
-		outcome, err := v.relocateEntry(ctx, fp, plan.Accounts)
+		// Announced before the first byte moves, so the file being worked on
+		// appears the moment it is picked up. The per-object callback then
+		// moves the bar as each copy lands, from the goroutines doing them.
+		say(RelocationProgress{Path: fp.Path, File: i + 1, Done: i, Recoding: fp.Recode})
+		onBytes := func(n int64) {
+			copied.Add(n)
+			say(RelocationProgress{Path: fp.Path, File: i + 1, Done: i, Recoding: fp.Recode})
+		}
+
+		outcome, err := v.relocateEntry(ctx, fp, plan.Accounts, onBytes)
 		report.Warnings = append(report.Warnings, outcome.warnings...)
 		report.PartsMoved += outcome.moved
 		report.PartsDrop += outcome.dropped
 		report.Bytes += outcome.bytes
 		if err == nil && fp.Recode {
 			report.Recoded++
+			// The rebuild reuses the migration machinery, which reports nothing
+			// until it commits — its whole bill lands here, at once.
+			copied.Add(fp.Bytes)
 		}
 
 		switch {
@@ -479,6 +546,7 @@ func (v *Vault) relocate(ctx context.Context, scope Scope, target string, accoun
 		if progress != nil {
 			progress(fp.Path, i+1, len(plan.Files))
 		}
+		say(RelocationProgress{Path: fp.Path, File: i + 1, Done: i + 1})
 	}
 
 	// A folder's thumbnails are stored as their own scattered pack, filed under
@@ -635,22 +703,34 @@ func planFileRelocation(scope Scope, entry *Entry, targets []string, byID map[st
 }
 
 // relocationScope resolves what a relocation was pointed at — an entry ID, a
-// file path, or a folder to walk — into the entries it covers.
+// file path, or a folder to walk — into the entries it covers, and the vault
+// they are really in.
+//
+// The scope handed in steers the path lookups, because two vaults can each
+// have a folder of the same name. An entry ID needs no steering and gets
+// none: an ID is unique across every vault inside the file, so — exactly like
+// reading, moving or deleting a file by ID — relocating one resolves against
+// whatever is open, and a caller that did not say which vault a file is in is
+// never told "no such file" about a file that exists.
 //
 // The entries are copies. Everything after this runs without the lock, and a
 // pointer into the live index would be rewritten underneath it by any other
 // upload.
-func (v *Vault) relocationScope(scope Scope, target string) ([]*Entry, string, bool, error) {
+func (v *Vault) relocationScope(scope Scope, target string) ([]*Entry, string, bool, Scope, error) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 
-	m, err := v.manifestForLocked(scope)
-	if err != nil {
-		return nil, "", false, err
+	if v.dataKey == nil {
+		return nil, "", false, scope, ErrLocked
 	}
 
-	if e := m.ByID(target); e != nil {
-		return []*Entry{copyEntry(e)}, e.Path(), false, nil
+	if found, e, ok := v.scopeOfEntryLocked(target); ok {
+		return []*Entry{copyEntry(e)}, e.Path(), false, found, nil
+	}
+
+	m, err := v.manifestForLocked(scope)
+	if err != nil {
+		return nil, "", false, scope, err
 	}
 
 	dir := CleanDir(target)
@@ -661,13 +741,13 @@ func (v *Vault) relocationScope(scope Scope, target string) ([]*Entry, string, b
 			out = append(out, copyEntry(e))
 		}
 		sort.Slice(out, func(i, j int) bool { return out[i].Path() < out[j].Path() })
-		return out, dir, true, nil
+		return out, dir, true, scope, nil
 	}
 
 	if e := m.ByPath(dir); e != nil {
-		return []*Entry{copyEntry(e)}, e.Path(), false, nil
+		return []*Entry{copyEntry(e)}, e.Path(), false, scope, nil
 	}
-	return nil, "", false, fmt.Errorf("no such file or folder: %s", target)
+	return nil, "", false, scope, fmt.Errorf("no such file or folder: %s", target)
 }
 
 // copyEntry takes a detached copy of an index row, shards and all.
@@ -691,7 +771,7 @@ type relocateOutcome struct {
 // A part that will not copy is reported and left where it was: the file is
 // still whole, just not yet all in the right place, and running the relocation
 // again picks up exactly that part. Only parts that really landed are recorded.
-func (v *Vault) relocateEntry(ctx context.Context, plan *FilePlan, accounts []string) (relocateOutcome, error) {
+func (v *Vault) relocateEntry(ctx context.Context, plan *FilePlan, accounts []string, onBytes func(int64)) (relocateOutcome, error) {
 	var out relocateOutcome
 
 	if plan.Recode {
@@ -730,7 +810,7 @@ func (v *Vault) relocateEntry(ctx context.Context, plan *FilePlan, accounts []st
 	}
 	v.mu.RUnlock()
 
-	landed := v.copyParts(ctx, plan, archiveID, chunkCount, configs, &out)
+	landed := v.copyParts(ctx, plan, archiveID, chunkCount, configs, onBytes, &out)
 	if len(landed) == 0 && len(plan.Drop) == 0 {
 		return out, nil
 	}
@@ -781,8 +861,10 @@ func (v *Vault) recodeEntry(ctx context.Context, plan *FilePlan, accounts []stri
 	// and the bytes are what the plan estimated rather than what any single
 	// copy reported.
 	v.mu.RLock()
-	if entry := v.manifest.ByID(plan.ID); entry != nil {
-		out.moved = len(entry.Shards)
+	if m, err := v.manifestForLocked(plan.vault); err == nil {
+		if entry := m.ByID(plan.ID); entry != nil {
+			out.moved = len(entry.Shards)
+		}
 	}
 	v.mu.RUnlock()
 	out.bytes = plan.Bytes
@@ -801,6 +883,7 @@ func (v *Vault) copyParts(
 	archiveID string,
 	chunkCount int,
 	configs map[string]provider.Config,
+	onBytes func(int64),
 	out *relocateOutcome,
 ) []PartMove {
 	window := make(chan struct{}, relocateWindow)
@@ -827,7 +910,7 @@ func (v *Vault) copyParts(
 		go func(move PartMove, src, dst provider.Config) {
 			defer wg.Done()
 
-			bytes, err := v.copyPart(ctx, src, dst, archiveID, chunkCount, move.Part, window)
+			bytes, err := v.copyPart(ctx, src, dst, archiveID, chunkCount, move.Part, window, onBytes)
 			if err != nil {
 				// Half a part on the destination is worse than none: it would
 				// answer a read with a hole. The record still points at the
@@ -869,6 +952,7 @@ func (v *Vault) copyPart(
 	archiveID string,
 	chunkCount, part int,
 	window chan struct{},
+	onBytes func(int64),
 ) (int64, error) {
 	from, err := v.buildProvider(src)
 	if err != nil {
@@ -886,6 +970,11 @@ func (v *Vault) copyPart(
 		}
 		if err := to.Put(ctx, key, blob); err != nil {
 			return 0, err
+		}
+		// Per object rather than per part, so a single film — one part, many
+		// chunks — still draws a bar that moves.
+		if onBytes != nil {
+			onBytes(int64(len(blob)))
 		}
 		return int64(len(blob)), nil
 	}

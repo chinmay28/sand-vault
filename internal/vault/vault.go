@@ -1747,18 +1747,19 @@ func (v *Vault) Entry(id string) (*Entry, error) {
 // Descendants returns every file stored at or below a folder, in no particular
 // order. It is what an operation over a subtree walks — matching a films folder
 // against the film database, say — and it answers from the index alone.
-func (v *Vault) Descendants(dir string) ([]*Entry, error) {
+func (v *Vault) Descendants(scope Scope, dir string) ([]*Entry, error) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
-	if v.dataKey == nil {
-		return nil, ErrLocked
-	}
 
+	m, err := v.manifestForLocked(scope)
+	if err != nil {
+		return nil, err
+	}
 	dir = CleanDir(dir)
-	if !v.manifest.FolderExists(dir) {
+	if !m.FolderExists(dir) {
 		return nil, fmt.Errorf("no such folder: %s", dir)
 	}
-	return append([]*Entry{}, v.manifest.Descendants(dir)...), nil
+	return append([]*Entry{}, m.Descendants(dir)...), nil
 }
 
 // EntryByPath looks a file up by its full browser path rather than its ID,

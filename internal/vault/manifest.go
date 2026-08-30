@@ -255,6 +255,15 @@ type SubVaultMeta struct {
 	// its manifest actually says, and a locked one's is left exactly as the
 	// last open moment left it.
 	Inventory []InventoryItem `json:"inventory,omitempty"`
+
+	// BorrowedKeys names the key generations of *other* vaults that this sub
+	// vault's files are still sealed under — what a file assigned in is on
+	// until the re-encryption behind the move catches up. Refreshed on every
+	// write the same way the inventory is, and for the same reason: the main
+	// vault must not retire one of its own generations while a locked section
+	// it cannot read still points at it. Key IDs are labels, not secrets — the
+	// vault file already carries every generation's ID in the clear.
+	BorrowedKeys []string `json:"borrowed_keys,omitempty"`
 }
 
 // InventoryItem is one stored archive — a file, or a folder's thumbnail pack —

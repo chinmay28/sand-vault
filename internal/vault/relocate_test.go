@@ -1106,3 +1106,61 @@ func TestRelocateLeavesAWholeFileAlone(t *testing.T) {
 			plan.Recoded, plan.Moves, plan.Unchanged)
 	}
 }
+
+// A watched relocation reports as it goes: the file it is on, and bytes
+// crossed against the plan's total — which is what a progress bar draws.
+func TestRelocateWatchedReportsBytesAgainstThePlan(t *testing.T) {
+	v, _ := newTestVault(t, 4)
+	ctx := context.Background()
+	ids := accountIDs(t, v)
+
+	payload := bytes.Repeat([]byte("a byte counted is a byte drawn\n"), 200)
+	entry, _, err := v.Upload(ctx, MainScope, "/", "watched.txt", payload, UploadOptions{
+		Accounts: ids[:3],
+	})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	before := placementOf(entry)
+	targets := []string{before[1], before[2], ids[3]}
+
+	var seen []RelocationProgress
+	report, err := v.RelocateWatched(ctx, MainScope, "/watched.txt", targets, archive.Scheme{},
+		func(at RelocationProgress) { seen = append(seen, at) })
+	if err != nil {
+		t.Fatalf("RelocateWatched: %v", err)
+	}
+	if report.Relocated != 1 {
+		t.Fatalf("relocated %d files, want 1: %+v", report.Relocated, report)
+	}
+	if len(seen) == 0 {
+		t.Fatal("a watched relocation reported nothing")
+	}
+
+	// The file is announced before a byte of it moves.
+	first := seen[0]
+	if first.Path != "/watched.txt" || first.File != 1 || first.Files != 1 || first.Done != 0 {
+		t.Errorf("first report = %+v, want /watched.txt as file 1 of 1, none done", first)
+	}
+	if first.Total <= 0 {
+		t.Errorf("the bar has no denominator: total = %d", first.Total)
+	}
+
+	// Every report stays inside the plan's bill, and the last one closes it
+	// out: bytes match what the run says moved, and the file counts as done.
+	last := seen[len(seen)-1]
+	for _, at := range seen {
+		if at.Bytes > at.Total {
+			t.Errorf("reported %d of %d bytes", at.Bytes, at.Total)
+		}
+	}
+	if last.Done != 1 {
+		t.Errorf("last report says %d files done, want 1", last.Done)
+	}
+	if last.Bytes != report.Bytes {
+		t.Errorf("last report says %d bytes, the run says %d", last.Bytes, report.Bytes)
+	}
+	if last.Bytes <= 0 {
+		t.Error("no bytes were ever reported")
+	}
+}

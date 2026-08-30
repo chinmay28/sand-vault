@@ -125,10 +125,10 @@ function Outcome({ done, total, verb }) {
 /* Erasing everything picked. A folder takes what is inside it, which is why
    the dialog counts the two kinds separately rather than saying "12 items" and
    leaving the folders to be discovered afterwards. */
-export function BulkDelete({ items, onClose, onDone }) {
+export function BulkDelete({ items, vault = '', onClose, onDone }) {
   const run = useRun(items, async (item) => {
     const resp = item.kind === 'folder'
-      ? await api.deleteFolder(item.path, true)
+      ? await api.deleteFolder(item.path, true, vault)
       : await api.deleteFile(item.file.id)
     return resp?.warnings
   }, onDone)

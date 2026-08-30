@@ -53,8 +53,11 @@ function origin(items) {
 
 /* `items` are the rows a listing hands around — { kind, name, path } for a
    folder, { kind, name, file } for a file — so one picked row and thirty are
-   the same dialog. */
-export default function MoveToFolder({ items, onClose, onDone }) {
+   the same dialog. `vault` is which of the vaults inside the file they live
+   in: a move never crosses that boundary, so the tree offered, the folder
+   made from here and the folder moves all have to be that vault's — the main
+   one has folders of its own, sometimes under the same names. */
+export default function MoveToFolder({ items, vault = '', onClose, onDone }) {
   const mobile = useIsMobile()
 
   const [folders, setFolders] = useState(null)
@@ -77,11 +80,11 @@ export default function MoveToFolder({ items, onClose, onDone }) {
      field below, which knows what it created. */
   useEffect(() => {
     let live = true
-    api.folders()
+    api.folders(vault)
       .then((resp) => { if (live) setFolders(resp.folders || ['/']) })
       .catch((err) => { if (live) setError(err.message) })
     return () => { live = false }
-  }, [])
+  }, [vault])
 
   /* What each picked thing would become, in the order it was picked. Worked out
      again on every change of destination, which is what keeps the count on the
@@ -121,6 +124,7 @@ export default function MoveToFolder({ items, onClose, onDone }) {
         <MoveRun
           batch={started.batch}
           dest={started.dest}
+          vault={vault}
           onBusy={setBusy}
           onFinished={() => setFinished(true)}
           onClose={close}
@@ -149,6 +153,7 @@ export default function MoveToFolder({ items, onClose, onDone }) {
           {creating ? (
             <NewFolder
               dest={dest}
+              vault={vault}
               onCancel={() => setCreating(false)}
               onCreated={(path) => {
                 setFolders((current) => [...(current || []), path].sort())
@@ -198,10 +203,12 @@ export default function MoveToFolder({ items, onClose, onDone }) {
    everything before it moved, everything after it still where it was. Started
    the moment this appears — pressing Move was the decision, and asking twice
    for the same thing is a step. */
-function MoveRun({ batch, dest, onBusy, onFinished, onClose }) {
+function MoveRun({ batch, dest, vault, onBusy, onFinished, onClose }) {
   const run = useRun(batch, async (item) => {
-    if (item.kind === 'folder') await api.moveFolder(item.path, item.to)
-    // An empty name keeps the one it has; only the folder is changing.
+    if (item.kind === 'folder') await api.moveFolder(item.path, item.to, vault)
+    // An empty name keeps the one it has; only the folder is changing. The
+    // file is named by ID, which the server resolves to whichever vault holds
+    // it, so no vault travels with it.
     else await api.moveFile(item.file.id, dest, '')
     return null
   }, onFinished)
@@ -391,7 +398,7 @@ function FolderChoice({ glyph, name, label, hint, dim, onSelect }) {
 /* Making the folder to move into, from inside the dialog that wanted it.
    Without this, moving three files somewhere new means closing this, making the
    folder, finding the three files again and picking them again. */
-function NewFolder({ dest, onCancel, onCreated }) {
+function NewFolder({ dest, vault, onCancel, onCreated }) {
   const [name, setName] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
@@ -402,7 +409,7 @@ function NewFolder({ dest, onCancel, onCreated }) {
     setBusy(true)
     setError(null)
     try {
-      const resp = await api.createFolder(joinPath(dest, trimmed))
+      const resp = await api.createFolder(joinPath(dest, trimmed), vault)
       onCreated(resp?.path || joinPath(dest, trimmed))
     } catch (err) {
       setError(err.message)

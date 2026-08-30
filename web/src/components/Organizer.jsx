@@ -615,7 +615,7 @@ function PruneEmpty({ survey, vault, onClose, onDone }) {
    are on three accounts and going through the same dialog is what keeps that
    said out loud — and selecting hands it back to the file browser, where the
    selection bar already knows how to move, download, scatter or vault it. */
-function ByType({ survey, mode, onClose, onDone, onSelect }) {
+function ByType({ survey, mode, vault, onClose, onDone, onSelect }) {
   const [deep, setDeep] = useState(true)
   const [picked, setPicked] = useState(() => new Set())
   const [confirming, setConfirming] = useState(null)
@@ -638,6 +638,7 @@ function ByType({ survey, mode, onClose, onDone, onSelect }) {
     return (
       <BulkDelete
         items={confirming}
+        vault={vault}
         onClose={onClose}
         onDone={onDone}
       />

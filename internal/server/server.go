@@ -75,6 +75,12 @@ type Server struct {
 	// handlers_sshkeys.go.
 	generatedKeys *generatedKeyStore
 
+	// relocations is where the moves between clouds running right now say how
+	// far they have got — the same window import_watch.go opens onto imports,
+	// for the same two readers: a progress bar, and a move that was detached
+	// from the page that started it.
+	relocations *relocateWatch
+
 	// imports is where the imports running right now say how far they have
 	// got, so the dialog that started one can draw it. It is a view of the
 	// requests in flight and dies with them — see import_watch.go.
@@ -181,6 +187,9 @@ func (s *Server) Handler() (http.Handler, error) {
 	}
 	if s.imports == nil {
 		s.imports = newImportWatch()
+	}
+	if s.relocations == nil {
+		s.relocations = newRelocateWatch()
 	}
 	if s.erases == nil {
 		s.erases = newEraseWatch()
@@ -374,12 +383,12 @@ func (s *Server) Handler() (http.Handler, error) {
 		// The files behind the "missing a spare part" figure the accounts panel
 		// shows. Paged, and a read of the index alone — putting a part back is
 		// POST /api/relocate, the same call the file list's own move uses.
-		"GET /api/degraded":          s.handleDegradedList,
-		"POST /api/files":            s.handleFilesUpload,
+		"GET /api/degraded": s.handleDegradedList,
+		"POST /api/files":   s.handleFilesUpload,
 		// Which files of a choice are already stored at their destination with
 		// the same name and size, asked before a byte of them is sent — the
 		// browser drops those from the upload rather than storing copies.
-		"POST /api/files/precheck": s.handleFilesPrecheck,
+		"POST /api/files/precheck":   s.handleFilesPrecheck,
 		"GET /api/files/{id}":        s.handleFileMeta,
 		"DELETE /api/files/{id}":     s.handleFileDelete,
 		"POST /api/files/{id}/move":  s.handleFileMove,
@@ -446,7 +455,9 @@ func (s *Server) Handler() (http.Handler, error) {
 		// Moving a file or a folder onto other clouds. One endpoint for both,
 		// because it is one operation over a set of files and the only
 		// difference is how the set was named.
-		"POST /api/relocate": s.handleRelocate,
+		"POST /api/relocate":              s.handleRelocate,
+		"GET /api/relocate/runs":          s.handleRelocateRuns,
+		"DELETE /api/relocate/runs/{run}": s.handleRelocateStop,
 
 		// The standing instructions a folder has been given: check what is
 		// under it on a schedule, and put back what is missing. Reading and
@@ -654,7 +665,7 @@ func (s *Server) autoLockLoop() {
 		if err != nil || !v.Unlocked() {
 			continue
 		}
-		if s.sessions.sweep() > 0 || s.externalActive() || s.imports.running() > 0 {
+		if s.sessions.sweep() > 0 || s.externalActive() || s.imports.running() > 0 || s.relocations.running() > 0 {
 			continue
 		}
 		v.Lock()
