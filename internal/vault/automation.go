@@ -1374,7 +1374,7 @@ func (v *Vault) repairFiles(ctx context.Context, scope Scope, policy *Automation
 			relocationOptions{
 				unreachable: dark,
 				absent:      map[string]map[int]bool{st.entry.ID: st.absent},
-			}, nil)
+			}, nil, nil)
 		if report != nil {
 			run.Warnings = append(run.Warnings, report.Warnings...)
 			res.PartsWritten += report.PartsMoved

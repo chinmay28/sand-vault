@@ -427,12 +427,23 @@ export const api = {
      copied — swapping one cloud out of three moves one part, not the file — so
      `preview` is worth asking first: it answers out of the index alone, without
      contacting a single account, and says exactly how much would travel. */
-  relocate: ({ id, path, accounts, scheme = '', preview = false, vault = '', signal } = {}) =>
+  relocate: ({ id, path, targets, accounts, scheme = '', preview = false, vault = '', detach = false, signal } = {}) =>
     request('/api/relocate', {
       method: 'POST',
-      body: { id, path, accounts, scheme, preview, vault },
+      body: { id, path, targets, accounts, scheme, preview, vault, detach },
       signal,
     }),
+  /* The moves between clouds running right now, and what a detached one lately
+     finished with — the same second, short request an import's progress bar
+     makes, for the same reason: the move itself is one long POST (or none at
+     all, detached), and this reads the counter beside it. */
+  relocations: ({ signal } = {}) => request('/api/relocate/runs', { signal }),
+  /* Stopping a running move and dismissing a finished one's result are the
+     same request, because they are the same gesture: stop showing me this.
+     Stopping loses nothing — every file already moved is committed, and
+     running the same move again finishes the rest. */
+  stopRelocation: (id) =>
+    request(`/api/relocate/runs/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   createFolder: (path, vault = '') =>
     request('/api/folders', { method: 'POST', body: { path, vault } }),

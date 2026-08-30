@@ -165,6 +165,11 @@ func (s *Server) handleVaultLock(w http.ResponseWriter, r *http.Request) {
 	s.sessions.clear()
 	s.streams.clear()
 	s.imports.stopAll()
+	// A relocation is the same case with less at stake: every file already
+	// moved is committed, and one that carried on would fail at its next
+	// commit for want of the index. What it copied first becomes litter the
+	// stray-parts scan knows how to find.
+	s.relocations.stopAll()
 	v.Lock()
 	clearSessionCookie(w, isSecureRequest(r))
 

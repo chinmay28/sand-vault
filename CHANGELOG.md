@@ -12,6 +12,31 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### Moving files between clouds can be watched, and handed to the machine
+
+Moving a folder of films onto other clouds is a copy between two accounts for
+every part of every chunk of every file in it — hours, on a home connection —
+and the dialog offered nothing for the duration but a spinner, on a page that
+had to stay open: the request held the transfer, so closing the tab cancelled
+it silently.
+
+It now gets both halves of the answer imports already had. The dialog draws a
+real progress bar — which file, and how many bytes have crossed against what
+the plan said would move, with the current speed and a rough time left —
+served by the machine rather than the page, so a dialog reopened later shows a
+move mid-bar. And **Keep going if I close this page** hands the move to the
+machine outright: it answers at once, runs with no page behind it, and its
+outcome waits in the dialog for whoever comes back. Stopping one loses
+nothing; every file already moved is committed, and running the same move
+again picks up the rest — which has always been how an interrupted relocation
+resumes, and is why nothing here needs a job to be written down.
+
+A selection of many files and folders now also travels as **one** request and
+one run with one bar and one report, rather than a burst of requests the
+browser had to sequence itself. A running move counts as use of the vault, so
+the idle timer no longer locks the keys out from under one; locking by hand
+still stops them, exactly as it stops imports.
+
 ### Working inside a sub vault now means the whole app works there
 
 A sub vault had its own tree, and half the app quietly kept talking to the main

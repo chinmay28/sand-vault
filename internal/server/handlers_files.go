@@ -664,13 +664,18 @@ func (s *Server) handleFileMove(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"file": entry, "path": entry.Path()})
 }
 
-// relocateRequest asks for a file, or a folder and everything under it, to be
-// moved onto a different set of cloud accounts.
+// relocateRequest asks for a file, or a folder and everything under it — or a
+// whole selection of both — to be moved onto a different set of cloud accounts.
 type relocateRequest struct {
 	// ID names a single file; Path names either a file or a folder. One of
-	// them is required, and ID wins if both are given.
+	// them is required unless Targets carries the selection, and ID wins if
+	// both are given.
 	ID   string `json:"id"`
 	Path string `json:"path"`
+
+	// Targets is a selection: several files and folders moved as one act, one
+	// run, one answer. When it is given, ID, Path and Vault above are ignored.
+	Targets []relocateTarget `json:"targets,omitempty"`
 
 	// Accounts is where the shards should end up, and how many are named settles
 	// the scheme unless Scheme names one. Ending up under a different code from
@@ -692,6 +697,46 @@ type relocateRequest struct {
 	// is the main vault. It is needed because a relocation can be aimed at a
 	// path, and two vaults can each have one of the same name.
 	Vault string `json:"vault,omitempty"`
+
+	// Detach runs the move on a context of its own and answers at once, rather
+	// than holding the request open until it is done. Asked for, never assumed
+	// — the same bargain an import strikes, for the same reason: a folder of
+	// films crossing between clouds should not need a browser tab held open
+	// for the hours it takes.
+	Detach bool `json:"detach,omitempty"`
+}
+
+// relocateTarget is one file or folder in a selection being moved.
+type relocateTarget struct {
+	ID    string `json:"id,omitempty"`
+	Path  string `json:"path,omitempty"`
+	Vault string `json:"vault,omitempty"`
+}
+
+// target is what the vault is pointed at: the ID when there is one.
+func (t relocateTarget) target() string {
+	if id := strings.TrimSpace(t.ID); id != "" {
+		return id
+	}
+	return strings.TrimSpace(t.Path)
+}
+
+// targets normalizes the request into the selection it means.
+func (req relocateRequest) targets() []relocateTarget {
+	if len(req.Targets) > 0 {
+		out := make([]relocateTarget, 0, len(req.Targets))
+		for _, t := range req.Targets {
+			if t.target() != "" {
+				out = append(out, t)
+			}
+		}
+		return out
+	}
+	single := relocateTarget{ID: req.ID, Path: req.Path, Vault: req.Vault}
+	if single.target() == "" {
+		return nil
+	}
+	return []relocateTarget{single}
 }
 
 // relocateTimeout is the ceiling on one relocation request.
@@ -704,9 +749,17 @@ type relocateRequest struct {
 // and asking again picks up whatever is still in the wrong place.
 const relocateTimeout = 6 * time.Hour
 
-// handleRelocate moves a file or a folder onto other clouds. Only the parts
-// that are not already on one of the chosen accounts are copied — see
-// vault.Relocate.
+// handleRelocate moves a file, a folder, or a whole selection onto other
+// clouds. Only the parts that are not already on one of the chosen accounts
+// are copied — see vault.Relocate.
+//
+// Synchronous unless asked otherwise, exactly as an import is, and the answer
+// to "this could take hours" is the same pair an import gives: the run reports
+// its progress here whether or not anything is watching (see relocate_watch.go
+// and GET /api/relocate/runs), and `detach` hands the move to the machine so
+// closing the page does not take the transfer with it. Either way each file
+// commits on its own, so an interrupted move loses nothing and running the
+// same one again finishes it.
 func (s *Server) handleRelocate(w http.ResponseWriter, r *http.Request) {
 	var req relocateRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -714,11 +767,8 @@ func (s *Server) handleRelocate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	target := strings.TrimSpace(req.ID)
-	if target == "" {
-		target = strings.TrimSpace(req.Path)
-	}
-	if target == "" {
+	targets := req.targets()
+	if len(targets) == 0 {
 		writeError(w, http.StatusBadRequest, "name the file or folder to move", "BAD_REQUEST")
 		return
 	}
@@ -732,7 +782,12 @@ func (s *Server) handleRelocate(w http.ResponseWriter, r *http.Request) {
 	v, _ := s.Vault()
 
 	if req.Preview {
-		plan, err := v.PlanRelocation(vault.Scope(req.Vault), target, req.Accounts, scheme)
+		if len(targets) != 1 {
+			writeError(w, http.StatusBadRequest,
+				"a preview prices one target at a time", "BAD_REQUEST")
+			return
+		}
+		plan, err := v.PlanRelocation(vault.Scope(targets[0].Vault), targets[0].target(), req.Accounts, scheme)
 		if err != nil {
 			vaultErrorResponse(w, err)
 			return
@@ -741,15 +796,210 @@ func (s *Server) handleRelocate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.Detach {
+		s.startDetachedRelocation(w, v, targets, req.Accounts, scheme)
+		return
+	}
+
 	ctx, cancel := contextWithTimeout(r, relocateTimeout)
 	defer cancel()
 
-	report, err := v.Relocate(ctx, vault.Scope(req.Vault), target, req.Accounts, scheme, nil)
+	// Registered before the first byte moves and forgotten however this ends,
+	// so what GET /api/relocate/runs answers with is what is actually running
+	// — including this, held open in the foreground.
+	ticket, err := s.relocations.start(relocateLabel(targets), false, cancel)
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error(), "RELOCATE_BUSY")
+		return
+	}
+	defer ticket.done()
+
+	report, err := s.runRelocation(ctx, v, targets, req.Accounts, scheme, ticket)
 	if err != nil {
 		vaultErrorResponse(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, report)
+}
+
+// relocateLabel names a run for its card: the one thing picked, or how many.
+func relocateLabel(targets []relocateTarget) string {
+	if len(targets) == 1 {
+		if path := strings.TrimSpace(targets[0].Path); path != "" {
+			return path
+		}
+		return "1 item"
+	}
+	return fmt.Sprintf("%d items", len(targets))
+}
+
+// runRelocation carries out one relocation request — every target, one after
+// another, reported as a single run and answered as a single report.
+//
+// The whole bill is priced first, from the index alone, so the progress bar
+// has its denominator before the first byte moves — and so a target that
+// cannot even be planned fails its own line without stopping the rest.
+func (s *Server) runRelocation(ctx context.Context, v *vault.Vault, targets []relocateTarget,
+	accounts []string, scheme archive.Scheme, ticket *relocateTicket) (*vault.RelocationReport, error) {
+
+	type job struct {
+		t     relocateTarget
+		files int
+		bytes int64
+	}
+	var (
+		jobs       []job
+		totalFiles int
+		totalBytes int64
+	)
+	merged := &vault.RelocationReport{}
+	for _, t := range targets {
+		plan, err := v.PlanRelocation(vault.Scope(t.Vault), t.target(), accounts, scheme)
+		if err != nil {
+			// One target, one answer: the error is the response. In a
+			// selection it is one line of many.
+			if len(targets) == 1 {
+				return nil, err
+			}
+			merged.Warnings = append(merged.Warnings, fmt.Sprintf("%s: %v", t.target(), err))
+			continue
+		}
+		jobs = append(jobs, job{t: t, files: plan.Total, bytes: plan.Bytes + plan.RecodeBytes})
+		totalFiles += plan.Total
+		totalBytes += plan.Bytes + plan.RecodeBytes
+	}
+	if len(jobs) == 0 {
+		return nil, fmt.Errorf("nothing in the selection could be moved: %s",
+			strings.Join(merged.Warnings, "; "))
+	}
+
+	filesBefore := 0
+	var bytesBefore int64
+	var last *vault.RelocationReport
+	for _, j := range jobs {
+		if err := ctx.Err(); err != nil {
+			merged.Warnings = append(merged.Warnings, fmt.Sprintf(
+				"stopped before %s: %v", j.t.target(), err))
+			break
+		}
+
+		// The per-target reports count from zero; the offsets fold them into
+		// one bar over the whole selection.
+		fb, bb := filesBefore, bytesBefore
+		watch := func(p vault.RelocationProgress) {
+			p.File += fb
+			p.Done += fb
+			p.Files = totalFiles
+			p.Bytes += bb
+			p.Total = totalBytes
+			ticket.update(p)
+			// A transfer with nobody watching is still use, and without saying
+			// so the idle timer would lock the vault out from under it.
+			s.noteExternalActivity()
+		}
+
+		report, err := v.RelocateWatched(ctx, vault.Scope(j.t.Vault), j.t.target(), accounts, scheme, watch)
+		if report != nil {
+			last = report
+			merged.Accounts = report.Accounts
+			merged.Total += report.Total
+			merged.Unchanged += report.Unchanged
+			merged.Relocated += report.Relocated
+			merged.Partial += report.Partial
+			merged.Failed += report.Failed
+			merged.PartsMoved += report.PartsMoved
+			merged.PartsDrop += report.PartsDrop
+			merged.Recoded += report.Recoded
+			merged.Bytes += report.Bytes
+			merged.Warnings = append(merged.Warnings, report.Warnings...)
+			filesBefore += report.Total
+			bytesBefore += report.Bytes
+		}
+		if err != nil {
+			// A locked vault fails everything after it identically; anything
+			// else is this target's own line.
+			if errors.Is(err, vault.ErrLocked) {
+				return merged, err
+			}
+			merged.Warnings = append(merged.Warnings, fmt.Sprintf("%s: %v", j.t.target(), err))
+		}
+	}
+
+	// One target keeps the answer's old shape, path and all.
+	if len(jobs) == 1 && last != nil {
+		merged.Path, merged.Folder = last.Path, last.Folder
+	}
+	return merged, nil
+}
+
+// startDetachedRelocation answers 202 and lets the move run with no request
+// behind it. The context is derived from Background rather than from r — that
+// is the whole difference, and what makes closing the page harmless. The
+// ceiling is the same one a foreground move gets, so a detached one cannot
+// outlive the day either.
+func (s *Server) startDetachedRelocation(w http.ResponseWriter, v *vault.Vault,
+	targets []relocateTarget, accounts []string, scheme archive.Scheme) {
+
+	// Refused before anything starts, so a selection nothing in which can be
+	// planned — bad accounts, a locked sub vault — comes back as an error on
+	// this request rather than as a run that appears and immediately fails.
+	// Planning reads the index alone, so asking twice costs nothing.
+	planned := 0
+	var firstErr error
+	for _, t := range targets {
+		if _, err := v.PlanRelocation(vault.Scope(t.Vault), t.target(), accounts, scheme); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		planned++
+	}
+	if planned == 0 {
+		vaultErrorResponse(w, firstErr)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), relocateTimeout)
+	ticket, err := s.relocations.start(relocateLabel(targets), true, cancel)
+	if err != nil {
+		cancel()
+		writeError(w, http.StatusConflict, err.Error(), "RELOCATE_BUSY")
+		return
+	}
+
+	go func() {
+		defer cancel()
+		report, err := s.runRelocation(ctx, v, targets, accounts, scheme, ticket)
+		// A cancelled run is not a failed one: it stopped because somebody
+		// stopped it, and every file that finished is already committed —
+		// running the same move again picks up the rest.
+		cancelled := ctx.Err() != nil
+		if err != nil && cancelled {
+			err = nil
+		}
+		ticket.finish(report, err, cancelled)
+	}()
+
+	writeJSON(w, http.StatusAccepted, map[string]any{"run": s.relocations.forRun(ticket.id)})
+}
+
+// handleRelocateRuns answers with every relocation running right now, and what
+// a detached one lately finished with. An empty list is the ordinary answer.
+func (s *Server) handleRelocateRuns(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"runs": s.relocations.all()})
+}
+
+// handleRelocateStop cancels a running relocation, or forgets a finished
+// one's result. Both are the same gesture: stop showing me this.
+func (s *Server) handleRelocateStop(w http.ResponseWriter, r *http.Request) {
+	if !s.relocations.stop(r.PathValue("run")) {
+		writeError(w, http.StatusNotFound, "no move by that name is running", "NOT_FOUND")
+		return
+	}
+	// 200 with what is left rather than 204, so the dialog redraws from the
+	// answer instead of from a guess about what it did.
+	writeJSON(w, http.StatusOK, map[string]any{"runs": s.relocations.all()})
 }
 
 func (s *Server) handleFileHealth(w http.ResponseWriter, r *http.Request) {

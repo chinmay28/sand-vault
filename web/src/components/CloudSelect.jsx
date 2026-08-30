@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { COLORS, FONT, KIND_ICONS, accountColor, formatBytes } from '../theme'
 import { api } from '../api'
 import { Banner, Button, Modal, Spinner } from './ui'
@@ -774,9 +774,18 @@ export function RelocateClouds({ target, targets, title, subtitle, current, prov
   const [plan, setPlan] = useState(null)
   const [planning, setPlanning] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [moved, setMoved] = useState(0)
   const [error, setError] = useState(null)
   const [report, setReport] = useState(null)
+  /* Asked for, never assumed — the same bargain an import strikes. A move
+     that keeps running after the page is closed is a thing somebody should
+     have decided, not something they discover later. */
+  const [detach, setDetach] = useState(false)
+  /* What the server says is moving right now, and what a detached move lately
+     finished with. Polled while the dialog is open, so a foreground move
+     draws a live bar and coming back to a detached one shows how far it got. */
+  const [runs, setRuns] = useState([])
+  const [changed, setChanged] = useState(false)
+  const finished = useRef(new Set())
 
   const scope = (targets && targets.length ? targets : [target]).filter(Boolean)
 
@@ -825,22 +834,63 @@ export function RelocateClouds({ target, targets, title, subtitle, current, prov
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, scopeKey, enough, report])
 
-  const submit = async () => {
-    setBusy(true)
-    setMoved(0)
+  /* Ask the server what is moving, and keep asking. Once a second while
+     something is, every five when nothing is — an idle dialog left open
+     should not be a request a second. */
+  useEffect(() => {
+    let live = true
+    const ask = async () => {
+      try {
+        const resp = await api.relocations()
+        if (live) setRuns(resp.runs || [])
+      } catch {
+        // A poll that failed says nothing about the move, which is running
+        // behind its own request either way. Leave the last answer up.
+      }
+    }
+    ask()
+    const timer = setInterval(ask, busy || runs.some((run) => !run.done) ? 1000 : 5000)
+    return () => { live = false; clearInterval(timer) }
+  }, [busy, runs.some((run) => !run.done)]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* A move that finished — this dialog's or any other's — has changed the
+     index the listing behind this is drawn from, so the way out refreshes. */
+  useEffect(() => {
+    let landed = false
+    for (const run of runs) {
+      if (run.done && !finished.current.has(run.id)) {
+        finished.current.add(run.id)
+        landed = true
+      }
+    }
+    if (landed) setChanged(true)
+  }, [runs])
+
+  // Stopping a running move and dismissing a finished one's result are the
+  // same request, because they are the same gesture: stop showing me this.
+  const stopRun = async (id) => {
     setError(null)
     try {
-      /* One at a time, unlike the estimates: this one really does copy parts
-         between accounts, and running the whole selection at once is how a
-         provider starts refusing. Each file commits on its own, so a failure
-         partway leaves everything before it moved and everything after it
-         where it was — which is exactly what running it again then finishes. */
-      const reports = []
-      for (const t of scope) {
-        reports.push(await api.relocate({ ...t, accounts: selected, scheme: cut }))
-        setMoved(reports.length)
-      }
-      setReport(mergeReports(reports))
+      const resp = await api.stopRelocation(id)
+      setRuns(resp.runs || [])
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  const submit = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      /* The whole selection goes as one request and runs as one move: each
+         file still commits on its own, so a failure partway leaves everything
+         before it moved and everything after it where it was — which is
+         exactly what running it again then finishes. Detached, the answer is
+         the run rather than the result: the transfer has not happened yet,
+         and how it comes out arrives on the poll. */
+      const resp = await api.relocate({ targets: scope, accounts: selected, scheme: cut, detach })
+      if (detach) setRuns((current) => [...current.filter((r) => r.id !== resp.run?.id), resp.run].filter(Boolean))
+      else setReport(resp)
     } catch (err) {
       setError(err.message)
     } finally {
@@ -850,7 +900,7 @@ export function RelocateClouds({ target, targets, title, subtitle, current, prov
 
   const close = () => {
     // The listing's part badges are drawn from the index, which has changed.
-    if (report) onDone?.()
+    if (report || changed) onDone?.()
     onClose()
   }
 
@@ -862,6 +912,14 @@ export function RelocateClouds({ target, targets, title, subtitle, current, prov
       width={480}
     >
       {error && <Banner tone="error">{error}</Banner>}
+
+      {/* Everything moving right now, and what a detached move lately came
+          to. A foreground move draws its bar from the same list — the only
+          difference between the two is what happens to this page. */}
+      {!report && runs.map((run) => (run.done
+        ? <FinishedRelocation key={run.id} run={run} onDismiss={() => stopRun(run.id)} />
+        : <RelocationRunCard key={run.id} run={run} onStop={() => stopRun(run.id)} />))}
+      {busy && runs.length === 0 && <RelocationRunCard run={null} />}
 
       {report ? (
         <RelocationOutcome report={report} onClose={close} />
@@ -896,6 +954,31 @@ export function RelocateClouds({ target, targets, title, subtitle, current, prov
 
           {enough && <RelocationCost plan={plan} planning={planning} />}
 
+          {/* Asked for, never assumed. A move that keeps running after the
+              page is closed is a thing to have decided, not to discover. */}
+          <label style={{
+            display: 'flex', gap: '8px', alignItems: 'flex-start', marginTop: '14px',
+            cursor: busy ? 'default' : 'pointer',
+          }}>
+            <input
+              type="checkbox"
+              checked={detach}
+              disabled={busy}
+              onChange={(e) => setDetach(e.target.checked)}
+              style={{ marginTop: '2px' }}
+            />
+            <span style={{
+              fontFamily: FONT.sans, fontSize: '12px', lineHeight: 1.5, color: COLORS.textDim,
+            }}>
+              Keep going if I close this page
+              <span style={{ display: 'block', fontSize: '11px', color: COLORS.textMuted }}>
+                The machine carries the shards across on its own, and this dialog shows how far
+                it has got whenever you come back to it. Every file that finished stays moved
+                either way — running the same move again picks up the rest.
+              </span>
+            </span>
+          </label>
+
           <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', marginTop: '16px' }}>
             <Button type="button" variant="ghost" onClick={close} disabled={busy}>Cancel</Button>
             <Button
@@ -907,7 +990,7 @@ export function RelocateClouds({ target, targets, title, subtitle, current, prov
               {busy ? (
                 <>
                   <Spinner size={10} color={COLORS.bg} />
-                  {scope.length > 1 ? ` Moving ${moved + 1} of ${scope.length}…` : ' Moving…'}
+                  {' Moving…'}
                 </>
               ) : '⇄ Move the shards'}
             </Button>
@@ -1086,4 +1169,136 @@ function RelocationOutcome({ report, onClose }) {
       </div>
     </>
   )
+}
+
+/* One move as it runs: which file it is on, and the bar that matters — bytes
+   across, of the bytes the plan said would move. Drawn from the server's own
+   reading rather than from anything this page did, which is what lets a move
+   started an hour ago, on a page since closed, show up mid-bar. */
+function RelocationRunCard({ run, onStop }) {
+  const at = run?.at
+  const total = at?.total || 0
+  const fraction = total > 0 ? Math.min(1, (at.bytes || 0) / total) : 0
+  const started = !!at?.path
+
+  /* How fast, and how much longer, from the server's reading of the transfer
+     rather than from the difference between two polls. Nothing while a move is
+     starting and nothing once it has stalled — both drawn as nothing rather
+     than as zero. */
+  const rate = run?.rate || 0
+  const left = rate > 0 && total > 0 ? (total - (at?.bytes || 0)) / rate : 0
+
+  return (
+    <div style={{
+      padding: '11px 13px',
+      marginBottom: '12px',
+      background: COLORS.surface,
+      border: `1px solid ${COLORS.border}`,
+      borderRadius: '6px',
+    }}>
+      <div style={{
+        display: 'flex', justifyContent: 'space-between', gap: '10px',
+        fontFamily: FONT.mono, fontSize: '11px', color: COLORS.textDim, marginBottom: '6px',
+      }}>
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {started ? at.path : 'Working out what has to move…'}
+        </span>
+        {started && at.files > 1 && (
+          <span style={{ flexShrink: 0 }}>{Math.min(at.file, at.files)} of {at.files}</span>
+        )}
+      </div>
+
+      {started && (
+        <div style={{
+          display: 'flex', justifyContent: 'space-between', gap: '10px',
+          fontFamily: FONT.mono, fontSize: '10.5px', color: COLORS.textMuted, marginBottom: '8px',
+        }}>
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {at.recoding
+              ? 'rebuilding — the whole file comes down and goes back up…'
+              : 'copying shards between clouds…'}
+          </span>
+          {total > 0 && (
+            <span style={{ flexShrink: 0 }}>
+              {formatBytes(at.bytes || 0)} / {formatBytes(total)}
+            </span>
+          )}
+        </div>
+      )}
+
+      <div style={{ height: '3px', background: COLORS.border, borderRadius: '2px', overflow: 'hidden' }}>
+        <div style={{
+          height: '100%',
+          width: `${Math.max(4, fraction * 100)}%`,
+          background: COLORS.accent,
+          transition: 'width 0.3s ease',
+        }} />
+      </div>
+
+      {started && rate > 0 && (
+        <div style={{
+          display: 'flex', justifyContent: 'flex-end', marginTop: '7px',
+          fontFamily: FONT.mono, fontSize: '10.5px', color: COLORS.textMuted,
+        }}>
+          <span>{formatBytes(rate)}/s{left > 0 ? ` · ${relocationTimeLeft(left)} left` : ''}</span>
+        </div>
+      )}
+
+      {run?.detached && (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          gap: '10px', marginTop: '9px',
+        }}>
+          <span style={{ fontFamily: FONT.sans, fontSize: '11px', color: COLORS.textMuted }}>
+            {run.label} — running on the machine, you can close this page.
+          </span>
+          {onStop && <Button size="sm" variant="ghost" onClick={onStop}>Stop</Button>}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* A detached move that is over, waiting to be read by whoever comes back. It
+   says what the foreground outcome says, in one line, because it is the same
+   report — there was just no request left to be the answer to. Stopped is an
+   outcome rather than a failure: it was asked for, and every file that
+   finished is already moved. */
+function FinishedRelocation({ run, onDismiss }) {
+  if (run.error) {
+    return (
+      <Banner tone="error" onDismiss={onDismiss}>
+        <div>Moving {run.label} stopped: {run.error}</div>
+        <div style={{ marginTop: '4px' }}>
+          Every file that finished is already on the chosen clouds. Running the same move
+          again picks up the rest.
+        </div>
+      </Banner>
+    )
+  }
+
+  const report = run.report || {}
+  const stuck = (report.partial || 0) + (report.failed || 0)
+  return (
+    <Banner tone={stuck ? 'warn' : 'success'} onDismiss={onDismiss}>
+      {run.cancelled ? 'Stopped. ' : ''}
+      {report.recoded > 0
+        ? `Rebuilt ${report.recoded} file(s)`
+        : `Moved ${report.parts_moved || 0} shard(s) across ${report.relocated || 0} file(s)`}
+      {report.bytes ? `, ${formatBytes(report.bytes)}` : ''}.
+      {stuck > 0 && ` ${stuck} file(s) did not fully move — nothing was lost, try them again.`}
+    </Banner>
+  )
+}
+
+/* How much longer, in the roundest terms that are still true — a current
+   speed times what is left does not deserve seconds. */
+function relocationTimeLeft(seconds) {
+  if (seconds < 60) return 'under a minute'
+  const minutes = Math.round(seconds / 60)
+  if (minutes < 60) return `about ${minutes} min`
+  const hours = seconds / 3600
+  if (hours < 2) return 'about an hour'
+  if (hours < 24) return `about ${Math.round(hours)} hours`
+  return 'over a day'
 }
