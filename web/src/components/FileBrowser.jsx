@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { COLORS, FONT, formatBytes, isPlayable } from '../theme'
+import { COLORS, FONT, formatBytes, isPlayable, previewKind } from '../theme'
 import { api, joinPath } from '../api'
 import { sortFiles, sortFolders, sortHits, useViewPrefs } from '../view'
 import { ActionSheet, Banner, Button, Empty, Modal, Spinner } from './ui'
@@ -221,6 +221,15 @@ export default function FileBrowser({
   const thumbs = useMemo(
     () => new Set((searchTerm ? results?.thumbs : listing?.thumbs) || []),
     [searchTerm, results, listing])
+
+  /* Every image on screen, in the order it is drawn — what the preview's
+     full-screen viewer steps through. Off `entries` rather than the raw
+     listing so the pages turn in the order the person is looking at, and so a
+     search's results page through the hits and nothing else. */
+  const gallery = useMemo(() => entries
+    .filter((entry) => entry.kind === 'file' && previewKind(entry.file.mime, entry.file.name) === 'image')
+    .map((entry) => ({ file: entry.file, hasThumb: thumbs.has(entry.file.id) })),
+  [entries, thumbs])
 
   /* The films that have been matched, by file id — a title and a year each,
      which is what a tile is captioned with. The full record is a request per
@@ -513,7 +522,9 @@ export default function FileBrowser({
     selected,
     onToggle: toggle,
     onNavigate: nav.navigate,
-    onPreview,
+    // The clicked file plus the images around it, so a preview opened on one
+    // photograph knows the rest of the folder.
+    onPreview: (file, hasThumb, film) => onPreview(file, hasThumb, film, gallery),
     onInspect,
     onFilm,
     onRefresh: searchTerm ? refreshSearch : onRefresh,
