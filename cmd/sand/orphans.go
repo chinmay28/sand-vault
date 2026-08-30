@@ -120,7 +120,10 @@ another window is never taken out from under it.`,
 				return nil
 			}
 
-			report, err := v.SweepOrphans(cmd.Context(), nil, false)
+			report, err := v.SweepOrphans(cmd.Context(), nil, false, func(done, total int) {
+				progressLine("erased", done, total)
+			})
+			clearProgressLine()
 			if report != nil {
 				printWarnings(report.Warnings)
 				printWarnings(report.Skipped)

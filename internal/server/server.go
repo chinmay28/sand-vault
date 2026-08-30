@@ -88,7 +88,9 @@ type Server struct {
 
 	// erases is the same window onto recursive folder deletes, so the dialog
 	// that is waiting on one can count files down instead of sitting on
-	// "Deleting…" for minutes — see erase_watch.go.
+	// "Deleting…" for minutes — see erase_watch.go. The orphan sweep opens
+	// the same kind of window through it, under a key of its own — see
+	// handlers_orphans.go.
 	erases *eraseWatch
 
 	// externalActivity is when something outside the browser last read the
@@ -278,6 +280,10 @@ func (s *Server) Handler() (http.Handler, error) {
 		// back, which moves nothing.
 		"GET /api/vault/orphans":           s.handleOrphanScan,
 		"POST /api/vault/orphans":          s.handleOrphanSweep,
+		// Where a running sweep has got to — objects erased against objects
+		// doomed — read beside the POST above, which for a vault where
+		// somebody has been deleting films answers only after minutes.
+		"GET /api/vault/orphans/erasing":   s.handleOrphanErasing,
 		"POST /api/vault/orphans/reattach": s.handleOrphanReattach,
 		// The same question asked of the one disk SAND writes to itself. An
 		// interrupted upload leaves its spool in the vault's own directory at

@@ -19,6 +19,10 @@ import (
 // minutes of a button saying "Deleting…" with no way to tell it apart from a
 // hang. The DELETE request itself can only answer at the end, so where it has
 // got to is served beside it, keyed by the folder being deleted.
+//
+// The orphan sweep is the same slow shape — one POST, a delete per abandoned
+// object, an answer only at the end — and counts itself through here too,
+// under a key no folder can produce. See handlers_orphans.go.
 
 // folderErase is one recursive delete, mid-flight: how many of the doomed
 // files have had their parts erased, out of how many the folder held.

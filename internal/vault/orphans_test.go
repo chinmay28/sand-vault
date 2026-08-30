@@ -152,7 +152,7 @@ func TestOrphanSweepErasesTheAbandonedPartAndNothingElse(t *testing.T) {
 
 	// Asked first without committing, because that is what the browser shows
 	// in the confirmation.
-	preview, err := v.SweepOrphans(ctx, nil, true)
+	preview, err := v.SweepOrphans(ctx, nil, true, nil)
 	if err != nil {
 		t.Fatalf("SweepOrphans dry run: %v", err)
 	}
@@ -163,12 +163,29 @@ func TestOrphanSweepErasesTheAbandonedPartAndNothingElse(t *testing.T) {
 		t.Fatalf("a dry run erased %d object(s)", len(before)-len(after))
 	}
 
-	report, err := v.SweepOrphans(ctx, nil, false)
+	// Watched the way the browser watches it, so the progress a dialog draws
+	// is pinned down too: the denominator first, then one step per object.
+	var seen [][2]int
+	report, err := v.SweepOrphans(ctx, nil, false, func(done, total int) {
+		seen = append(seen, [2]int{done, total})
+	})
 	if err != nil {
 		t.Fatalf("SweepOrphans: %v", err)
 	}
 	if report.Archives != 1 || report.Deleted != preview.Deleted || report.Bytes != preview.Bytes {
 		t.Fatalf("the sweep did not do what the dry run said: %+v vs %+v", report, preview)
+	}
+	if len(seen) != report.Deleted+1 {
+		t.Fatalf("progress was reported %d time(s), want the opening (0, total) and one per object: %v",
+			len(seen), seen)
+	}
+	if seen[0] != [2]int{0, report.Deleted} {
+		t.Errorf("the first report was %v, want (0, %d)", seen[0], report.Deleted)
+	}
+	for i := 1; i < len(seen); i++ {
+		if seen[i] != [2]int{i, report.Deleted} {
+			t.Errorf("report %d was %v, want (%d, %d)", i, seen[i], i, report.Deleted)
+		}
 	}
 	if len(report.Warnings) > 0 || len(report.Skipped) > 0 {
 		t.Errorf("sweep complained: %v %v", report.Warnings, report.Skipped)
@@ -253,7 +270,7 @@ func TestOrphanScanWillNotSweepAVaultWaitingToBeRecovered(t *testing.T) {
 		}
 	}
 
-	if _, err := fresh.SweepOrphans(context.Background(), nil, false); err == nil {
+	if _, err := fresh.SweepOrphans(context.Background(), nil, false, nil); err == nil {
 		t.Fatal("SweepOrphans ran anyway")
 	}
 	if live := storedObjects(t, roots); len(live) == 0 {
@@ -327,7 +344,7 @@ func TestOrphanScanWillNotSweepAnAccountAnotherVaultIsUsing(t *testing.T) {
 	}
 
 	// Sweeping everything is a no-op rather than a disaster.
-	if _, err := v.SweepOrphans(ctx, nil, false); err != nil {
+	if _, err := v.SweepOrphans(ctx, nil, false, nil); err != nil {
 		t.Fatalf("SweepOrphans: %v", err)
 	}
 	if !holdsArchive(storedObjects(t, roots), theirs.ArchiveID) {
@@ -362,7 +379,7 @@ func TestOrphanScanIgnoresObjectsSandDidNotWrite(t *testing.T) {
 		t.Fatalf("files SAND never wrote were counted as abandoned: %+v", scan.Items)
 	}
 
-	if _, err := v.SweepOrphans(ctx, nil, false); err != nil {
+	if _, err := v.SweepOrphans(ctx, nil, false, nil); err != nil {
 		t.Fatalf("SweepOrphans: %v", err)
 	}
 	for name := range strangers {
@@ -390,7 +407,7 @@ func TestOrphanSweepRefusesATargetThatIsNoLongerAbandoned(t *testing.T) {
 	// scan is re-run inside the sweep, so the name means nothing on its own.
 	report, err := v.SweepOrphans(ctx, []OrphanTarget{
 		{ProviderID: accounts[0].ID, ArchiveID: live.ArchiveID},
-	}, false)
+	}, false, nil)
 	if err != nil {
 		t.Fatalf("SweepOrphans: %v", err)
 	}
@@ -456,7 +473,7 @@ func TestOrphanScanWithholdsTheSweepWhenAnAccountWillNotAnswer(t *testing.T) {
 		t.Error("the abandoned archive went unreported as well as unswept")
 	}
 
-	if _, err := v.SweepOrphans(ctx, nil, false); err == nil {
+	if _, err := v.SweepOrphans(ctx, nil, false, nil); err == nil {
 		t.Fatal("SweepOrphans ran with an account silent")
 	}
 	if !holdsArchive(storedObjects(t, roots), doomed.ArchiveID) {
@@ -537,7 +554,7 @@ func TestOrphanSweepTakesTheRowsThePreviewCouldNotShow(t *testing.T) {
 
 	// The cap bounds what is shown, not what is swept. A sweep that stopped at
 	// the preview would leave the rest behind without saying so.
-	report, err := v.SweepOrphans(ctx, nil, false)
+	report, err := v.SweepOrphans(ctx, nil, false, nil)
 	if err != nil {
 		t.Fatalf("SweepOrphans: %v", err)
 	}
@@ -921,7 +938,7 @@ func TestReattachLeavesAThumbnailPackAlone(t *testing.T) {
 	} else if report.Shards != 0 {
 		t.Errorf("it reattached %d pack shard(s)", report.Shards)
 	}
-	if _, err := v.SweepOrphans(ctx, nil, false); err != nil {
+	if _, err := v.SweepOrphans(ctx, nil, false, nil); err != nil {
 		t.Fatalf("SweepOrphans: %v", err)
 	}
 	if !holdsArchive(storedObjects(t, roots), packArchive) {

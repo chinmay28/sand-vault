@@ -161,6 +161,13 @@ func TestOrphanSweepErasesWhatTheDryRunPromised(t *testing.T) {
 
 	before := sandFilesIn(t, roots[0])
 
+	// The window the dialog polls while a sweep runs. Nothing is running, so
+	// it must say so — and a dry run must not open it either: a browser asking
+	// what a sweep would do must not make one that is running look otherwise.
+	if w, body := c.json(http.MethodGet, "/api/vault/orphans/erasing", nil); w.Code != http.StatusOK || body["running"] != false {
+		t.Errorf("erasing before any sweep: %d %v, want running=false", w.Code, body)
+	}
+
 	w, preview := c.json(http.MethodPost, "/api/vault/orphans", map[string]any{"dry_run": true})
 	if w.Code != http.StatusOK {
 		t.Fatalf("dry run: %d %s", w.Code, w.Body.String())
@@ -175,6 +182,10 @@ func TestOrphanSweepErasesWhatTheDryRunPromised(t *testing.T) {
 	w, report := c.json(http.MethodPost, "/api/vault/orphans", nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("sweep: %d %s", w.Code, w.Body.String())
+	}
+	// And the window comes down with the request it was counting beside.
+	if w, body := c.json(http.MethodGet, "/api/vault/orphans/erasing", nil); w.Code != http.StatusOK || body["running"] != false {
+		t.Errorf("erasing after the sweep finished: %d %v, want running=false", w.Code, body)
 	}
 	if report["deleted"] != preview["deleted"] || report["bytes"] != preview["bytes"] {
 		t.Fatalf("the sweep did not do what the dry run said: %v vs %v", report, preview)
@@ -304,6 +315,11 @@ func TestOrphanEndpointsNeedASession(t *testing.T) {
 		if w.Code != http.StatusUnauthorized {
 			t.Errorf("%s /api/vault/orphans without a session: %d, want 401", call.method, w.Code)
 		}
+	}
+
+	w, _ := c.json(http.MethodGet, "/api/vault/orphans/erasing", nil)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("GET /api/vault/orphans/erasing without a session: %d, want 401", w.Code)
 	}
 }
 

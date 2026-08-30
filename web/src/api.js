@@ -120,6 +120,12 @@ export const api = {
      they are now, not as the scan left them. */
   sweepOrphans: ({ targets = [], dryRun = false } = {}) =>
     request('/api/vault/orphans', { method: 'POST', body: { targets, dry_run: dryRun } }),
+  /* Where the sweep above has got to, while it is still in flight — objects
+     erased against objects doomed, read beside a POST that can only answer at
+     the end. A total of 0 while running means the sweep is still listing the
+     accounts to decide what goes. Asked only while a sweep is running — see
+     useOrphanEraseProgress. */
+  orphanErasing: () => request('/api/vault/orphans/erasing'),
   /* The other half of the same listing, and the opposite of a sweep.
 
      A part with no record is not always rubbish. Disconnecting a cloud drops

@@ -419,7 +419,11 @@ the unit somebody is being asked about. It **re-runs the scan itself** rather
 than trusting the caller's: between being shown a figure and agreeing to it, a
 file may have been uploaded, a sub vault opened, an account reconnected — and
 each of those changes the answer. A target that has stopped being abandoned is
-skipped and reported, never erased.
+skipped and reported, never erased. The sweep reports its progress — objects
+dealt with against objects doomed — through an optional callback, the same
+window `Rmdir` opens onto a recursive folder delete: the request itself can
+only answer at the end, and the browser reads the count beside it
+(`GET /api/vault/orphans/erasing`).
 
 **Where the sweep refuses.** "No index points at it" stops meaning "abandoned"
 in four states, each of which an ordinary user can be in, and `orphanGuard`
