@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -441,10 +442,10 @@ func TestRmdirRecursive(t *testing.T) {
 		t.Fatalf("Upload: %v", err)
 	}
 
-	if _, err := v.Rmdir(ctx, MainScope, "/docs", false); err == nil {
+	if _, err := v.Rmdir(ctx, MainScope, "/docs", false, nil); err == nil {
 		t.Error("expected non-recursive Rmdir to refuse a non-empty folder")
 	}
-	if _, err := v.Rmdir(ctx, MainScope, "/docs", true); err != nil {
+	if _, err := v.Rmdir(ctx, MainScope, "/docs", true, nil); err != nil {
 		t.Fatalf("recursive Rmdir: %v", err)
 	}
 
@@ -454,6 +455,45 @@ func TestRmdirRecursive(t *testing.T) {
 	}
 	if len(listing.Folders) != 0 || len(listing.Files) != 0 {
 		t.Errorf("root not empty after recursive delete: %+v", listing)
+	}
+}
+
+// Files are erased a few at a time rather than one after another, so the
+// callback is what keeps the counts readable: it must open on (0, total), say
+// every count once, and never step backwards — a watcher draws a bar straight
+// off these numbers.
+func TestRmdirReportsProgressInOrder(t *testing.T) {
+	v, _ := newTestVault(t, 3)
+	ctx := context.Background()
+
+	if err := v.Mkdir(MainScope, "/bulk"); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	const files = 9
+	for i := 0; i < files; i++ {
+		name := fmt.Sprintf("f%d.txt", i)
+		if _, _, err := v.Upload(ctx, MainScope, "/bulk", name, []byte(name), UploadOptions{}); err != nil {
+			t.Fatalf("Upload %s: %v", name, err)
+		}
+	}
+
+	var counts []int
+	if _, err := v.Rmdir(ctx, MainScope, "/bulk", true, func(done, total int) {
+		if total != files {
+			t.Errorf("total reported as %d, want %d", total, files)
+		}
+		counts = append(counts, done)
+	}); err != nil {
+		t.Fatalf("recursive Rmdir: %v", err)
+	}
+
+	if len(counts) != files+1 {
+		t.Fatalf("got %d progress reports, want %d: %v", len(counts), files+1, counts)
+	}
+	for i, n := range counts {
+		if n != i {
+			t.Fatalf("progress arrived out of order: %v", counts)
+		}
 	}
 }
 

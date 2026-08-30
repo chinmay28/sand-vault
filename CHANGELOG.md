@@ -75,6 +75,26 @@ batch's thumbnails are drawn, `splitting, encrypting and scattering…` while th
 server is putting a batch onto the clouds. Stuck and busy no longer look the
 same.
 
+### Deleting a big folder is faster, and counts itself down while it runs
+
+Deleting a folder erases every part of every file in it from every account
+holding one — and it did that one file at a time. Each file's parts went in
+parallel, but a file's turn was over only when the slowest of its accounts had
+answered, and a folder of three hundred files paid that worst-of-three latency
+three hundred times in a row. All of it behind one request that answered only
+at the end: minutes of a button saying "Deleting…", indistinguishable from a
+hang.
+
+The erasing now runs a few files abreast — overlapping the waits without
+turning the delete into the burst of requests per account that gets
+rate-limited — and the server counts files beside the running request, where
+the browser can read it. The confirm dialog counts down instead of sitting on
+"Deleting…" (*Erasing every part from every account — 214 of 300 files done*,
+with a bar), and a folder inside a bulk delete shows the same count next to its
+name, so the bar standing on one item for a while has a number that is moving.
+`sand rm -r` on a terminal shows the same count. Nothing about what is erased
+or written changed — the index still updates once, after the parts are gone.
+
 ### SAND now checks that your clouds are still answering, hourly
 
 Every ping SAND made was one you started. Opening the accounts drawer pinged

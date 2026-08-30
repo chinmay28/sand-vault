@@ -80,6 +80,11 @@ type Server struct {
 	// requests in flight and dies with them — see import_watch.go.
 	imports *importWatch
 
+	// erases is the same window onto recursive folder deletes, so the dialog
+	// that is waiting on one can count files down instead of sitting on
+	// "Deleting…" for minutes — see erase_watch.go.
+	erases *eraseWatch
+
 	// externalActivity is when something outside the browser last read the
 	// vault — a mounted share, or a player following a stream link. Neither has
 	// a browser session to keep the vault alive, so without this it would lock
@@ -176,6 +181,9 @@ func (s *Server) Handler() (http.Handler, error) {
 	}
 	if s.imports == nil {
 		s.imports = newImportWatch()
+	}
+	if s.erases == nil {
+		s.erases = newEraseWatch()
 	}
 
 	mux := http.NewServeMux()
@@ -386,6 +394,10 @@ func (s *Server) Handler() (http.Handler, error) {
 		"GET /api/folders":    s.handleFoldersList,
 		"POST /api/folders":   s.handleFolderCreate,
 		"DELETE /api/folders": s.handleFolderDelete,
+		// Where the DELETE above has got to, for whoever is waiting on it — a
+		// recursive delete of a big folder runs for minutes and can only
+		// answer at the end. Read-only and in-memory; see erase_watch.go.
+		"GET /api/folders/erasing": s.handleFolderErasing,
 		// The picture a folder is drawn with: which file's thumbnail stands for
 		// it, and which others could. Nothing is stored by choosing — the
 		// answer is a file ID, drawn through that file's own thumbnail.

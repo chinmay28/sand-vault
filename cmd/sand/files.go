@@ -461,7 +461,10 @@ func rmCmd() *cobra.Command {
 			// A path that names a folder is only ever a folder delete.
 			if listing, listErr := v.List(scope, target); listErr == nil && vault.CleanDir(target) != "/" {
 				_ = listing
-				warnings, err := v.Rmdir(ctx, scope, target, recursive)
+				warnings, err := v.Rmdir(ctx, scope, target, recursive, func(done, total int) {
+					progressLine("files erased", done, total)
+				})
+				clearProgressLine()
 				printWarnings(warnings)
 				if err != nil {
 					return err

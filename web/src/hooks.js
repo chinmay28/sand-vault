@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { api } from './api'
 
 /* Every style in this app is inline, so there is no stylesheet to hang an
    @media block off. Layout that has to change shape on a phone — the two-pane
@@ -27,6 +28,42 @@ export function useMediaQuery(query) {
   }, [query])
 
   return matches
+}
+
+/* Where a recursive folder delete has got to, asked about once a second while
+   one is running. The DELETE itself is a single request that answers only at
+   the end, which for a folder of hundreds of files is minutes of a button
+   saying "Deleting…" — indistinguishable from a hang. The server counts files
+   beside the running request (see /api/folders/erasing), and this is the
+   asking end.
+
+   `active` is whether the caller has such a delete in flight: polling starts
+   with it and stops with it, so nothing asks a question that has no answer.
+   The count only ever moves forward here — the last poll can race the delete
+   finishing and come back "not running", and a bar that has watched 76 of 79
+   go should hold there rather than blink empty on the way out. */
+export function useEraseProgress(path, vault, active) {
+  const [at, setAt] = useState(null)
+
+  useEffect(() => {
+    setAt(null)
+    if (!active) return undefined
+
+    let live = true
+    const ask = () => api.folderErasing(path, vault)
+      .then((resp) => {
+        if (live && resp.running) setAt({ done: resp.done, total: resp.total })
+      })
+      // Silence on purpose: this is the answer to a question nobody typed,
+      // and the delete it watches reports its own failures.
+      .catch(() => {})
+
+    ask()
+    const timer = setInterval(ask, 900)
+    return () => { live = false; clearInterval(timer) }
+  }, [path, vault, active])
+
+  return at
 }
 
 /* Where the two-pane layout gives up: a 286px sidebar plus a file table whose

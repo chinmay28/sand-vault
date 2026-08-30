@@ -234,7 +234,7 @@ func TestAutomationGoesWithTheFolderItLooksAfter(t *testing.T) {
 		}
 	}
 
-	if _, err := v.Rmdir(context.Background(), MainScope, "/archive", true); err != nil {
+	if _, err := v.Rmdir(context.Background(), MainScope, "/archive", true, nil); err != nil {
 		t.Fatalf("Rmdir: %v", err)
 	}
 
