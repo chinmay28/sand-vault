@@ -241,7 +241,7 @@ export function useFileActions({
 
       {relocating && (
         <RelocateClouds
-          target={{ id: file.id }}
+          target={{ id: file.id, vault }}
           title={`Move ${file.name}`}
           subtitle={`${formatBytes(file.size)} — ${schemeName(fileScheme(file))}; pick the clouds its shards should live on`}
           /* Already selected: where the parts are now, so the dialog opens on
@@ -256,6 +256,7 @@ export function useFileActions({
       {moving && (
         <MoveToFolder
           items={[{ kind: 'file', name: file.name, file }]}
+          vault={vault}
           onClose={() => setMoving(false)}
           onDone={onRefresh}
         />
@@ -951,7 +952,10 @@ function useFolderActions({
 
       {relocating && (
         <RelocateClouds
-          target={{ path }}
+          /* The vault travels with the path: two vaults can each have a folder
+             of this name, and the server can only tell them apart by being
+             told which tree the move was aimed at. */
+          target={{ path, vault }}
           title={`Move ${name}`}
           subtitle={`Everything under ${path} — pick the clouds its parts should live on`}
           /* A folder has no placement of its own; its files each have one. So
@@ -968,6 +972,7 @@ function useFolderActions({
       {moving && (
         <MoveToFolder
           items={[{ kind: 'folder', name, path }]}
+          vault={vault}
           onClose={() => setMoving(false)}
           onDone={onRefresh}
         />
@@ -990,6 +995,7 @@ function useFolderActions({
         <FolderArtPicker
           path={path}
           name={name}
+          vault={vault}
           onClose={() => setPicturing(false)}
           onDone={onRefresh}
         />
@@ -1000,6 +1006,7 @@ function useFolderActions({
           kind="folder"
           name={name}
           path={path}
+          vault={vault}
           onClose={() => setRenaming(false)}
           onDone={onRefresh}
         />

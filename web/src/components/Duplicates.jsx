@@ -143,7 +143,7 @@ function Found({ found, onClose, onDone, onSelect }) {
   })
 
   if (confirming) {
-    return <BulkDelete items={confirming} onClose={onClose} onDone={onDone} />
+    return <BulkDelete items={confirming} vault={vault} onClose={onClose} onDone={onDone} />
   }
 
   const asked = WAYS.find((w) => w.key === way)

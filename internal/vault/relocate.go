@@ -298,7 +298,7 @@ func (v *Vault) PlanRelocation(scope Scope, target string, accounts []string, sc
 // planRelocation is PlanRelocation with every file's row kept, which is what
 // the relocation itself walks.
 func (v *Vault) planRelocation(scope Scope, target string, accounts []string, scheme archive.Scheme, opts relocationOptions) (*RelocationPlan, error) {
-	entries, dir, folder, err := v.relocationScope(scope, target)
+	entries, dir, folder, scope, err := v.relocationScope(scope, target)
 	if err != nil {
 		return nil, err
 	}
@@ -635,22 +635,34 @@ func planFileRelocation(scope Scope, entry *Entry, targets []string, byID map[st
 }
 
 // relocationScope resolves what a relocation was pointed at — an entry ID, a
-// file path, or a folder to walk — into the entries it covers.
+// file path, or a folder to walk — into the entries it covers, and the vault
+// they are really in.
+//
+// The scope handed in steers the path lookups, because two vaults can each
+// have a folder of the same name. An entry ID needs no steering and gets
+// none: an ID is unique across every vault inside the file, so — exactly like
+// reading, moving or deleting a file by ID — relocating one resolves against
+// whatever is open, and a caller that did not say which vault a file is in is
+// never told "no such file" about a file that exists.
 //
 // The entries are copies. Everything after this runs without the lock, and a
 // pointer into the live index would be rewritten underneath it by any other
 // upload.
-func (v *Vault) relocationScope(scope Scope, target string) ([]*Entry, string, bool, error) {
+func (v *Vault) relocationScope(scope Scope, target string) ([]*Entry, string, bool, Scope, error) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 
-	m, err := v.manifestForLocked(scope)
-	if err != nil {
-		return nil, "", false, err
+	if v.dataKey == nil {
+		return nil, "", false, scope, ErrLocked
 	}
 
-	if e := m.ByID(target); e != nil {
-		return []*Entry{copyEntry(e)}, e.Path(), false, nil
+	if found, e, ok := v.scopeOfEntryLocked(target); ok {
+		return []*Entry{copyEntry(e)}, e.Path(), false, found, nil
+	}
+
+	m, err := v.manifestForLocked(scope)
+	if err != nil {
+		return nil, "", false, scope, err
 	}
 
 	dir := CleanDir(target)
@@ -661,13 +673,13 @@ func (v *Vault) relocationScope(scope Scope, target string) ([]*Entry, string, b
 			out = append(out, copyEntry(e))
 		}
 		sort.Slice(out, func(i, j int) bool { return out[i].Path() < out[j].Path() })
-		return out, dir, true, nil
+		return out, dir, true, scope, nil
 	}
 
 	if e := m.ByPath(dir); e != nil {
-		return []*Entry{copyEntry(e)}, e.Path(), false, nil
+		return []*Entry{copyEntry(e)}, e.Path(), false, scope, nil
 	}
-	return nil, "", false, fmt.Errorf("no such file or folder: %s", target)
+	return nil, "", false, scope, fmt.Errorf("no such file or folder: %s", target)
 }
 
 // copyEntry takes a detached copy of an index row, shards and all.
@@ -781,8 +793,10 @@ func (v *Vault) recodeEntry(ctx context.Context, plan *FilePlan, accounts []stri
 	// and the bytes are what the plan estimated rather than what any single
 	// copy reported.
 	v.mu.RLock()
-	if entry := v.manifest.ByID(plan.ID); entry != nil {
-		out.moved = len(entry.Shards)
+	if m, err := v.manifestForLocked(plan.vault); err == nil {
+		if entry := m.ByID(plan.ID); entry != nil {
+			out.moved = len(entry.Shards)
+		}
 	}
 	v.mu.RUnlock()
 	out.bytes = plan.Bytes

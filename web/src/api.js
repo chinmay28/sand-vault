@@ -609,8 +609,8 @@ export const api = {
   folderArt: (path, vault = '') =>
     request(`/api/folders/art?path=${encodeURIComponent(path)}${vaultParam(vault)}`),
   /* Pick one, or pass no id to hand the choice back to the vault. */
-  setFolderArt: (path, id = '') =>
-    request('/api/folders/art', { method: 'POST', body: { path, id } }),
+  setFolderArt: (path, id = '', vault = '') =>
+    request('/api/folders/art', { method: 'POST', body: { path, id, vault } }),
   /* --- The vaults inside the vault ------------------------------------ */
 
   subVaults: () => request('/api/subvaults'),
@@ -741,15 +741,17 @@ export const api = {
   setMovieKey: (key) => request('/api/movies/key', { method: 'POST', body: { key } }),
   /* Turn matching on or off for a folder and everything under it. It stores
      the setting and nothing else: sweeping is a separate, explicit request. */
-  setMovieLookup: (path, enabled) =>
-    request('/api/movies/lookup', { method: 'POST', body: { path, enabled } }),
+  setMovieLookup: (path, enabled, vault = '') =>
+    request(`/api/movies/lookup${vault ? `?vault=${encodeURIComponent(vault)}` : ''}`,
+      { method: 'POST', body: { path, enabled } }),
   /* Look up every unmatched video under a folder. Long — one search, one
      record and one poster per film — and the connection is held for the
      duration, the way converting a file is. `refresh` asks for the ones that
      already have details to be looked up again; matches corrected by hand are
      left alone either way. */
-  scanMovies: (path, { refresh = false, signal } = {}) =>
-    request('/api/movies/scan', { method: 'POST', body: { path, refresh }, signal }),
+  scanMovies: (path, { refresh = false, vault = '', signal } = {}) =>
+    request(`/api/movies/scan${vault ? `?vault=${encodeURIComponent(vault)}` : ''}`,
+      { method: 'POST', body: { path, refresh }, signal }),
 
   movie: (id) => request(`/api/files/${encodeURIComponent(id)}/movie`),
   /* Look one file up now. With nothing passed it searches for whatever the

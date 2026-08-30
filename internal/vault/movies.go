@@ -115,13 +115,16 @@ func (v *Vault) MovieLookupFor(scope Scope, dir string) MovieLookup {
 }
 
 // movieLookupLocked walks from the folder up to the root looking for the
-// nearest setting. The caller must hold at least the read lock.
+// nearest setting, in the index the folder belongs to — a sub vault opts its
+// own folders in, and never inherits a choice made on a main-vault folder
+// that happens to share the path. The caller must hold at least the read
+// lock.
 func (v *Vault) movieLookupLocked(m *Manifest, dir string) MovieLookup {
-	if len(v.manifest.MovieFolders) == 0 {
+	if len(m.MovieFolders) == 0 {
 		return MovieLookup{}
 	}
 	for at := CleanDir(dir); ; {
-		if _, ok := v.manifest.MovieFolders[at]; ok {
+		if _, ok := m.MovieFolders[at]; ok {
 			return MovieLookup{Enabled: true, Source: at}
 		}
 		if at == "/" {
@@ -160,47 +163,48 @@ func (v *Vault) MovieFolders() []string {
 // switch is about whether this vault talks to the database, not about whether
 // it is allowed to remember what it was told. Forgetting a film is its own
 // action, per file, in the details view.
-func (v *Vault) SetMovieLookup(dir string, enabled bool) error {
+func (v *Vault) SetMovieLookup(scope Scope, dir string, enabled bool) error {
 	dir = CleanDir(dir)
 
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if v.dataKey == nil {
-		return ErrLocked
+	m, err := v.manifestForLocked(scope)
+	if err != nil {
+		return err
 	}
-	if !v.manifest.FolderExists(dir) {
+	if !m.FolderExists(dir) {
 		return fmt.Errorf("no such folder: %s", dir)
 	}
 
-	_, had := v.manifest.MovieFolders[dir]
+	_, had := m.MovieFolders[dir]
 	if had == enabled {
 		return nil
 	}
 
 	if enabled {
-		if v.manifest.MovieFolders == nil {
-			v.manifest.MovieFolders = map[string]*MovieFolder{}
+		if m.MovieFolders == nil {
+			m.MovieFolders = map[string]*MovieFolder{}
 		}
-		v.manifest.MovieFolders[dir] = &MovieFolder{EnabledAt: time.Now().UTC()}
+		m.MovieFolders[dir] = &MovieFolder{EnabledAt: time.Now().UTC()}
 	} else {
-		delete(v.manifest.MovieFolders, dir)
-		if len(v.manifest.MovieFolders) == 0 {
-			v.manifest.MovieFolders = nil
+		delete(m.MovieFolders, dir)
+		if len(m.MovieFolders) == 0 {
+			m.MovieFolders = nil
 		}
 	}
 
 	if err := v.persistLocked(); err != nil {
 		// Put the setting back the way the file on disk still has it.
 		if enabled {
-			delete(v.manifest.MovieFolders, dir)
-			if len(v.manifest.MovieFolders) == 0 {
-				v.manifest.MovieFolders = nil
+			delete(m.MovieFolders, dir)
+			if len(m.MovieFolders) == 0 {
+				m.MovieFolders = nil
 			}
 		} else {
-			if v.manifest.MovieFolders == nil {
-				v.manifest.MovieFolders = map[string]*MovieFolder{}
+			if m.MovieFolders == nil {
+				m.MovieFolders = map[string]*MovieFolder{}
 			}
-			v.manifest.MovieFolders[dir] = &MovieFolder{EnabledAt: time.Now().UTC()}
+			m.MovieFolders[dir] = &MovieFolder{EnabledAt: time.Now().UTC()}
 		}
 		return err
 	}
@@ -208,14 +212,25 @@ func (v *Vault) SetMovieLookup(dir string, enabled bool) error {
 }
 
 // Movie returns what is known about a file's film, or nil when it has not been
-// matched.
+// matched. The details live in the index of whichever vault holds the file —
+// a sub vault's film titles belong inside its sealed section, never in the
+// main manifest that is replicated to every account — and the ID resolves
+// that the way it does everywhere else.
 func (v *Vault) Movie(id string) *movie.Info {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 	if v.dataKey == nil {
 		return nil
 	}
-	return v.manifest.Movies[id]
+	scope, _, ok := v.scopeOfEntryLocked(id)
+	if !ok {
+		return nil
+	}
+	m, err := v.manifestForLocked(scope)
+	if err != nil {
+		return nil
+	}
+	return m.Movies[id]
 }
 
 // SetMovie records a match against a file.
@@ -229,21 +244,26 @@ func (v *Vault) SetMovie(id string, info *movie.Info) error {
 	if v.dataKey == nil {
 		return ErrLocked
 	}
-	if v.manifest.ByID(id) == nil {
+	scope, _, ok := v.scopeOfEntryLocked(id)
+	if !ok {
 		return fmt.Errorf("no such file: %s", id)
 	}
-
-	if v.manifest.Movies == nil {
-		v.manifest.Movies = map[string]*movie.Info{}
+	m, err := v.manifestForLocked(scope)
+	if err != nil {
+		return err
 	}
-	previous, had := v.manifest.Movies[id]
-	v.manifest.Movies[id] = info
+
+	if m.Movies == nil {
+		m.Movies = map[string]*movie.Info{}
+	}
+	previous, had := m.Movies[id]
+	m.Movies[id] = info
 
 	if err := v.persistLocked(); err != nil {
 		if had {
-			v.manifest.Movies[id] = previous
+			m.Movies[id] = previous
 		} else {
-			delete(v.manifest.Movies, id)
+			delete(m.Movies, id)
 		}
 		return err
 	}
@@ -258,20 +278,31 @@ func (v *Vault) ForgetMovie(id string) error {
 	if v.dataKey == nil {
 		return ErrLocked
 	}
-	previous, had := v.manifest.Movies[id]
+
+	// Whichever readable index holds the record. The file itself may already
+	// be gone — forgetting a film does not require the film's file.
+	var m *Manifest
+	var previous *movie.Info
+	had := false
+	for _, candidate := range v.manifestsLocked() {
+		if info, ok := candidate.Movies[id]; ok {
+			m, previous, had = candidate, info, true
+			break
+		}
+	}
 	if !had {
 		return nil
 	}
 
-	delete(v.manifest.Movies, id)
-	if len(v.manifest.Movies) == 0 {
-		v.manifest.Movies = nil
+	delete(m.Movies, id)
+	if len(m.Movies) == 0 {
+		m.Movies = nil
 	}
 	if err := v.persistLocked(); err != nil {
-		if v.manifest.Movies == nil {
-			v.manifest.Movies = map[string]*movie.Info{}
+		if m.Movies == nil {
+			m.Movies = map[string]*movie.Info{}
 		}
-		v.manifest.Movies[id] = previous
+		m.Movies[id] = previous
 		return err
 	}
 	return nil
@@ -280,12 +311,12 @@ func (v *Vault) ForgetMovie(id string) error {
 // movieBriefsForLocked collects the titles of whichever entries have been
 // matched. The caller must hold at least the read lock.
 func (v *Vault) movieBriefsForLocked(m *Manifest, entries []*Entry) map[string]MovieBrief {
-	if len(v.manifest.Movies) == 0 {
+	if len(m.Movies) == 0 {
 		return nil
 	}
 	var out map[string]MovieBrief
 	for _, e := range entries {
-		info := v.manifest.Movies[e.ID]
+		info := m.Movies[e.ID]
 		if info == nil {
 			continue
 		}

@@ -12,6 +12,59 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### Working inside a sub vault now means the whole app works there
+
+A sub vault had its own tree, and half the app quietly kept talking to the main
+one. **Move to other clouds** answered "no such file or folder" for a file
+sitting right there in the listing, because the request never said which vault
+it was standing in — and the server, told nothing, looked in the main index.
+The same missing word ran through more dialogs than that one:
+
+- **Move to another folder** offered the *main* vault's tree, made its new
+  folders in the main vault, and — the dangerous half — renaming or moving a
+  folder inside a sub vault renamed the main vault's folder of the same name,
+  where there was one. Erasing a folder from a selection did the same, which
+  for a shared name meant erasing the wrong vault's folder, recursively.
+- **Film lookup** could not be turned on for a sub vault folder at all, and
+  the settings that decide it were read from the main index whatever vault the
+  folder was in. Worse, a matched film's title was only ever stored in the main
+  manifest — the one that is replicated to every connected account — which is
+  exactly where a sub vault's contents must never appear. Details now live in
+  the index of the vault that holds the file, travel with an assignment, and a
+  folder's opt-in is the sub vault's own.
+- **A folder's picture** was read and chosen against the main vault.
+
+Every one of these now carries the vault it was aimed at, and a file named by
+its ID — relocating it included — resolves to whichever open vault holds it,
+the way reading, moving and deleting by ID always have.
+
+### A key lent across the vault boundary is no longer thrown away
+
+Assigning a file between vaults deliberately moves no key: the file stays
+sealed under the generation of the vault it came from until the re-encryption
+behind the move finishes, and until then it reads only while that vault is
+open. That contract held; the bookkeeping around it did not. The vault that
+*owned* such a generation would retire it on the strength of its own index
+alone — and its own index, correctly, no longer named it:
+
+- A main password change kept only the old generations the *main* index still
+  pointed at, then pruned them as its files migrated. A file assigned into a
+  sub vault and not yet re-encrypted was left pointing at a key that had been
+  wiped — permanently unreadable, locked sub vault or open.
+- The mirror image: a sub vault's re-seal pruned its retired keys against its
+  own entries, so assigning a file *out* while it sat on one erased the only
+  copy of that key in the same write that recorded the move.
+- A sub vault's password change refused outright while a file assigned *in*
+  was still pending — the honest answer was to skip it — and dropped its own
+  old key even when a file assigned out still answered to it.
+
+Each sub vault's metadata now records which foreign generations its index
+still names (key IDs are labels the vault file already carries in the clear),
+and every prune, rotation and password change checks what the *other* vaults
+still point at before letting a key go. Deleting a sub vault whose key still
+seals a file assigned out of it now says so, file by file, instead of leaving
+the loss to be found at the next read.
+
 ### Uploading a folder of any size no longer takes the tab with it
 
 Picking seventy-nine files, or a folder holding a gigabyte and a half, did

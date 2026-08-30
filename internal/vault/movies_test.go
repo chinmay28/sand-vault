@@ -17,7 +17,7 @@ func TestMovieLookupIsInheritedDownwards(t *testing.T) {
 		t.Fatalf("lookup = %+v, want off until it is asked for", got)
 	}
 
-	if err := v.SetMovieLookup("/films", true); err != nil {
+	if err := v.SetMovieLookup(MainScope, "/films", true); err != nil {
 		t.Fatalf("SetMovieLookup: %v", err)
 	}
 
@@ -58,14 +58,14 @@ func TestTurningLookupOffKeepsWhatWasFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
-	if err := v.SetMovieLookup("/films", true); err != nil {
+	if err := v.SetMovieLookup(MainScope, "/films", true); err != nil {
 		t.Fatalf("SetMovieLookup: %v", err)
 	}
 	if err := v.SetMovie(entry.ID, &movie.Info{TMDBID: 1091, Title: "The Thing", Year: 1982}); err != nil {
 		t.Fatalf("SetMovie: %v", err)
 	}
 
-	if err := v.SetMovieLookup("/films", false); err != nil {
+	if err := v.SetMovieLookup(MainScope, "/films", false); err != nil {
 		t.Fatalf("SetMovieLookup off: %v", err)
 	}
 	if got := v.Movie(entry.ID); got == nil || got.Title != "The Thing" {
@@ -92,7 +92,7 @@ func TestMovingAFolderCarriesItsLookupSetting(t *testing.T) {
 	if err := v.Mkdir(MainScope, "/films/2019"); err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
-	if err := v.SetMovieLookup("/films", true); err != nil {
+	if err := v.SetMovieLookup(MainScope, "/films", true); err != nil {
 		t.Fatalf("SetMovieLookup: %v", err)
 	}
 	if err := v.MoveFolder(context.Background(), MainScope, "/films", "/cinema"); err != nil {
@@ -142,7 +142,7 @@ func TestDeletingAFolderTakesItsSettingAndFilms(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
-	if err := v.SetMovieLookup("/films", true); err != nil {
+	if err := v.SetMovieLookup(MainScope, "/films", true); err != nil {
 		t.Fatalf("SetMovieLookup: %v", err)
 	}
 	if err := v.SetMovie(entry.ID, &movie.Info{TMDBID: 496243, Title: "Parasite", Year: 2019}); err != nil {

@@ -18,7 +18,7 @@ import { TILE_POSTER, TILE_SQUARE } from './FileEntry'
    otherwise here, and which film stands for a trilogy is exactly the sort of
    question an app should not answer on its own. */
 
-export default function FolderArtPicker({ path, name, onClose, onDone }) {
+export default function FolderArtPicker({ path, name, vault = '', onClose, onDone }) {
   const mobile = useIsMobile()
 
   const [loading, setLoading] = useState(true)
@@ -33,7 +33,7 @@ export default function FolderArtPicker({ path, name, onClose, onDone }) {
 
   useEffect(() => {
     let live = true
-    api.folderArt(path)
+    api.folderArt(path, vault)
       .then((resp) => {
         if (!live) return
         setArt(resp.art || null)
@@ -43,7 +43,7 @@ export default function FolderArtPicker({ path, name, onClose, onDone }) {
       .catch((err) => { if (live) setError(err.message) })
       .finally(() => { if (live) setLoading(false) })
     return () => { live = false }
-  }, [path])
+  }, [path, vault])
 
   /* One shape for the whole grid, the way the file browser does it: a folder
      with films in it is a wall of posters, and a square crop of a poster eats
@@ -54,7 +54,7 @@ export default function FolderArtPicker({ path, name, onClose, onDone }) {
     setBusy(id || 'auto')
     setError(null)
     try {
-      const resp = await api.setFolderArt(path, id)
+      const resp = await api.setFolderArt(path, id, vault)
       setArt(resp.art || null)
       setChanged(true)
       close(true)

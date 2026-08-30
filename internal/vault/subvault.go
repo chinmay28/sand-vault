@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/chinmay28/sand-vault/internal/crypto"
+	"github.com/chinmay28/sand-vault/internal/movie"
 	"github.com/chinmay28/sand-vault/internal/provider"
 	"github.com/google/uuid"
 )
@@ -210,7 +211,7 @@ func (v *Vault) resealSubVaultsLocked(now time.Time) error {
 
 	for id, sub := range v.subs {
 		sub.manifest.UpdatedAt = now
-		sub.pruneRetiredKeys()
+		sub.pruneRetiredKeys(v.keyIDsNamedOutsideLocked(Scope(id)))
 
 		rec, err := sub.record()
 		if err != nil {
@@ -231,16 +232,106 @@ func (v *Vault) resealSubVaultsLocked(now time.Time) error {
 
 		if meta := v.manifest.SubVaultByID(id); meta != nil {
 			meta.Inventory = sub.manifest.inventory()
+			meta.BorrowedKeys = sub.borrowedKeyIDs()
 		}
 	}
 	return nil
+}
+
+// borrowedKeyIDs lists the key generations this sub vault's index names that
+// are not the sub vault's own — what a file assigned in and not yet migrated
+// is still sealed under. They belong to the main vault or to another sub
+// vault, and whichever vault holds them must not retire them while this index
+// points at them; recording the list in SubVaultMeta is how that survives this
+// sub vault being locked.
+func (s *subVault) borrowedKeyIDs() []string {
+	own := map[string]bool{s.dataKeyID: true}
+	for id := range s.retired {
+		own[id] = true
+	}
+
+	borrowed := map[string]bool{}
+	for _, e := range s.manifest.Entries {
+		if !own[e.KeyID] {
+			borrowed[e.KeyID] = true
+		}
+	}
+	for _, pack := range s.manifest.Thumbs {
+		if pack != nil && !own[pack.KeyID] {
+			borrowed[pack.KeyID] = true
+		}
+	}
+	if len(borrowed) == 0 {
+		return nil
+	}
+
+	out := make([]string, 0, len(borrowed))
+	for id := range borrowed {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// keyIDsNamedOutsideLocked collects every key generation the vaults other than
+// scope still point at: the main index's entries and thumbnail packs, every
+// other open sub vault's, and the borrowed-key lists recorded for the sub
+// vaults that are shut. It is what key pruning checks against, so a
+// generation lent across a vault boundary by an unmigrated assignment is
+// never dropped by the vault that holds it while another index still needs
+// it. The caller must hold at least the read lock.
+func (v *Vault) keyIDsNamedOutsideLocked(scope Scope) map[string]bool {
+	named := map[string]bool{}
+
+	collect := func(m *Manifest) {
+		for _, e := range m.Entries {
+			named[e.KeyID] = true
+		}
+		for _, pack := range m.Thumbs {
+			if pack != nil {
+				named[pack.KeyID] = true
+			}
+		}
+	}
+
+	if !scope.Main() && v.manifest != nil {
+		collect(v.manifest)
+	}
+	for id, sub := range v.subs {
+		if Scope(id) != scope {
+			collect(sub.manifest)
+		}
+	}
+	// The shut sub vaults cannot be read, which is exactly what the recorded
+	// list is for. An open one is counted from its live index above instead,
+	// so a reference that was migrated away a moment ago does not linger.
+	if v.manifest != nil {
+		for _, meta := range v.manifest.SubVaults {
+			if Scope(meta.ID) == scope {
+				continue
+			}
+			if _, open := v.subs[meta.ID]; open {
+				continue
+			}
+			for _, id := range meta.BorrowedKeys {
+				named[id] = true
+			}
+		}
+	}
+	return named
 }
 
 // pruneRetiredKeys drops the sub vault's own key generations that nothing in
 // its index names any more. It mirrors the main vault's pruning and is scoped
 // the same way: only an open sub vault's keys are considered, because only an
 // open sub vault can be asked what it still refers to.
-func (s *subVault) pruneRetiredKeys() {
+//
+// lent is what the other vaults still point at — see keyIDsNamedOutsideLocked.
+// A file assigned out of this sub vault keeps its generation until the
+// re-encryption behind the move finishes, and this record holds the only copy
+// of that key, so pruning it on the strength of this index alone would erase
+// a file the main vault still lists.
+func (s *subVault) pruneRetiredKeys(lent map[string]bool) {
 	if len(s.retired) == 0 {
 		return
 	}
@@ -254,7 +345,7 @@ func (s *subVault) pruneRetiredKeys() {
 		}
 	}
 	for id, key := range s.retired {
-		if !inUse[id] {
+		if !inUse[id] && !lent[id] {
 			crypto.ZeroBytes(key)
 			delete(s.retired, id)
 		}
@@ -480,6 +571,48 @@ func (v *Vault) LockSubVault(id string) error {
 	return nil
 }
 
+// keyHeldElsewhereLocked reports whether a key generation is held by any vault
+// inside the file other than the named sub vault — the main vault, another
+// open sub vault, or a shut one that advertises it. It is how a sub vault
+// operation tells a file assigned in and not yet migrated (whose key is simply
+// somebody else's) from a file whose key is genuinely gone. The caller must
+// hold at least the read lock.
+func (v *Vault) keyHeldElsewhereLocked(exclude, keyID string) bool {
+	if keyID == v.dataKeyID {
+		return true
+	}
+	if _, ok := v.retired[keyID]; ok {
+		return true
+	}
+	for id, sub := range v.subs {
+		if id == exclude {
+			continue
+		}
+		if keyID == sub.dataKeyID {
+			return true
+		}
+		if _, ok := sub.retired[keyID]; ok {
+			return true
+		}
+	}
+	if v.store != nil {
+		for _, rec := range v.store.SubVaults {
+			if rec.ID == exclude {
+				continue
+			}
+			if _, open := v.subs[rec.ID]; open {
+				continue
+			}
+			for _, id := range rec.keyIDs() {
+				if id == keyID {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 // subVaultRecordLocked returns the on-disk record for a sub vault.
 func (v *Vault) subVaultRecordLocked(id string) (subVaultRecord, bool) {
 	if v.store == nil {
@@ -587,13 +720,14 @@ type AssignReport struct {
 // parts on the old one are erased. Without it, MigrateFilesIn finishes the job,
 // and until it does the file needs both vaults open.
 func (v *Vault) Assign(ctx context.Context, from Scope, target string, to Scope, migrate bool) (*AssignReport, error) {
-	if from == to {
-		return nil, fmt.Errorf("that is already where it is")
-	}
-
-	entries, dir, folder, err := v.relocationScope(from, target)
+	// A target named by ID resolves to the vault it is really in, so the
+	// declared source only steers a path lookup — see relocationScope.
+	entries, dir, folder, from, err := v.relocationScope(from, target)
 	if err != nil {
 		return nil, err
+	}
+	if from == to {
+		return nil, fmt.Errorf("that is already where it is")
 	}
 	if len(entries) == 0 && !folder {
 		return nil, fmt.Errorf("no such file or folder: %s", target)
@@ -668,12 +802,33 @@ func (v *Vault) Assign(ctx context.Context, from Scope, target string, to Scope,
 		}
 		dst.add(live)
 		report.Files++
+
+		// The film details are index, so they move with the file — and they
+		// have to: leaving a sub vault file's title behind in the main
+		// manifest would replicate it to every connected account.
+		if info, ok := src.Movies[live.ID]; ok {
+			if dst.Movies == nil {
+				dst.Movies = map[string]*movie.Info{}
+			}
+			dst.Movies[live.ID] = info
+			src.forgetMovies(live.ID)
+		}
 	}
 	if folder {
+		// The per-folder settings filed under the moved tree — which file a
+		// folder wears as its picture, and whether its videos are matched —
+		// travel with it, exactly as a rename inside one vault carries them.
+		carryFolderSettings(src, dst, dir)
 		src.removeFolders(dir)
 		// The folder is not in this vault any more, so a standing instruction
 		// naming it would be a schedule sweeping a tree that is not there.
 		src.dropAutomations(dir)
+	}
+	// A folder left behind must not keep wearing the picture of a file that
+	// has gone: any remaining source-side choice naming a moved file is
+	// dropped, the same way deleting the file would drop it.
+	for _, e := range entries {
+		src.forgetFolderArt(e.ID)
 	}
 
 	err = v.persistLocked()
@@ -705,6 +860,46 @@ func (v *Vault) Assign(ctx context.Context, from Scope, target string, to Scope,
 		report.Warnings = append(report.Warnings, migration.Warnings...)
 	}
 	return report, err
+}
+
+// carryFolderSettings moves the per-folder settings filed under a folder —
+// which file it wears as its picture, and whether its videos are matched
+// against the film database — from one vault's index to the other's. The keys
+// stay as they are, because an assignment keeps the path.
+func carryFolderSettings(src, dst *Manifest, dir string) {
+	prefix := dir
+	if prefix != "/" {
+		prefix += "/"
+	}
+	within := func(at string) bool { return at == dir || strings.HasPrefix(at, prefix) }
+
+	for at, id := range src.FolderArt {
+		if !within(at) {
+			continue
+		}
+		if dst.FolderArt == nil {
+			dst.FolderArt = map[string]string{}
+		}
+		dst.FolderArt[at] = id
+		delete(src.FolderArt, at)
+	}
+	if len(src.FolderArt) == 0 {
+		src.FolderArt = nil
+	}
+
+	for at, setting := range src.MovieFolders {
+		if !within(at) {
+			continue
+		}
+		if dst.MovieFolders == nil {
+			dst.MovieFolders = map[string]*MovieFolder{}
+		}
+		dst.MovieFolders[at] = setting
+		delete(src.MovieFolders, at)
+	}
+	if len(src.MovieFolders) == 0 {
+		src.MovieFolders = nil
+	}
 }
 
 // movePictureBetweenVaults carries one thumbnail from a pack in one vault to a
@@ -784,9 +979,7 @@ func (v *Vault) ChangeSubVaultPassword(ctx context.Context, id, oldPassword, new
 	// The index comes across as it stands, and so do the key generations its
 	// files are still on — dropping those would make every file in the sub
 	// vault unreadable the moment the password was typed.
-	next.manifest = current.manifest
-	next.manifest.Thumbs = nil
-	for _, e := range next.manifest.Entries {
+	for _, e := range current.manifest.Entries {
 		if e.KeyID == current.dataKeyID {
 			next.retired[e.KeyID] = append([]byte(nil), current.dataKey...)
 			continue
@@ -795,12 +988,40 @@ func (v *Vault) ChangeSubVaultPassword(ctx context.Context, id, oldPassword, new
 			next.retired[e.KeyID] = append([]byte(nil), key...)
 			continue
 		}
+		// Assigned in from another vault and not migrated yet: the generation
+		// sealing it is that vault's, which this change neither holds nor
+		// needs. There is nothing here to carry — the file reads exactly as it
+		// did, whenever the vault it came from is open.
+		if v.keyHeldElsewhereLocked(id, e.KeyID) {
+			continue
+		}
 		current.zero()
 		next.zero()
 		v.mu.Unlock()
 		return nil, fmt.Errorf(
 			"%s is recorded under a data key this sub vault does not hold, so it cannot be "+
 				"re-encrypted; remove it, then change the password", e.Path())
+	}
+	next.manifest = current.manifest
+	next.manifest.Thumbs = nil
+
+	// The other direction of the same borrowing: a file assigned *out* and not
+	// yet re-encrypted is still sealed under a generation only this record
+	// holds, and nothing in this index names it any more. It is carried across
+	// the password change all the same — dropping it here would erase the only
+	// copy of the key while the main vault still lists the file.
+	lent := v.keyIDsNamedOutsideLocked(Scope(id))
+	carry := func(keyID string, key []byte) {
+		if _, done := next.retired[keyID]; done {
+			return
+		}
+		if lent[keyID] {
+			next.retired[keyID] = append([]byte(nil), key...)
+		}
+	}
+	carry(current.dataKeyID, current.dataKey)
+	for keyID, key := range current.retired {
+		carry(keyID, key)
 	}
 
 	// The record on disk is rewritten from this by the write below, which is
@@ -875,6 +1096,50 @@ func (v *Vault) DeleteSubVault(ctx context.Context, id string, force bool) ([]st
 		configs[cfg.ID] = cfg
 	}
 
+	// What this sub vault's keys still seal outside it: files assigned out of
+	// it whose re-encryption has not finished. The record about to go holds
+	// the only copy of those generations, so the loss is said out loud here
+	// rather than discovered at the next read.
+	var lentWarnings []string
+	if rec, held := v.subVaultRecordLocked(id); held {
+		owned := map[string]bool{}
+		for _, kid := range rec.keyIDs() {
+			owned[kid] = true
+		}
+		report := func(m *Manifest, where string) {
+			for _, e := range m.Entries {
+				if owned[e.KeyID] {
+					lentWarnings = append(lentWarnings, fmt.Sprintf(
+						"%s%s was assigned out of %s before its re-encryption finished, and its key "+
+							"goes with the sub vault — it cannot be read any more",
+						where, e.Path(), meta.Label))
+				}
+			}
+		}
+		report(v.manifest, "")
+		for otherID, other := range v.subs {
+			if otherID != id {
+				report(other.manifest, v.subVaultLabelLocked(otherID)+": ")
+			}
+		}
+		for _, other := range v.manifest.SubVaults {
+			if other.ID == id {
+				continue
+			}
+			if _, open := v.subs[other.ID]; open {
+				continue
+			}
+			for _, kid := range other.BorrowedKeys {
+				if owned[kid] {
+					lentWarnings = append(lentWarnings, fmt.Sprintf(
+						"the locked sub vault %s still holds file(s) sealed under this sub vault's "+
+							"key — they cannot be read any more", other.Label))
+					break
+				}
+			}
+		}
+	}
+
 	// The record and the metadata leave together. Everything after this is
 	// erasure on the accounts, which is best-effort: what it cannot reach is a
 	// warning, and the sub vault is gone from the vault either way.
@@ -913,7 +1178,7 @@ func (v *Vault) DeleteSubVault(ctx context.Context, id string, force bool) ([]st
 
 	v.chunks.clear()
 	v.forgetAllThumbs()
-	return v.eraseInventory(ctx, doomed, configs), nil
+	return append(lentWarnings, v.eraseInventory(ctx, doomed, configs)...), nil
 }
 
 // eraseInventory deletes every object an inventory names, returning a warning

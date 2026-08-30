@@ -14,7 +14,7 @@ import { Banner, Button, Modal, Spinner } from './ui'
 
    Which is why this is the same pair of calls the move dialog makes, with the
    folder left alone instead of the name. */
-export default function RenameDialog({ kind, name, file, path, onClose, onDone }) {
+export default function RenameDialog({ kind, name, file, path, vault = '', onClose, onDone }) {
   const [value, setValue] = useState(name)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
@@ -45,7 +45,7 @@ export default function RenameDialog({ kind, name, file, path, onClose, onDone }
     setBusy(true)
     setError(null)
     try {
-      if (kind === 'folder') await api.moveFolder(path, joinPath(parentPath(path), wanted))
+      if (kind === 'folder') await api.moveFolder(path, joinPath(parentPath(path), wanted), vault)
       else await api.moveFile(file.id, '', wanted)
       onDone?.()
       onClose()

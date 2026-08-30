@@ -297,6 +297,24 @@ func retainedKeys(u *unsealed, manifest *Manifest, subs []subVaultRecord) (map[s
 		}
 		retained[e.KeyID] = key
 	}
+
+	// A file assigned into a sub vault keeps the main generation it was sealed
+	// under until its re-encryption catches up, and only the sub vault's index
+	// — which this change cannot open — still names it. The borrowed-key list
+	// each sub vault's metadata carries is how that reference survives the
+	// section being shut. A listed key the main vault does not hold is one of
+	// another sub vault's (already skipped as elsewhere) or already lost, and
+	// neither is this change's to fix.
+	for _, meta := range manifest.SubVaults {
+		for _, id := range meta.BorrowedKeys {
+			if _, done := retained[id]; done {
+				continue
+			}
+			if key, ok := available[id]; ok {
+				retained[id] = key
+			}
+		}
+	}
 	return retained, nil
 }
 
@@ -580,6 +598,13 @@ func (v *Vault) pruneRetiredKeysLocked() {
 		if pack != nil {
 			inUse[pack.KeyID] = true
 		}
+	}
+	// And so does a file assigned into a sub vault that has not been
+	// re-encrypted onto the sub vault's own key yet. Its entry lives in the
+	// sub vault's index — open or shut — while the generation sealing its
+	// parts lives here, and this is the only copy of it.
+	for id := range v.keyIDsNamedOutsideLocked(MainScope) {
+		inUse[id] = true
 	}
 
 	dropped := false

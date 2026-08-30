@@ -947,6 +947,7 @@ export default function FileBrowser({
       {films && (
         <FilmLookupSettings
           path={path}
+          vault={vault}
           lookup={lookup}
           onClose={() => setFilms(false)}
           /* Turning it on changes what the rows offer; a sweep changes their
@@ -967,6 +968,7 @@ export default function FileBrowser({
       {bulk === 'delete' && (
         <BulkDelete
           items={chosen}
+          vault={vault}
           onClose={() => setBulk(null)}
           /* What was deleted cannot stay ticked, and what survived a partial
              run is still there to be tried again. */
@@ -981,6 +983,7 @@ export default function FileBrowser({
       {bulk === 'folder' && (
         <MoveToFolder
           items={chosen}
+          vault={vault}
           onClose={() => setBulk(null)}
           /* What moved is not in this folder any more, so it cannot stay
              ticked; what a partial run left behind is still here to try
@@ -1003,7 +1006,7 @@ export default function FileBrowser({
       {bulk === 'clouds' && (
         <RelocateClouds
           targets={chosen.map((entry) => (
-            entry.kind === 'folder' ? { path: entry.path } : { id: entry.file.id }))}
+            entry.kind === 'folder' ? { path: entry.path, vault } : { id: entry.file.id, vault }))}
           title={`Move ${chosen.length} item${chosen.length === 1 ? '' : 's'}`}
           subtitle="Pick the clouds every part of everything selected should live on"
           /* Nothing preselected: a selection has as many placements as it has

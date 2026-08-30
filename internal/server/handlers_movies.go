@@ -109,7 +109,7 @@ func (s *Server) handleMovieLookup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	v, _ := s.Vault()
-	if err := v.SetMovieLookup(req.Path, req.Enabled); err != nil {
+	if err := v.SetMovieLookup(requestScope(r), req.Path, req.Enabled); err != nil {
 		vaultErrorResponse(w, err)
 		return
 	}

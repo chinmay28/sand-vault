@@ -124,7 +124,7 @@ func (s *Server) scanFolder(ctx context.Context, scope vault.Scope, dir string, 
 		return nil, err
 	}
 
-	entries, err := v.Descendants(dir)
+	entries, err := v.Descendants(scope, dir)
 	if err != nil {
 		return nil, err
 	}
