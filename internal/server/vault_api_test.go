@@ -522,8 +522,22 @@ func TestFoldersOverHTTP(t *testing.T) {
 	if w, _ := c.json(http.MethodDelete, "/api/folders?path=/photos", nil); w.Code == http.StatusOK {
 		t.Error("expected a non-recursive delete of a non-empty folder to fail")
 	}
+
+	// The delete-progress window answers plainly when nothing is running —
+	// the poller and the DELETE it watches race, and asking early is not an
+	// error.
+	if w, body := c.json(http.MethodGet, "/api/folders/erasing?path=/photos", nil); w.Code != http.StatusOK || body["running"] != false {
+		t.Errorf("erasing before any delete: %d %v, want running=false", w.Code, body)
+	}
+
 	if w, body := c.json(http.MethodDelete, "/api/folders?path=/photos&recursive=1", nil); w.Code != http.StatusOK {
 		t.Fatalf("recursive delete: %d %v", w.Code, body)
+	}
+
+	// And the window comes down with the request: a later delete of a folder
+	// recreated under this name must not open on this one's count.
+	if w, body := c.json(http.MethodGet, "/api/folders/erasing?path=/photos", nil); w.Code != http.StatusOK || body["running"] != false {
+		t.Errorf("erasing after the delete finished: %d %v, want running=false", w.Code, body)
 	}
 
 	w, body = c.json(http.MethodGet, "/api/files?path=/", nil)

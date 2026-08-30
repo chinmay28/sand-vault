@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { COLORS, FONT, accountColor, fileIcon, formatBytes, formatDate, formatDay, isPlayable } from '../theme'
 import { api } from '../api'
 import { useDownload } from '../download'
+import { useEraseProgress } from '../hooks'
 import { ActionSheet, Banner, Button, ConfirmDialog, IconButton, Modal } from './ui'
 import StreamLink from './StreamLink'
 import ConvertFile from './ConvertFile'
@@ -802,6 +803,11 @@ function useFolderActions({
 
   const [busy, setBusy] = useState(false)
 
+  /* Followed only while the delete below is in flight: a folder of hundreds
+     of files takes minutes to erase, and the dialog has to count them down
+     rather than sit on "Deleting…" looking hung. */
+  const erasing = useEraseProgress(path, vault, busy)
+
   /* What the folder is holding, fetched when the menu opens and not before.
      A folder row cannot say how big it is — the weight is in the levels below
      it, and finding it is a walk of the index per folder, which is not a price
@@ -919,7 +925,27 @@ function useFolderActions({
           onConfirm={remove}
           onClose={() => !busy && setConfirming(false)}
         >
-          The folder and everything inside it goes: all parts are erased from every account. This cannot be undone.
+          {/* While the delete runs the warning has served its purpose, and
+              what the dialog owes instead is the count: files whose parts are
+              erased, out of what the folder held. */}
+          {busy && erasing ? (
+            <>
+              <div style={{ fontFamily: FONT.mono, fontSize: '11.5px' }}>
+                Erasing every part from every account — {erasing.done} of {erasing.total} files done.
+              </div>
+              <div style={{
+                marginTop: '10px', height: '3px', background: COLORS.border,
+                borderRadius: '2px', overflow: 'hidden',
+              }}>
+                <div style={{
+                  height: '100%',
+                  width: `${Math.max(4, (erasing.done / (erasing.total || 1)) * 100)}%`,
+                  background: COLORS.accent,
+                  transition: 'width 0.2s ease',
+                }} />
+              </div>
+            </>
+          ) : 'The folder and everything inside it goes: all parts are erased from every account. This cannot be undone.'}
         </ConfirmDialog>
       )}
 

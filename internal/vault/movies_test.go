@@ -149,7 +149,7 @@ func TestDeletingAFolderTakesItsSettingAndFilms(t *testing.T) {
 		t.Fatalf("SetMovie: %v", err)
 	}
 
-	if _, err := v.Rmdir(context.Background(), MainScope, "/films", true); err != nil {
+	if _, err := v.Rmdir(context.Background(), MainScope, "/films", true, nil); err != nil {
 		t.Fatalf("Rmdir: %v", err)
 	}
 	if got := v.Movie(entry.ID); got != nil {

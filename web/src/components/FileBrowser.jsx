@@ -396,11 +396,17 @@ export default function FileBrowser({
 
     // What is going up, said the way it was chosen: one file by its name, a
     // folder by the folder rather than by the four hundred files inside it.
+    // Alongside it, the only count that means anything from out here: how many
+    // files the server has confirmed stored, out of how many were picked. The
+    // batches are how the upload travels, not what it is, so they stay out of
+    // the card — "1 of 6" read as six of something nobody chose.
+    const fileCount = picks.files.length
     const card = {
       id: Math.random().toString(36).slice(2),
       label: describePicks(picks),
       progress: 0,
-      note: batches.length > 1 ? `1 of ${batches.length}` : '',
+      note: fileCount > 1 ? `0 of ${fileCount} stored` : '',
+      phase: '',
     }
     setUploads((prev) => [...prev, card])
 
@@ -408,9 +414,14 @@ export default function FileBrowser({
       prev.map((u) => (u.id === card.id ? { ...u, ...fields } : u)))
 
     // Bytes rather than batches, so the bar moves at the rate the network is
-    // actually going and not in equal steps over unequal batches.
+    // actually going and not in equal steps over unequal batches. The bar and
+    // its percentage measure bytes handed to the server — what has been *sent*.
+    // Stored is the other number on the card, and it moves later, because the
+    // server only answers for a batch once every file in it has been split,
+    // encrypted and scattered.
     const total = totalBytes(picks) || 1
     let done = 0
+    let stored = 0
     // The corners of the tree no file would make on the way past. They ride
     // with the first request that lands, and are only let go once it has.
     let folders = emptyDirs(picks)
@@ -421,7 +432,6 @@ export default function FileBrowser({
       for (let i = 0; i < batches.length; i++) {
         const group = batches[i]
         const weight = batchBytes(group)
-        if (batches.length > 1) track({ note: `${i + 1} of ${batches.length}` })
 
         try {
           /* Made here, before this batch is sent and not before the whole
@@ -430,23 +440,38 @@ export default function FileBrowser({
              at once is what made the tab disappear. Each resolves to null
              rather than throwing, so a format we cannot draw never holds up
              its upload. */
+          track({ phase: 'previews' })
           const thumbnails = await makeThumbnails(group.map(({ file }) => file))
+          track({ phase: '' })
 
+          /* The card says what it is waiting on, because each wait looks like
+             the other from outside: while a batch's bytes are leaving, the
+             percentage moves; once they have all left, nothing can move until
+             the server has split, encrypted and scattered every file in the
+             batch — minutes, on a slow cloud — and a bar that sits on one
+             number for minutes reads as stuck. So the moment the last byte is
+             out, the card stops showing a percentage and says what the wait
+             is instead. */
           const resp = await api.upload(group, path, {
             vault,
             accounts,
             scheme,
             thumbs: thumbnails,
             dirs: folders,
-            onProgress: (fraction) => track({ progress: (done + fraction * weight) / total }),
+            onProgress: (fraction) => track({
+              progress: (done + fraction * weight) / total,
+              phase: fraction >= 1 ? 'scatter' : '',
+            }),
           })
           folders = []
 
           const results = resp.results || []
           for (const r of results) {
-            if (!r.ok) failures.push(`${r.name}: ${r.error}`)
+            if (r.ok) stored += 1
+            else failures.push(`${r.name}: ${r.error}`)
             for (const w of r.warnings || []) notes.push(`${r.name}: ${w}`)
           }
+          if (fileCount > 1) track({ note: `${stored} of ${fileCount} stored` })
           // Listed as it arrives: on a long upload the folder fills up while
           // the rest of it is still going, which is also the only sign from
           // out here that anything is happening at all.
@@ -467,7 +492,7 @@ export default function FileBrowser({
         }
 
         done += weight
-        track({ progress: done / total })
+        track({ progress: done / total, phase: '' })
       }
 
       if (failures.length) onError(failures.join('\n'))
@@ -724,14 +749,22 @@ export default function FileBrowser({
             }}>
               <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {upload.label}
-                {/* Which batch of how many, when it takes more than one — so a
-                    folder that goes up in six requests reads as one upload
-                    making its way through rather than six of them. */}
+                {/* How many files the server has answered for, out of how many
+                    were picked. "Stored" is the word because it is the claim:
+                    a file counts only once its parts are on the clouds, so
+                    this number is behind the bar and catches up in steps. */}
                 {upload.note && <span style={{ color: COLORS.textMuted }}> · {upload.note}</span>}
               </span>
-              <span>{upload.progress >= 1
-                ? 'splitting, encrypting and scattering…'
-                : `${Math.round(upload.progress * 100)}%`}</span>
+              {/* The right-hand side says what is being waited on. "Sent" is
+                  what the percentage measures — bytes handed over, not files
+                  stored — and while nothing is moving because the server is
+                  doing the work, it says so instead of holding a number
+                  still. */}
+              <span style={{ whiteSpace: 'nowrap' }}>{upload.phase === 'previews'
+                ? 'making previews…'
+                : upload.phase === 'scatter'
+                  ? 'splitting, encrypting and scattering…'
+                  : `${Math.round(upload.progress * 100)}% sent`}</span>
             </div>
             <div style={{ height: '3px', background: COLORS.border, borderRadius: '2px', overflow: 'hidden' }}>
               <div style={{

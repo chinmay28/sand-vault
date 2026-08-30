@@ -196,7 +196,7 @@ func TestRmdirDropsThePack(t *testing.T) {
 	}
 	storeThumb(t, v, entry.ID, "thumbnail-bytes")
 
-	if _, err := v.Rmdir(ctx, MainScope, "/album", true); err != nil {
+	if _, err := v.Rmdir(ctx, MainScope, "/album", true, nil); err != nil {
 		t.Fatalf("Rmdir: %v", err)
 	}
 

@@ -439,6 +439,12 @@ export const api = {
   deleteFolder: (path, recursive, vault = '') =>
     request(`/api/folders?path=${encodeURIComponent(path)}${recursive ? '&recursive=1' : ''}${vaultParam(vault)}`,
       { method: 'DELETE' }),
+  /* Where the DELETE above has got to, while it is still in flight. A
+     recursive delete of a big folder erases parts for minutes and the request
+     itself can only answer at the end; this reads the count beside it. Asked
+     only while such a delete is running — see useEraseProgress. */
+  folderErasing: (path, vault = '') =>
+    request(`/api/folders/erasing?path=${encodeURIComponent(path)}${vaultParam(vault)}`),
 
   /* Every folder in the vault, root first — the whole tree in one answer,
      which is what picking a destination needs. Folder paths and nothing else:

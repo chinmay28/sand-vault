@@ -996,13 +996,37 @@ func (s *Server) handleFolderDelete(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := contextWithTimeout(r, 30*time.Minute)
 	defer cancel()
 
+	scope := requestScope(r)
+	// Counted as it goes, so GET /api/folders/erasing can answer whoever is
+	// waiting on this request — which for a big folder runs for minutes and
+	// says nothing until the end. Cleared however the delete comes out: a
+	// window left up would answer a later delete of a recreated folder with
+	// this one's count.
+	key := eraseKey(scope, path)
+	defer s.erases.clear(key)
+
 	v, _ := s.Vault()
-	warnings, err := v.Rmdir(ctx, requestScope(r), path, recursive)
+	warnings, err := v.Rmdir(ctx, scope, path, recursive, func(done, total int) {
+		s.erases.set(key, folderErase{Done: done, Total: total})
+	})
 	if err != nil {
 		vaultErrorResponse(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "warnings": warnings})
+}
+
+// handleFolderErasing answers with where a running recursive delete of the
+// named folder has got to. Not running is an ordinary answer rather than an
+// error: the poller and the DELETE it watches race, and asking a moment early
+// or late is not a mistake worth a red banner.
+func (s *Server) handleFolderErasing(w http.ResponseWriter, r *http.Request) {
+	at, ok := s.erases.get(eraseKey(requestScope(r), r.URL.Query().Get("path")))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"running": ok,
+		"done":    at.Done,
+		"total":   at.Total,
+	})
 }
 
 // handleDegradedList answers with the files missing at least one part.

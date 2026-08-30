@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { COLORS, FONT, formatBytes } from '../theme'
 import { api } from '../api'
 import { downloadFile } from '../download'
+import { useEraseProgress } from '../hooks'
 import { Banner, Button, Modal, Spinner } from './ui'
 
 /* What a handful of picked rows can be told to do at once.
@@ -65,7 +66,7 @@ export function useRun(chosen, perform, onFinished) {
   return { items, at, running, done, start }
 }
 
-export function Progress({ items, at, verb }) {
+export function Progress({ items, at, verb, note }) {
   const item = items[at]
 
   return (
@@ -80,6 +81,10 @@ export function Progress({ items, at, verb }) {
           flex: 1, minWidth: 0, color: COLORS.textMuted,
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
         }}>{item?.name}</span>
+        {/* Inside the item, when the item is itself a slow plural — a folder
+            being deleted counts its files here, so the bar below standing
+            still on one item for minutes has a number that is moving. */}
+        {note && <span style={{ flexShrink: 0, color: COLORS.textMuted }}>{note}</span>}
       </div>
       <div style={{ height: '3px', background: COLORS.border, borderRadius: '2px', overflow: 'hidden' }}>
         <div style={{
@@ -133,6 +138,14 @@ export function BulkDelete({ items, onClose, onDone }) {
   const files = batch.filter((i) => i.kind !== 'folder')
   const bytes = files.reduce((sum, f) => sum + (f.file.size || 0), 0)
 
+  /* A folder in the batch is one item out here and hundreds of erasures on
+     the server, so while the run is standing on one, its own count is
+     followed too — otherwise the bar sits on "3 of 12" for minutes with
+     nothing to say about why. */
+  const current = run.running ? batch[run.at] : null
+  const folderInFlight = Boolean(run.running && current?.kind === 'folder')
+  const erasing = useEraseProgress(folderInFlight ? current.path : '', '', folderInFlight)
+
   const close = () => { if (!run.running) onClose() }
 
   return (
@@ -150,7 +163,12 @@ export function BulkDelete({ items, onClose, onDone }) {
           </div>
         </>
       ) : run.running ? (
-        <Progress items={batch} at={run.at} verb="Deleting" />
+        <Progress
+          items={batch}
+          at={run.at}
+          verb="Deleting"
+          note={erasing ? `${erasing.done} of ${erasing.total} files` : ''}
+        />
       ) : (
         <>
           <div style={{

@@ -170,7 +170,7 @@ func (fs *FileSystem) RemoveAll(ctx context.Context, name string) error {
 	}
 
 	if fs.Vault.FolderExists(mainVault, clean) {
-		_, err := fs.Vault.Rmdir(ctx, mainVault, clean, true)
+		_, err := fs.Vault.Rmdir(ctx, mainVault, clean, true, nil)
 		return vaultError(err)
 	}
 

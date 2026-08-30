@@ -666,9 +666,25 @@ func (v *Vault) Delete(ctx context.Context, id string) ([]string, error) {
 	return warnings, nil
 }
 
+// rmdirEraseWindow is how many files of a doomed folder have their parts
+// erased at once.
+//
+// One at a time is what made a big delete slow: each file already erases its
+// own parts in parallel, but a file's round is over only when the slowest of
+// its accounts has answered, and a folder of three hundred files paid that
+// worst-of-three latency three hundred times in a row. A few files abreast
+// overlaps the waits without turning the delete into the burst of requests
+// per account that gets rate-limited.
+const rmdirEraseWindow = 4
+
 // Rmdir removes a folder. Without recursive it refuses to touch a folder that
 // still has contents.
-func (v *Vault) Rmdir(ctx context.Context, scope Scope, dir string, recursive bool) ([]string, error) {
+//
+// onProgress, when given, is told how many of the doomed files have had their
+// parts erased so far — once with (0, total) before the erasing starts, then
+// once per file. It is a window for whoever is waiting on the request, nothing
+// more: no job state, nothing written down. Calls arrive in order.
+func (v *Vault) Rmdir(ctx context.Context, scope Scope, dir string, recursive bool, onProgress func(done, total int)) ([]string, error) {
 	dir = CleanDir(dir)
 	if dir == "/" {
 		return nil, fmt.Errorf("cannot remove the root folder")
@@ -692,12 +708,38 @@ func (v *Vault) Rmdir(ctx context.Context, scope Scope, dir string, recursive bo
 		return nil, fmt.Errorf("%s is not empty", dir)
 	}
 
-	var warnings []string
-	var ids []string
-	for _, e := range doomed {
-		warnings = append(warnings, v.deleteEntryShards(ctx, e)...)
-		ids = append(ids, e.ID)
+	if onProgress != nil {
+		onProgress(0, len(doomed))
 	}
+
+	var warnings []string
+	ids := make([]string, len(doomed))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	finished := 0
+	window := make(chan struct{}, rmdirEraseWindow)
+	for i, e := range doomed {
+		ids[i] = e.ID
+		wg.Add(1)
+		window <- struct{}{}
+		go func(e *Entry) {
+			defer wg.Done()
+			defer func() { <-window }()
+			found := v.deleteEntryShards(ctx, e)
+			mu.Lock()
+			warnings = append(warnings, found...)
+			finished++
+			// Under the lock, so the counts leave in the order they were
+			// taken — two goroutines reporting outside it could hand a
+			// watcher 2 and then 1, and a bar that steps backwards reads as
+			// a bug in whatever is drawing it.
+			if onProgress != nil {
+				onProgress(finished, len(doomed))
+			}
+			mu.Unlock()
+		}(e)
+	}
+	wg.Wait()
 
 	v.mu.Lock()
 	if m, err = v.manifestForLocked(scope); err != nil {
