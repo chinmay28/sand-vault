@@ -264,6 +264,80 @@ func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, status, map[string]any{"results": results, "stored": stored})
 }
 
+// uploadPrecheckRequest asks, before a byte is sent, which files of a choice
+// the vault already holds. Each file is described the way the upload itself
+// would describe it: the name the browser has for it, the path it had inside
+// whatever was chosen (absent for a file picked on its own), and its size.
+type uploadPrecheckRequest struct {
+	Path  string               `json:"path"`
+	Vault string               `json:"vault,omitempty"`
+	Files []uploadPrecheckFile `json:"files"`
+}
+
+type uploadPrecheckFile struct {
+	Name string `json:"name"`
+	Rel  string `json:"rel,omitempty"`
+	Size int64  `json:"size"`
+}
+
+// handleFilesPrecheck answers which files of a would-be upload are already
+// stored at their destination with the same name and the same size — the ones
+// there is no point sending, since without an overwrite the upload would only
+// store a second copy under a made-up name beside the first.
+//
+// Each file is resolved to the folder and name the upload would give it, by
+// the same rule the upload uses, so the comparison is against the name the
+// file would actually be stored under. A file whose path the upload would
+// refuse is simply not "existing" — the upload itself is where that refusal
+// is reported, per file, and this check is not a gate in front of it.
+//
+// Same name but a different size is not a match: that file has changed, and
+// whether to send it anyway is not this endpoint's call. Nothing is read from
+// any account and nothing is written anywhere — the answer comes from the
+// index alone, which is what makes it cheap enough to ask before every upload.
+func (s *Server) handleFilesPrecheck(w http.ResponseWriter, r *http.Request) {
+	var req uploadPrecheckRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
+		return
+	}
+
+	dir := req.Path
+	if dir == "" {
+		dir = "/"
+	}
+
+	places := make([]uploadPlace, len(req.Files))
+	paths := make([]string, 0, len(req.Files))
+	for i, f := range req.Files {
+		places[i] = placeUpload(dir, f.Rel, f.Name)
+		if places[i].Err == nil {
+			paths = append(paths, vault.JoinPath(places[i].Dir, places[i].Name))
+		}
+	}
+
+	v, _ := s.Vault()
+	sizes, err := v.ExistingSizes(vault.Scope(req.Vault), paths)
+	if err != nil {
+		vaultErrorResponse(w, err)
+		return
+	}
+
+	// Positions rather than names, because positions are the one thing in a
+	// multi-file choice that is unique — the same reason the upload's own
+	// fields are numbered.
+	existing := []int{}
+	for i, f := range req.Files {
+		if places[i].Err != nil {
+			continue
+		}
+		if size, ok := sizes[vault.JoinPath(places[i].Dir, places[i].Name)]; ok && size == f.Size {
+			existing = append(existing, i)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"existing": existing})
+}
+
 // formatBytes writes a size the way the rest of SAND does, so a limit named in
 // an error reads like the figures the browser shows beside it.
 func formatBytes(b int64) string {

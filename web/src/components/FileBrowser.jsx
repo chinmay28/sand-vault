@@ -6,7 +6,8 @@ import { ActionSheet, Banner, Button, Empty, Modal, Spinner } from './ui'
 import { UploadDestination, RelocateClouds } from './CloudSelect'
 import { makeThumbnails } from '../thumbs'
 import {
-  batchBytes, batchPicks, describePicks, emptyDirs, picksFromDrop, picksFromInput, totalBytes,
+  batchBytes, batchPicks, describePicks, describeSkips, emptyDirs, picksFromDrop, picksFromInput,
+  totalBytes,
 } from '../upload'
 import {
   COLUMNS, FILM_COLUMNS, TILE_POSTER, TILE_SQUARE,
@@ -356,7 +357,7 @@ export default function FileBrowser({
      A choice is files each with the path it had inside whatever was picked, so
      a folder can be rebuilt on the other side rather than tipped out flat; see
      upload.js. */
-  const choosePicks = useCallback((picks) => {
+  const choosePicks = useCallback(async (picks) => {
     /* A folder with nothing in it is not an upload — no bytes, no clouds, no
        choice to make about where its parts go. It is a folder, so it is made
        rather than put through the picker and refused there for having no
@@ -372,7 +373,27 @@ export default function FileBrowser({
       onError('Connect a cloud account before uploading — there is nowhere to put the parts yet.')
       return
     }
-    setPending(picks)
+
+    /* The files this folder already holds at the same name and size are
+       dropped here, before a byte of them is read or sent — uploading one
+       again would not replace it but store a copy beside it under a made-up
+       name. Dropped quietly they would look lost, so what was skipped is
+       said; and when everything was skipped there is nothing left to choose
+       clouds for, so the destination dialog never opens. */
+    let files = picks.files
+    try {
+      const existing = new Set(await api.uploadPrecheck(picks.files, path, { vault }))
+      if (existing.size) {
+        setWarnings((prev) => [...prev, describeSkips(files.filter((_, i) => existing.has(i)))])
+        files = files.filter((_, i) => !existing.has(i))
+      }
+    } catch {
+      /* The check is a courtesy, not a gate: if it cannot be asked, the
+         upload goes ahead with everything, which is what it always did. */
+    }
+    if (!files.length) return
+
+    setPending({ ...picks, files })
   }, [canUpload, onError, onRefresh, path, vault])
 
   /* Sends a choice, in as many requests as it takes.

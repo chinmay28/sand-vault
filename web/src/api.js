@@ -768,6 +768,39 @@ export const api = {
   forgetMovie: (id) =>
     request(`/api/files/${encodeURIComponent(id)}/movie`, { method: 'DELETE' }),
 
+  /* Asks which of a choice's files the vault already holds at this
+     destination with the same name and the same size — the ones not worth
+     sending, since the server would only store a second copy beside the
+     first. Asked before a byte of the choice leaves the machine; answers the
+     positions of those files within `picks`.
+
+     Asked a page at a time because the server caps a JSON body well below
+     what twenty thousand paths add up to, and one oversized request would
+     turn the whole check into an error. */
+  async uploadPrecheck(picks, path, { vault = '' } = {}) {
+    const PAGE = 1000
+    const existing = []
+    for (let start = 0; start < picks.length; start += PAGE) {
+      const page = picks.slice(start, start + PAGE)
+      const resp = await request('/api/files/precheck', {
+        method: 'POST',
+        body: {
+          path,
+          vault,
+          files: page.map(({ file, path: rel }) => ({
+            name: file.name,
+            // Absent for a file picked on its own, the same way upload()
+            // sends it.
+            rel: rel && rel !== file.name ? rel : undefined,
+            size: file.size,
+          })),
+        },
+      })
+      for (const i of resp.existing || []) existing.push(start + i)
+    }
+    return existing
+  },
+
   /* Uploads go through XMLHttpRequest rather than fetch so the UI can show
      real progress while a large file is being split and scattered.
 

@@ -1778,6 +1778,39 @@ func (v *Vault) EntryByPath(scope Scope, path string) (*Entry, error) {
 	return e, nil
 }
 
+// ExistingSizes answers, for each named file that is already stored, the size
+// it is stored at. Paths that name nothing are simply absent from the answer —
+// absence is the answer, not an error.
+//
+// It exists for the upload precheck: before a byte of a choice is sent, the
+// browser asks which of its files the vault already holds, so a folder dropped
+// twice is skipped rather than uploaded again beside itself. One walk of the
+// index for the whole list, because that question can be about thousands of
+// files at once and ByPath is a walk per file.
+func (v *Vault) ExistingSizes(scope Scope, paths []string) (map[string]int64, error) {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+
+	m, err := v.manifestForLocked(scope)
+	if err != nil {
+		return nil, err
+	}
+
+	wanted := make(map[string]bool, len(paths))
+	for _, p := range paths {
+		wanted[CleanDir(p)] = true
+	}
+
+	out := make(map[string]int64)
+	for _, e := range m.Entries {
+		full := JoinPath(e.Dir, e.Name)
+		if wanted[full] {
+			out[full] = e.Size
+		}
+	}
+	return out, nil
+}
+
 // Folders lists every folder in the vault, root first, as normalized paths.
 //
 // It is the whole tree in one answer, which is what a "where should this go?"
