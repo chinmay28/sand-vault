@@ -1,6 +1,8 @@
 package server
 
 import (
+	"bytes"
+	"fmt"
 	"net/http"
 	"testing"
 )
@@ -49,6 +51,44 @@ func TestPrecheckNamesTheFilesAlreadyStoredAtTheSameSize(t *testing.T) {
 	})
 	if len(existing) != 1 || existing[0] != 0 {
 		t.Errorf("existing = %v, want [0]", existing)
+	}
+}
+
+// The report from the field this guards against: a choice of fourteen photos,
+// seven of them already in the folder, where the banner was suspected of
+// naming the wrong seven. The two sets must never trade places — what the
+// server calls existing is exactly what is stored, whatever order the choice
+// mixes them in.
+func TestPrecheckNamesTheStoredHalfOfAMixedChoiceAndOnlyThat(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("pw", 3)
+
+	stored := map[int]bool{}
+	files := make([]map[string]any, 0, 14)
+	for i := 0; i < 14; i++ {
+		name := fmt.Sprintf("_MYS%d.jpg", 4622+i)
+		content := bytes.Repeat([]byte("x"), 100+i)
+		// Every other file is already in the folder; the rest are new. The
+		// sizes all differ, so a match by the wrong file's size cannot pass.
+		if i%2 == 0 {
+			c.upload(name, "/", content)
+			stored[i] = true
+		}
+		files = append(files, map[string]any{"name": name, "size": len(content)})
+	}
+
+	existing := c.precheck("/", files)
+	got := map[int]bool{}
+	for _, i := range existing {
+		got[i] = true
+	}
+	for i := 0; i < 14; i++ {
+		if stored[i] && !got[i] {
+			t.Errorf("file %d is stored but was not called existing", i)
+		}
+		if !stored[i] && got[i] {
+			t.Errorf("file %d is new but was called existing — the sets traded places", i)
+		}
 	}
 }
 

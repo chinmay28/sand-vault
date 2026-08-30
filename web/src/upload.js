@@ -119,16 +119,27 @@ export function describePicks({ files, dirs }) {
 
 /* How to say what was not sent because the destination already had it. Each
    skipped file matters to whoever chose it, but four hundred of them are a
-   wall of text, not a notice — so a few are named and the rest are counted. */
-export function describeSkips(skipped) {
+   wall of text, not a notice — so a few are named and the rest are counted.
+
+   Both halves of the choice are counted, not just the skipped one. "Skipped 7
+   files" beside a card uploading 7 reads as one set of seven described two
+   ways; "7 of 14, the other 7 are going up" is two sets that plainly add up
+   to what was picked, and can be checked against the folder at a glance. */
+export function describeSkips(skipped, total) {
   const paths = skipped.map(({ path }) => path)
-  if (paths.length === 1) {
+  if (total === 1) {
     return `Skipped ${paths[0]} — already stored here with the same name and size.`
+  }
+  if (paths.length === total) {
+    return `All ${total} files are already stored here with the same name and size — `
+      + 'there is nothing to upload.'
   }
   const named = paths.slice(0, 3).join(', ')
   const more = paths.length - 3
-  return `Skipped ${paths.length} files already stored here with the same name and size: `
-    + `${named}${more > 0 ? ` and ${more} more` : ''}.`
+  const left = total - paths.length
+  return `Skipped ${paths.length} of ${total} files — already stored here with the same name `
+    + `and size: ${named}${more > 0 ? ` and ${more} more` : ''}. `
+    + `The other ${left === 1 ? 'file is' : `${left} are`} going up.`
 }
 
 /* The total, which is the file bytes: a folder costs nothing of its own. */

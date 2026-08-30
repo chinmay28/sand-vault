@@ -384,7 +384,8 @@ export default function FileBrowser({
     try {
       const existing = new Set(await api.uploadPrecheck(picks.files, path, { vault }))
       if (existing.size) {
-        setWarnings((prev) => [...prev, describeSkips(files.filter((_, i) => existing.has(i)))])
+        setWarnings((prev) => [...prev,
+          describeSkips(files.filter((_, i) => existing.has(i)), files.length)])
         files = files.filter((_, i) => !existing.has(i))
       }
     } catch {
