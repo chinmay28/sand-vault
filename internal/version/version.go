@@ -25,7 +25,7 @@ import "strconv"
 // month, 1–12.
 const (
 	Year  = 2026
-	Month = 8
+	Month = 9
 )
 
 // Patch is the repository's commit count, stamped at link time (see the

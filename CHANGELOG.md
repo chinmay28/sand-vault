@@ -10,7 +10,7 @@ Each section below is the body of the corresponding GitHub release. A heading
 must name the tag exactly — a tag whose commit builds a different version is a
 tag that shouldn't be published.
 
-## Unreleased
+## v2026.8.143
 
 ### Erasing abandoned parts counts itself down instead of hanging
 
