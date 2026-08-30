@@ -117,6 +117,20 @@ export function describePicks({ files, dirs }) {
   return `${folder} and ${loose.length} file${loose.length === 1 ? '' : 's'}`
 }
 
+/* How to say what was not sent because the destination already had it. Each
+   skipped file matters to whoever chose it, but four hundred of them are a
+   wall of text, not a notice — so a few are named and the rest are counted. */
+export function describeSkips(skipped) {
+  const paths = skipped.map(({ path }) => path)
+  if (paths.length === 1) {
+    return `Skipped ${paths[0]} — already stored here with the same name and size.`
+  }
+  const named = paths.slice(0, 3).join(', ')
+  const more = paths.length - 3
+  return `Skipped ${paths.length} files already stored here with the same name and size: `
+    + `${named}${more > 0 ? ` and ${more} more` : ''}.`
+}
+
 /* The total, which is the file bytes: a folder costs nothing of its own. */
 export function totalBytes({ files }) {
   return files.reduce((sum, { file }) => sum + file.size, 0)

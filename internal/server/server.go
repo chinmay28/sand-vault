@@ -376,6 +376,10 @@ func (s *Server) Handler() (http.Handler, error) {
 		// POST /api/relocate, the same call the file list's own move uses.
 		"GET /api/degraded":          s.handleDegradedList,
 		"POST /api/files":            s.handleFilesUpload,
+		// Which files of a choice are already stored at their destination with
+		// the same name and size, asked before a byte of them is sent — the
+		// browser drops those from the upload rather than storing copies.
+		"POST /api/files/precheck": s.handleFilesPrecheck,
 		"GET /api/files/{id}":        s.handleFileMeta,
 		"DELETE /api/files/{id}":     s.handleFileDelete,
 		"POST /api/files/{id}/move":  s.handleFileMove,
