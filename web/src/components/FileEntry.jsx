@@ -522,14 +522,17 @@ function PartBadges({ file }) {
 }
 
 /* The same question, answered in the space a phone row can spare: one small
-   dot per shard in its account's colour, and the count of them spelled out
-   beside the dots, since nobody counts fifteen dots. The numbers go — a phone's
-   badges were never a control, and the inspector in the row's menu names every
-   shard — so a 15-cloud spread costs 118px where the squares wanted 236px.
+   dot per shard in its account's colour, and the scheme spelled out beside
+   the dots — "10-of-15" says how many dots there are, since nobody counts
+   fifteen, and says what a bare count could not: how many are enough to
+   rebuild. The numbers on the dots go — a phone's badges were never a
+   control, and the inspector in the row's menu names every shard — so a
+   15-cloud spread costs 118px where the squares wanted 236px.
 
-   A missing shard is a hollow dot, and the count becomes "stored of total" in
-   the warning colour — or the error colour once too few remain to rebuild —
-   which says how far gone the file is, not just that something is. */
+   A missing shard is a hollow dot, and the stored count steps in front of the
+   scheme as "stored/total" in the warning colour — or the error colour once
+   too few remain to rebuild — so the live number leads and the scheme stands
+   muted behind it as the floor it is falling toward. */
 function PartDots({ file }) {
   const scheme = fileScheme(file)
   const stored = storedParts(file.shards)
@@ -557,13 +560,16 @@ function PartDots({ file }) {
           )
         })}
       </span>
-      <span style={{
-        fontSize: '10px',
-        fontWeight: 700,
-        color: dead ? COLORS.error : degraded ? COLORS.warn : COLORS.textMuted,
-      }}>
-        {degraded ? `${stored}/${scheme.total}` : scheme.total}
-      </span>
+      {degraded ? (
+        <>
+          <span style={{ fontSize: '10px', fontWeight: 700, color: dead ? COLORS.error : COLORS.warn }}>
+            {stored}/{scheme.total}
+          </span>
+          <span style={{ fontSize: '10px', color: COLORS.textMuted }}>· {schemeName(scheme)}</span>
+        </>
+      ) : (
+        <span style={{ fontSize: '10px', color: COLORS.textMuted }}>{schemeName(scheme)}</span>
+      )}
     </>
   )
 }
