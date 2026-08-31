@@ -475,8 +475,10 @@ function describeParts(file) {
 
    A 2-of-3 file draws three and a 6-of-9 file draws nine, so the row says at a
    glance how widely the file is spread as well as whether anything is missing.
-   The squares narrow past three so that nine of them still fit the column. */
-function PartBadges({ file, mobile }) {
+   The squares narrow past three so that nine of them still fit the column.
+   This is the desktop row's and the tile's read-out; a phone row draws
+   PartDots instead. */
+function PartBadges({ file }) {
   const scheme = fileScheme(file)
   const degraded = storedParts(file.shards) < scheme.total
   const dead = storedParts(file.shards) < scheme.data
@@ -493,15 +495,11 @@ function PartBadges({ file, mobile }) {
               ? `Shard ${part} on ${shard.provider_name}`
               : `Shard ${part} not stored`}
             style={{
-              /* The badges share the phone's second line with the size and
-                 the date now that the picture has taken the left column, so
-                 they are the desktop's width there too — that is the
-                 difference between reading the date and truncating it. */
               width: tight ? '12px' : '19px',
-              height: mobile ? '16px' : '15px',
+              height: '15px',
               borderRadius: '3px',
               fontFamily: FONT.mono,
-              fontSize: tight ? '7.5px' : (mobile ? '9.5px' : '8.5px'),
+              fontSize: tight ? '7.5px' : '8.5px',
               fontWeight: 700,
               display: 'flex',
               alignItems: 'center',
@@ -518,6 +516,59 @@ function PartBadges({ file, mobile }) {
         <span style={{ marginLeft: '3px', color: dead ? COLORS.error : COLORS.warn, fontSize: '11px' }}>
           {dead ? '✗' : '!'}
         </span>
+      )}
+    </>
+  )
+}
+
+/* The same question, answered in the space a phone row can spare: one small
+   dot per shard in its account's colour, and the scheme spelled out beside
+   the dots — "10-of-15" says how many dots there are, since nobody counts
+   fifteen, and says what a bare count could not: how many are enough to
+   rebuild. The numbers on the dots go — a phone's badges were never a
+   control, and the inspector in the row's menu names every shard — so a
+   15-cloud spread costs 118px where the squares wanted 236px.
+
+   A missing shard is a hollow dot, and the stored count steps in front of the
+   scheme as "stored/total" in the warning colour — or the error colour once
+   too few remain to rebuild — so the live number leads and the scheme stands
+   muted behind it as the floor it is falling toward. */
+function PartDots({ file }) {
+  const scheme = fileScheme(file)
+  const stored = storedParts(file.shards)
+  const degraded = stored < scheme.total
+  const dead = stored < scheme.data
+
+  return (
+    <>
+      <span style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '2px' }}>
+        {Array.from({ length: scheme.total }, (_, i) => i + 1).map((part) => {
+          const shard = file.shards.find((s) => s.part === part)
+          return (
+            <span
+              key={part}
+              style={{
+                width: '6px',
+                height: '6px',
+                borderRadius: '50%',
+                flexShrink: 0,
+                boxSizing: 'border-box',
+                background: shard ? accountColor(shard.provider_id) : 'transparent',
+                border: shard ? 'none' : `1px dashed ${COLORS.borderBright}`,
+              }}
+            />
+          )
+        })}
+      </span>
+      {degraded ? (
+        <>
+          <span style={{ fontSize: '10px', fontWeight: 700, color: dead ? COLORS.error : COLORS.warn }}>
+            {stored}/{scheme.total}
+          </span>
+          <span style={{ fontSize: '10px', color: COLORS.textMuted }}>· {schemeName(scheme)}</span>
+        </>
+      ) : (
+        <span style={{ fontSize: '10px', color: COLORS.textMuted }}>{schemeName(scheme)}</span>
       )}
     </>
   )
@@ -551,7 +602,7 @@ export function FileRow({
     />
   )
 
-  /* On a phone the badges are a read-out and nothing more. A third target in a
+  /* On a phone the dots are a read-out and nothing more. A third target in a
      row that already has a name and a menu would have to be either too small
      to hit or tall enough to push the next file off the screen — and the menu
      already offers the same inspector by name. On a desktop the badges stay
@@ -560,7 +611,7 @@ export function FileRow({
     <span
       title={describeParts(file)}
       style={{ display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 0 }}
-    ><PartBadges file={file} mobile /></span>
+    ><PartDots file={file} /></span>
   ) : (
     <button
       onClick={onInspect}
@@ -659,6 +710,12 @@ export function FileRow({
     </span>
   )
 
+  /* Whether the phone row's dots share the size-and-date line or take a line
+     of their own underneath. Three is the cut: three dots and a count fit
+     beside a date, and three is also what most files are — so the common row
+     stays two lines and only a widely-spread file grows the third. */
+  const wideSpread = fileScheme(file).total > 3
+
   if (mobile) {
     /* The picture is the row's left column and the two lines of text sit
        beside it, rather than the name being indented over a line of detail.
@@ -689,10 +746,12 @@ export function FileRow({
                 overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
               }}>{file.name}</span>
 
-              {/* This line carries the part badges as well as the size and the
-                  date, and on a 390px screen it has 224px to do it in. Hence
-                  no "·" separator, unlike everywhere else, and hence the
-                  badges are pushed right with a margin rather than a spacer
+              {/* This line carries the size and the date — and the dots too,
+                  but only for a file on three clouds or fewer, which is what
+                  the line can hold beside a date in the 224px a 390px screen
+                  gives it; a wider spread gets the line below to itself.
+                  Hence no "·" separator, unlike everywhere else, and hence
+                  the dots are pushed right with a margin rather than a spacer
                   element — a spacer would cost a flex gap of its own, which is
                   the difference between reading the time and truncating it. */}
               <span style={{
@@ -709,8 +768,11 @@ export function FileRow({
                     style={{ minWidth: 0, flexShrink: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
                   >in {location}</span>
                 )}
-                <span style={{ marginLeft: 'auto', display: 'flex', flexShrink: 0 }}>{parts}</span>
+                {!wideSpread && (
+                  <span style={{ marginLeft: 'auto', display: 'flex', flexShrink: 0 }}>{parts}</span>
+                )}
               </span>
+              {wideSpread && parts}
             </span>
           </button>
 
