@@ -766,7 +766,14 @@ const PREVIEW_DEBOUNCE_MS = 220
    `target` is one file or folder; `targets` is a list of them, which is what a
    selection of rows comes to. Both are the same dialog: the estimates are
    priced together and read as one number, because "what would this cost" is
-   one question however many things were picked. */
+   one question however many things were picked.
+
+   Every move is handed to the machine (`detach`) rather than held open on a
+   request from this page, because a folder of films crossing between clouds
+   takes hours and a browser tab should not be what keeps it alive — navigating
+   away used to cancel the move mid-transfer. The dialog draws the machine's
+   own reading of the run, so closing it and coming back shows the same bar,
+   and the outcome waits here for whoever returns. */
 export function RelocateClouds({ target, targets, title, subtitle, current, providers, onClose, onDone }) {
   const [selected, setSelected] = useState(() => (current || []).filter(
     (id) => providers.some((p) => p.id === id)))
@@ -775,17 +782,20 @@ export function RelocateClouds({ target, targets, title, subtitle, current, prov
   const [planning, setPlanning] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
-  const [report, setReport] = useState(null)
-  /* Asked for, never assumed — the same bargain an import strikes. A move
-     that keeps running after the page is closed is a thing somebody should
-     have decided, not something they discover later. */
-  const [detach, setDetach] = useState(false)
-  /* What the server says is moving right now, and what a detached move lately
-     finished with. Polled while the dialog is open, so a foreground move
-     draws a live bar and coming back to a detached one shows how far it got. */
+  /* What the server says is moving right now, and what a move lately finished
+     with. Every move runs detached — on the machine, not on this page — so
+     this poll is the only place its progress and its outcome come from, and
+     coming back to a move started an hour ago shows how far it got. */
   const [runs, setRuns] = useState([])
   const [changed, setChanged] = useState(false)
+  /* Counts the moves that have landed, so the estimate is asked again once
+     one has: the parts it priced have moved, and a bill drawn before the
+     move would offer to do it all over again. */
+  const [landed, setLanded] = useState(0)
   const finished = useRef(new Set())
+  /* The moves this dialog started, as opposed to ones it merely shows. What
+     turns Cancel into Done is one of these coming home, not somebody else's. */
+  const started = useRef(new Set())
 
   const scope = (targets && targets.length ? targets : [target]).filter(Boolean)
 
@@ -803,7 +813,7 @@ export function RelocateClouds({ target, targets, title, subtitle, current, prov
   const scopeKey = scope.map((t) => t.id || t.path).join('\n')
 
   useEffect(() => {
-    if (!enough || report) {
+    if (!enough) {
       setPlan(null)
       return undefined
     }
@@ -830,9 +840,10 @@ export function RelocateClouds({ target, targets, title, subtitle, current, prov
 
     return () => { clearTimeout(timer); controller.abort() }
     // The selection and the scope are compared by value: a new array holding
-    // the same ids is the same question.
+    // the same ids is the same question. `landed` is here so a finished move
+    // re-prices what is left — usually to "already there".
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, scopeKey, enough, report])
+  }, [key, scopeKey, enough, landed])
 
   /* Ask the server what is moving, and keep asking. Once a second while
      something is, every five when nothing is — an idle dialog left open
@@ -856,14 +867,17 @@ export function RelocateClouds({ target, targets, title, subtitle, current, prov
   /* A move that finished — this dialog's or any other's — has changed the
      index the listing behind this is drawn from, so the way out refreshes. */
   useEffect(() => {
-    let landed = false
+    let arrived = false
     for (const run of runs) {
       if (run.done && !finished.current.has(run.id)) {
         finished.current.add(run.id)
-        landed = true
+        arrived = true
       }
     }
-    if (landed) setChanged(true)
+    if (arrived) {
+      setChanged(true)
+      setLanded((n) => n + 1)
+    }
   }, [runs])
 
   // Stopping a running move and dismissing a finished one's result are the
@@ -885,12 +899,15 @@ export function RelocateClouds({ target, targets, title, subtitle, current, prov
       /* The whole selection goes as one request and runs as one move: each
          file still commits on its own, so a failure partway leaves everything
          before it moved and everything after it where it was — which is
-         exactly what running it again then finishes. Detached, the answer is
-         the run rather than the result: the transfer has not happened yet,
-         and how it comes out arrives on the poll. */
-      const resp = await api.relocate({ targets: scope, accounts: selected, scheme: cut, detach })
-      if (detach) setRuns((current) => [...current.filter((r) => r.id !== resp.run?.id), resp.run].filter(Boolean))
-      else setReport(resp)
+         exactly what running it again then finishes. Always detached, so the
+         answer is the run rather than the result: the machine carries the
+         shards across whether or not this page stays open, and how it comes
+         out arrives on the poll. */
+      const resp = await api.relocate({ targets: scope, accounts: selected, scheme: cut, detach: true })
+      if (resp.run) {
+        started.current.add(resp.run.id)
+        setRuns((current) => [...current.filter((r) => r.id !== resp.run.id), resp.run])
+      }
     } catch (err) {
       setError(err.message)
     } finally {
@@ -898,9 +915,14 @@ export function RelocateClouds({ target, targets, title, subtitle, current, prov
     }
   }
 
+  /* This dialog's own move, as distinct from ones it is merely showing. */
+  const mine = runs.filter((run) => started.current.has(run.id))
+  const moving = busy || mine.some((run) => !run.done)
+  const landedMine = mine.length > 0 && !moving
+
   const close = () => {
     // The listing's part badges are drawn from the index, which has changed.
-    if (report || changed) onDone?.()
+    if (changed) onDone?.()
     onClose()
   }
 
@@ -913,90 +935,75 @@ export function RelocateClouds({ target, targets, title, subtitle, current, prov
     >
       {error && <Banner tone="error">{error}</Banner>}
 
-      {/* Everything moving right now, and what a detached move lately came
-          to. A foreground move draws its bar from the same list — the only
-          difference between the two is what happens to this page. */}
-      {!report && runs.map((run) => (run.done
+      {/* Everything moving right now, and what a move lately came to. Every
+          move runs on the machine, so this list is its bar while it goes and
+          its report once it is done — on this page or the next one opened. */}
+      {runs.map((run) => (run.done
         ? <FinishedRelocation key={run.id} run={run} onDismiss={() => stopRun(run.id)} />
         : <RelocationRunCard key={run.id} run={run} onStop={() => stopRun(run.id)} />))}
       {busy && runs.length === 0 && <RelocationRunCard run={null} />}
 
-      {report ? (
-        <RelocationOutcome report={report} onClose={close} />
-      ) : (
-        <>
-          <p style={{
-            margin: '0 0 12px',
-            fontFamily: FONT.sans,
-            fontSize: '12px',
-            color: COLORS.textMuted,
-            lineHeight: 1.6,
-          }}>
-            Shards already on a cloud you keep stay exactly where they are — only the rest are
-            carried across, still encrypted, without ever being rebuilt. Changing the code a file
-            is cut with is different — a wider spread, or a different threshold — because no
-            shard of the old file is a shard of the new one, so it is gathered and written out
-            again. The estimate below says which is happening.
-          </p>
+      <p style={{
+        margin: '0 0 12px',
+        fontFamily: FONT.sans,
+        fontSize: '12px',
+        color: COLORS.textMuted,
+        lineHeight: 1.6,
+      }}>
+        Shards already on a cloud you keep stay exactly where they are — only the rest are
+        carried across, still encrypted, without ever being rebuilt. Changing the code a file
+        is cut with is different — a wider spread, or a different threshold — because no
+        shard of the old file is a shard of the new one, so it is gathered and written out
+        again. The estimate below says which is happening.
+      </p>
 
-          <CloudChoice
-            providers={providers}
-            selected={selected}
-            onChange={setSelected}
-            cap={providers.length}
-          />
+      <CloudChoice
+        providers={providers}
+        selected={selected}
+        onChange={setSelected}
+        cap={providers.length}
+      />
 
-          <ThresholdChoice scheme={scheme} onChange={(next) => setThreshold(next.data)} />
+      <ThresholdChoice scheme={scheme} onChange={(next) => setThreshold(next.data)} />
 
-          <div style={{ marginTop: '14px' }}>
-            <SelectionNote providers={providers} selected={selected} scheme={scheme} moving />
-          </div>
+      <div style={{ marginTop: '14px' }}>
+        <SelectionNote providers={providers} selected={selected} scheme={scheme} moving />
+      </div>
 
-          {enough && <RelocationCost plan={plan} planning={planning} />}
+      {enough && <RelocationCost plan={plan} planning={planning} />}
 
-          {/* Asked for, never assumed. A move that keeps running after the
-              page is closed is a thing to have decided, not to discover. */}
-          <label style={{
-            display: 'flex', gap: '8px', alignItems: 'flex-start', marginTop: '14px',
-            cursor: busy ? 'default' : 'pointer',
-          }}>
-            <input
-              type="checkbox"
-              checked={detach}
-              disabled={busy}
-              onChange={(e) => setDetach(e.target.checked)}
-              style={{ marginTop: '2px' }}
-            />
-            <span style={{
-              fontFamily: FONT.sans, fontSize: '12px', lineHeight: 1.5, color: COLORS.textDim,
-            }}>
-              Keep going if I close this page
-              <span style={{ display: 'block', fontSize: '11px', color: COLORS.textMuted }}>
-                The machine carries the shards across on its own, and this dialog shows how far
-                it has got whenever you come back to it. Every file that finished stays moved
-                either way — running the same move again picks up the rest.
-              </span>
-            </span>
-          </label>
+      {/* The one promise worth making before the button, because it is the
+          one thing the button no longer needs the page for. */}
+      <p style={{
+        margin: '14px 0 0',
+        fontFamily: FONT.sans,
+        fontSize: '11px',
+        color: COLORS.textMuted,
+        lineHeight: 1.5,
+      }}>
+        The machine carries the shards across on its own — closing this page does not stop it,
+        and this dialog shows how far it has got whenever you come back. Every file that
+        finishes stays moved; running the same move again picks up the rest.
+      </p>
 
-          <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', marginTop: '16px' }}>
-            <Button type="button" variant="ghost" onClick={close} disabled={busy}>Cancel</Button>
-            <Button
-              type="button"
-              variant="primary"
-              onClick={submit}
-              disabled={busy || !enough || (plan !== null && !worthDoing(plan))}
-            >
-              {busy ? (
-                <>
-                  <Spinner size={10} color={COLORS.bg} />
-                  {' Moving…'}
-                </>
-              ) : '⇄ Move the shards'}
-            </Button>
-          </div>
-        </>
-      )}
+      <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', marginTop: '16px' }}>
+        <Button type="button" variant="ghost" onClick={close} disabled={busy}>
+          {landedMine ? 'Done' : 'Cancel'}
+        </Button>
+        <Button
+          type="button"
+          variant="primary"
+          onClick={submit}
+          disabled={moving || !enough || (plan !== null && !worthDoing(plan))}
+        >
+          {moving ? (
+            <>
+              <Spinner size={10} color={COLORS.bg} />
+              {' Moving…'}
+            </>
+          ) : '⇄ Move the shards'}
+        </Button>
+      </div>
     </Modal>
   )
 }
@@ -1023,24 +1030,6 @@ function mergePlans(plans) {
     drops: all.drops + (plan.drops || 0),
     warnings: [...all.warnings, ...(plan.warnings || [])],
   }), { moves: 0, recoded: 0, recode_bytes: 0, bytes: 0, total: 0, unchanged: 0, drops: 0, warnings: [] })
-}
-
-function mergeReports(reports) {
-  return reports.reduce((all, report) => ({
-    relocated: all.relocated + (report.relocated || 0),
-    recoded: all.recoded + (report.recoded || 0),
-    parts_moved: all.parts_moved + (report.parts_moved || 0),
-    parts_dropped: all.parts_dropped + (report.parts_dropped || 0),
-    bytes: all.bytes + (report.bytes || 0),
-    total: all.total + (report.total || 0),
-    unchanged: all.unchanged + (report.unchanged || 0),
-    partial: all.partial + (report.partial || 0),
-    failed: all.failed + (report.failed || 0),
-    warnings: [...all.warnings, ...(report.warnings || [])],
-  }), {
-    relocated: 0, recoded: 0, parts_moved: 0, parts_dropped: 0, bytes: 0,
-    total: 0, unchanged: 0, partial: 0, failed: 0, warnings: [],
-  })
 }
 
 /* What the chosen clouds would cost, from the index alone. */
@@ -1116,58 +1105,6 @@ function RelocationCost({ plan, planning }) {
         <div key={i} style={{ color: COLORS.warn }}>{w}</div>
       ))}
     </div>
-  )
-}
-
-/* What the move actually did. It stays on screen rather than closing on
-   success, because a partial move — one cloud not answering — is a normal
-   outcome worth reading, and running it again is what finishes it. */
-function RelocationOutcome({ report, onClose }) {
-  const stuck = report.partial + report.failed
-
-  return (
-    <>
-      <Banner tone={stuck ? 'warn' : 'success'}>
-        {stuck
-          ? `${stuck} file(s) did not fully move. Nothing was lost — their parts are still where
-             they were. Try again once the accounts are answering.`
-          : report.recoded > 0
-            ? `Rebuilt ${report.recoded} file(s) under the new scheme${
-              report.bytes ? `, ${formatBytes(report.bytes)}` : ''}.`
-            : `Moved ${report.parts_moved} shard(s)${report.bytes ? `, ${formatBytes(report.bytes)}` : ''},
-               across ${report.relocated} file(s).`}
-      </Banner>
-
-      <div style={{
-        padding: '11px 13px',
-        background: COLORS.bg,
-        border: `1px solid ${COLORS.border}`,
-        borderRadius: '6px',
-        fontFamily: FONT.mono,
-        fontSize: '11px',
-        color: COLORS.textDim,
-        lineHeight: 1.7,
-      }}>
-        <div>{report.total} file(s) in scope · {report.unchanged} already in place</div>
-        {report.parts_dropped > 0 && (
-          <div style={{ color: COLORS.warn }}>
-            {report.parts_dropped} spare shard(s) erased — the chosen clouds had no room for them.
-          </div>
-        )}
-      </div>
-
-      {(report.warnings || []).length > 0 && (
-        <div style={{ marginTop: '10px', maxHeight: '160px', overflowY: 'auto' }}>
-          <Banner tone="warn">
-            {report.warnings.map((w, i) => <div key={i}>{w}</div>)}
-          </Banner>
-        </div>
-      )}
-
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '4px' }}>
-        <Button type="button" variant="primary" onClick={onClose}>Done</Button>
-      </div>
-    </>
   )
 }
 
@@ -1287,6 +1224,11 @@ function FinishedRelocation({ run, onDismiss }) {
         : `Moved ${report.parts_moved || 0} shard(s) across ${report.relocated || 0} file(s)`}
       {report.bytes ? `, ${formatBytes(report.bytes)}` : ''}.
       {stuck > 0 && ` ${stuck} file(s) did not fully move — nothing was lost, try them again.`}
+      {/* The first few reasons why, because "did not fully move" without a
+          why is a question, not a report. */}
+      {(report.warnings || []).slice(0, 3).map((w, i) => (
+        <div key={i} style={{ marginTop: '4px', fontSize: '11px' }}>{w}</div>
+      ))}
     </Banner>
   )
 }

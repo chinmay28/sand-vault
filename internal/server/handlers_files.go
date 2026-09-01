@@ -753,13 +753,15 @@ const relocateTimeout = 6 * time.Hour
 // clouds. Only the parts that are not already on one of the chosen accounts
 // are copied — see vault.Relocate.
 //
-// Synchronous unless asked otherwise, exactly as an import is, and the answer
-// to "this could take hours" is the same pair an import gives: the run reports
-// its progress here whether or not anything is watching (see relocate_watch.go
-// and GET /api/relocate/runs), and `detach` hands the move to the machine so
-// closing the page does not take the transfer with it. Either way each file
-// commits on its own, so an interrupted move loses nothing and running the
-// same one again finishes it.
+// Synchronous unless asked otherwise, and the answer to "this could take
+// hours" is the same pair an import gives: the run reports its progress here
+// whether or not anything is watching (see relocate_watch.go and
+// GET /api/relocate/runs), and `detach` hands the move to the machine so
+// closing the page does not take the transfer with it. The web client always
+// detaches — a browser tab should never be what keeps a transfer alive — so
+// the synchronous shape is for callers scripting the API, who want the report
+// as the response. Either way each file commits on its own, so an interrupted
+// move loses nothing and running the same one again finishes it.
 func (s *Server) handleRelocate(w http.ResponseWriter, r *http.Request) {
 	var req relocateRequest
 	if err := decodeJSON(r, &req); err != nil {
