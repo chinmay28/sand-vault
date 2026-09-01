@@ -16,10 +16,10 @@ import (
 // app (see import_watch.go for the reasoning it carries): a relocation is one
 // long POST, held open by default so that closing the tab cancels it, and a
 // folder of films moving between clouds is exactly the request nobody should
-// have to keep a page open for. So a relocation can be asked to detach, runs
-// on a context of its own when it is, reports here either way, and is
-// remembered for a while after it ends so the outcome is still there when
-// somebody comes back to look.
+// have to keep a page open for. So a relocation can be asked to detach — the
+// web client always asks — runs on a context of its own when it is, reports
+// here either way, and is remembered for a while after it ends so the outcome
+// is still there when somebody comes back to look.
 //
 // The lifetime line is the same one imports drew, for the same reason:
 // process, not request, and not restart. A relocation commits file by file,
