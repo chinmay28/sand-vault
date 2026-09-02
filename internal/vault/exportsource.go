@@ -29,11 +29,6 @@ import (
 // index before a byte moves, files go one at a time, each lands whole or not at
 // all, and re-running the same export is how an interrupted one resumes.
 
-// MaxExportFiles bounds how many files one export may send, for the reason
-// MaxImportFiles bounds an import: a folder is picked without knowing what is
-// under it, and the cap is reported rather than applied in silence.
-const MaxExportFiles = MaxImportFiles
-
 // ExportRequest is one push from a folder of this vault onto a source.
 type ExportRequest struct {
 	// Paths are what was picked, as paths in the vault: files, folders, or
@@ -56,8 +51,10 @@ type ExportRequest struct {
 	OnProgress func(TransferProgress)
 }
 
-// ExportResult is what became of one file, one line per file so a partial
-// export reads as what it is.
+// ExportResult is what became of one file that is worth a line: it failed,
+// or it was left alone for a reason a second run will not clear. A partial
+// export reads as what it is because every file that did not simply go says
+// so; the ones that did are counted.
 type ExportResult struct {
 	// Path is the file in the vault; Dest is where it went on the machine,
 	// relative to the source's root.
@@ -73,8 +70,21 @@ type ExportResult struct {
 	Error  string `json:"error,omitempty"`
 }
 
-// ExportSummary is the whole request's outcome.
+// worthALine says whether this result is one the summary lists. A file that
+// went, or that was already there as the same file, is counted instead; a
+// file skipped for any other reason is listed, because that is the one skip
+// a second run will not resolve and the person has to be told about.
+func (r ExportResult) worthALine() bool {
+	return r.Error != "" || (r.Skipped && r.Reason != alreadyThere)
+}
+
+// ExportSummary is the whole request's outcome: the counts, and a line for
+// every file worth one.
 type ExportSummary struct {
+	// Results holds the files that failed and the files left alone for a
+	// reason Replace would have to clear, in the order they were reached, up
+	// to maxTransferLines of them. Files that went and files already there
+	// are in the counts below and nowhere else.
 	Results  []ExportResult `json:"results"`
 	Exported int            `json:"exported"`
 	Skipped  int            `json:"skipped"`
@@ -83,10 +93,9 @@ type ExportSummary struct {
 	// Bytes is how much was actually written, skipped files excluded.
 	Bytes int64 `json:"bytes"`
 
-	// Truncated says the selection held more than MaxExportFiles and the rest
-	// was not attempted. Re-running picks up where this left off, because
-	// what already arrived is skipped.
-	Truncated bool `json:"truncated,omitempty"`
+	// Omitted counts the lines Results had no room for. The counts above are
+	// whole regardless; this says only that not every line is listed.
+	Omitted int `json:"omitted,omitempty"`
 }
 
 // exportFile is one file the plan found: a copy of its index record, and
@@ -139,7 +148,7 @@ func (v *Vault) ExportToSource(ctx context.Context, scope Scope, id string, req 
 		return ExportSummary{}, err
 	}
 
-	files, truncated, err := v.planExport(scope, req.Paths, dest)
+	files, err := v.planExport(scope, req.Paths, dest)
 	if err != nil {
 		return ExportSummary{}, err
 	}
@@ -157,10 +166,10 @@ func (v *Vault) ExportToSource(ctx context.Context, scope Scope, id string, req 
 		return ExportSummary{}, err
 	}
 
-	summary := ExportSummary{
-		Results:   make([]ExportResult, 0, len(files)),
-		Truncated: truncated,
-	}
+	var (
+		summary ExportSummary
+		lines   transferLines[ExportResult]
+	)
 	for i, f := range files {
 		// Fixed for this file and filled in as it moves. The tallies are of
 		// the files before this one, so what the bar says mid-flight is what
@@ -189,7 +198,9 @@ func (v *Vault) ExportToSource(ctx context.Context, scope Scope, id string, req 
 		default:
 			summary.Failed++
 		}
-		summary.Results = append(summary.Results, result)
+		if result.worthALine() {
+			lines.add(result)
+		}
 
 		// A cancelled request stops here rather than working through the rest
 		// with a dead context and reporting a failure per file. What landed is
@@ -198,6 +209,7 @@ func (v *Vault) ExportToSource(ctx context.Context, scope Scope, id string, req 
 			break
 		}
 	}
+	summary.Results, summary.Omitted = lines.lines, lines.omitted
 	return summary, nil
 }
 
@@ -276,6 +288,10 @@ func (v *Vault) exportOne(ctx context.Context, client *sandsftp.Client, root str
 // its name.
 const inTheWay = "a different file is already there under this name — tick Replace to overwrite it"
 
+// alreadyThere is why a file was left alone when nothing is wrong: the same
+// file is on the machine already. The one skip that is a count and not a line.
+const alreadyThere = "already there"
+
 // alreadyExported reports whether this file is on the machine already, and
 // what to say about it. See ExportToSource for why a size and a time are
 // enough.
@@ -301,7 +317,7 @@ func alreadyExported(client *sandsftp.Client, root string, f exportFile) (bool, 
 	if info.ModTime().Before(f.entry.ModifiedAt.Truncate(time.Second)) {
 		return true, "the copy there is older than the one in the vault — tick Replace to overwrite it", nil
 	}
-	return true, "already there", nil
+	return true, alreadyThere, nil
 }
 
 // planExport expands a selection into the list of files to send, walking any
@@ -310,29 +326,24 @@ func alreadyExported(client *sandsftp.Client, root string, f exportFile) (bool, 
 // Under one read lock rather than a lookup per path, so the plan is of one
 // moment of the index — and copied out of it, so that a rename or a delete
 // while the export runs changes the index and not the plan.
-func (v *Vault) planExport(scope Scope, paths []string, dest string) ([]exportFile, bool, error) {
+func (v *Vault) planExport(scope Scope, paths []string, dest string) ([]exportFile, error) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 
 	m, err := v.manifestForLocked(scope)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 
 	var (
-		files     []exportFile
-		truncated bool
-		seen      = map[string]bool{}
+		files []exportFile
+		seen  = map[string]bool{}
 	)
 	add := func(e *Entry, remote string) {
 		if seen[e.ID] {
 			// Picking a folder and a file inside it is an easy thing to do in
 			// a list with checkboxes, and sending it twice would be a numbered
 			// copy on the far end or a refusal, depending on the server.
-			return
-		}
-		if len(files) >= MaxExportFiles {
-			truncated = true
 			return
 		}
 		seen[e.ID] = true
@@ -343,7 +354,7 @@ func (v *Vault) planExport(scope Scope, paths []string, dest string) ([]exportFi
 
 	for _, raw := range paths {
 		if strings.TrimSpace(raw) == "" {
-			return nil, false, fmt.Errorf("cannot export by naming nothing: pick what to send")
+			return nil, fmt.Errorf("cannot export by naming nothing: pick what to send")
 		}
 		p := CleanDir(raw)
 
@@ -352,7 +363,7 @@ func (v *Vault) planExport(scope Scope, paths []string, dest string) ([]exportFi
 			continue
 		}
 		if !m.FolderExists(p) {
-			return nil, false, fmt.Errorf("no such file or folder: %s", p)
+			return nil, fmt.Errorf("no such file or folder: %s", p)
 		}
 
 		// The folder itself becomes a folder on the machine, so its shape
@@ -370,8 +381,8 @@ func (v *Vault) planExport(scope Scope, paths []string, dest string) ([]exportFi
 		}
 	}
 
-	if len(files) == 0 && !truncated {
-		return nil, false, fmt.Errorf("nothing to export: the selection holds no files")
+	if len(files) == 0 {
+		return nil, fmt.Errorf("nothing to export: the selection holds no files")
 	}
-	return files, truncated, nil
+	return files, nil
 }

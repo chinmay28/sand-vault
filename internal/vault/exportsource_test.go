@@ -3,12 +3,14 @@ package vault
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"testing"
 	"time"
+
+	sandsftp "github.com/chinmay28/sand-vault/internal/sftp"
 )
 
 // store puts one file in the vault at dir/name, for the export tests to send
@@ -35,12 +37,15 @@ func onDisk(t *testing.T, root string, rel ...string) string {
 	return string(data)
 }
 
-func remotePaths(summary ExportSummary) []string {
-	out := make([]string, 0, len(summary.Results))
-	for _, r := range summary.Results {
-		out = append(out, r.Dest)
+// landed says which of the paths, relative to the source's root, are on the
+// machine, so a test can check where a selection went.
+func landed(root string, rels ...string) []string {
+	var out []string
+	for _, rel := range rels {
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); err == nil {
+			out = append(out, rel)
+		}
 	}
-	sort.Strings(out)
 	return out
 }
 
@@ -64,8 +69,9 @@ func TestExportFiles(t *testing.T) {
 	if got := onDisk(t, root, "out", "notes.txt"); got != "hello from the vault" {
 		t.Errorf("the machine holds %q, want the file's contents", got)
 	}
-	if summary.Results[0].Dest != "out/notes.txt" {
-		t.Errorf("landed at %q, want out/notes.txt", summary.Results[0].Dest)
+	// A file that simply went is a count, not a line.
+	if len(summary.Results) != 0 {
+		t.Errorf("a clean export listed %d lines: %+v", len(summary.Results), summary.Results)
 	}
 	// Written for the owner alone: these are the user's files in the clear.
 	info, _ := os.Stat(filepath.Join(root, "out", "notes.txt"))
@@ -93,7 +99,7 @@ func TestExportFolderKeepsItsShape(t *testing.T) {
 		t.Fatalf("exported %d, want 3: %+v", summary.Exported, summary.Results)
 	}
 	want := []string{"backup/films/2019/one.mp4", "backup/films/2020/two.mp4", "backup/films/poster.jpg"}
-	if got := remotePaths(summary); strings.Join(got, ",") != strings.Join(want, ",") {
+	if got := landed(root, want...); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("landed at %v, want %v", got, want)
 	}
 	if got := onDisk(t, root, "backup", "films", "2019", "one.mp4"); got != "one" {
@@ -117,11 +123,13 @@ func TestExportOfTheRootLandsInTheDestination(t *testing.T) {
 	if err != nil {
 		t.Fatalf("export: %v", err)
 	}
+	if summary.Exported != 2 {
+		t.Fatalf("exported %d, want 2: %+v", summary.Exported, summary.Results)
+	}
 	want := []string{"all/a.txt", "all/deep/b.txt"}
-	if got := remotePaths(summary); strings.Join(got, ",") != strings.Join(want, ",") {
+	if got := landed(root, want...); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("landed at %v, want %v", got, want)
 	}
-	onDisk(t, root, "all", "deep", "b.txt")
 }
 
 // An empty destination is the source's own folder.
@@ -171,10 +179,11 @@ func TestExportSkipsWhatIsAlreadyThere(t *testing.T) {
 		t.Fatalf("re-running sent %d and skipped %d, want 1 and 2: %+v",
 			again.Exported, again.Skipped, again.Results)
 	}
-	for _, r := range again.Results {
-		if r.Skipped && r.Reason != "already there" {
-			t.Errorf("%s was skipped for %q", r.Dest, r.Reason)
-		}
+	// Already there is the answer on a second run, and it is given as a
+	// count: on a selection of every file, a line per skip would be the whole
+	// list. Only a skip Replace would have to clear gets a line.
+	if len(again.Results) != 0 {
+		t.Errorf("files already there were listed: %+v", again.Results)
 	}
 	if again.Bytes != 3 {
 		t.Errorf("counted %d bytes on the second run, want the one file that moved", again.Bytes)
@@ -309,7 +318,7 @@ func TestExportRefusesAnEmptyOrUnknownSelection(t *testing.T) {
 
 // Picking a folder and a file inside it sends the file once.
 func TestExportSendsAFileOnceHoweverItWasPicked(t *testing.T) {
-	v, id, _ := importFixture(t)
+	v, id, root := importFixture(t)
 	store(t, v, "/photos", "a.jpg", "a")
 
 	summary, err := v.ExportToSource(context.Background(), MainScope, id, ExportRequest{
@@ -318,8 +327,63 @@ func TestExportSendsAFileOnceHoweverItWasPicked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("export: %v", err)
 	}
-	if len(summary.Results) != 1 || summary.Exported != 1 {
-		t.Errorf("a file picked twice was sent %d times: %+v", len(summary.Results), summary.Results)
+	if summary.Exported != 1 {
+		t.Errorf("a file picked twice was sent %d times: %+v", summary.Exported, summary.Results)
+	}
+	entries, err := os.ReadDir(filepath.Join(root, "photos"))
+	if err != nil {
+		t.Fatalf("reading the folder on the machine: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("the machine holds %d files under photos, want the one", len(entries))
+	}
+}
+
+// There is no cap on a selection: a folder with more files than the browser
+// lists on one page is planned whole.
+func TestPlanExportIsNotCapped(t *testing.T) {
+	v, _, _ := importFixture(t)
+	const files = sandsftp.MaxEntries + 10
+
+	// Straight into the index, since the plan reads nothing else and storing
+	// two thousand files for real would be the slow part of the suite.
+	v.mu.Lock()
+	for i := 0; i < files; i++ {
+		v.manifest.add(&Entry{
+			ID: fmt.Sprintf("crowded-%d", i), Dir: "/crowded", Name: fmt.Sprintf("f%05d", i), Size: 1,
+		})
+	}
+	v.mu.Unlock()
+
+	plan, err := v.planExport(MainScope, []string{"/crowded"}, "out")
+	if err != nil {
+		t.Fatalf("planExport: %v", err)
+	}
+	if len(plan) != files {
+		t.Errorf("planned %d files, want every one of %d", len(plan), files)
+	}
+	if plan[0].remote != "out/crowded/f00000" || plan[files-1].remote != fmt.Sprintf("out/crowded/f%05d", files-1) {
+		t.Errorf("plan runs from %q to %q", plan[0].remote, plan[files-1].remote)
+	}
+}
+
+// Which files get a line: the ones that did not simply go, and the ones left
+// alone for a reason a second run will not clear.
+func TestExportResultWorthALine(t *testing.T) {
+	cases := map[string]struct {
+		result ExportResult
+		want   bool
+	}{
+		"sent":          {ExportResult{OK: true}, false},
+		"already there": {ExportResult{Skipped: true, Reason: alreadyThere}, false},
+		"in the way":    {ExportResult{Skipped: true, Reason: inTheWay}, true},
+		"older copy":    {ExportResult{Skipped: true, Reason: "the copy there is older than the one in the vault — tick Replace to overwrite it"}, true},
+		"failed":        {ExportResult{Error: "sent 3 of 9 bytes"}, true},
+	}
+	for name, c := range cases {
+		if got := c.result.worthALine(); got != c.want {
+			t.Errorf("%s: worth a line = %v, want %v", name, got, c.want)
+		}
 	}
 }
 
@@ -380,10 +444,10 @@ func TestExportStopsWhenCancelled(t *testing.T) {
 		t.Fatalf("export: %v", err)
 	}
 	// The first file was picked up and then pulled out from under; the
-	// second was never reached and has no line, failed or otherwise.
-	if len(summary.Results) != 1 {
+	// second was never reached and is not counted, failed or otherwise.
+	if reached := summary.Exported + summary.Skipped + summary.Failed; reached != 1 {
 		t.Errorf("a cancelled export reported %d files, want the one it was on: %+v",
-			len(summary.Results), summary.Results)
+			reached, summary)
 	}
 	if _, err := os.Stat(filepath.Join(root, "b.txt")); !errors.Is(err, os.ErrNotExist) {
 		t.Error("a file the export never reached landed on the machine")

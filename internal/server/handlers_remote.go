@@ -268,8 +268,9 @@ type transferJob struct {
 // while it is being paid, and closing the tab stops it. What makes it
 // affordable is that an interrupted import loses no whole file — every file
 // that arrived is committed, and re-running the same request skips them and
-// carries on. The answer is one line per file so that a partial import is
-// legible rather than mysterious.
+// carries on. The answer is the counts and a line for every file that did not
+// simply arrive, so that a partial import is legible rather than mysterious
+// without being as long as the selection — see vault.ImportSummary.
 //
 // `detach` is the other half of that bargain, for the case the default is
 // wrong: one very large file, where the page would have to stay open for an

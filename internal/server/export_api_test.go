@@ -57,9 +57,13 @@ func TestRemoteExport(t *testing.T) {
 	if string(got) != "a film" {
 		t.Errorf("the machine holds %q", got)
 	}
-	results, _ := body["results"].([]any)
-	if len(results) != 2 {
-		t.Errorf("answered with %d lines, want one per file", len(results))
+	if _, err := os.Stat(filepath.Join(root, "backup", "films", "two.mp4")); err != nil {
+		t.Errorf("the second file did not land: %v", err)
+	}
+	// Files that simply went are counted, not listed: the lines are for what
+	// needs reading, and a clean export has none.
+	if results, _ := body["results"].([]any); len(results) != 0 {
+		t.Errorf("a clean export answered with %d lines: %v", len(results), results)
 	}
 }
 

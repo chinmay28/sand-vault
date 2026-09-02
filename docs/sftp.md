@@ -268,11 +268,20 @@ progress reporting anywhere is `rekey.go`'s `ProgressFunc`. A 200 GB media tree
 does not fit in a request, and the honest answer is to scope v1 so it does not
 have to:
 
-- Import takes an explicit list of selected files.
-- It runs synchronously and returns per-file `results[]`, exactly as
-  `handleFilesUpload` already does, so a partial import is legible rather than
-  mysterious.
-- What was already imported is skipped.
+- Import takes an explicit list of selected files and folders. A folder
+  brings everything under it, however many files that is: there is no cap on
+  a selection, and the walk reads every entry of every folder even though the
+  browser's own listing of one is cut at `sftp.MaxEntries` — the cap is on
+  the page, not the directory (`ReadDirAll` beside `ReadDir`).
+- It runs synchronously and returns the counts plus `results[]` for the files
+  worth a line — every failure, and on an export every file left alone for a
+  reason Replace would have to clear — so a partial import is legible rather
+  than mysterious without being as long as the selection. The lines are
+  bounded (`maxTransferLines`, with `omitted` counting the rest) because a
+  source that dies halfway fails every file after it in the same words, and
+  a summary held for half an hour after a detached transfer should not cost
+  a Raspberry Pi tens of megabytes.
+- What was already imported is skipped, and counted rather than listed.
 
 The background-job version is a real v2 and deserves to be designed on its own
 merits, not smuggled in under this feature.

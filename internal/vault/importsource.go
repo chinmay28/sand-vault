@@ -12,17 +12,15 @@ import (
 	sandsftp "github.com/chinmay28/sand-vault/internal/sftp"
 )
 
-// MaxImportFiles bounds how many files one import request may pull.
-//
-// A person selecting a folder does not know how many files are under it, and
-// "import my media drive" is a request that can mean two hundred thousand of
-// them. The cap is what keeps one request from becoming an operation nobody can
-// see the end of, and it is reported rather than applied silently — an import
-// that quietly stopped at a round number would look exactly like an import that
-// finished.
-const MaxImportFiles = 2000
-
 // maxImportDepth bounds how deep the walk under a selected folder goes.
+//
+// It is the one bound on a selection. There is no cap on how many files a
+// folder may bring: a person picking "my media drive" does not know what is
+// under it, and an import that stopped at a round number and asked to be run
+// again was a job done in instalments. What an unbounded selection costs is
+// held elsewhere — the walk keeps a few words per file, the transfer holds
+// one file at a time, and the summary is bounded on its own terms; see
+// transferlines.go.
 const maxImportDepth = 32
 
 // ImportRequest is one pull from a source into a folder of this vault.
@@ -52,9 +50,10 @@ type ImportRequest struct {
 	OnProgress func(TransferProgress)
 }
 
-// ImportResult is what became of one file. One line per file, so a partial
-// import is legible rather than mysterious — the same bargain the browser
-// upload handler strikes.
+// ImportResult is what became of one file that is worth a line: it failed, or
+// it arrived with a warning. A partial import is legible because every file
+// that did not simply arrive says so — the same bargain the browser upload
+// handler strikes, minus the lines nobody reads.
 type ImportResult struct {
 	// Path is the file on the source, relative to its root.
 	Path string `json:"path"`
@@ -70,20 +69,30 @@ type ImportResult struct {
 
 	Error    string   `json:"error,omitempty"`
 	Warnings []string `json:"warnings,omitempty"`
-	File     *Entry   `json:"file,omitempty"`
 }
 
-// ImportSummary is the whole request's outcome.
+// worthALine says whether this result is one the summary lists. A file that
+// arrived cleanly, or was already here, is counted instead: on a selection of
+// two hundred thousand files those are the lines, and nobody reads them.
+func (r ImportResult) worthALine() bool {
+	return r.Error != "" || len(r.Warnings) > 0
+}
+
+// ImportSummary is the whole request's outcome: the counts, and a line for
+// every file worth one.
 type ImportSummary struct {
+	// Results holds the files that failed and the files that arrived with a
+	// warning, in the order they were reached, up to maxTransferLines of
+	// them. Files that arrived cleanly and files already here are in the
+	// counts below and nowhere else.
 	Results  []ImportResult `json:"results"`
 	Imported int            `json:"imported"`
 	Skipped  int            `json:"skipped"`
 	Failed   int            `json:"failed"`
 
-	// Truncated says the selection held more than MaxImportFiles and the rest
-	// was not attempted. Re-running the import picks up where this left off,
-	// because what already arrived is skipped — see ImportFromSource.
-	Truncated bool `json:"truncated,omitempty"`
+	// Omitted counts the lines Results had no room for. The counts above are
+	// whole regardless; this says only that not every failure is listed.
+	Omitted int `json:"omitted,omitempty"`
 }
 
 // importFile is one file the walk found: where it is on the source, and where
@@ -152,15 +161,15 @@ func (v *Vault) ImportFromSource(ctx context.Context, scope Scope, id string, re
 		return ImportSummary{}, err
 	}
 
-	files, truncated, err := planImport(client, source.Root, req.Paths, dest)
+	files, err := planImport(client, source.Root, req.Paths, dest)
 	if err != nil {
 		return ImportSummary{}, err
 	}
 
-	summary := ImportSummary{
-		Results:   make([]ImportResult, 0, len(files)),
-		Truncated: truncated,
-	}
+	var (
+		summary ImportSummary
+		lines   transferLines[ImportResult]
+	)
 
 	// Every folder the files hang off, made once each and before anything is
 	// fetched. A folder that will not be made fails every file under it on its
@@ -168,7 +177,7 @@ func (v *Vault) ImportFromSource(ctx context.Context, scope Scope, id string, re
 	made[dest] = true
 	for i, f := range files {
 		if err := v.ensureFolder(scope, f.dir, made); err != nil {
-			summary.Results = append(summary.Results, ImportResult{
+			lines.add(ImportResult{
 				Path:  f.remote,
 				Dest:  path.Join(f.dir, f.name),
 				Error: err.Error(),
@@ -203,7 +212,9 @@ func (v *Vault) ImportFromSource(ctx context.Context, scope Scope, id string, re
 		default:
 			summary.Failed++
 		}
-		summary.Results = append(summary.Results, result)
+		if result.worthALine() {
+			lines.add(result)
+		}
 
 		// A cancelled request stops here rather than working through the rest
 		// of the selection with a dead context and reporting a failure per
@@ -212,6 +223,7 @@ func (v *Vault) ImportFromSource(ctx context.Context, scope Scope, id string, re
 			break
 		}
 	}
+	summary.Results, summary.Omitted = lines.lines, lines.omitted
 	return summary, nil
 }
 
@@ -257,7 +269,7 @@ func (v *Vault) importOne(ctx context.Context, scope Scope, client *sandsftp.Cli
 		opts.OnScattered = func(done, _ int64) { report(StageScattering, done) }
 	}
 
-	entry, warnings, err := v.UploadStream(ctx, scope, f.dir, f.name, src, opts)
+	_, warnings, err := v.UploadStream(ctx, scope, f.dir, f.name, src, opts)
 	result.Warnings = warnings
 	if err != nil {
 		result.Error = err.Error()
@@ -265,7 +277,6 @@ func (v *Vault) importOne(ctx context.Context, scope Scope, client *sandsftp.Cli
 	}
 
 	result.OK = true
-	result.File = entry
 	return result
 }
 
@@ -325,35 +336,28 @@ func (v *Vault) ensureFolder(scope Scope, dir string, made map[string]bool) erro
 // Done up front, before a byte moves, so that a path the caller should not have
 // asked for is refused before anything is transferred rather than halfway
 // through — the same order handleFilesUpload works in.
-func planImport(client *sandsftp.Client, root string, paths []string, dest string) ([]importFile, bool, error) {
+//
+// The walk reads every entry of every folder. The browser's listing is cut at
+// sftp.MaxEntries because a page has no use for more; a plan cut the same way
+// would leave the files past the cut out of the import with nothing to say
+// they were, so the walk asks for the whole directory — see sftp.ReadDirAll.
+func planImport(client *sandsftp.Client, root string, paths []string, dest string) ([]importFile, error) {
 	var (
-		files     []importFile
-		truncated bool
-		seen      = map[string]bool{}
+		files []importFile
+		seen  = map[string]bool{}
 	)
 
 	var walk func(rel, destDir string, depth int) error
 	walk = func(rel, destDir string, depth int) error {
-		if len(files) >= MaxImportFiles {
-			truncated = true
-			return nil
-		}
 		if depth > maxImportDepth {
 			return fmt.Errorf("%s is nested deeper than %d folders", rel, maxImportDepth)
 		}
 
-		listing, err := client.ReadDir(root, rel)
+		listing, err := client.ReadDirAll(root, rel)
 		if err != nil {
 			return err
 		}
-		if listing.Truncated {
-			truncated = true
-		}
 		for _, entry := range listing.Entries {
-			if len(files) >= MaxImportFiles {
-				truncated = true
-				return nil
-			}
 			// A link that cannot be followed is not a file to fetch. It was
 			// already listed with a reason attached when it was browsed.
 			if entry.Unreachable {
@@ -380,24 +384,24 @@ func planImport(client *sandsftp.Client, root string, paths []string, dest strin
 	for _, raw := range paths {
 		rel := sandsftp.CleanPath(strings.TrimPrefix(strings.TrimSpace(raw), "/"))
 		if rel == "" {
-			return nil, false, fmt.Errorf("cannot import the whole of a source by naming nothing: pick what to bring")
+			return nil, fmt.Errorf("cannot import the whole of a source by naming nothing: pick what to bring")
 		}
 		// Refused here as well as inside the client, because this is where the
 		// answer is still "which of the things you asked for" rather than an
 		// error attached to one file.
 		if _, err := sandsftp.Under(root, rel); err != nil {
-			return nil, false, err
+			return nil, err
 		}
 
 		info, err := client.StatUnder(root, rel)
 		if err != nil {
-			return nil, false, err
+			return nil, err
 		}
 		if info.IsDir() {
 			// The folder itself becomes a folder in the vault, so its shape
 			// survives the trip.
 			if err := walk(rel, path.Join(dest, path.Base(rel)), 1); err != nil {
-				return nil, false, err
+				return nil, err
 			}
 			continue
 		}
@@ -410,10 +414,10 @@ func planImport(client *sandsftp.Client, root string, paths []string, dest strin
 		})
 	}
 
-	if len(files) == 0 && !truncated {
-		return nil, false, fmt.Errorf("nothing to import: the selection holds no files")
+	if len(files) == 0 {
+		return nil, fmt.Errorf("nothing to import: the selection holds no files")
 	}
-	return files, truncated, nil
+	return files, nil
 }
 
 // addImport appends a file unless the selection already reached it — picking a
