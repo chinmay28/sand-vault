@@ -3954,12 +3954,15 @@ class TestDownloadingAFolder:
         assert app.url == before
         expect(dialog.get_by_text("Your browser is saving it", exact=False)).to_be_visible()
 
-    def test_a_home_screen_app_hands_the_zip_to_the_browser(self, app, tmp_path):
-        """Added to a home screen the vault has no browser around it, and iOS
-        ignores the download attribute there: pointing the app's own window at
-        the archive leaves it on a "Code.zip" screen with no way back. So a
-        standalone app opens the address in the system browser instead, and
-        the app itself never moves.
+    def test_a_home_screen_app_saves_through_the_share_sheet(self, app, tmp_path):
+        """Added to a home screen the vault has no Downloads of its own: iOS
+        ignores the download attribute, a blob opened in place is a dead end,
+        and a new window is an in-app Safari view that cannot save either. The
+        one door is the share sheet, and it opens only on a tap — so a file is
+        rebuilt first and offered under a button second, for a folder's zip
+        and for a single file alike. Safari's standalone flag and a share
+        sheet are stood in for here; what is checked is that the file handed
+        to the sheet is the right one and the app never moves.
         """
         make_folder(app, "handed")
         app.get_by_text("handed").first.click()
@@ -3967,29 +3970,44 @@ class TestDownloadingAFolder:
         one = tmp_path / "handed.txt"
         one.write_text("handed over")
         upload_and_settle(app, one)
+
+        app.evaluate("""() => {
+          Object.defineProperty(navigator, 'standalone', { value: true })
+          window.__shared = []
+          navigator.canShare = (data) => !!(data && data.files)
+          navigator.share = async (data) => {
+            window.__shared.push({ name: data.files[0].name, size: data.files[0].size })
+          }
+        }""")
+        before = app.url
+
+        # A single file: rebuilt, then offered to the sheet under a button.
+        app.get_by_label("Download handed.txt").click()
+        sheet = app.get_by_role("dialog", name="Save handed.txt")
+        sheet.wait_for(timeout=60000)
+        sheet.get_by_role("button", name="Save to Files…").click()
+        expect(sheet).to_have_count(0, timeout=20000)
+        assert app.evaluate("window.__shared") == [{"name": "handed.txt", "size": len("handed over")}]
+
+        # The folder's zip: read into memory here, since the sheet takes a
+        # file and not an address, then offered the same way.
         app.locator('button[aria-label="Up"]').click()
         app.wait_for_selector('button[aria-label="Actions for handed"]', timeout=20000)
-
-        # Safari's flag for a home-screen app, which is how the page tells.
-        app.evaluate("Object.defineProperty(navigator, 'standalone', { value: true })")
-
         app.locator('button[aria-label="Actions for handed"]').click()
         app.get_by_role("dialog", name="handed").get_by_text("Download as zip", exact=True).click()
         dialog = app.get_by_role("dialog", name="Download handed")
         dialog.wait_for(timeout=20000)
         expect(dialog.get_by_text("1 file", exact=True)).to_be_visible(timeout=20000)
+        dialog.get_by_role("button", name=re.compile(r"Save handed\.zip")).click()
+        sheet = app.get_by_role("dialog", name="Save handed.zip")
+        sheet.wait_for(timeout=60000)
+        sheet.get_by_role("button", name="Save to Files…").click()
+        expect(dialog.get_by_text("Handed to the share sheet", exact=False)).to_be_visible(timeout=20000)
+        shared = app.evaluate("window.__shared")
+        assert shared[1]["name"] == "handed.zip" and shared[1]["size"] > 100
 
-        before = app.url
-        with app.context.expect_page(timeout=20000) as opened:
-            dialog.get_by_role("button", name=re.compile(r"Save handed\.zip")).click()
-        # The new window is pointed at an attachment, so it never commits a
-        # URL of its own; that it opened at all is the handoff.
-        popup = opened.value
-        popup.close()
-
-        # The app is exactly where it was, and says where the download went.
+        # The app is exactly where it was.
         assert app.url == before
-        expect(dialog.get_by_text("Handed to your browser", exact=False)).to_be_visible()
 
     def test_an_empty_folder_is_refused_rather_than_zipped(self, app):
         make_folder(app, "zip-empty")
