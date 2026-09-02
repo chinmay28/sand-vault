@@ -606,9 +606,9 @@ function SourceBrowser({ source, mode, onMode, path, vault, preset, onBack, onCl
 
       {listing?.truncated && (
         <Banner tone="warn">
-          This folder holds more than can be listed at once, so what is above is
-          only part of it. Narrow it down on the server, or work a subfolder at
-          a time.
+          This folder holds more than can be shown at once, so what is above is
+          only part of it.
+          {!exporting && ' Tick the folder from the one above it and everything under it comes along.'}
         </Banner>
       )}
 
@@ -1137,7 +1137,10 @@ function RemoteEntry({ entry, pickable, checked, disabled, onOpen, onToggle }) {
   )
 }
 
-/* What happened, one line per file where a line is worth having.
+/* What happened: the counts, and a line per file where a line is worth
+   having. The server lists only those — a file that failed, or was left alone
+   for a reason a second run will not clear — and only so many of them, so the
+   figures come from the counts and the lines are the detail under them.
 
    Skipped is reported as loudly as moved, because on a second run it is the
    answer: it says the files are already there rather than that nothing
@@ -1152,13 +1155,12 @@ function TransferSummary({ summary, kind, lead = '', onDismiss }) {
   const inTheWay = exporting ? skipped.filter((r) => r.reason && r.reason !== 'already there') : []
 
   return (
-    <Banner tone={failures.length || inTheWay.length ? 'warn' : 'info'} onDismiss={onDismiss}>
+    <Banner tone={summary.failed || inTheWay.length ? 'warn' : 'info'} onDismiss={onDismiss}>
       <div>
         {lead && `${lead} `}
         {moved || 0} {exporting ? 'sent' : 'brought in'}
         {summary.skipped ? `, ${summary.skipped} already there` : ''}
-        {failures.length ? `, ${failures.length} failed` : ''}.
-        {summary.truncated ? ` More was selected than one ${exporting ? 'export' : 'import'} can carry — run it again to continue.` : ''}
+        {summary.failed ? `, ${summary.failed} failed` : ''}.
       </div>
       {inTheWay.slice(0, 5).map((r) => (
         <div key={r.path} style={{

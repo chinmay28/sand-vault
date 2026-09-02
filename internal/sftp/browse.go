@@ -11,13 +11,16 @@ import (
 	pkgsftp "github.com/pkg/sftp"
 )
 
-// MaxEntries bounds one directory listing.
+// MaxEntries bounds one directory listing made for a browser.
 //
 // A directory with a hundred thousand files in it is a real thing — a Maildir,
 // a sprite dump, a camera roll that was never sorted — and neither the browser
 // nor the JSON in between wants all of it. The listing says it was cut short
 // rather than pretending it was complete, which is the same bargain
 // handleSystemFolders strikes for folders on this machine.
+//
+// It bounds what is shown, not what can be reached: a walk that has to find
+// every file under a folder reads with ReadDirAll, which never cuts.
 const MaxEntries = 2000
 
 // Entry is one item in a remote directory.
@@ -58,17 +61,33 @@ type Listing struct {
 
 	Entries []Entry `json:"entries"`
 
-	// Truncated says the directory held more than MaxEntries.
+	// Truncated says the directory held more than MaxEntries and Entries is
+	// the first MaxEntries of it. ReadDirAll never sets it.
 	Truncated bool `json:"truncated,omitempty"`
 }
 
-// ReadDir lists one directory under root.
+// ReadDir lists one directory under root, cut to MaxEntries for a browser.
 //
 // rel is relative to root and is put through Under, so nothing outside the
 // source's configured folder can be listed however the path is written — the
 // browse endpoint takes rel straight from a query string, which makes this the
 // boundary rather than a formality.
 func (c *Client) ReadDir(root, rel string) (Listing, error) {
+	return c.readDir(root, rel, MaxEntries)
+}
+
+// ReadDirAll lists one directory under root, every entry of it.
+//
+// For a walk rather than a page: an import handed a folder has to find every
+// file under it, and a listing cut at a round number would make the import
+// stop at one too. The same path checks as ReadDir apply; the only difference
+// is that nothing is left out.
+func (c *Client) ReadDirAll(root, rel string) (Listing, error) {
+	return c.readDir(root, rel, 0)
+}
+
+// readDir is both listings. A limit of zero is no limit.
+func (c *Client) readDir(root, rel string, limit int) (Listing, error) {
 	root = CleanPath(root)
 	if root == "" {
 		root = "/"
@@ -92,7 +111,7 @@ func (c *Client) ReadDir(root, rel string) (Listing, error) {
 	}
 
 	for _, info := range infos {
-		if len(listing.Entries) >= MaxEntries {
+		if limit > 0 && len(listing.Entries) >= limit {
 			listing.Truncated = true
 			break
 		}

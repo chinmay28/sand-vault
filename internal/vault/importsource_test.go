@@ -2,12 +2,14 @@ package vault
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"testing"
 	"time"
+
+	sandsftp "github.com/chinmay28/sand-vault/internal/sftp"
 )
 
 // importFixture gives a vault with three accounts and one connected source.
@@ -38,12 +40,15 @@ func read(t *testing.T, v *Vault, full string) string {
 	return string(data)
 }
 
-func destPaths(summary ImportSummary) []string {
-	out := make([]string, 0, len(summary.Results))
-	for _, r := range summary.Results {
-		out = append(out, r.Dest)
+// stored says which of the paths are in the main vault's index, so a test can
+// check where a selection landed.
+func stored(v *Vault, paths ...string) []string {
+	var out []string
+	for _, p := range paths {
+		if v.manifest.ByPath(p) != nil {
+			out = append(out, p)
+		}
 	}
-	sort.Strings(out)
 	return out
 }
 
@@ -65,8 +70,9 @@ func TestImportFiles(t *testing.T) {
 	if got := read(t, v, "/notes.txt"); got != "hello from the vps" {
 		t.Errorf("stored %q, want the file's contents", got)
 	}
-	if summary.Results[0].File == nil {
-		t.Error("a successful import reported no entry")
+	// A file that simply arrived is a count, not a line.
+	if len(summary.Results) != 0 {
+		t.Errorf("a clean import listed %d lines: %+v", len(summary.Results), summary.Results)
 	}
 }
 
@@ -90,7 +96,7 @@ func TestImportFolderKeepsItsShape(t *testing.T) {
 	}
 
 	want := []string{"/media/films/2019/one.mp4", "/media/films/2020/two.mp4", "/media/films/poster.jpg"}
-	if got := destPaths(summary); strings.Join(got, ",") != strings.Join(want, ",") {
+	if got := stored(v, want...); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("landed at %v, want %v", got, want)
 	}
 	if got := read(t, v, "/media/films/2019/one.mp4"); got != "one" {
@@ -125,10 +131,10 @@ func TestImportSkipsWhatIsAlreadyThere(t *testing.T) {
 		t.Fatalf("re-running fetched %d and skipped %d, want 1 and 2: %+v",
 			again.Imported, again.Skipped, again.Results)
 	}
-	for _, r := range again.Results {
-		if r.Skipped && r.Reason == "" {
-			t.Errorf("%s was skipped with no reason given", r.Dest)
-		}
+	// Already here is the answer on a second run, and it is given as a count:
+	// on a selection of every file, a line per skip would be the whole list.
+	if len(again.Results) != 0 {
+		t.Errorf("files already here were listed: %+v", again.Results)
 	}
 
 	// Nothing was stored twice under a numbered name.
@@ -208,8 +214,70 @@ func TestImportDoesNotFetchTheSameFileTwice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("import: %v", err)
 	}
-	if len(summary.Results) != 1 {
-		t.Errorf("one file selected two ways produced %d results", len(summary.Results))
+	if summary.Imported != 1 {
+		t.Errorf("one file selected two ways was imported %d times", summary.Imported)
+	}
+	listing, err := v.List(MainScope, "/films")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(listing.Files) != 1 {
+		t.Errorf("the folder holds %d files, want the one", len(listing.Files))
+	}
+}
+
+// There is no cap on a selection, and the walk is not cut where the browser's
+// listing is: a folder with more files than one page shows is imported whole.
+func TestPlanImportReadsPastTheListingCap(t *testing.T) {
+	v, id, root := importFixture(t)
+	const files = sandsftp.MaxEntries + 10
+	for i := 0; i < files; i++ {
+		seed(t, filepath.Join(root, "crowded", fmt.Sprintf("f%05d", i)), "x")
+	}
+
+	client, source, err := v.connectSource(context.Background(), id)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer client.Close()
+
+	// The browser's own listing of the folder is a page, cut short and
+	// saying so.
+	page, err := client.ReadDir(source.Root, "crowded")
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	if !page.Truncated {
+		t.Fatalf("a folder of %d files was not cut for the browser, so this test proves nothing", files)
+	}
+
+	plan, err := planImport(client, source.Root, []string{"crowded"}, "/")
+	if err != nil {
+		t.Fatalf("planImport: %v", err)
+	}
+	if len(plan) != files {
+		t.Errorf("planned %d files, want every one of %d", len(plan), files)
+	}
+	if plan[0].remote != "crowded/f00000" || plan[files-1].remote != fmt.Sprintf("crowded/f%05d", files-1) {
+		t.Errorf("plan runs from %q to %q", plan[0].remote, plan[files-1].remote)
+	}
+}
+
+// Which files get a line: the ones that did not simply arrive.
+func TestImportResultWorthALine(t *testing.T) {
+	cases := map[string]struct {
+		result ImportResult
+		want   bool
+	}{
+		"arrived":                {ImportResult{OK: true}, false},
+		"already here":           {ImportResult{Skipped: true, Reason: "already imported"}, false},
+		"failed":                 {ImportResult{Error: "the source hung up"}, true},
+		"arrived with a warning": {ImportResult{OK: true, Warnings: []string{"stored on one cloud fewer than asked"}}, true},
+	}
+	for name, c := range cases {
+		if got := c.result.worthALine(); got != c.want {
+			t.Errorf("%s: worth a line = %v, want %v", name, got, c.want)
+		}
 	}
 }
 
@@ -265,7 +333,7 @@ func TestImportReportsPerFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	files, _, err := planImport(client, source.Root, []string{"good.txt", "vanishing.txt"}, "/")
+	files, err := planImport(client, source.Root, []string{"good.txt", "vanishing.txt"}, "/")
 	client.Close()
 	if err != nil {
 		t.Fatalf("plan: %v", err)

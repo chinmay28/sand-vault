@@ -227,6 +227,40 @@ func TestReadDirTruncatesAVeryLargeDirectory(t *testing.T) {
 	}
 }
 
+// The cap is on the page, not the directory: a walk that has to find every
+// file asks for all of them and gets all of them.
+func TestReadDirAllIsNotCut(t *testing.T) {
+	client, root, _ := browseFixture(t)
+
+	crowded := filepath.Join(root, "crowded")
+	if err := os.MkdirAll(crowded, 0755); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < MaxEntries+10; i++ {
+		write(t, filepath.Join(crowded, "f"+strings.Repeat("0", 5-len(itoa(i)))+itoa(i)), "x")
+	}
+
+	listing, err := client.ReadDirAll(root, "crowded")
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+	if len(listing.Entries) != MaxEntries+10 {
+		t.Errorf("listed %d entries, want every one of %d", len(listing.Entries), MaxEntries+10)
+	}
+	if listing.Truncated {
+		t.Error("a complete listing said it was cut short")
+	}
+	// Still a listing and not a raw directory read: the same order, and the
+	// same refusal to step outside the root.
+	if listing.Entries[0].Name != "f00000" || listing.Entries[MaxEntries+9].Name != "f02009" {
+		t.Errorf("entries are not sorted: first %q, last %q",
+			listing.Entries[0].Name, listing.Entries[MaxEntries+9].Name)
+	}
+	if _, err := client.ReadDirAll(root, "../"); err == nil {
+		t.Error("ReadDirAll climbed out of the root")
+	}
+}
+
 func itoa(n int) string {
 	if n == 0 {
 		return "0"
