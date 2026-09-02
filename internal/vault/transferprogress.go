@@ -2,64 +2,77 @@ package vault
 
 import "io"
 
-// Where an import has got to, while it is still getting there.
+// Where a transfer has got to, while it is still getting there.
+//
+// A transfer is a file moving between this vault and a machine somebody has a
+// login on, in either direction: an import brings the machine's files in, an
+// export puts the vault's files back out. Both are long, both are worked a
+// file at a time, and both are watched through this one window.
 //
 // This is a window onto a request that is running, and nothing more. It is not
-// job state: it lives in memory for as long as the import does, it is never
-// written down, and losing it costs nothing, because the import it describes
-// went with it. That is the same bargain ImportFromSource makes about resuming
-// — there is no job, only a request — and adding a progress bar was not allowed
-// to quietly turn one into the other.
+// job state: it lives in memory for as long as the transfer does, it is never
+// written down, and losing it costs nothing, because the transfer it describes
+// went with it. That is the same bargain ImportFromSource and ExportToSource
+// make about resuming — there is no job, only a request — and adding a
+// progress bar was not allowed to quietly turn one into the other.
 //
 // What it is for is the case the dialog used to have nothing to say about: one
 // very large file. A folder of small files reports itself, a file at a time, in
 // the summary at the end; an 18 GB film reports nothing for an hour and looks
 // identical to a hang.
 
-// ImportStage is which half of the journey a file is on.
+// TransferStage is which leg of the journey a file is on.
 //
-// Both halves are worth naming because both are long and they are long for
-// different reasons: fetching is the source's upstream, scattering is this
+// An import has two legs worth naming because both are long and they are long
+// for different reasons: fetching is the source's upstream, scattering is this
 // machine's, and one being slow says something quite different from the other.
-type ImportStage string
+// An export has one — the parts are gathered from the clouds and written to
+// the machine in the same pass — so it only ever reports sending.
+type TransferStage string
 
 const (
 	// StageFetching is the source coming down to this machine's spool.
-	StageFetching ImportStage = "fetching"
+	StageFetching TransferStage = "fetching"
 
 	// StageScattering is the spool going back up to the connected accounts,
 	// compressed, split and encrypted on the way. See UploadStream.
-	StageScattering ImportStage = "scattering"
+	StageScattering TransferStage = "scattering"
+
+	// StageSending is a file leaving the vault for a machine: gathered from
+	// the clouds, decrypted and written out as it arrives. See ExportToSource.
+	StageSending TransferStage = "sending"
 )
 
-// ImportProgress is one file of an import, mid-flight.
+// TransferProgress is one file of a transfer, mid-flight.
 //
-// The counts are what the summary would say if the import stopped here, which
-// is what makes it readable while it runs: "4 of 12, one already here".
-type ImportProgress struct {
+// The counts are what the summary would say if the transfer stopped here, which
+// is what makes it readable while it runs: "4 of 12, one already there".
+type TransferProgress struct {
 	// File is the file being worked on, 1-based, out of Files. Files is what
-	// the walk planned, so it is the whole selection rather than what is left.
+	// the plan holds, so it is the whole selection rather than what is left.
 	File  int `json:"file"`
 	Files int `json:"files"`
 
-	// Path is the file on the source, relative to its root; Dest is where it
-	// is landing in the vault.
+	// Path is where the file is coming from and Dest where it is going. For an
+	// import that is a path on the source and a path in the vault; for an
+	// export it is the other way round. Both are relative to their own root.
 	Path string `json:"path"`
 	Dest string `json:"dest"`
 	Name string `json:"name"`
 
-	Stage ImportStage `json:"stage"`
+	Stage TransferStage `json:"stage"`
 
 	// Done is how much of this file has moved in this stage, out of Size.
-	// It restarts at zero when the stage changes, because the two stages are
-	// two passes over the same bytes rather than halves of one.
+	// It restarts at zero when the stage changes, because an import's two
+	// stages are two passes over the same bytes rather than halves of one.
 	Done int64 `json:"done"`
 	Size int64 `json:"size"`
 
-	// What has become of the files before this one.
-	Imported int `json:"imported"`
-	Skipped  int `json:"skipped"`
-	Failed   int `json:"failed"`
+	// What has become of the files before this one: carried across, passed
+	// over because they were already there, or failed.
+	Completed int `json:"completed"`
+	Skipped   int `json:"skipped"`
+	Failed    int `json:"failed"`
 }
 
 // progressEvery is how much has to move before the reader says so again.

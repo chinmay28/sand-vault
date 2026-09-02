@@ -10,10 +10,17 @@ import (
 	"github.com/google/uuid"
 )
 
-// The imports running right now, so the browser can draw one — and so that one
-// can outlive the page that started it.
+// The transfers running right now between this vault and a machine somebody
+// has a login on, so the browser can draw one — and so that one can outlive
+// the page that started it.
 //
-// An import is one long POST. Left in the foreground it is exactly that: the
+// A transfer is an import or an export, and the watch does not much care
+// which: both are one long POST that works a selection a file at a time,
+// both report the same progress, and both can be detached. What differs is
+// which way the bytes go and what the summary at the end is called, and the
+// run records both so the dialog can say.
+//
+// A transfer is one long POST. Left in the foreground it is exactly that: the
 // request holds the connection open for as long as the transfer takes, and
 // closing the tab cancels the transfer, because the handler's context is the
 // request's. That is the right default — it is what makes "nothing is running
@@ -21,39 +28,51 @@ import (
 // film, where the page has to stay open for an hour to get a file that the
 // machine could perfectly well fetch on its own.
 //
-// So an import can be asked to detach. A detached one runs on a context of its
-// own, reports here exactly as a foreground one does, and is remembered for a
-// while after it ends so the summary is still there when somebody comes back to
-// look. Its lifetime is the *process*, not the request: closing the page keeps
-// it, and restarting SAND does not. That line is deliberate. Making it survive
-// a restart would mean writing down what is in flight, and an import has
-// nothing worth writing down — re-running one is how it resumes, at whole-file
-// granularity, which is a property of the vault rather than of any bookkeeping
-// here. See vault.ImportFromSource.
+// So a transfer can be asked to detach. A detached one runs on a context of
+// its own, reports here exactly as a foreground one does, and is remembered
+// for a while after it ends so the summary is still there when somebody comes
+// back to look. Its lifetime is the *process*, not the request: closing the
+// page keeps it, and restarting SAND does not. That line is deliberate. Making
+// it survive a restart would mean writing down what is in flight, and a
+// transfer has nothing worth writing down — re-running one is how it resumes,
+// at whole-file granularity, which is a property of the vault rather than of
+// any bookkeeping here. See vault.ImportFromSource and vault.ExportToSource.
 //
-// Nothing in this file is ever read by an import. It is written to, and read
+// Nothing in this file is ever read by a transfer. It is written to, and read
 // back out to be shown.
 
-// maxDetachedImports is how many imports may be running detached at once.
-//
-// A foreground import is bounded by somebody sitting in front of it. A detached
-// one is not, and four selections walking four machines at once is already more
-// than a home connection has to give — past that they only slow each other
-// down while looking like progress.
-const maxDetachedImports = 4
+// transferKind is which way the bytes go.
+type transferKind string
 
-// finishedImportTTL is how long a detached import's result is kept after it
-// ends, for somebody who was not watching when it did.
+const (
+	// transferImport brings a machine's files into the vault.
+	transferImport transferKind = "import"
+
+	// transferExport writes the vault's files out onto a machine.
+	transferExport transferKind = "export"
+)
+
+// maxDetachedTransfers is how many transfers may be running detached at once,
+// imports and exports together.
+//
+// A foreground transfer is bounded by somebody sitting in front of it. A
+// detached one is not, and four selections walking four machines at once is
+// already more than a home connection has to give — past that they only slow
+// each other down while looking like progress.
+const maxDetachedTransfers = 4
+
+// finishedTransferTTL is how long a detached transfer's result is kept after
+// it ends, for somebody who was not watching when it did.
 //
 // Long enough to make a cup of tea and come back, short enough that a browser
 // opened tomorrow is not shown yesterday's news as though it were current. It
 // is also dismissable, which is the path that actually matters — this is the
 // backstop for the page that was never reopened.
-const finishedImportTTL = 30 * time.Minute
+const finishedTransferTTL = 30 * time.Minute
 
-// maxFinishedImports caps how many results are held at once, oldest dropped
-// first, so a night of hourly imports cannot grow the map without bound.
-const maxFinishedImports = 8
+// maxFinishedTransfers caps how many results are held at once, oldest dropped
+// first, so a night of hourly transfers cannot grow the map without bound.
+const maxFinishedTransfers = 8
 
 // rateSample is how far apart two progress reports have to be before the speed
 // between them is worth believing.
@@ -81,12 +100,17 @@ const rateWeight = 0.25
 // on a wide erasure scheme.
 const staleRateAfter = 12 * time.Second
 
-// importRun is one import, running or lately finished.
-type importRun struct {
+// transferRun is one transfer, running or lately finished.
+type transferRun struct {
 	ID string `json:"id"`
 
-	// Source is the machine it is pulling from, Dest the vault folder it is
-	// landing in, and Vault the sub vault that folder is inside, if any.
+	// Kind is which way it is going.
+	Kind transferKind `json:"kind"`
+
+	// Source is the machine at the far end. Dest is where files are landing:
+	// the vault folder for an import, the folder on the machine (relative to
+	// the source's root) for an export. Vault is the sub vault the vault side
+	// is in, if any.
 	Source string `json:"source"`
 	Dest   string `json:"dest"`
 	Vault  string `json:"vault,omitempty"`
@@ -100,33 +124,37 @@ type importRun struct {
 	// At is where it has got to, and is the zero value until the first file is
 	// picked up — a selection of ten thousand files spends a moment being
 	// walked before anything moves.
-	At vault.ImportProgress `json:"at"`
+	At vault.TransferProgress `json:"at"`
 
 	// Rate is how fast the current stage is moving, in bytes per second, or
 	// zero when there is nothing to say yet — the file has just started, or
 	// nothing has moved for a while.
 	//
-	// Per stage rather than per file, because the two stages are two different
-	// speeds: coming down is the source's upstream and going up is this
-	// machine's, and averaging them would describe neither. It is what the
-	// stage is doing now rather than what it has averaged, since a number
+	// Per stage rather than per file, because an import's two stages are two
+	// different speeds: coming down is the source's upstream and going up is
+	// this machine's, and averaging them would describe neither. It is what
+	// the stage is doing now rather than what it has averaged, since a number
 	// that spent the last minute wrong keeps saying so long after it stops
 	// being true.
 	Rate float64 `json:"rate,omitempty"`
 
 	// Done, and what it came to. A finished run is only ever a detached one:
-	// a foreground import's answer goes back down the request that started it,
-	// and is forgotten here the moment that request ends.
-	Done      bool                 `json:"done,omitempty"`
-	Summary   *vault.ImportSummary `json:"summary,omitempty"`
-	Error     string               `json:"error,omitempty"`
-	Cancelled bool                 `json:"cancelled,omitempty"`
+	// a foreground transfer's answer goes back down the request that started
+	// it, and is forgotten here the moment that request ends.
+	//
+	// Summary is a *vault.ImportSummary or a *vault.ExportSummary, by Kind.
+	// It is held loosely because the watch has no reason to look inside it —
+	// it is carried for the dialog, which reads the kind and knows the shape.
+	Done      bool   `json:"done,omitempty"`
+	Summary   any    `json:"summary,omitempty"`
+	Error     string `json:"error,omitempty"`
+	Cancelled bool   `json:"cancelled,omitempty"`
 }
 
-// importWatch holds them.
-type importWatch struct {
+// transferWatch holds them.
+type transferWatch struct {
 	mu   sync.Mutex
-	runs map[string]*watchedImport
+	runs map[string]*watchedTransfer
 
 	// now is time.Now everywhere but in the tests that have to drive the speed
 	// reading, which is arithmetic over timestamps and untestable against a
@@ -134,10 +162,10 @@ type importWatch struct {
 	now func() time.Time
 }
 
-// watchedImport is a run plus the handle to stop it, and what the speed reading
-// is measured against.
-type watchedImport struct {
-	run    importRun
+// watchedTransfer is a run plus the handle to stop it, and what the speed
+// reading is measured against.
+type watchedTransfer struct {
+	run    transferRun
 	cancel func()
 
 	// The last sample the speed was worked out from: which stage of which file
@@ -149,23 +177,23 @@ type watchedImport struct {
 	at    time.Time
 }
 
-func newImportWatch() *importWatch {
-	return &importWatch{runs: map[string]*watchedImport{}, now: time.Now}
+func newTransferWatch() *transferWatch {
+	return &transferWatch{runs: map[string]*watchedTransfer{}, now: time.Now}
 }
 
-// errTooManyImports is refusing to detach one more.
-type errTooManyImports struct{}
+// errTooManyTransfers is refusing to detach one more.
+type errTooManyTransfers struct{}
 
-func (errTooManyImports) Error() string {
-	return "too many imports are already running in the background; wait for one to finish or stop it"
+func (errTooManyTransfers) Error() string {
+	return "too many transfers are already running in the background; wait for one to finish or stop it"
 }
 
-// start registers an import and hands back the handle to report it with.
+// start registers a transfer and hands back the handle to report it with.
 //
-// cancel is what stopping it calls, and is the detached import's answer to a
+// cancel is what stopping it calls, and is the detached transfer's answer to a
 // question a foreground one never has to ask: a request that has gone away
 // takes its transfer with it, and a detached one has to be stopped on purpose.
-func (w *importWatch) start(source, dest, scope string, detached bool, cancel func()) (*importTicket, error) {
+func (w *transferWatch) start(kind transferKind, source, dest, scope string, detached bool, cancel func()) (*transferTicket, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.sweepLocked()
@@ -177,32 +205,32 @@ func (w *importWatch) start(source, dest, scope string, detached bool, cancel fu
 				running++
 			}
 		}
-		if running >= maxDetachedImports {
-			return nil, errTooManyImports{}
+		if running >= maxDetachedTransfers {
+			return nil, errTooManyTransfers{}
 		}
 	}
 
 	id := uuid.NewString()
-	w.runs[id] = &watchedImport{
-		run: importRun{
-			ID: id, Source: source, Dest: dest, Vault: scope,
+	w.runs[id] = &watchedTransfer{
+		run: transferRun{
+			ID: id, Kind: kind, Source: source, Dest: dest, Vault: scope,
 			Detached: detached, StartedAt: w.now(),
 		},
 		cancel: cancel,
 	}
-	return &importTicket{watch: w, id: id}, nil
+	return &transferTicket{watch: w, id: id}, nil
 }
 
-// importTicket is one running import's handle on its own entry.
-type importTicket struct {
-	watch *importWatch
+// transferTicket is one running transfer's handle on its own entry.
+type transferTicket struct {
+	watch *transferWatch
 	id    string
 }
 
-// update records where the import has got to, and how fast it is getting
-// there. It is called from the goroutine running the import, on every few
+// update records where the transfer has got to, and how fast it is getting
+// there. It is called from the goroutine running the transfer, on every few
 // megabytes, and does nothing but take a lock and do a little arithmetic.
-func (t *importTicket) update(at vault.ImportProgress) {
+func (t *transferTicket) update(at vault.TransferProgress) {
 	if t == nil {
 		return
 	}
@@ -218,7 +246,7 @@ func (t *importTicket) update(at vault.ImportProgress) {
 }
 
 // measure folds one progress report into the speed reading.
-func (e *watchedImport) measure(at vault.ImportProgress, now time.Time) {
+func (e *watchedTransfer) measure(at vault.TransferProgress, now time.Time) {
 	stage := fmt.Sprintf("%d/%s", at.File, at.Stage)
 
 	// A new file, or the same file's other half. Neither continues the last
@@ -247,10 +275,11 @@ func (e *watchedImport) measure(at vault.ImportProgress, now time.Time) {
 	e.done, e.at = at.Done, now
 }
 
-// done forgets the import. It is what a foreground import ends with, whether it
-// finished, failed or was cancelled: the answer went back down its own request,
-// and a progress bar for something that is no longer running is worse than none.
-func (t *importTicket) done() {
+// done forgets the transfer. It is what a foreground transfer ends with,
+// whether it finished, failed or was cancelled: the answer went back down its
+// own request, and a progress bar for something that is no longer running is
+// worse than none.
+func (t *transferTicket) done() {
 	if t == nil {
 		return
 	}
@@ -259,9 +288,9 @@ func (t *importTicket) done() {
 	delete(t.watch.runs, t.id)
 }
 
-// finish is what a detached import ends with instead: the result stays, because
-// there is no longer a request for it to be the answer to.
-func (t *importTicket) finish(summary *vault.ImportSummary, err error, cancelled bool) {
+// finish is what a detached transfer ends with instead: the result stays,
+// because there is no longer a request for it to be the answer to.
+func (t *transferTicket) finish(summary any, err error, cancelled bool) {
 	if t == nil {
 		return
 	}
@@ -284,18 +313,18 @@ func (t *importTicket) finish(summary *vault.ImportSummary, err error, cancelled
 	t.watch.trimLocked()
 }
 
-// forSource answers with what one machine has running or lately finished,
-// oldest first. Copies, not pointers: the import goroutine goes on writing to
-// its entry the moment the lock is released, and a handler encoding one of
-// these to JSON would otherwise be reading it as it changed.
-func (w *importWatch) forSource(source string) []importRun {
+// forSource answers with what one machine has running or lately finished in
+// one direction, oldest first. Copies, not pointers: the transfer goroutine
+// goes on writing to its entry the moment the lock is released, and a handler
+// encoding one of these to JSON would otherwise be reading it as it changed.
+func (w *transferWatch) forSource(source string, kind transferKind) []transferRun {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.sweepLocked()
 
-	out := make([]importRun, 0, len(w.runs))
+	out := make([]transferRun, 0, len(w.runs))
 	for _, entry := range w.runs {
-		if entry.run.Source == source {
+		if entry.run.Source == source && entry.run.Kind == kind {
 			out = append(out, w.snapshotLocked(entry))
 		}
 	}
@@ -303,14 +332,14 @@ func (w *importWatch) forSource(source string) []importRun {
 	return out
 }
 
-// running is how many imports are moving bytes right now, detached or not.
+// running is how many transfers are moving bytes right now, detached or not.
 //
 // The auto-lock asks: a transfer is use of the vault as much as a browser
 // clicking around is, and locking the keys out from under one would fail it for
 // no reason. Progress also touches the external-activity clock, which covers
 // the same ground from the other side; this is the one that does not depend on
 // a tick having landed recently.
-func (w *importWatch) running() int {
+func (w *transferWatch) running() int {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -325,7 +354,7 @@ func (w *importWatch) running() int {
 
 // forRun answers with one run by ID, or nil if there is no such thing. A copy,
 // for the same reason forSource hands out copies.
-func (w *importWatch) forRun(id string) *importRun {
+func (w *transferWatch) forRun(id string) *transferRun {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -341,7 +370,7 @@ func (w *importWatch) forRun(id string) *importRun {
 // has moved behind for a while. A stalled transfer saying it is doing 20 MB/s
 // is worse than one saying nothing: the bytes have stopped either way, and only
 // one of the two answers admits it.
-func (w *importWatch) snapshotLocked(entry *watchedImport) importRun {
+func (w *transferWatch) snapshotLocked(entry *watchedTransfer) transferRun {
 	run := entry.run
 	if !run.Done && !entry.at.IsZero() && w.now().Sub(entry.at) > staleRateAfter {
 		run.Rate = 0
@@ -352,13 +381,14 @@ func (w *importWatch) snapshotLocked(entry *watchedImport) importRun {
 	return run
 }
 
-// stop cancels a running import and forgets a finished one, which are the same
-// gesture from the outside: this is not something I want to look at any more.
-// It reports whether there was anything by that name.
-func (w *importWatch) stop(id string) bool {
+// stop cancels a running transfer and forgets a finished one, which are the
+// same gesture from the outside: this is not something I want to look at any
+// more. It reports whether there was anything by that name — in the direction
+// asked, so a dialog cannot stop an import by naming it as an export.
+func (w *transferWatch) stop(id string, kind transferKind) bool {
 	w.mu.Lock()
 	entry, ok := w.runs[id]
-	if !ok {
+	if !ok || entry.run.Kind != kind {
 		w.mu.Unlock()
 		return false
 	}
@@ -368,9 +398,9 @@ func (w *importWatch) stop(id string) bool {
 	}
 	w.mu.Unlock()
 
-	// Outside the lock: cancelling wakes the import's own goroutine, which
+	// Outside the lock: cancelling wakes the transfer's own goroutine, which
 	// comes back here to record how it ended. The entry stays until it does,
-	// so a stopped import is still listed — as stopping — rather than
+	// so a stopped transfer is still listed — as stopping — rather than
 	// vanishing before it has actually let go of the connection.
 	if cancel != nil {
 		cancel()
@@ -378,11 +408,11 @@ func (w *importWatch) stop(id string) bool {
 	return true
 }
 
-// stopAll cancels every running import. Locking the vault calls it: the keys
-// those transfers are being sealed with are about to leave memory, and a
-// transfer that carried on would only fail further in, having spent the
+// stopAll cancels every running transfer. Locking the vault calls it: the keys
+// those transfers are being sealed or opened with are about to leave memory,
+// and a transfer that carried on would only fail further in, having spent the
 // bandwidth first.
-func (w *importWatch) stopAll() {
+func (w *transferWatch) stopAll() {
 	w.mu.Lock()
 	cancels := make([]func(), 0, len(w.runs))
 	for _, entry := range w.runs {
@@ -398,27 +428,27 @@ func (w *importWatch) stopAll() {
 }
 
 // sweepLocked drops finished runs nobody came back for.
-func (w *importWatch) sweepLocked() {
+func (w *transferWatch) sweepLocked() {
 	for id, entry := range w.runs {
-		if entry.run.Done && entry.run.FinishedAt != nil && time.Since(*entry.run.FinishedAt) > finishedImportTTL {
+		if entry.run.Done && entry.run.FinishedAt != nil && time.Since(*entry.run.FinishedAt) > finishedTransferTTL {
 			delete(w.runs, id)
 		}
 	}
 }
 
 // trimLocked keeps the number of remembered results down, oldest first.
-func (w *importWatch) trimLocked() {
-	finished := make([]importRun, 0, len(w.runs))
+func (w *transferWatch) trimLocked() {
+	finished := make([]transferRun, 0, len(w.runs))
 	for _, entry := range w.runs {
 		if entry.run.Done {
 			finished = append(finished, entry.run)
 		}
 	}
-	if len(finished) <= maxFinishedImports {
+	if len(finished) <= maxFinishedTransfers {
 		return
 	}
 	sort.Slice(finished, func(i, j int) bool { return finished[i].StartedAt.Before(finished[j].StartedAt) })
-	for _, run := range finished[:len(finished)-maxFinishedImports] {
+	for _, run := range finished[:len(finished)-maxFinishedTransfers] {
 		delete(w.runs, run.ID)
 	}
 }

@@ -494,3 +494,54 @@ func TestOpenReadSeekerRefusesAPreChunkingFile(t *testing.T) {
 		t.Errorf("the refusal does not name the file: %v", err)
 	}
 }
+
+// A sequential reader passes over a file once and leaves nothing behind in
+// the shared cache: the chunk it is in is the only one it holds, and it lets
+// go of that one on the way into the next.
+func TestOpenSequentialKeepsOutOfTheSharedCache(t *testing.T) {
+	v, _ := chunkedVault(t, 3, 1024)
+	ctx := context.Background()
+
+	payload := readerPayload(5000)
+	entry, _, err := v.Upload(ctx, MainScope, "/", "film.bin", payload, UploadOptions{})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if entry.ChunkCount < 3 {
+		t.Fatalf("the fixture has %d chunks; the test wants several", entry.ChunkCount)
+	}
+
+	body, _, err := v.OpenSequential(ctx, entry.ID)
+	if err != nil {
+		t.Fatalf("OpenSequential: %v", err)
+	}
+	got, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatalf("reading: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Error("a sequential read did not come back byte for byte")
+	}
+
+	v.chunks.mu.Lock()
+	cached := v.chunks.used
+	v.chunks.mu.Unlock()
+	if cached != 0 {
+		t.Errorf("a one-pass read left %d bytes in the shared cache", cached)
+	}
+
+	// The shared reader still caches, so a player beside it is not starved.
+	shared, _, err := v.OpenReadSeeker(ctx, entry.ID)
+	if err != nil {
+		t.Fatalf("OpenReadSeeker: %v", err)
+	}
+	if _, err := io.ReadAll(shared); err != nil {
+		t.Fatalf("reading through the cache: %v", err)
+	}
+	v.chunks.mu.Lock()
+	cached = v.chunks.used
+	v.chunks.mu.Unlock()
+	if cached == 0 {
+		t.Error("the shared reader stopped caching")
+	}
+}

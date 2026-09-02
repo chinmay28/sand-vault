@@ -6,17 +6,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/archive"
 	"github.com/chinmay28/sand-vault/internal/vault"
 )
 
-// The machines a vault imports files from, over HTTP.
+// The machines a vault moves files to and from, over HTTP.
 //
-// Five endpoints, and the split between them is the one the feature turns on.
-// Listing what is configured is index work. Adding one, browsing one and
-// importing from one all talk to somebody else's machine, so each gets a
-// deadline of its own — and they are wildly different deadlines, because
-// listing a directory is one round trip and an import can be a media library.
+// The endpoints split the way the feature does. Listing what is configured is
+// index work. Adding one, browsing one, importing from one and exporting to
+// one all talk to somebody else's machine, so each gets a deadline of its own
+// — and they are wildly different deadlines, because listing a directory is
+// one round trip and a transfer can be a media library.
 //
 // See internal/vault/source.go for what a source is and why it is deliberately
 // not a connected account, and docs/sftp.md for the whole design.
@@ -30,17 +29,17 @@ const remoteConnectTimeout = 45 * time.Second
 // than leaving the picker spinning.
 const remoteBrowseTimeout = 60 * time.Second
 
-// remoteImportTimeout is the ceiling on one import.
+// remoteTransferTimeout is the ceiling on one import or export.
 //
 // Generous for the same reason the git track timeout is: this is a selection
-// coming down somebody's home connection and going back up to three clouds, and
-// a folder of films is not a five-minute job. It is a ceiling rather than a
-// budget — an import that runs out of it has still committed everything that
-// arrived, and re-running picks up where it stopped, because what is already in
-// the vault is skipped. See vault.ImportFromSource.
-const remoteImportTimeout = 12 * time.Hour
+// crossing somebody's home connection in one direction and three clouds in the
+// other, and a folder of films is not a five-minute job. It is a ceiling rather
+// than a budget — a transfer that runs out of it has still committed everything
+// that arrived, and re-running picks up where it stopped, because what is
+// already there is skipped. See vault.ImportFromSource and vault.ExportToSource.
+const remoteTransferTimeout = 12 * time.Hour
 
-// sourceRequest is a machine somebody wants to import from.
+// sourceRequest is a machine somebody wants to import from or export to.
 //
 // The secret fields carry the redaction placeholder back on an edit, meaning
 // "leave the one you have alone", exactly as a connected account's do.
@@ -167,7 +166,8 @@ func (s *Server) handleRemoteUpdate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"source": source})
 }
 
-// handleRemoteRemove forgets a machine. Nothing already imported is touched.
+// handleRemoteRemove forgets a machine. Nothing already imported or exported
+// is touched.
 func (s *Server) handleRemoteRemove(w http.ResponseWriter, r *http.Request) {
 	v, _ := s.Vault()
 	if err := v.RemoveSource(r.PathValue("id")); err != nil {
@@ -226,6 +226,41 @@ type remoteImportRequest struct {
 	Detach bool `json:"detach,omitempty"`
 }
 
+// remoteExportRequest is one push from the vault onto a source.
+type remoteExportRequest struct {
+	Vault string `json:"vault,omitempty"`
+
+	// Paths are what was picked, as paths in the vault — files, folders, or
+	// both. A folder brings everything under it, keeping its shape.
+	Paths []string `json:"paths"`
+
+	// Dest is the folder on the machine they land in, relative to the source's
+	// folder and made if it is not there. Empty is that folder itself.
+	Dest string `json:"dest"`
+
+	// Overwrite replaces a file already at the name. Without it a file that is
+	// there is left alone and reported: as already exported when it is the
+	// same file, and as in the way when it is not.
+	Overwrite bool `json:"overwrite,omitempty"`
+
+	// Detach is the same bargain an import's is — see remoteImportRequest.
+	Detach bool `json:"detach,omitempty"`
+}
+
+// transferJob is one direction of a transfer, described well enough for the
+// machinery around it — the ticket, the deadline, foreground or detached — to
+// run either without knowing which.
+type transferJob struct {
+	kind  transferKind
+	dest  string
+	scope string
+
+	// run does the transfer and hands back its summary, which is the answer
+	// to the request, and how many files actually moved, which decides
+	// whether that answer is a 201 or a 200.
+	run func(ctx context.Context, ticket *transferTicket) (summary any, moved int, err error)
+}
+
 // handleRemoteImport pulls files off a source into the vault.
 //
 // Synchronous unless asked otherwise, and that is still the default for a
@@ -239,8 +274,8 @@ type remoteImportRequest struct {
 // `detach` is the other half of that bargain, for the case the default is
 // wrong: one very large file, where the page would have to stay open for an
 // hour to fetch something the machine could fetch on its own. It answers 202
-// at once and runs on a context of its own — see startDetachedImport, and
-// import_watch.go for what "background" is allowed to mean here.
+// at once and runs on a context of its own — see startDetachedTransfer, and
+// transfer_watch.go for what "background" is allowed to mean here.
 func (s *Server) handleRemoteImport(w http.ResponseWriter, r *http.Request) {
 	var req remoteImportRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -255,121 +290,179 @@ func (s *Server) handleRemoteImport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := r.PathValue("id")
-	if req.Detach {
-		s.startDetachedImport(w, id, req, scheme)
+	v, _ := s.Vault()
+	job := transferJob{
+		kind: transferImport, dest: req.Dest, scope: req.Vault,
+		run: func(ctx context.Context, ticket *transferTicket) (any, int, error) {
+			summary, err := v.ImportFromSource(ctx, vault.Scope(req.Vault), id, vault.ImportRequest{
+				Paths:      req.Paths,
+				Dest:       req.Dest,
+				Accounts:   req.Accounts,
+				Scheme:     scheme,
+				Overwrite:  req.Overwrite,
+				OnProgress: s.transferProgress(ticket),
+			})
+			if err != nil {
+				return nil, 0, err
+			}
+			return &summary, summary.Imported, nil
+		},
+	}
+	s.runTransfer(w, r, id, req.Detach, job)
+}
+
+// handleRemoteExport writes files out of the vault onto a source.
+//
+// The same shape as the import in every respect but the direction — the same
+// per-file answer, the same skip on a re-run, the same detach — because it is
+// the same kind of request. What is different is said in the dialog rather
+// than here: the far end holds the files in the clear afterwards.
+func (s *Server) handleRemoteExport(w http.ResponseWriter, r *http.Request) {
+	var req remoteExportRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
 		return
 	}
 
-	ctx, cancel := contextWithTimeout(r, remoteImportTimeout)
+	id := r.PathValue("id")
+	v, _ := s.Vault()
+	job := transferJob{
+		kind: transferExport, dest: req.Dest, scope: req.Vault,
+		run: func(ctx context.Context, ticket *transferTicket) (any, int, error) {
+			summary, err := v.ExportToSource(ctx, vault.Scope(req.Vault), id, vault.ExportRequest{
+				Paths:      req.Paths,
+				Dest:       req.Dest,
+				Overwrite:  req.Overwrite,
+				OnProgress: s.transferProgress(ticket),
+			})
+			if err != nil {
+				return nil, 0, err
+			}
+			return &summary, summary.Exported, nil
+		},
+	}
+	s.runTransfer(w, r, id, req.Detach, job)
+}
+
+// transferProgress is what a running transfer reports through: the ticket,
+// and the activity clock beside it.
+func (s *Server) transferProgress(ticket *transferTicket) func(vault.TransferProgress) {
+	return func(at vault.TransferProgress) {
+		ticket.update(at)
+		// A transfer with nobody watching is still use, and without saying so
+		// the idle timer would lock the vault out from under it — the keys it
+		// is sealing or opening chunks with are the ones auto-locking takes
+		// away. The share and the stream links say it the same way.
+		s.noteExternalActivity()
+	}
+}
+
+// runTransfer runs one job in the foreground, or hands it to the machine.
+func (s *Server) runTransfer(w http.ResponseWriter, r *http.Request, id string, detach bool, job transferJob) {
+	if detach {
+		s.startDetachedTransfer(w, id, job)
+		return
+	}
+
+	ctx, cancel := contextWithTimeout(r, remoteTransferTimeout)
 	defer cancel()
 
 	// Registered before the first byte moves and forgotten however this ends,
-	// so what GET /api/remote/{id}/import answers with is what is actually
-	// running. It is a place to write progress to and nothing the import reads
-	// back — see import_watch.go.
-	ticket, err := s.imports.start(id, req.Dest, req.Vault, false, cancel)
+	// so what the progress GET answers with is what is actually running. It
+	// is a place to write progress to and nothing the transfer reads back —
+	// see transfer_watch.go.
+	ticket, err := s.transfers.start(job.kind, id, job.dest, job.scope, false, cancel)
 	if err != nil {
-		writeError(w, http.StatusConflict, err.Error(), "IMPORT_BUSY")
+		writeError(w, http.StatusConflict, err.Error(), "TRANSFER_BUSY")
 		return
 	}
 	defer ticket.done()
 
-	v, _ := s.Vault()
-	summary, err := v.ImportFromSource(ctx, vault.Scope(req.Vault), id, s.importRequest(req, scheme, ticket))
+	summary, moved, err := job.run(ctx, ticket)
 	if err != nil {
 		vaultErrorResponse(w, err)
 		return
 	}
 
-	// 201 when something arrived, 200 when everything was already here. A
-	// request that fetched nothing because nothing needed fetching is a
-	// success, and saying so with "created" would be a lie about what happened.
+	// 201 when something moved, 200 when everything was already there. A
+	// request that moved nothing because nothing needed moving is a success,
+	// and saying so with "created" would be a lie about what happened.
 	status := http.StatusOK
-	if summary.Imported > 0 {
+	if moved > 0 {
 		status = http.StatusCreated
 	}
 	writeJSON(w, status, summary)
 }
 
-// importRequest is the vault-level request both paths run, so a detached import
-// is the same import and differs only in what is holding its context.
-func (s *Server) importRequest(req remoteImportRequest, scheme archive.Scheme, ticket *importTicket) vault.ImportRequest {
-	return vault.ImportRequest{
-		Paths:     req.Paths,
-		Dest:      req.Dest,
-		Accounts:  req.Accounts,
-		Scheme:    scheme,
-		Overwrite: req.Overwrite,
-		OnProgress: func(at vault.ImportProgress) {
-			ticket.update(at)
-			// A transfer with nobody watching is still use, and without saying
-			// so the idle timer would lock the vault out from under it — the
-			// keys it is sealing chunks with are the ones auto-locking takes
-			// away. The share and the stream links say it the same way.
-			s.noteExternalActivity()
-		},
-	}
-}
-
-// startDetachedImport answers 202 and lets the import run without a request
-// behind it.
+// startDetachedTransfer answers 202 and lets the transfer run without a
+// request behind it.
 //
 // The context is derived from Background rather than from r: that is the whole
 // difference, and it is what makes closing the page harmless instead of fatal.
-// The ceiling is the same one a foreground import gets, so a detached import
+// The ceiling is the same one a foreground transfer gets, so a detached one
 // cannot outlive the day either.
-func (s *Server) startDetachedImport(w http.ResponseWriter, id string, req remoteImportRequest, scheme archive.Scheme) {
+func (s *Server) startDetachedTransfer(w http.ResponseWriter, id string, job transferJob) {
 	// Refused before anything is started, so a bad source ID or a locked sub
 	// vault comes back as an error on this request rather than as a run that
-	// appears and immediately fails. Everything after this is the import's own
-	// business to report.
+	// appears and immediately fails. Everything after this is the transfer's
+	// own business to report.
 	v, _ := s.Vault()
 	if _, err := v.Source(id); err != nil {
 		vaultErrorResponse(w, err)
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), remoteImportTimeout)
-	ticket, err := s.imports.start(id, req.Dest, req.Vault, true, cancel)
+	ctx, cancel := context.WithTimeout(context.Background(), remoteTransferTimeout)
+	ticket, err := s.transfers.start(job.kind, id, job.dest, job.scope, true, cancel)
 	if err != nil {
 		cancel()
-		writeError(w, http.StatusConflict, err.Error(), "IMPORT_BUSY")
+		writeError(w, http.StatusConflict, err.Error(), "TRANSFER_BUSY")
 		return
 	}
 
 	go func() {
 		defer cancel()
-		summary, err := v.ImportFromSource(ctx, vault.Scope(req.Vault), id, s.importRequest(req, scheme, ticket))
-		// A cancelled import is not a failed one. It stopped because somebody
-		// stopped it, and what it had already brought in is in the vault — the
+		summary, _, err := job.run(ctx, ticket)
+		// A cancelled transfer is not a failed one. It stopped because somebody
+		// stopped it, and what it had already moved is where it was going — the
 		// summary says how much, which is exactly what the next run will skip.
 		cancelled := ctx.Err() != nil
 		if err != nil && cancelled {
 			err = nil
 		}
-		var result *vault.ImportSummary
-		if err == nil {
-			result = &summary
+		if err != nil {
+			summary = nil
 		}
-		ticket.finish(result, err, cancelled)
+		ticket.finish(summary, err, cancelled)
 	}()
 
-	writeJSON(w, http.StatusAccepted, map[string]any{"run": s.imports.forRun(ticket.id)})
+	writeJSON(w, http.StatusAccepted, map[string]any{"run": s.transfers.forRun(ticket.id)})
 }
 
 // handleRemoteImportStop cancels a running import, or forgets a finished one's
 // result. Both are the same gesture: stop showing me this.
 func (s *Server) handleRemoteImportStop(w http.ResponseWriter, r *http.Request) {
-	if !s.imports.stop(r.PathValue("run")) {
-		writeError(w, http.StatusNotFound, "no import by that name is running", "NOT_FOUND")
+	s.stopTransfer(w, r, transferImport)
+}
+
+// handleRemoteExportStop is the same gesture aimed at an export.
+func (s *Server) handleRemoteExportStop(w http.ResponseWriter, r *http.Request) {
+	s.stopTransfer(w, r, transferExport)
+}
+
+func (s *Server) stopTransfer(w http.ResponseWriter, r *http.Request, kind transferKind) {
+	if !s.transfers.stop(r.PathValue("run"), kind) {
+		writeError(w, http.StatusNotFound, "no "+string(kind)+" by that name is running", "NOT_FOUND")
 		return
 	}
 	// 200 with what is left rather than 204, so the dialog that asked redraws
 	// from the answer instead of from a guess about what it did.
-	writeJSON(w, http.StatusOK, map[string]any{"imports": s.imports.forSource(r.PathValue("id"))})
+	writeJSON(w, http.StatusOK, map[string]any{
+		string(kind) + "s": s.transfers.forSource(r.PathValue("id"), kind),
+	})
 }
 
-// handleRemoteImportProgress answers with what one machine has running, and
+// handleRemoteImportProgress answers with what one machine has coming in, and
 // what a detached import lately finished with.
 //
 // An empty list is the ordinary answer rather than an error. A foreground
@@ -378,6 +471,15 @@ func (s *Server) handleRemoteImportStop(w http.ResponseWriter, r *http.Request) 
 // is a request to put it in. A detached one has no such request, so its summary
 // waits here until it is dismissed or goes stale.
 func (s *Server) handleRemoteImportProgress(w http.ResponseWriter, r *http.Request) {
+	s.transferProgressFor(w, r, transferImport)
+}
+
+// handleRemoteExportProgress is the same window onto what is going out.
+func (s *Server) handleRemoteExportProgress(w http.ResponseWriter, r *http.Request) {
+	s.transferProgressFor(w, r, transferExport)
+}
+
+func (s *Server) transferProgressFor(w http.ResponseWriter, r *http.Request, kind transferKind) {
 	// The source is checked against the vault so that a stale dialog polling a
 	// machine that has since been forgotten is told so, rather than being left
 	// watching an empty list forever.
@@ -386,5 +488,7 @@ func (s *Server) handleRemoteImportProgress(w http.ResponseWriter, r *http.Reque
 		vaultErrorResponse(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"imports": s.imports.forSource(r.PathValue("id"))})
+	writeJSON(w, http.StatusOK, map[string]any{
+		string(kind) + "s": s.transfers.forSource(r.PathValue("id"), kind),
+	})
 }

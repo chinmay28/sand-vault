@@ -18,7 +18,7 @@ import { BulkAssign, BulkDelete, BulkDownload } from './BulkActions'
 import MoveToFolder from './MoveToFolder'
 import { FilmButton, FilmLookupSettings } from './FilmDetails'
 import { OrganizerButton, OrganizerMenu, OrganizerTool } from './Organizer'
-import { ImportFromMachine } from './ImportFromMachine'
+import { MachineTransfer } from './MachineTransfer'
 
 /* How long to sit on a keystroke before asking the server. Long enough that
    typing a word is one query rather than six, short enough to feel live. */
@@ -679,11 +679,16 @@ export default function FileBrowser({
               />
               <Button size="sm" onClick={() => setCreatingFolder(true)}>+ Folder</Button>
               {/* Beside Upload rather than under the organizer, because it is
-                  the same act: files arriving in this folder. The only
-                  difference is that these come off a machine you have a login
-                  on instead of off the device you are holding. */}
-              <Button size="sm" onClick={() => setImporting(true)} disabled={!canUpload}>
-                ↓ Import
+                  the same act: files arriving in this folder — or leaving it
+                  for a machine you have a login on. One button for both
+                  directions, and the dialog asks which. */}
+              <Button
+                size="sm"
+                onClick={() => setImporting(true)}
+                disabled={!canUpload}
+                title={canUpload ? `Bring files into ${path} from a machine, or send files from it to one` : 'Connect a cloud account first'}
+              >
+                ⇅ Machine
               </Button>
               <Button size="sm" variant="primary" onClick={() => setChoosing(true)} disabled={!canUpload}>
                 ↑ Upload
@@ -909,7 +914,7 @@ export default function FileBrowser({
       )}
 
       {importing && (
-        <ImportFromMachine
+        <MachineTransfer
           path={path}
           vault={vault}
           onClose={() => setImporting(false)}

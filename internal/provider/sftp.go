@@ -3,8 +3,6 @@ package provider
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -220,7 +218,7 @@ func (p *sftpProvider) Put(ctx context.Context, key string, data []byte) error {
 	// come looking for. It matters more here than on a local disk: the thing
 	// that interrupts a network write is a dropped connection, which is
 	// common, rather than a crash, which is not.
-	tmp := path.Join(dir, ".sand-tmp-"+randomSuffix())
+	tmp := sandsftp.TempName(dir)
 	f, err := fs.Create(tmp)
 	if err != nil {
 		return fmt.Errorf("sftp: creating %s: %w", tmp, err)
@@ -242,48 +240,11 @@ func (p *sftpProvider) Put(ctx context.Context, key string, data []byte) error {
 		return fmt.Errorf("sftp: closing %s: %w", key, err)
 	}
 
-	if err := renameOver(client, tmp, full); err != nil {
+	if err := sandsftp.RenameOver(client, tmp, full); err != nil {
 		fs.Remove(tmp)
 		return fmt.Errorf("sftp: finalizing %s: %w", key, err)
 	}
 	return nil
-}
-
-// renameOver puts a temporary file in its final place, overwriting whatever is
-// there.
-//
-// Two ways round, because the protocol's own rename cannot do it. SFTP v3
-// leaves the behaviour of a rename onto an existing name to the server, and
-// OpenSSH's answer is to refuse — so OpenSSH also ships posix-rename@openssh.com,
-// which is atomic and overwrites, and is what nearly every server SAND will
-// meet supports. The fallback for the ones that do not is remove-then-rename,
-// which has a window where the object does not exist. That window is survivable
-// where an atomic overwrite would be nicer: a shard is one of several, a reader
-// that misses it reads the others, and Put is only overwriting at all when
-// something is being rewritten in place.
-func renameOver(client *sandsftp.Client, from, to string) error {
-	fs := client.SFTP()
-	if err := fs.PosixRename(from, to); err == nil {
-		return nil
-	}
-	if err := fs.Remove(to); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	return fs.Rename(from, to)
-}
-
-// randomSuffix names a temporary file. Random rather than counted because two
-// SAND instances may be writing into the same folder — a vault on a laptop and
-// one on a Pi, pointed at the same box — and a collision would have one of
-// them renaming the other's half-written file into place.
-func randomSuffix() string {
-	var buf [8]byte
-	if _, err := rand.Read(buf[:]); err != nil {
-		// crypto/rand does not fail in practice, and a temp name is not a
-		// secret: any name nobody else is using will do.
-		return "fallback"
-	}
-	return hex.EncodeToString(buf[:])
 }
 
 func (p *sftpProvider) Get(ctx context.Context, key string) ([]byte, error) {
@@ -392,7 +353,7 @@ func (p *sftpProvider) List(ctx context.Context, prefix string) ([]ObjectInfo, e
 		}
 		// A half-written shard from an interrupted Put is not an object, and
 		// listing it would have the recovery scan try to read it.
-		if strings.HasPrefix(path.Base(rel), ".sand-tmp-") {
+		if sandsftp.IsTempName(path.Base(rel)) {
 			continue
 		}
 		out = append(out, ObjectInfo{Key: rel, Size: info.Size()})
@@ -415,7 +376,7 @@ func (p *sftpProvider) Ping(ctx context.Context) error {
 	// answers the first and not the second fails on the first upload instead
 	// of here. A read-only home directory and a quota already spent both look
 	// like a working connection until something is written.
-	probe := path.Join(p.root, ".sand-write-probe-"+randomSuffix())
+	probe := sandsftp.TempName(p.root)
 	f, err := fs.Create(probe)
 	if err != nil {
 		return fmt.Errorf("%s is not writable by %s: %w", p.root, p.cfg.Option("username"), err)

@@ -25,6 +25,11 @@ import (
 // is a bearer token — anyone holding the link can play that file until it
 // expires — which is why it names a single file rather than the vault, expires
 // on its own, and dies the moment the vault locks.
+//
+// The store underneath is generic over what a ticket stands for, because a
+// folder handed back as a zip wants the same thing for the same reason: a
+// download the browser cannot buffer has to be an address, and an address
+// needs a credential of its own. See handlers_zip.go.
 
 // DefaultStreamTTL is how long a stream link survives without being used.
 //
@@ -33,31 +38,28 @@ import (
 // it. A link that is put down does.
 const DefaultStreamTTL = 12 * time.Hour
 
-// streamTicket is one minted link: the file it plays, and when it stops.
-type streamTicket struct {
-	fileID string
-	expiry time.Time
+// ticket is one minted link: what it stands for, and when it stops.
+type ticket[T any] struct {
+	subject T
+	expiry  time.Time
 }
 
-// streamStore holds the live tickets. It is deliberately memory-only: a link
-// that outlived the process would be a link that outlived the unlocked vault it
-// was minted from.
-type streamStore struct {
+// ticketStore holds the live tickets of one kind. It is deliberately
+// memory-only: a link that outlived the process would be a link that outlived
+// the unlocked vault it was minted from.
+type ticketStore[T any] struct {
 	ttl time.Duration
 
 	mu      sync.Mutex
-	tickets map[string]streamTicket
+	tickets map[string]ticket[T]
 }
 
-func newStreamStore(ttl time.Duration) *streamStore {
-	if ttl <= 0 {
-		ttl = DefaultStreamTTL
-	}
-	return &streamStore{ttl: ttl, tickets: map[string]streamTicket{}}
+func newTicketStore[T any](ttl time.Duration) *ticketStore[T] {
+	return &ticketStore[T]{ttl: ttl, tickets: map[string]ticket[T]{}}
 }
 
-// issue mints a ticket for one file and returns the token and its deadline.
-func (s *streamStore) issue(fileID string) (string, time.Time, error) {
+// issue mints a ticket for one subject and returns the token and its deadline.
+func (s *ticketStore[T]) issue(subject T) (string, time.Time, error) {
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
 		return "", time.Time{}, err
@@ -67,23 +69,24 @@ func (s *streamStore) issue(fileID string) (string, time.Time, error) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.tickets[token] = streamTicket{fileID: fileID, expiry: expiry}
+	s.tickets[token] = ticket[T]{subject: subject, expiry: expiry}
 	return token, expiry, nil
 }
 
-// lookup resolves a token to the file it plays and pushes its deadline out,
+// lookup resolves a token to what it stands for and pushes its deadline out,
 // exactly as a request on a session extends that session.
-func (s *streamStore) lookup(token string) (string, bool) {
+func (s *ticketStore[T]) lookup(token string) (T, bool) {
+	var none T
 	if token == "" {
-		return "", false
+		return none, false
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	now := time.Now()
-	for existing, ticket := range s.tickets {
-		if now.After(ticket.expiry) {
+	for existing, t := range s.tickets {
+		if now.After(t.expiry) {
 			delete(s.tickets, existing)
 			continue
 		}
@@ -92,24 +95,34 @@ func (s *streamStore) lookup(token string) (string, bool) {
 		// arrives. The map holds a handful of entries; a film's range requests
 		// are answered from cloud accounts, not from here.
 		if subtle.ConstantTimeCompare([]byte(existing), []byte(token)) == 1 {
-			ticket.expiry = now.Add(s.ttl)
-			s.tickets[existing] = ticket
-			return ticket.fileID, true
+			t.expiry = now.Add(s.ttl)
+			s.tickets[existing] = t
+			return t.subject, true
 		}
 	}
-	return "", false
+	return none, false
 }
 
 // clear drops every ticket. Locking the vault takes the keys out of memory, so
 // nothing minted before it can read anything after it — the links are voided
 // rather than left to fail one request at a time.
-func (s *streamStore) clear() {
+func (s *ticketStore[T]) clear() {
 	if s == nil {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.tickets = map[string]streamTicket{}
+	s.tickets = map[string]ticket[T]{}
+}
+
+// streamStore holds stream tickets, each standing for one file by ID.
+type streamStore = ticketStore[string]
+
+func newStreamStore(ttl time.Duration) *streamStore {
+	if ttl <= 0 {
+		ttl = DefaultStreamTTL
+	}
+	return newTicketStore[string](ttl)
 }
 
 // streamPath is where a ticket plays from.

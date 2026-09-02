@@ -495,6 +495,16 @@ export const api = {
      would be forty walks nobody asked for. */
   folderStats: (path, vault = '') =>
     request(`/api/folders/stats?path=${encodeURIComponent(path)}${vaultParam(vault)}`),
+  /* Everything under a folder as one zip. What comes back is a link to save
+     from and what the archive will hold — files, bytes — rather than the
+     archive: it is streamed by the server as it is built, gathering each file
+     from the clouds on the way, and can be far bigger than a page could hold
+     in memory. The link carries its own credential and is good for a few
+     minutes, so it can also be pasted into a download manager elsewhere. It
+     is refused, with NEEDS_CONVERSION, while any file under the folder is
+     still in the pre-chunking format. */
+  folderZipLink: (path, vault = '') =>
+    request('/api/folders/zip', { method: 'POST', body: { path, vault } }),
 
   /* Which files under a folder are copies of each other, asked three ways from
      one walk of the index: the same bytes (one SHA-256, which is proof), the
@@ -553,7 +563,8 @@ export const api = {
   /* The machines a vault imports files *from*, which is the other direction
      from a connected account and deliberately not one: an account holds
      encrypted parts under names SAND invents, a source holds your own files
-     under paths you browse, and nothing is ever written to it.
+     under paths you browse — and, when you send files out, written to as
+     your own files, whole and in the clear. Never a shard, in either direction.
 
      Listing is index work. The rest talk to somebody else's machine: connecting
      is a handshake and a directory listing, browsing is a round trip a click,
@@ -616,6 +627,23 @@ export const api = {
      skips those and carries on. */
   stopImport: (id, run) =>
     request(`/api/remote/${encodeURIComponent(id)}/import/${encodeURIComponent(run)}`,
+      { method: 'DELETE' }),
+  /* The other direction: files out of the vault and onto the machine, in the
+     clear. `paths` are vault paths — files, folders, or both; a folder brings
+     everything under it, keeping its shape — and `dest` is the folder on the
+     machine they land in, relative to the folder the source is scoped to.
+
+     The same bargain as an import, mirrored: each file lands whole or not at
+     all, a file already there is skipped rather than sent again, and running
+     the same export again is how an interrupted one resumes. A file already
+     there that is *not* the same file is left alone and said so, unless
+     `overwrite` asks otherwise. `detach` answers 202 with the run to watch. */
+  exportToSource: (id, body, { signal } = {}) =>
+    request(`/api/remote/${encodeURIComponent(id)}/export`, { method: 'POST', body, signal }),
+  sourceExports: (id, { signal } = {}) =>
+    request(`/api/remote/${encodeURIComponent(id)}/export`, { signal }),
+  stopExport: (id, run) =>
+    request(`/api/remote/${encodeURIComponent(id)}/export/${encodeURIComponent(run)}`,
       { method: 'DELETE' }),
 
   /* The picture a folder is drawn with, and what else it could be drawn with:

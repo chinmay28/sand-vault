@@ -12,16 +12,17 @@ import (
 	"github.com/google/uuid"
 )
 
-// A Source is a machine files are brought *in* from, which is the opposite
-// direction from everything else in this package.
+// A Source is a machine the user's own files are brought *in* from and sent
+// back *out* to, whole — which is the opposite of everything else in this
+// package, where what leaves is a shard.
 //
 // It is deliberately not a provider.Config, and the same VPS wearing both hats
 // is deliberately two entries. A connected account holds opaque shards under
 // keys SAND generates; a source holds the user's own files under paths the user
-// browses, is read-only, and is never a place a part is written. Folding the
-// two together would mean an import browser that can see the shard store, and a
-// bug on the import path that can write into it. The cost of keeping them apart
-// is typing the host twice.
+// browses, and is never a place a part is written. Folding the two together
+// would mean a browser over your files that can see the shard store, and a bug
+// on the export path that can write into it. The cost of keeping them apart is
+// typing the host twice.
 //
 // What they share is that both hold credentials, which is why a Source only
 // ever exists inside the encrypted vault.
