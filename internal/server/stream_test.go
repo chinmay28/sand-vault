@@ -241,7 +241,7 @@ func TestStreamTicketDeadlineSlidesOnUse(t *testing.T) {
 	}
 
 	store.mu.Lock()
-	store.tickets[token] = streamTicket{fileID: "file-1", expiry: time.Now().Add(2 * time.Second)}
+	store.tickets[token] = ticket[string]{subject: "file-1", expiry: time.Now().Add(2 * time.Second)}
 	store.mu.Unlock()
 
 	id, ok := store.lookup(token)
@@ -260,7 +260,7 @@ func TestStreamTicketDeadlineSlidesOnUse(t *testing.T) {
 	}
 
 	store.mu.Lock()
-	store.tickets[token] = streamTicket{fileID: "file-1", expiry: time.Now().Add(-time.Second)}
+	store.tickets[token] = ticket[string]{subject: "file-1", expiry: time.Now().Add(-time.Second)}
 	store.mu.Unlock()
 	if _, ok := store.lookup(token); ok {
 		t.Error("an expired ticket still resolved")

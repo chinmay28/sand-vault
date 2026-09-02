@@ -2,6 +2,8 @@ import React, { useEffect, useState } from 'react'
 import { COLORS, FONT, accountColor, fileIcon, formatBytes, formatDate, formatDay, isPlayable } from '../theme'
 import { api } from '../api'
 import { useDownload } from '../download'
+import { FolderZip } from './FolderZip'
+import { MachineTransfer } from './MachineTransfer'
 import { useEraseProgress } from '../hooks'
 import { ActionSheet, Banner, Button, ConfirmDialog, IconButton, Modal } from './ui'
 import StreamLink from './StreamLink'
@@ -863,6 +865,8 @@ function useFolderActions({
   const [renaming, setRenaming] = useState(false)
   const [picturing, setPicturing] = useState(false)
   const [assigning, setAssigning] = useState(false)
+  const [zipping, setZipping] = useState(false)
+  const [sending, setSending] = useState(false)
 
   const [busy, setBusy] = useState(false)
 
@@ -925,6 +929,23 @@ function useFolderActions({
           onClose={() => setMenu(false)}
           items={[
             { key: 'open', glyph: '▸', label: 'Open folder', onSelect: open },
+            /* The two ways a folder leaves the vault whole. Neither buffers
+               it: the archive streams as it is built, and a send goes straight
+               from the clouds onto the machine, a piece at a time. */
+            {
+              key: 'zip',
+              glyph: '↓',
+              label: 'Download as zip',
+              hint: 'Everything inside it as one archive, built as it downloads',
+              onSelect: () => setZipping(true),
+            },
+            {
+              key: 'send',
+              glyph: '⇡',
+              label: 'Send to a machine',
+              hint: 'Copy it onto a machine you have a login on — in the clear',
+              onSelect: () => setSending(true),
+            },
             /* Only where there is something to choose from. A folder with
                nothing picturable inside it has nothing to offer, and the entry
                would open a dialog whose whole content is an apology. */
@@ -1060,6 +1081,26 @@ function useFolderActions({
           vault={vault}
           onClose={() => setPicturing(false)}
           onDone={onRefresh}
+        />
+      )}
+
+      {zipping && (
+        <FolderZip
+          path={path}
+          name={name}
+          vault={vault}
+          onClose={() => setZipping(false)}
+        />
+      )}
+
+      {sending && (
+        <MachineTransfer
+          path={path}
+          vault={vault}
+          mode="export"
+          preset={[{ kind: 'folder', path, name }]}
+          onClose={() => setSending(false)}
+          onChanged={onRefresh}
         />
       )}
 

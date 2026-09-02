@@ -50,6 +50,27 @@ export async function downloadFile(file) {
   saveBlob(await resp.blob(), file.name)
 }
 
+/* Save from an address the browser must not read into memory first.
+
+   A folder as one zip can be far bigger than the page could hold, so it is not
+   fetched as a blob the way a file is: the anchor points at the server's own
+   streaming endpoint and the browser saves straight from it, spooling to disk
+   as the bytes arrive. The address carries its own short-lived credential, so
+   the session cookie — which a home-screen app does not share with anything —
+   is not needed for it to work.
+
+   The response is an attachment, which is what keeps this from being the
+   navigation trap above: a browser handed a download does not leave the page
+   for it. */
+export function downloadFromLink(url, filename) {
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+}
+
 /* Rebuilding a file takes as long as the slowest account holding a part, so
    whatever control started it has to be able to say it is still working. */
 export function useDownload(onError) {

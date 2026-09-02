@@ -177,6 +177,14 @@ func (f *chunkFlight) do(key string, fetch func() ([]byte, error)) ([]byte, erro
 type ChunkedReader struct {
 	v     *Vault
 	entry *Entry
+
+	// A sequential reader keeps the chunk it is in to itself rather than in
+	// the shared cache, which is the difference between a one-pass copy
+	// costing one chunk and costing the whole cache — see OpenSequential.
+	private  bool
+	mu       sync.Mutex
+	held     int
+	heldData []byte
 }
 
 // ErrNeedsConversion is returned for a file still stored in the pre-chunking
@@ -267,12 +275,23 @@ func (r *ChunkedReader) ReadAtContext(ctx context.Context, p []byte, off int64) 
 // chunkAt returns one chunk's plaintext, from the cache when it is there and
 // from the accounts when it is not.
 func (r *ChunkedReader) chunkAt(ctx context.Context, index int) ([]byte, error) {
+	if r.private {
+		r.mu.Lock()
+		if r.heldData != nil && r.held == index {
+			data := r.heldData
+			r.mu.Unlock()
+			return data, nil
+		}
+		r.mu.Unlock()
+	}
+
 	key := chunkCacheKey(r.entry.ArchiveID, index)
 	if data, ok := r.v.chunks.get(key); ok {
+		r.hold(index, data)
 		return data, nil
 	}
 
-	return r.v.flight.do(key, func() ([]byte, error) {
+	data, err := r.v.flight.do(key, func() ([]byte, error) {
 		// Another caller may have finished while this one waited for its turn.
 		if data, ok := r.v.chunks.get(key); ok {
 			return data, nil
@@ -290,9 +309,27 @@ func (r *ChunkedReader) chunkAt(ctx context.Context, index int) ([]byte, error) 
 		if err != nil {
 			return nil, err
 		}
-		r.v.chunks.put(key, data)
+		if !r.private {
+			r.v.chunks.put(key, data)
+		}
 		return data, nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	r.hold(index, data)
+	return data, nil
+}
+
+// hold keeps the chunk a sequential reader is in, letting go of the one
+// before it. A shared reader holds nothing: the cache is its memory.
+func (r *ChunkedReader) hold(index int, data []byte) {
+	if !r.private {
+		return
+	}
+	r.mu.Lock()
+	r.held, r.heldData = index, data
+	r.mu.Unlock()
 }
 
 // SectionReader is the whole file as an io.ReadSeeker, which is the shape an
@@ -312,6 +349,30 @@ type ctxReaderAt struct {
 
 func (c ctxReaderAt) ReadAt(p []byte, off int64) (int, error) {
 	return c.reader.ReadAtContext(c.ctx, p, off)
+}
+
+// OpenSequential reads a stored file front to back for a consumer that will
+// pass over it once — an archive being written, an export leaving for a
+// machine — and keeps nothing it has read.
+//
+// The shared cache is for a player seeking around a film, where the chunk it
+// just left is the one it is most likely to want next. A one-pass copy wants
+// the opposite: every chunk exactly once, and then gone. Read through the
+// cache it would fill all of it with plaintext nothing will ask for again,
+// evicting whatever a player beside it was actually using, and on a machine
+// with little to spare that is memory spent on nothing. So the reader holds
+// the chunk it is in — the consecutive small reads a copy makes have to land
+// somewhere — and only that: a 40 GB folder passes through this machine one
+// chunk at a time. A chunk another reader already has cached is still used;
+// what is never done is putting one there.
+func (v *Vault) OpenSequential(ctx context.Context, id string) (io.ReadSeeker, *Entry, error) {
+	reader, err := v.OpenReader(id)
+	if err != nil {
+		return nil, nil, err
+	}
+	reader.private = true
+	return io.NewSectionReader(
+		ctxReaderAt{ctx: ctx, reader: reader}, 0, reader.Size()), reader.Entry(), nil
 }
 
 // OpenReadSeeker reads a stored file at an offset, so that serving a range

@@ -3,18 +3,18 @@
 Two features share one SSH client, and the first thing worth doing is keeping
 them apart in your head:
 
-|  | **Backend** — a shard destination | **Source** — a place you import from |
+|  | **Backend** — a shard destination | **Source** — a machine you move your own files to and from |
 |---|---|---|
 | What the far end sees | opaque encrypted shards | your actual files, in the clear |
 | Who names the paths | SAND, from the archive ID | you, browsing |
-| Access needed | read/write under one folder | read only |
+| Access needed | read/write under one folder | read under one folder; write too, to send files out |
 | Implements | `provider.Provider` | `vault.Source` |
-| Status | **built** — `internal/provider/sftp.go` | **built** — `internal/vault/source.go` |
+| Status | **built** — `internal/provider/sftp.go` | **built** — `internal/vault/source.go`, both directions |
 
 They should stay two connected entries even when they point at the same box.
-The cost is typing the host twice; what it buys is that an import source cannot
-see the shard store, and a bug in the import path cannot write into it. Same
-host, same key, two roots, two entries.
+The cost is typing the host twice; what it buys is that a browser over your
+files cannot see the shard store, and a bug in the export path cannot write
+into it. Same host, same key, two roots, two entries.
 
 ---
 
@@ -238,7 +238,7 @@ This matters because **there is still no background job framework**, and what
 grew here instead is worth stating precisely, because it is one step across a
 line that used to be absolute.
 
-`internal/server/import_watch.go` holds the imports in flight, in memory, keyed
+`internal/server/transfer_watch.go` holds the imports (and exports) in flight, in memory, keyed
 by source. The running handler writes progress to it and nothing reads that back
 — it exists to be shown. `GET /api/remote/{id}/import` answers out of it.
 
@@ -295,13 +295,73 @@ anybody wants the mirror.
 
 ## Sending the other way
 
-Export — a vault folder written back out to a VPS path — is nearly free once
-the client exists: reverse the stream. It is deliberately *not* in v1, for one
-reason worth stating loudly:
+Export — files or folders of the vault written back out to a machine — is the
+import reversed, and built. One thing about it is worth stating loudly before
+the mechanics:
 
-**Export writes plaintext onto the VPS.** The backend half is careful that the
-far end only ever holds opaque shards; export is the direction that undoes that.
-That asymmetry has to be visible in the UI, not merely true in the code.
+**Export writes plaintext onto the machine.** The backend half is careful that
+the far end only ever holds opaque shards; export is the direction that undoes
+that, on purpose. That asymmetry is visible in the UI rather than merely true
+in the code: the direction switch names it, and a warning sits beside the
+button that does it.
+
+```
+POST   /api/remote/{id}/export        {paths[], dest, overwrite, detach} → results[]
+GET    /api/remote/{id}/export        what that POST is doing right now → exports[]
+DELETE /api/remote/{id}/export/{run}  stop one, or dismiss a finished one's result
+```
+
+`paths` are vault paths — files, folders or both; a folder brings everything
+under it, keeping its shape, and the root puts its contents straight into
+`dest`. `dest` is a folder on the machine, relative to the folder the source is
+scoped to, made if it is not there, and refused if it climbs out — the same
+`Under` check as browsing, made before a connection is dialled.
+
+The mechanics mirror the import's, seam for seam:
+
+- **The seam is `OpenSequential`.** The vault hands back an `io.ReadSeeker`
+  that gathers a chunk at a time and keeps only the chunk it is in, and
+  `(*sftp.Client).WriteUnder` takes a reader. So an export is: open the stored
+  file, hand the reader to the machine, done. Bytes go clouds → SAND →
+  machine and never touch the browser; a 40 GB film costs one chunk of
+  memory, which is what lets this run on a Raspberry Pi.
+- **The reader is not read through the shared chunk cache.** A player seeking
+  around a film wants the chunk it just left; a one-pass copy wants every
+  chunk once and then gone. Reading it through the cache would fill all
+  128 MiB of it with plaintext nothing will ask for again, evicting whatever
+  a player beside it was using. The sequential reader holds its own chunk and
+  puts nothing in the cache — the same reader a folder zip streams through.
+- **Writes are atomic, as the backend's are.** A file goes to `.sand-tmp-…`
+  in its destination directory and is renamed into place once every byte is
+  there and the handle is closed, so the name asked for is either the whole
+  file or nothing. `sftp.RenameOver` and `sftp.TempName` are now shared with
+  the backend rather than copied from it.
+- **The skip is sound, for the same reason the import's is.** A file already
+  on the machine at its destination, the same size, and not older than the
+  vault's copy is not sent again — and because of the rename above, a size
+  match is a real answer. The vault's own modification time is stamped on
+  the file, which is what the next run recognises it by, and guards the one
+  case size alone gets wrong. **Re-running an export is how you resume it.**
+- **Nothing is clobbered by default.** A file already there that is *not*
+  the same one — a different size, or older than the vault's copy — is left
+  alone and reported on its own line, with the reason. `overwrite` is how
+  somebody asks otherwise, and it also re-sends what would have been skipped.
+- **A file still in the pre-chunking format fails on its own line**, naming
+  the cure (convert it), and the rest of the selection goes. Rebuilding it
+  whole in memory is exactly what this path exists not to do.
+- **Progress, detaching and stopping are the import's**, through the same
+  watch: `internal/server/transfer_watch.go` holds imports and exports alike,
+  told apart by `kind`, and the detached cap counts both together because
+  they share the same connection and the same clouds. Locking the vault stops
+  every one of them.
+- **The far end's files are written for the owner alone** (`0600`), before
+  the bytes rather than after, since on a server with a permissive umask the
+  window between creating and chmod-ing is a window where everyone can read
+  them.
+
+What it deliberately does not do: mirror. "Keep this vault folder in step
+with this machine folder" is the tracked-directory version of the same fork
+the import faced, and it is still a follow-on rather than a v1.
 
 ---
 
@@ -330,12 +390,18 @@ internal/sftp/sftptest/     an in-process sshd, so the code that talks to a
                             server is tested against a server
 internal/provider/sftp.go   KindSFTP: Put/Get/Stat/Delete/List/Ping,
                             CredentialRotator, UsageReporter
-internal/vault/source.go    a machine to import from: stored, connected, browsed
+internal/sftp/write.go      writing under the root: atomic put, mkdir, the
+                            shared rename-over and temp names
+internal/vault/source.go    a machine to move files to and from: stored,
+                            connected, browsed
 internal/vault/importsource.go   planning a selection and pulling it in
-internal/server/handlers_remote.go   the five endpoints above
+internal/vault/exportsource.go   planning a selection and sending it out
+internal/vault/transferprogress.go   the progress window both directions share
+internal/server/handlers_remote.go   the endpoints, both directions
+internal/server/transfer_watch.go    the transfers in flight, both directions
 internal/server/handlers_sshkeys.go  making a key pair, and holding the private
                             half here rather than sending it to the browser
-web/src/components/ImportFromMachine.jsx   connect, browse, pick, import
+web/src/components/MachineTransfer.jsx   connect, browse, pick, import or export
 web/src/components/SshKeyField.jsx   generate or paste, in one field
 ```
 
@@ -395,6 +461,11 @@ it starts over at each stage boundary because the fetch and the scatter are
 different pipes, and it is dropped rather than held once nothing has moved for
 `staleRateAfter` — a stalled transfer claiming 20 MB/s is worse than one
 claiming nothing.
+
+`POST /api/remote/{id}/export` and its `GET` and `DELETE` are the same three
+verbs pointed the other way — see "Sending the other way" above — and answer
+`exports[]` in the same shape, with `kind` on every run saying which direction
+it is.
 
 `POST` takes `detach: true` for an import that should outlive the page that
 asked for it. It answers `202` with the run to watch instead of the result, and
@@ -462,7 +533,7 @@ Build order:
 2. ~~`KindSFTP` backend~~ — done
 3. ~~browse~~ — done
 4. ~~import~~ — done
-5. export — still open, and still the direction that writes plaintext
+5. ~~export~~ — done, and still the direction that writes plaintext
 
 ---
 

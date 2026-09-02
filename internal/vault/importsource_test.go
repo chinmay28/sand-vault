@@ -336,11 +336,11 @@ func TestImportReportsProgress(t *testing.T) {
 	seed(t, filepath.Join(root, "a.txt"), "aaa")
 	seed(t, filepath.Join(root, "b.txt"), "bbbb")
 
-	var seen []ImportProgress
+	var seen []TransferProgress
 	req := ImportRequest{
 		Paths:      []string{"a.txt", "b.txt"},
 		Dest:       "/",
-		OnProgress: func(at ImportProgress) { seen = append(seen, at) },
+		OnProgress: func(at TransferProgress) { seen = append(seen, at) },
 	}
 	if _, err := v.ImportFromSource(context.Background(), MainScope, id, req); err != nil {
 		t.Fatalf("import: %v", err)
@@ -362,7 +362,7 @@ func TestImportReportsProgress(t *testing.T) {
 	// Both halves of the trip are reported, and named apart: coming down from
 	// the source and going back up to the accounts are slow for different
 	// reasons and one is not the other's second half.
-	stages := map[ImportStage]bool{}
+	stages := map[TransferStage]bool{}
 	for _, at := range seen {
 		stages[at.Stage] = true
 		if at.Done > at.Size {
@@ -379,7 +379,7 @@ func TestImportReportsProgress(t *testing.T) {
 	// The second file knows the first one landed, which is what makes the
 	// counts readable mid-flight: they are what the summary would say if the
 	// import stopped here.
-	var second *ImportProgress
+	var second *TransferProgress
 	for i := range seen {
 		if seen[i].Name == "b.txt" {
 			second = &seen[i]
@@ -389,8 +389,8 @@ func TestImportReportsProgress(t *testing.T) {
 	if second == nil {
 		t.Fatal("the second file was never reported")
 	}
-	if second.File != 2 || second.Imported != 1 {
-		t.Errorf("b.txt was reported as file %d with %d imported, want 2 and 1", second.File, second.Imported)
+	if second.File != 2 || second.Completed != 1 {
+		t.Errorf("b.txt was reported as file %d with %d imported, want 2 and 1", second.File, second.Completed)
 	}
 }
 
@@ -406,8 +406,8 @@ func TestImportReportsNothingForASkippedFile(t *testing.T) {
 		t.Fatalf("first import: %v", err)
 	}
 
-	var seen []ImportProgress
-	req.OnProgress = func(at ImportProgress) { seen = append(seen, at) }
+	var seen []TransferProgress
+	req.OnProgress = func(at TransferProgress) { seen = append(seen, at) }
 	again, err := v.ImportFromSource(context.Background(), MainScope, id, req)
 	if err != nil {
 		t.Fatalf("second import: %v", err)
@@ -432,7 +432,7 @@ func TestImportProgressCountsEveryByte(t *testing.T) {
 	req := ImportRequest{
 		Paths: []string{"big.bin"},
 		Dest:  "/",
-		OnProgress: func(at ImportProgress) {
+		OnProgress: func(at TransferProgress) {
 			if at.Stage == StageFetching && at.Done > fetched {
 				fetched = at.Done
 			}

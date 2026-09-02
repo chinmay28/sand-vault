@@ -204,19 +204,20 @@ export function FolderHeader({
           )}
         </button>
 
-        {/* Files arriving off a machine you have a login on, which is the same
-            act as an upload and belongs next to it. Icon-only here: the phone
-            heading has room for one worded button and uploading is the one
-            people came for. */}
+        {/* Files arriving off a machine you have a login on, or leaving for
+            one — the same act as an upload in either direction, and it
+            belongs next to it. Icon-only here: the phone heading has room for
+            one worded button and uploading is the one people came for. */}
         {onImport && (
           <Button
             size="md"
             onClick={onImport}
             disabled={!canUpload}
-            aria-label="Import from a machine"
-            title={canUpload ? `Import into ${path} from a machine` : 'Connect a cloud account first'}
-            style={{ flexShrink: 0, minHeight: '44px', fontSize: '13px' }}
-          >↓</Button>
+            aria-label="Bring files in from a machine, or send files to one"
+            title={canUpload ? `Bring files into ${path} from a machine, or send files from it to one` : 'Connect a cloud account first'}
+            /* A glyph is narrower than a word, and a target is a target. */
+            style={{ flexShrink: 0, minWidth: '44px', minHeight: '44px', fontSize: '13px' }}
+          >⇅</Button>
         )}
 
         <Button

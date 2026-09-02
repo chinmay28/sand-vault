@@ -13,7 +13,7 @@ import (
 // one can outlive the page that started it.
 //
 // This is the import watch's shape applied to the other long transfer in the
-// app (see import_watch.go for the reasoning it carries): a relocation is one
+// app (see transfer_watch.go for the reasoning it carries): a relocation is one
 // long POST, held open by default so that closing the tab cancels it, and a
 // folder of films moving between clouds is exactly the request nobody should
 // have to keep a page open for. So a relocation can be asked to detach — the
@@ -313,7 +313,7 @@ func (w *relocateWatch) stopAll() {
 // news presented as current.
 func (w *relocateWatch) sweepLocked() {
 	for id, entry := range w.runs {
-		if entry.run.Done && entry.run.FinishedAt != nil && time.Since(*entry.run.FinishedAt) > finishedImportTTL {
+		if entry.run.Done && entry.run.FinishedAt != nil && time.Since(*entry.run.FinishedAt) > finishedTransferTTL {
 			delete(w.runs, id)
 		}
 	}
@@ -327,11 +327,11 @@ func (w *relocateWatch) trimLocked() {
 			finished = append(finished, entry.run)
 		}
 	}
-	if len(finished) <= maxFinishedImports {
+	if len(finished) <= maxFinishedTransfers {
 		return
 	}
 	sort.Slice(finished, func(i, j int) bool { return finished[i].StartedAt.Before(finished[j].StartedAt) })
-	for _, run := range finished[:len(finished)-maxFinishedImports] {
+	for _, run := range finished[:len(finished)-maxFinishedTransfers] {
 		delete(w.runs, run.ID)
 	}
 }

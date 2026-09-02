@@ -157,14 +157,16 @@ func (s *Server) handleVaultLock(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Locking is global: the keys leave memory, so every session goes with it —
-	// and so does every stream link, which was minted against those keys, and
-	// every import still running. An import that carried on would be sealing
-	// chunks with a key that is about to be zeroed, and would fail further in
-	// having spent the bandwidth first; stopping it costs only what it had not
-	// fetched yet, since what it did fetch is already committed.
+	// and so does every stream and zip link, which was minted against those
+	// keys, and every import or export still running. A transfer that carried
+	// on would be sealing or opening chunks with a key that is about to be
+	// zeroed, and would fail further in having spent the bandwidth first;
+	// stopping it costs only what it had not moved yet, since what it did
+	// move is already there.
 	s.sessions.clear()
 	s.streams.clear()
-	s.imports.stopAll()
+	s.zips.clear()
+	s.transfers.stopAll()
 	// A relocation is the same case with less at stake: every file already
 	// moved is committed, and one that carried on would fail at its next
 	// commit for want of the index. What it copied first becomes litter the

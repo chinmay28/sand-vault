@@ -240,27 +240,38 @@ for adding one.
 > same box twice does not make it two places, and two parts of one file on one
 > machine is one machine that can rebuild the file.
 
-> **Bringing files in from a machine** is the other direction, and a separate
-> thing: **↓ Import** in a folder connects a machine you have an SSH login on,
-> browses it, and pulls what you pick into that folder — compressed, split,
-> encrypted and scattered like any other upload. The bytes go from the machine
-> to SAND to your accounts; they never pass through the browser.
+> **Moving your own files to and from a machine** is the other direction, and
+> a separate thing: **⇅ Machine** in a folder connects a machine you have an
+> SSH login on. *Bring in* browses it and pulls what you pick into that folder
+> — compressed, split, encrypted and scattered like any other upload. *Send
+> out* goes the other way: pick files or folders of the vault, pick a folder on
+> the machine, and they are written there **whole and in the clear**, under
+> their own names — which is the point of sending them, and the opposite of
+> what a connected cloud ever holds; the dialog says so beside the button. In
+> both directions the bytes go between the machine, SAND and your accounts;
+> they never pass through the browser, and nothing is held in SAND's memory
+> beyond the piece in flight, so a 40 GB film crosses a Raspberry Pi with
+> 4 GB. A folder's own menu has **Send to a machine** for the usual case.
 >
 > Two entries, even for the same box. A connected account is a place SAND
-> *writes* encrypted parts to. A source is a place it *reads* your own files
-> from, and never writes to. Keeping them apart is what stops an import browser
-> from seeing the shard store. Each gets its own key, and each connect form
-> offers to generate one — the same reversed paste as above, so what you carry
-> to the server is the public half.
+> *writes* encrypted parts to. A machine is a place it reads and writes your
+> own files, and never a part. Keeping them apart is what stops a browser over
+> your files from seeing the shard store. Each gets its own key, and each
+> connect form offers to generate one — the same reversed paste as above, so
+> what you carry to the server is the public half.
 >
-> Nothing is removed from the machine, and nothing outside the folder you scope
-> it to can be seen — including through a symlink pointing out of it. **If an
-> import is interrupted, every file that arrived whole is kept:** it is already
-> scattered, and running the same import again skips those and carries on from
-> the next one. There is no job to resume, only an import to repeat. **A file
-> cut off partway is the exception** — nothing of it is kept, and the next run
-> fetches it again from the first byte, which on one very large file means
-> starting it over rather than continuing it.
+> Nothing is removed from either side, and nothing outside the folder you scope
+> the machine to can be seen or written — including through a symlink pointing
+> out of it. **If a transfer is interrupted, every file that arrived whole is
+> kept:** an import's are already scattered, an export's are already renamed
+> into place on the machine, and running the same transfer again skips those
+> and carries on from the next one. There is no job to resume, only a transfer
+> to repeat. **A file cut off partway is the exception** — nothing of it is
+> kept under its name, and the next run moves it again from the first byte,
+> which on one very large file means starting it over rather than continuing
+> it. Sending out never writes over a file that is already there unless you
+> tick *Replace*: a file of the same size that is not older than the vault's
+> copy counts as already sent, and anything else is left alone and said so.
 >
 > While an import runs, the dialog draws the file it is on: which file of how
 > many, whether it is coming down from the machine or going back up to the
@@ -1967,6 +1978,18 @@ pipe the password on stdin.
   went to, what those parts weigh across the accounts, how many folders are
   inside, and when the newest of them changed — see [What a folder is
   holding](#what-a-folder-is-holding)
+- **Download a folder as a zip** — *Download as zip* in a folder's menu hands
+  the whole folder back as one archive, built as it downloads: each file is
+  gathered from your clouds and written straight into the stream, so a folder
+  far larger than SAND's own memory still leaves it, one piece at a time. The
+  dialog also shows the archive's address, good for a few minutes and carrying
+  its own credential, for a download manager or `curl -O` on a machine with the
+  disk for it. The archive is stored rather than compressed — the files already
+  were, before they were split
+- **Send a folder to a machine** — *Send to a machine* in the same menu copies
+  the folder, whole and in the clear, onto a machine you have an SSH login on —
+  see [Supported Backends](#supported-backends), where machines are described
+  beside the clouds
 - **Search** — a box in the toolbar finds a file or folder anywhere in the
   vault, each hit shown with the folder it lives in; searching inside a folder
   looks there first and offers to widen to the whole vault
@@ -2413,6 +2436,8 @@ one walk, so comparing them costs nothing.
 | GET | `/api/folders` | Every folder in the vault, for a destination picker |
 | GET | `/api/folders/survey?path=` | Everything under a folder in one walk of the index — every file with its kind and depth, every folder with what it holds. What the organizer plans from |
 | GET | `/api/folders/stats?path=` | What one folder holds, counted rather than listed: files and bytes at or below it, folders under it, what the parts weigh across the accounts, which clouds they are on, files short a part, newest change. What the folder menu shows |
+| POST | `/api/folders/zip` | Plan a folder as one zip — `{path, vault}` → the link to save it from, what it will be called, and how many files and bytes it holds. Refused with `NEEDS_CONVERSION` while any file under it is still in the pre-chunking format |
+| GET | `/zip/{token}/{name}` | Stream that archive (no session; the token is the credential, good for 15 minutes and voided by a lock). Built as it is sent, one chunk at a time, stored rather than deflated, so its size is not known up front |
 | GET | `/api/folders/duplicates?path=` | Which files under a folder are copies of each other, asked three ways in one walk: the same bytes, the same size, or names a copy marker apart |
 | GET · POST | `/api/folders/art?path=` | Which file's thumbnail a folder is drawn with, and what else it could be (`id` to pick one, `""` for none) |
 | POST · DELETE | `/api/folders` | Create / delete folders |

@@ -76,15 +76,21 @@ type Server struct {
 	generatedKeys *generatedKeyStore
 
 	// relocations is where the moves between clouds running right now say how
-	// far they have got — the same window import_watch.go opens onto imports,
+	// far they have got — the same window transfer_watch.go opens onto imports,
 	// for the same two readers: a progress bar, and a move that was detached
 	// from the page that started it.
 	relocations *relocateWatch
 
-	// imports is where the imports running right now say how far they have
-	// got, so the dialog that started one can draw it. It is a view of the
-	// requests in flight and dies with them — see import_watch.go.
-	imports *importWatch
+	// transfers is where the imports and exports running right now say how
+	// far they have got, so the dialog that started one can draw it. It is a
+	// view of the requests in flight and dies with them — see
+	// transfer_watch.go.
+	transfers *transferWatch
+
+	// zips holds the tickets for folders being handed back as archives: the
+	// same bearer-link shape as streams, minted for a folder and dying with
+	// the keys — see handlers_zip.go.
+	zips *ticketStore[zipTicket]
 
 	// erases is the same window onto recursive folder deletes, so the dialog
 	// that is waiting on one can count files down instead of sitting on
@@ -187,8 +193,11 @@ func (s *Server) Handler() (http.Handler, error) {
 	if s.generatedKeys == nil {
 		s.generatedKeys = newGeneratedKeyStore()
 	}
-	if s.imports == nil {
-		s.imports = newImportWatch()
+	if s.transfers == nil {
+		s.transfers = newTransferWatch()
+	}
+	if s.zips == nil {
+		s.zips = newTicketStore[zipTicket](zipTicketTTL)
 	}
 	if s.relocations == nil {
 		s.relocations = newRelocateWatch()
@@ -239,6 +248,12 @@ func (s *Server) Handler() (http.Handler, error) {
 	mux.HandleFunc("GET /stream/{token}", s.handleStream)
 	mux.HandleFunc("GET /stream/{token}/{name}", s.handleStream)
 
+	// A folder as one zip, by the same bargain: the ticket is the credential,
+	// because the archive is too big to come back down a fetch the page
+	// buffers and has to be an address the browser — or a download manager
+	// on another machine — saves from directly. See handlers_zip.go.
+	mux.HandleFunc("GET /zip/{token}/{name}", s.handleFolderZip)
+
 	// The provider sends the browser back here after the account holder has
 	// signed in. It arrives as a cross-site navigation, which the session
 	// cookie deliberately does not survive, so the flow's state parameter is
@@ -278,8 +293,8 @@ func (s *Server) Handler() (http.Handler, error) {
 		// still in the tree — a disconnect drops the records naming the
 		// account it removes — in which case the repair is to write the record
 		// back, which moves nothing.
-		"GET /api/vault/orphans":           s.handleOrphanScan,
-		"POST /api/vault/orphans":          s.handleOrphanSweep,
+		"GET /api/vault/orphans":  s.handleOrphanScan,
+		"POST /api/vault/orphans": s.handleOrphanSweep,
 		// Where a running sweep has got to — objects erased against objects
 		// doomed — read beside the POST above, which for a vault where
 		// somebody has been deleting films answers only after minutes.
@@ -433,6 +448,11 @@ func (s *Server) Handler() (http.Handler, error) {
 		// survey above could be counted for the same answer, and is a list of
 		// every name under the folder to get it.
 		"GET /api/folders/stats": s.handleFolderStats,
+		// Everything under a folder as one zip. The POST plans it from the
+		// index and mints the link to save it from; the GET /zip/ route
+		// above streams it, gathering each file as the archive is written,
+		// so a folder far bigger than this machine's memory still leaves it.
+		"POST /api/folders/zip": s.handleFolderZipLink,
 
 		// The copies under a folder, asked three ways in one walk: the same
 		// bytes, the same length, or names alike enough to be copies of each
@@ -491,11 +511,11 @@ func (s *Server) Handler() (http.Handler, error) {
 		// handlers_sshkeys.go for why that direction is the whole point of it.
 		"POST /api/ssh/keypair": s.handleGenerateSSHKey,
 
-		// The machines a vault imports files *from*, which is the opposite
-		// direction from a connected account and is deliberately not one: an
-		// account holds opaque shards under keys SAND generates, a source holds
-		// the user's own files under paths the user browses, and it is never
-		// written to. Listing is index work; the other four talk to somebody
+		// The machines a vault moves the user's own files to and from, which
+		// is the opposite of a connected account and is deliberately not one:
+		// an account holds opaque shards under keys SAND generates, a source
+		// holds the user's own files under paths the user browses, and never
+		// holds a shard. Listing is index work; the rest talk to somebody
 		// else's machine and carry deadlines of their own. See
 		// handlers_remote.go and internal/vault/source.go.
 		"GET /api/remote":              s.handleRemoteList,
@@ -515,6 +535,13 @@ func (s *Server) Handler() (http.Handler, error) {
 		// purpose, and its result dismissed on purpose too.
 		"GET /api/remote/{id}/import":          s.handleRemoteImportProgress,
 		"DELETE /api/remote/{id}/import/{run}": s.handleRemoteImportStop,
+		// The other direction: the vault's files written out onto the
+		// machine, in the clear. The same three verbs, because it is the same
+		// kind of request with the bytes going the other way — one long POST,
+		// a GET beside it for progress, a DELETE to stop or dismiss.
+		"POST /api/remote/{id}/export":         s.handleRemoteExport,
+		"GET /api/remote/{id}/export":          s.handleRemoteExportProgress,
+		"DELETE /api/remote/{id}/export/{run}": s.handleRemoteExportStop,
 	}
 	for pattern, handler := range protected {
 		mux.HandleFunc(pattern, s.requireSession(handler))
@@ -671,12 +698,14 @@ func (s *Server) autoLockLoop() {
 		if err != nil || !v.Unlocked() {
 			continue
 		}
-		if s.sessions.sweep() > 0 || s.externalActive() || s.imports.running() > 0 || s.relocations.running() > 0 {
+		if s.sessions.sweep() > 0 || s.externalActive() || s.transfers.running() > 0 || s.relocations.running() > 0 {
 			continue
 		}
 		v.Lock()
-		// Every stream link was minted against the keys that just left memory.
+		// Every stream and zip link was minted against the keys that just
+		// left memory.
 		s.streams.clear()
+		s.zips.clear()
 		log.Print("vault auto-locked after idle timeout")
 	}
 }

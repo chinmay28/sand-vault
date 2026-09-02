@@ -47,9 +47,9 @@ type ImportRequest struct {
 
 	// OnProgress, when set, is called as files move, so a caller holding the
 	// request open can say where it is. It is called from the goroutine running
-	// the import and must not block: see ImportProgress for what it carries and
+	// the import and must not block: see TransferProgress for what it carries and
 	// why it is a view of a running request rather than state anybody keeps.
-	OnProgress func(ImportProgress)
+	OnProgress func(TransferProgress)
 }
 
 // ImportResult is what became of one file. One line per file, so a partial
@@ -180,15 +180,15 @@ func (v *Vault) ImportFromSource(ctx context.Context, scope Scope, id string, re
 		// Fixed for this file, and filled in with a stage and a count as it
 		// moves. The tallies are of the files before this one, so what the bar
 		// says mid-flight is what the summary would say if it stopped here.
-		at := ImportProgress{
+		at := TransferProgress{
 			File: i + 1, Files: len(files),
 			Path: f.remote, Dest: path.Join(f.dir, f.name), Name: f.name,
-			Size:     f.size,
-			Imported: summary.Imported, Skipped: summary.Skipped, Failed: summary.Failed,
+			Size:      f.size,
+			Completed: summary.Imported, Skipped: summary.Skipped, Failed: summary.Failed,
 		}
-		var report func(ImportStage, int64)
+		var report func(TransferStage, int64)
 		if req.OnProgress != nil {
-			report = func(stage ImportStage, done int64) {
+			report = func(stage TransferStage, done int64) {
 				at.Stage, at.Done = stage, done
 				req.OnProgress(at)
 			}
@@ -217,7 +217,7 @@ func (v *Vault) ImportFromSource(ctx context.Context, scope Scope, id string, re
 
 // importOne fetches a single file, or says why it did not.
 func (v *Vault) importOne(ctx context.Context, scope Scope, client *sandsftp.Client,
-	source Source, f importFile, req ImportRequest, report func(ImportStage, int64)) ImportResult {
+	source Source, f importFile, req ImportRequest, report func(TransferStage, int64)) ImportResult {
 
 	result := ImportResult{Path: f.remote, Dest: path.Join(f.dir, f.name)}
 

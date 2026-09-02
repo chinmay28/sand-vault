@@ -3900,3 +3900,111 @@ class TestCloudHealthLine:
         expect(page.get_by_text("checks off")).to_be_visible(timeout=20000)
         assert schedule()["enabled"] is False
 
+
+
+class TestDownloadingAFolder:
+    """A folder comes back as one zip, streamed as it is built.
+
+    A file is fetched and handed over as a blob; a folder is not, because a
+    folder can be far larger than a page can hold. The dialog mints a link and
+    the browser saves straight from it, and the page never goes anywhere.
+    """
+
+    def test_a_folder_downloads_as_one_zip(self, app, tmp_path):
+        import zipfile
+
+        make_folder(app, "zipped")
+        app.get_by_text("zipped").first.click()
+        app.wait_for_load_state("networkidle")
+
+        one = tmp_path / "one.txt"
+        one.write_text("first file")
+        upload_and_settle(app, one)
+        two = tmp_path / "two.txt"
+        two.write_text("second file, a little longer")
+        upload_and_settle(app, two)
+
+        app.locator('button[aria-label="Up"]').click()
+        app.wait_for_selector('button[aria-label="Actions for zipped"]', timeout=20000)
+        app.locator('button[aria-label="Actions for zipped"]').click()
+        sheet = app.get_by_role("dialog", name="zipped")
+        sheet.wait_for(timeout=20000)
+        sheet.get_by_text("Download as zip", exact=True).click()
+
+        dialog = app.get_by_role("dialog", name="Download zipped")
+        dialog.wait_for(timeout=20000)
+        # It says what the archive will hold before a byte of it is fetched.
+        expect(dialog.get_by_text("2 files", exact=True)).to_be_visible(timeout=20000)
+
+        before = app.url
+        with app.expect_download(timeout=60000) as download:
+            dialog.get_by_role("button", name=re.compile(r"Save zipped\.zip")).click()
+
+        assert download.value.suggested_filename == "zipped.zip"
+        with zipfile.ZipFile(download.value.path()) as archive:
+            names = sorted(archive.namelist())
+            assert names == ["zipped/one.txt", "zipped/two.txt"]
+            assert archive.read("zipped/one.txt") == b"first file"
+            assert archive.read("zipped/two.txt") == b"second file, a little longer"
+            # Stored, not deflated: the files were compressed before they were
+            # ever split, and a Pi's CPU is not where a download should go.
+            assert all(info.compress_type == zipfile.ZIP_STORED for info in archive.infolist())
+
+        # The app is still where it was: a download never navigates.
+        assert app.url == before
+        expect(dialog.get_by_text("Your browser is saving it", exact=False)).to_be_visible()
+
+    def test_an_empty_folder_is_refused_rather_than_zipped(self, app):
+        make_folder(app, "zip-empty")
+        app.locator('button[aria-label="Actions for zip-empty"]').click()
+        sheet = app.get_by_role("dialog", name="zip-empty")
+        sheet.wait_for(timeout=20000)
+        sheet.get_by_text("Download as zip", exact=True).click()
+
+        dialog = app.get_by_role("dialog", name="Download zip-empty")
+        dialog.wait_for(timeout=20000)
+        expect(dialog.get_by_text("holds no files", exact=False)).to_be_visible(timeout=20000)
+
+
+class TestMovingFilesWithAMachine:
+    """One button, both directions.
+
+    There is no machine to connect in this suite — that takes an sshd, and the
+    Go tests bring their own — so what is checked here is the shape: the
+    dialog opens from the toolbar and from a folder's menu, offers both ways,
+    and says out loud which way writes plaintext.
+    """
+
+    def test_the_toolbar_button_offers_both_directions(self, app):
+        app.get_by_role("button", name="⇅ Machine").click()
+        dialog = app.get_by_role("dialog", name="A machine you have a login on")
+        dialog.wait_for(timeout=20000)
+
+        expect(dialog.get_by_text("Bring files into", exact=False)).to_be_visible()
+        bring = dialog.get_by_role("button", name=re.compile("BRING IN"))
+        send = dialog.get_by_role("button", name=re.compile("SEND OUT"))
+        expect(bring).to_have_attribute("aria-pressed", "true")
+        expect(send).to_have_attribute("aria-pressed", "false")
+        # The direction that writes plaintext says so where it is chosen.
+        expect(send).to_contain_text("in the clear")
+
+        send.click()
+        expect(dialog.get_by_text("Send files from", exact=False)).to_be_visible()
+        expect(send).to_have_attribute("aria-pressed", "true")
+        expect(dialog.get_by_text("No machines yet", exact=False)).to_be_visible()
+
+        app.keyboard.press("Escape")
+        expect(dialog).to_have_count(0)
+
+    def test_a_folder_menu_opens_the_dialog_ready_to_send(self, app):
+        make_folder(app, "outbound")
+        app.locator('button[aria-label="Actions for outbound"]').click()
+        sheet = app.get_by_role("dialog", name="outbound")
+        sheet.wait_for(timeout=20000)
+        sheet.get_by_text("Send to a machine", exact=True).click()
+
+        dialog = app.get_by_role("dialog", name="A machine you have a login on")
+        dialog.wait_for(timeout=20000)
+        expect(dialog.get_by_text("Send files from /outbound", exact=False)).to_be_visible()
+        expect(dialog.get_by_role("button", name=re.compile("SEND OUT"))).to_have_attribute("aria-pressed", "true")
+        app.keyboard.press("Escape")
