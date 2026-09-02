@@ -160,8 +160,17 @@ func TestFolderZipLinkExpires(t *testing.T) {
 	stale.expiry = time.Now().Add(-time.Second)
 	c.server.zips.tickets[token] = stale
 	c.server.zips.mu.Unlock()
-	if resp := fetchZip(t, c, http.MethodGet, url); resp.Code != http.StatusNotFound {
+	resp := fetchZip(t, c, http.MethodGet, url)
+	if resp.Code != http.StatusNotFound {
 		t.Errorf("an expired link answered %d, want 404", resp.Code)
+	}
+	// Whoever followed the link is a browser, not the app: the answer is a
+	// page that says what happened, not JSON with a code in it.
+	if ct := resp.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("an expired link answered with %q, want a page a browser can show", ct)
+	}
+	if !strings.Contains(resp.Body.String(), "expired") || !strings.Contains(resp.Body.String(), "Download as zip") {
+		t.Errorf("the refusal does not say what happened or what to do: %s", resp.Body.String())
 	}
 
 	// Locked: every link goes with the keys.
@@ -172,6 +181,11 @@ func TestFolderZipLinkExpires(t *testing.T) {
 	}
 	if resp := fetchZip(t, c, http.MethodGet, url); resp.Code == http.StatusOK {
 		t.Error("a link minted before the vault locked still answered")
+	}
+	// A link lasts the same twelve hours a stream link does — long enough to
+	// be carried to the machine with the disk for it.
+	if c.server.zips.ttl != DefaultStreamTTL {
+		t.Errorf("zip links last %v, want the stream link's %v", c.server.zips.ttl, DefaultStreamTTL)
 	}
 	if resp := fetchZip(t, c, http.MethodGet, "/zip/nosuchtoken/x.zip"); resp.Code != http.StatusNotFound {
 		t.Errorf("an unknown token answered %d, want 404", resp.Code)

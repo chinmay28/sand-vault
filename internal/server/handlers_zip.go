@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"html"
 	"log"
 	"mime"
 	"net/http"
@@ -28,14 +29,18 @@ import (
 // the content endpoint makes for one file, made for a folder. See
 // vault.WriteFolderZip.
 
-// zipTicketTTL is how long a zip link is good for.
+// zipTicketTTL is how long a zip link is good for without being used.
 //
-// Short, because it is a bearer link to a whole folder in the clear and the
-// browser follows it within a second of being handed it. Long enough that the
-// address can be pasted into a download manager on another machine — the case
-// a Pi's owner actually has, pulling a folder to the desktop that has the disk
-// for it — and it slides forward while the download runs.
-const zipTicketTTL = 15 * time.Minute
+// The same lifetime a stream link gets, for the same reasons: it is a bearer
+// link to plaintext either way, it slides forward on every use so a download
+// in progress never expires underneath itself, and it dies the moment the
+// vault locks. It is long rather than short because the address is meant to
+// be carried somewhere — pasted into a download manager on the desktop that
+// has the disk for it, or typed into a browser on another device — and that
+// is not always done within the minute. A link that had quietly expired by
+// the time it was tried answered with a bare JSON error, which is what
+// "the download URL doesn't work" looks like from the outside.
+const zipTicketTTL = DefaultStreamTTL
 
 // zipStreamTimeout is the ceiling on one archive. A folder is as big as a
 // folder is, and the connection under it is what sets the pace.
@@ -127,17 +132,19 @@ func (s *Server) handleFolderZipLink(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleFolderZip(w http.ResponseWriter, r *http.Request) {
 	t, ok := s.zips.lookup(r.PathValue("token"))
 	if !ok {
-		writeError(w, http.StatusNotFound, "this download link has expired", "NO_TICKET")
+		zipRefusal(w, http.StatusNotFound, "This download link has expired.",
+			"Links last twelve hours and end when the vault locks. Open the folder's menu in SAND and choose Download as zip again for a fresh one.")
 		return
 	}
 
 	v, err := s.Vault()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error(), "VAULT_ERROR")
+		zipRefusal(w, http.StatusInternalServerError, "SAND cannot open its vault right now.", err.Error())
 		return
 	}
 	if !v.Unlocked() {
-		writeError(w, http.StatusUnauthorized, "vault is locked", "LOCKED")
+		zipRefusal(w, http.StatusUnauthorized, "The vault is locked.",
+			"Every download link ends when the vault locks. Unlock it in SAND and make a new one from the folder's menu.")
 		return
 	}
 
@@ -193,6 +200,24 @@ func (s *Server) handleFolderZip(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+}
+
+// zipRefusal says no to a download in words a browser will show.
+//
+// Whoever follows a zip link is not the app: it is Safari, a download manager,
+// curl. The app's JSON errors are for the app, which reads the code and acts on
+// it; a person who pasted an address into a browser and got
+// {"error":"…","code":"NO_TICKET"} has been told nothing they can use. So the
+// refusal is a small page that says what happened and what to do about it,
+// with the same status the JSON would have carried for anything that checks.
+func zipRefusal(w http.ResponseWriter, status int, what, why string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.WriteHeader(status)
+	fmt.Fprintf(w, `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>%s</title><style>body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0b0f16;color:#c9d1d9;font:15px/1.6 system-ui,sans-serif}main{max-width:32rem;padding:2rem}h1{font-size:1.2rem;margin:0 0 .6rem;color:#f0f6fc}p{margin:0;color:#8b949e}</style></head><body><main><h1>%s</h1><p>%s</p></main></body></html>`,
+		html.EscapeString(what), html.EscapeString(what), html.EscapeString(why))
 }
 
 // activityWriter passes bytes through and notes that the vault is in use,

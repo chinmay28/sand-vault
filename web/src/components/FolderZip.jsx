@@ -17,8 +17,9 @@ import { Banner, Button, CopyField, Modal, Spinner } from './ui'
 
    The address is shown as well as followed, for the case a phone is the wrong
    place to receive 40 GB: paste it into a download manager, or curl, on a
-   machine with the disk. It carries its own credential and is good for a few
-   minutes, and it dies the moment the vault locks. */
+   machine with the disk. It carries its own credential, lasts twelve hours
+   without being used — sliding forward while a download runs — and dies the
+   moment the vault locks. */
 export function FolderZip({ path, name, vault = '', onClose }) {
   const [link, setLink] = useState(null)
   const [error, setError] = useState(null)
@@ -101,7 +102,7 @@ export function FolderZip({ path, name, vault = '', onClose }) {
           <CopyField
             label="Or save it somewhere else"
             value={link.address}
-            help="Good for a few minutes and for one folder. Paste it into a download manager, or curl -O it, on a machine with the disk for it — no sign-in needed, the address is the key."
+            help="Good for twelve hours, or until the vault locks, and for this one folder. Paste it into a download manager, or curl -O it, on a machine with the disk for it — no sign-in needed, the address is the key."
           />
 
           <p style={{
