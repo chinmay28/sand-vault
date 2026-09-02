@@ -499,12 +499,19 @@ export const api = {
      from and what the archive will hold — files, bytes — rather than the
      archive: it is streamed by the server as it is built, gathering each file
      from the clouds on the way, and can be far bigger than a page could hold
-     in memory. The link carries its own credential and lasts twelve hours
-     without use, so it can also be pasted into a download manager elsewhere. It
+     in memory. The link carries its own credential and lasts a few hours
+     without use — three unless the vault's settings say otherwise, see
+     linkSettings — so it can also be pasted into a download manager elsewhere. It
      is refused, with NEEDS_CONVERSION, while any file under the folder is
      still in the pre-chunking format. */
   folderZipLink: (path, vault = '') =>
     request('/api/folders/zip', { method: 'POST', body: { path, vault } }),
+  /* How long one of those links stays good, in hours: the setting with the
+     room it has to move in. A link is a bearer address to a folder in the
+     clear, so this is the vault owner's call rather than a constant; zero
+     puts the default back. Shortening it shortens links already handed out. */
+  linkSettings: () => request('/api/vault/links'),
+  setLinkSettings: (hours) => request('/api/vault/links', { method: 'POST', body: { hours } }),
 
   /* Which files under a folder are copies of each other, asked three ways from
      one walk of the index: the same bytes (one SHA-256, which is proof), the

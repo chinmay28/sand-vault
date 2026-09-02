@@ -419,7 +419,7 @@ function CloudRow({ cloud }) {
 
 /* One interval, picked. A radio row written as chips: they are short, there are
    five of them, and a select would hide four of the five behind a tap. */
-function Choice({ label, on, tone, disabled, onClick }) {
+export function Choice({ label, on, tone, disabled, onClick }) {
   const [hover, setHover] = useState(false)
 
   return (

@@ -4063,3 +4063,36 @@ class TestMovingFilesWithAMachine:
         expect(dialog.get_by_text("Send files from /outbound", exact=False)).to_be_visible()
         expect(dialog.get_by_role("button", name=re.compile("SEND OUT"))).to_have_attribute("aria-pressed", "true")
         app.keyboard.press("Escape")
+
+
+class TestDownloadLinkLifetime:
+    """How long a folder's download address stays good is the vault owner's
+    call: a line in Vault settings reads it out, and a dialog changes it.
+    """
+
+    def test_the_setting_is_read_and_changed_from_vault_settings(self, app):
+        panel = open_vault_setting(app, "Download links")
+        dialog = app.get_by_role("dialog", name="Download links")
+        dialog.wait_for(timeout=20000)
+        # Three hours unless told otherwise.
+        expect(dialog.get_by_role("button", name="3 hours")).to_have_attribute("aria-pressed", "true", timeout=20000)
+
+        dialog.get_by_role("button", name="1 hour").click()
+        expect(dialog.get_by_role("button", name="1 hour")).to_have_attribute("aria-pressed", "true", timeout=20000)
+        expect(dialog.get_by_text("Links currently last 1 hour", exact=False)).to_be_visible()
+
+        # Any number of hours within the bounds, typed.
+        dialog.get_by_label(re.compile("Or any number of hours")).fill("5")
+        dialog.get_by_role("button", name="Save", exact=True).click()
+        expect(dialog.get_by_text("Links currently last 5 hours", exact=False)).to_be_visible(timeout=20000)
+
+        dialog.get_by_role("button", name="Close").click()
+        # The settings line reads the new value out.
+        menu = app.get_by_role("dialog", name="Vault settings")
+        expect(menu.get_by_role("button", name=re.compile(r"^Download links.*5 hours$"))).to_be_visible(timeout=20000)
+
+        # And the server agrees, with the link's own expiry to match.
+        settings = app.evaluate("fetch('/api/vault/links').then((r) => r.json())")
+        assert settings["hours"] == 5
+        # Put it back for the rest of the suite.
+        app.evaluate("fetch('/api/vault/links', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({hours: 0})})")

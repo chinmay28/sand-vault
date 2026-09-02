@@ -175,6 +175,12 @@ type storeFile struct {
 	HealthCheckMinutes int  `json:"health_check_minutes,omitempty"`
 	HealthCheckOff     bool `json:"health_check_off,omitempty"`
 
+	// LinkHours is how long a folder's download link stays good, in hours.
+	// Zero — every vault written before this existed — is the default. In the
+	// clear for the same reason the health interval is: a number of hours
+	// says nothing about what is stored or where. See links.go.
+	LinkHours int `json:"link_hours,omitempty"`
+
 	// ManifestBackupDisabled turns off replicating the manifest to the
 	// connected accounts. Stored as the negative so that the absence of the
 	// field — an older vault, or one written by a build that predates the

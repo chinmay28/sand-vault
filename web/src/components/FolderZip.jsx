@@ -18,9 +18,10 @@ import { Banner, Button, CopyField, Modal, Spinner } from './ui'
 
    The address is shown as well as followed, for the case a phone is the wrong
    place to receive 40 GB: paste it into a download manager, or curl, on a
-   machine with the disk. It carries its own credential, lasts twelve hours
-   without being used — sliding forward while a download runs — and dies the
-   moment the vault locks.
+   machine with the disk. It carries its own credential, lasts a few hours
+   without being used — three unless the vault's settings say otherwise,
+   sliding forward while a download runs — and dies the moment the vault
+   locks.
 
    A home-screen app cannot save from an address at all: iOS ignores the
    download attribute there and a new window is an in-app Safari view that
@@ -33,6 +34,16 @@ import { Banner, Button, CopyField, Modal, Spinner } from './ui'
    has room for this; it does not have room for a film library, and a page that
    tried would be killed partway with nothing to show for it. */
 const SHARE_LIMIT = 512 << 20
+
+/* A link's remaining life in the roundest words that are still true. */
+function describeLifetime(seconds) {
+  const hours = Math.round((seconds || 0) / 3600)
+  if (hours < 1) return 'under an hour'
+  if (hours === 1) return 'an hour'
+  if (hours === 24) return 'a day'
+  if (hours % 24 === 0) return `${hours / 24} days`
+  return `${hours} hours`
+}
 export function FolderZip({ path, name, vault = '', onClose }) {
   const [link, setLink] = useState(null)
   const [error, setError] = useState(null)
@@ -163,7 +174,7 @@ export function FolderZip({ path, name, vault = '', onClose }) {
           <CopyField
             label="Or save it somewhere else"
             value={link.address}
-            help="Good for twelve hours, or until the vault locks, and for this one folder. Paste it into a download manager, or curl -O it, on a machine with the disk for it — no sign-in needed, the address is the key."
+            help={`Good for ${describeLifetime(link.expires_in)}, or until the vault locks, and for this one folder. Paste it into a download manager, or curl -O it, on a machine with the disk for it — no sign-in needed, the address is the key. How long a link lasts is in Vault settings.`}
           />
 
           <p style={{

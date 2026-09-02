@@ -197,7 +197,7 @@ func (s *Server) Handler() (http.Handler, error) {
 		s.transfers = newTransferWatch()
 	}
 	if s.zips == nil {
-		s.zips = newTicketStore[zipTicket](zipTicketTTL)
+		s.zips = newTicketStore[zipTicket](vault.DefaultLinkLifetime)
 	}
 	if s.relocations == nil {
 		s.relocations = newRelocateWatch()
@@ -272,6 +272,10 @@ func (s *Server) Handler() (http.Handler, error) {
 		"POST /api/vault/policy":   s.handleVaultPolicy,
 		"POST /api/vault/defaults": s.handleVaultDefaults,
 		"POST /api/vault/backup":   s.handleVaultBackup,
+		// How long a folder's download link stays good. A setting on the
+		// vault, kept beside the health schedule — see handlers_links.go.
+		"GET /api/vault/links":  s.handleLinkSettings,
+		"POST /api/vault/links": s.handleLinkSettingsSet,
 
 		// Disaster recovery: what the accounts are still holding after the
 		// machine that held the vault is gone, and rebuilding the index from

@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react'
 import { COLORS, FONT } from '../theme'
 import { api } from '../api'
-import { Modal } from './ui'
+import { Banner, Button, Input, Modal } from './ui'
 import ChangePassword from './ChangePassword'
-import CloudHealth from './CloudHealth'
+import CloudHealth, { Choice } from './CloudHealth'
 import MountDrive from './MountDrive'
 import { FilmKeySettings } from './FilmDetails'
 import SubVaults from './SubVaults'
@@ -54,6 +54,7 @@ export default function VaultSettings({
   const [open, setOpen] = useState(null)
   const [filmKey, setFilmKey] = useState(null)
   const [kit, setKit] = useState(null)
+  const [links, setLinks] = useState(null)
 
   const defaults = (stats?.default_accounts || []).filter(
     (id) => providers.some((p) => p.id === id))
@@ -73,6 +74,17 @@ export default function VaultSettings({
      about it worth reading without opening anything. */
   const loadKit = () => api.kitStatus().then(setKit).catch(() => {})
   useEffect(() => { loadKit() }, [])
+
+  /* How long a folder's download link stays good, for the line to read out.
+     Asked here rather than carried in the status, since nothing else in the
+     app needs it. */
+  useEffect(() => {
+    let cancelled = false
+    api.linkSettings()
+      .then((resp) => { if (!cancelled) setLinks(resp) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [])
 
   const close = () => setOpen(null)
 
@@ -117,6 +129,18 @@ export default function VaultSettings({
             onClick={() => setOpen('health')}
           />
         )}
+
+        {/* A folder downloaded as a zip is fetched through an address that
+            carries its own credential, so it can be handed to a download
+            manager or another device — and how long such an address should
+            stay good is the vault owner's call, not a constant. */}
+        <Setting
+          icon="🔗"
+          label="Download links"
+          hint="How long a folder's download address stays good"
+          status={links ? describeHours(links.hours) : '…'}
+          onClick={() => setOpen('links')}
+        />
 
         <Setting
           icon="🔑"
@@ -249,6 +273,15 @@ export default function VaultSettings({
         />
       )}
 
+      {open === 'links' && (
+        <DownloadLinks
+          settings={links}
+          zIndex={CHILD_Z}
+          onClose={close}
+          onChanged={setLinks}
+        />
+      )}
+
       {open === 'health' && (
         <CloudHealth
           health={health}
@@ -267,6 +300,120 @@ export default function VaultSettings({
       {open === 'strays' && (
         <StrayParts zIndex={CHILD_Z} onClose={close} onChanged={onChanged} />
       )}
+    </Modal>
+  )
+}
+
+/* A lifetime in hours, the way a person would say it. */
+function describeHours(hours) {
+  if (hours === 1) return '1 hour'
+  if (hours === 24) return 'A day'
+  if (hours % 24 === 0 && hours >= 48) return `${hours / 24} days`
+  return `${hours} hours`
+}
+
+const LINK_CHOICES = [
+  { hours: 1, label: '1 hour' },
+  { hours: 3, label: '3 hours' },
+  { hours: 12, label: '12 hours' },
+  { hours: 24, label: 'A day' },
+  { hours: 168, label: 'A week' },
+]
+
+/* How long a folder's download link stays good.
+
+   The link is a bearer address to a folder in the clear: anyone holding it can
+   fetch the archive until it expires, with no sign-in. That is what makes it
+   useful — a download manager on the desktop with the disk, a browser on
+   another device — and what makes its lifetime worth choosing. Three hours is
+   the default. It slides forward while a download runs, and every link ends
+   the moment the vault locks, whatever this says. */
+function DownloadLinks({ settings, zIndex, onClose, onChanged }) {
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState(null)
+  const [custom, setCustom] = useState('')
+
+  const choose = async (hours) => {
+    setSaving(true)
+    setError(null)
+    try {
+      onChanged(await api.setLinkSettings(hours))
+      setCustom('')
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const hours = settings?.hours
+  const min = settings?.min_hours ?? 1
+  const max = settings?.max_hours ?? 168
+  const customHours = Number(custom)
+  const customOK = Number.isInteger(customHours) && customHours >= min && customHours <= max
+
+  return (
+    <Modal
+      title="Download links"
+      subtitle="How long a folder's download address stays good"
+      onClose={onClose}
+      width={480}
+      zIndex={zIndex}
+    >
+      {error && <Banner tone="error">{error}</Banner>}
+
+      <p style={{
+        margin: '0 0 14px', fontFamily: FONT.sans, fontSize: '12.5px', lineHeight: 1.6,
+        color: COLORS.textDim,
+      }}>
+        Downloading a folder as a zip hands you an address that carries its own
+        key: anyone holding it can fetch the folder, in the clear, until it
+        expires — no sign-in needed, which is what lets a download manager or
+        another device take it. A link slides forward while a download runs,
+        and every link ends the moment the vault locks. Shortening this also
+        shortens the links already handed out.
+      </p>
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '14px' }}>
+        {LINK_CHOICES.map((choice) => (
+          <Choice
+            key={choice.hours}
+            label={choice.label}
+            on={hours === choice.hours}
+            disabled={saving || !settings}
+            onClick={() => choose(choice.hours)}
+          />
+        ))}
+      </div>
+
+      <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-end' }}>
+        <div style={{ flex: 1 }}>
+          <Input
+            label={`Or any number of hours (${min}–${max})`}
+            type="number"
+            min={min}
+            max={max}
+            value={custom}
+            disabled={saving || !settings}
+            placeholder={hours ? String(hours) : ''}
+            onChange={(e) => setCustom(e.target.value)}
+          />
+        </div>
+        <Button
+          onClick={() => choose(customHours)}
+          disabled={saving || !customOK}
+          style={{ marginBottom: '12px' }}
+        >Save</Button>
+      </div>
+
+      <p style={{
+        margin: '4px 0 0', fontFamily: FONT.sans, fontSize: '11px', lineHeight: 1.6,
+        color: COLORS.textMuted,
+      }}>
+        {settings
+          ? `Links currently last ${describeHours(settings.hours).toLowerCase()}; the default is ${describeHours(settings.default_hours).toLowerCase()}.`
+          : 'Reading the setting…'}
+      </p>
     </Modal>
   )
 }

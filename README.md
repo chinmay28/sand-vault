@@ -1982,9 +1982,11 @@ pipe the password on stdin.
   the whole folder back as one archive, built as it downloads: each file is
   gathered from your clouds and written straight into the stream, so a folder
   far larger than SAND's own memory still leaves it, one piece at a time. The
-  dialog also shows the archive's address, good for twelve hours or until the
-  vault locks and carrying its own credential, for a download manager or
-  `curl -O` on a machine with the disk for it. The archive is stored rather than compressed — the files already
+  dialog also shows the archive's address, carrying its own credential, for a
+  download manager or `curl -O` on a machine with the disk for it. It is good
+  for three hours or until the vault locks — **Download links** in Vault
+  settings changes the hours, and shortening it shortens links already handed
+  out. The archive is stored rather than compressed — the files already
   were, before they were split
 - **Send a folder to a machine** — *Send to a machine* in the same menu copies
   the folder, whole and in the clear, onto a machine you have an SSH login on —
@@ -2436,8 +2438,10 @@ one walk, so comparing them costs nothing.
 | GET | `/api/folders` | Every folder in the vault, for a destination picker |
 | GET | `/api/folders/survey?path=` | Everything under a folder in one walk of the index — every file with its kind and depth, every folder with what it holds. What the organizer plans from |
 | GET | `/api/folders/stats?path=` | What one folder holds, counted rather than listed: files and bytes at or below it, folders under it, what the parts weigh across the accounts, which clouds they are on, files short a part, newest change. What the folder menu shows |
+| GET | `/api/vault/links` | How long a folder's download link stays good, in hours, with the default and the bounds |
+| POST | `/api/vault/links` | Set it — `{hours}`, zero for the default. Shortening it shortens links already handed out |
 | POST | `/api/folders/zip` | Plan a folder as one zip — `{path, vault}` → the link to save it from, what it will be called, and how many files and bytes it holds. Refused with `NEEDS_CONVERSION` while any file under it is still in the pre-chunking format |
-| GET | `/zip/{token}/{name}` | Stream that archive (no session; the token is the credential, good for twelve hours of disuse like a stream link's and voided by a lock; an expired one answers with a page saying so). Built as it is sent, one chunk at a time, stored rather than deflated, so its size is not known up front |
+| GET | `/zip/{token}/{name}` | Stream that archive (no session; the token is the credential, good for three hours of disuse by default and voided by a lock; an expired one answers with a page saying so). Built as it is sent, one chunk at a time, stored rather than deflated, so its size is not known up front |
 | GET | `/api/folders/duplicates?path=` | Which files under a folder are copies of each other, asked three ways in one walk: the same bytes, the same size, or names a copy marker apart |
 | GET · POST | `/api/folders/art?path=` | Which file's thumbnail a folder is drawn with, and what else it could be (`id` to pick one, `""` for none) |
 | POST · DELETE | `/api/folders` | Create / delete folders |

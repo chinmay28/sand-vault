@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/chinmay28/sand-vault/internal/vault"
 )
 
 // zipFixture is a vault with a small tree under /photos.
@@ -182,10 +184,10 @@ func TestFolderZipLinkExpires(t *testing.T) {
 	if resp := fetchZip(t, c, http.MethodGet, url); resp.Code == http.StatusOK {
 		t.Error("a link minted before the vault locked still answered")
 	}
-	// A link lasts the same twelve hours a stream link does — long enough to
-	// be carried to the machine with the disk for it.
-	if c.server.zips.ttl != DefaultStreamTTL {
-		t.Errorf("zip links last %v, want the stream link's %v", c.server.zips.ttl, DefaultStreamTTL)
+	// A link lasts three hours unless the vault says otherwise — long enough
+	// to be carried to the machine with the disk for it.
+	if c.server.zips.ttl != vault.DefaultLinkLifetime {
+		t.Errorf("zip links last %v, want %v", c.server.zips.ttl, vault.DefaultLinkLifetime)
 	}
 	if resp := fetchZip(t, c, http.MethodGet, "/zip/nosuchtoken/x.zip"); resp.Code != http.StatusNotFound {
 		t.Errorf("an unknown token answered %d, want 404", resp.Code)

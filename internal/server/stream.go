@@ -103,6 +103,34 @@ func (s *ticketStore[T]) lookup(token string) (T, bool) {
 	return none, false
 }
 
+// setTTL changes how long tickets last from here on, and pulls in any that
+// were minted to last longer.
+//
+// The pull-in is the point. A lifetime is shortened because somebody decided
+// a link should not stay good that long, and a link already out there is
+// exactly the one they were thinking of; leaving it to run under the old rule
+// would make the setting a promise about the future only. Lengthening leaves
+// existing tickets alone — their next use extends them under the new rule, as
+// any use does.
+func (s *ticketStore[T]) setTTL(ttl time.Duration) {
+	if ttl <= 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ttl == s.ttl {
+		return
+	}
+	s.ttl = ttl
+	latest := time.Now().Add(ttl)
+	for token, t := range s.tickets {
+		if t.expiry.After(latest) {
+			t.expiry = latest
+			s.tickets[token] = t
+		}
+	}
+}
+
 // clear drops every ticket. Locking the vault takes the keys out of memory, so
 // nothing minted before it can read anything after it — the links are voided
 // rather than left to fail one request at a time.

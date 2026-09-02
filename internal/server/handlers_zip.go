@@ -29,18 +29,13 @@ import (
 // the content endpoint makes for one file, made for a folder. See
 // vault.WriteFolderZip.
 
-// zipTicketTTL is how long a zip link is good for without being used.
-//
-// The same lifetime a stream link gets, for the same reasons: it is a bearer
-// link to plaintext either way, it slides forward on every use so a download
-// in progress never expires underneath itself, and it dies the moment the
-// vault locks. It is long rather than short because the address is meant to
-// be carried somewhere — pasted into a download manager on the desktop that
-// has the disk for it, or typed into a browser on another device — and that
-// is not always done within the minute. A link that had quietly expired by
-// the time it was tried answered with a bare JSON error, which is what
-// "the download URL doesn't work" looks like from the outside.
-const zipTicketTTL = DefaultStreamTTL
+// How long a zip link is good for without being used is the vault's own
+// setting — three hours unless its owner says otherwise; see vault.LinkLifetime
+// and handlers_links.go. Like a stream link it slides forward on every use, so
+// a download in progress never expires underneath itself, and it dies the
+// moment the vault locks. The store is told the vault's answer at every mint
+// and every use, so a vault opened with a different setting than the last one
+// is obeyed without anything having to be told twice.
 
 // zipStreamTimeout is the ceiling on one archive. A folder is as big as a
 // folder is, and the connection under it is what sets the pace.
@@ -103,6 +98,7 @@ func (s *Server) handleFolderZipLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.zips.setTTL(v.LinkLifetime())
 	token, expiry, err := s.zips.issue(zipTicket{scope: scope, dir: plan.Path})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not mint a download link", "INTERNAL_ERROR")
@@ -130,16 +126,18 @@ func (s *Server) handleFolderZipLink(w http.ResponseWriter, r *http.Request) {
 // the bytes so far rather than a percentage, which is the honest reading of a
 // download whose end is decided by three clouds.
 func (s *Server) handleFolderZip(w http.ResponseWriter, r *http.Request) {
-	t, ok := s.zips.lookup(r.PathValue("token"))
-	if !ok {
-		zipRefusal(w, http.StatusNotFound, "This download link has expired.",
-			"Links last twelve hours and end when the vault locks. Open the folder's menu in SAND and choose Download as zip again for a fresh one.")
-		return
-	}
-
 	v, err := s.Vault()
 	if err != nil {
 		zipRefusal(w, http.StatusInternalServerError, "SAND cannot open its vault right now.", err.Error())
+		return
+	}
+	s.zips.setTTL(v.LinkLifetime())
+
+	t, ok := s.zips.lookup(r.PathValue("token"))
+	if !ok {
+		zipRefusal(w, http.StatusNotFound, "This download link has expired.",
+			fmt.Sprintf("Links last %s of disuse — a setting in Vault settings — and end when the vault locks. Open the folder's menu in SAND and choose Download as zip again for a fresh one.",
+				describeHours(v.LinkHours())))
 		return
 	}
 	if !v.Unlocked() {
@@ -200,6 +198,19 @@ func (s *Server) handleFolderZip(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+}
+
+// describeHours says a lifetime the way a person would.
+func describeHours(hours int) string {
+	switch {
+	case hours == 1:
+		return "an hour"
+	case hours%24 == 0 && hours >= 48:
+		return fmt.Sprintf("%d days", hours/24)
+	case hours == 24:
+		return "a day"
+	}
+	return fmt.Sprintf("%d hours", hours)
 }
 
 // zipRefusal says no to a download in words a browser will show.
