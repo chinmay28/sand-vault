@@ -3954,6 +3954,43 @@ class TestDownloadingAFolder:
         assert app.url == before
         expect(dialog.get_by_text("Your browser is saving it", exact=False)).to_be_visible()
 
+    def test_a_home_screen_app_hands_the_zip_to_the_browser(self, app, tmp_path):
+        """Added to a home screen the vault has no browser around it, and iOS
+        ignores the download attribute there: pointing the app's own window at
+        the archive leaves it on a "Code.zip" screen with no way back. So a
+        standalone app opens the address in the system browser instead, and
+        the app itself never moves.
+        """
+        make_folder(app, "handed")
+        app.get_by_text("handed").first.click()
+        app.wait_for_load_state("networkidle")
+        one = tmp_path / "handed.txt"
+        one.write_text("handed over")
+        upload_and_settle(app, one)
+        app.locator('button[aria-label="Up"]').click()
+        app.wait_for_selector('button[aria-label="Actions for handed"]', timeout=20000)
+
+        # Safari's flag for a home-screen app, which is how the page tells.
+        app.evaluate("Object.defineProperty(navigator, 'standalone', { value: true })")
+
+        app.locator('button[aria-label="Actions for handed"]').click()
+        app.get_by_role("dialog", name="handed").get_by_text("Download as zip", exact=True).click()
+        dialog = app.get_by_role("dialog", name="Download handed")
+        dialog.wait_for(timeout=20000)
+        expect(dialog.get_by_text("1 file", exact=True)).to_be_visible(timeout=20000)
+
+        before = app.url
+        with app.context.expect_page(timeout=20000) as opened:
+            dialog.get_by_role("button", name=re.compile(r"Save handed\.zip")).click()
+        # The new window is pointed at an attachment, so it never commits a
+        # URL of its own; that it opened at all is the handoff.
+        popup = opened.value
+        popup.close()
+
+        # The app is exactly where it was, and says where the download went.
+        assert app.url == before
+        expect(dialog.get_by_text("Handed to your browser", exact=False)).to_be_visible()
+
     def test_an_empty_folder_is_refused_rather_than_zipped(self, app):
         make_folder(app, "zip-empty")
         app.locator('button[aria-label="Actions for zip-empty"]').click()

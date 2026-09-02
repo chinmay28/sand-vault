@@ -499,8 +499,8 @@ export const api = {
      from and what the archive will hold — files, bytes — rather than the
      archive: it is streamed by the server as it is built, gathering each file
      from the clouds on the way, and can be far bigger than a page could hold
-     in memory. The link carries its own credential and is good for a few
-     minutes, so it can also be pasted into a download manager elsewhere. It
+     in memory. The link carries its own credential and lasts twelve hours
+     without use, so it can also be pasted into a download manager elsewhere. It
      is refused, with NEEDS_CONVERSION, while any file under the folder is
      still in the pre-chunking format. */
   folderZipLink: (path, vault = '') =>

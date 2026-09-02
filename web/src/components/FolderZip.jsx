@@ -17,12 +17,16 @@ import { Banner, Button, CopyField, Modal, Spinner } from './ui'
 
    The address is shown as well as followed, for the case a phone is the wrong
    place to receive 40 GB: paste it into a download manager, or curl, on a
-   machine with the disk. It carries its own credential and is good for a few
-   minutes, and it dies the moment the vault locks. */
+   machine with the disk. It carries its own credential, lasts twelve hours
+   without being used — sliding forward while a download runs — and dies the
+   moment the vault locks. */
 export function FolderZip({ path, name, vault = '', onClose }) {
   const [link, setLink] = useState(null)
   const [error, setError] = useState(null)
-  const [started, setStarted] = useState(false)
+  /* null until Save is pressed, then where the download went — see
+     downloadFromLink. A home-screen app cannot save a file itself, so it
+     hands the address to the browser and says so. */
+  const [started, setStarted] = useState(null)
 
   useEffect(() => {
     let live = true
@@ -34,8 +38,7 @@ export function FolderZip({ path, name, vault = '', onClose }) {
 
   const save = () => {
     if (!link) return
-    downloadFromLink(link.url, link.name)
-    setStarted(true)
+    setStarted(downloadFromLink(link.url, link.name))
   }
 
   return (
@@ -81,18 +84,25 @@ export function FolderZip({ path, name, vault = '', onClose }) {
             <Button variant="ghost" onClick={onClose}>{started ? 'Done' : 'Cancel'}</Button>
           </div>
 
-          {started && (
+          {started === 'saved' && (
             <Banner tone="info">
               Your browser is saving it. There is nothing to wait for here — the
               archive is built as it downloads, and closing this leaves the
               download running.
             </Banner>
           )}
+          {started === 'browser' && (
+            <Banner tone="info">
+              Handed to your browser, which can save it where this app cannot:
+              tap Download there and it goes to your Downloads. Come back here
+              whenever you like — nothing is waiting on this screen.
+            </Banner>
+          )}
 
           <CopyField
             label="Or save it somewhere else"
             value={link.address}
-            help="Good for a few minutes and for one folder. Paste it into a download manager, or curl -O it, on a machine with the disk for it — no sign-in needed, the address is the key."
+            help="Good for twelve hours, or until the vault locks, and for this one folder. Paste it into a download manager, or curl -O it, on a machine with the disk for it — no sign-in needed, the address is the key."
           />
 
           <p style={{

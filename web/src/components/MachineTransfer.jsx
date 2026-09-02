@@ -724,23 +724,28 @@ function describeItems(items, short = false) {
   return parts.join(' and ')
 }
 
-/* Choosing what to send, from the folder the browser is standing in.
+/* Choosing what to send, starting from the folder the browser is standing in.
 
-   The vault's own listing, one level, with a tick per row — a folder ticks
-   everything under it. The shortcut at the top is the case this is usually
-   wanted in: the whole folder, as it is, onto the machine. */
+   The vault's own listing, walked a level at a time with a tick per row: a
+   folder ticked sends everything under it, a folder opened shows what is
+   inside so one file deep in it can be picked on its own. Ticks survive
+   walking around, so a selection can be gathered from several folders and
+   sent in one go. The shortcut at the top is the case this is usually wanted
+   in: the whole folder, as it is, onto the machine. */
 function VaultPicker({ path, vault, source, mode, onMode, initial, onBack, onClose, onPick }) {
+  const [cwd, setCwd] = useState(path)
   const [listing, setListing] = useState(null)
   const [error, setError] = useState(null)
   const [chosen, setChosen] = useState(() => new Map(initial.map((item) => [item.path, item])))
 
   useEffect(() => {
     let live = true
-    api.list(path, vault)
+    setListing(null)
+    api.list(cwd, vault)
       .then((resp) => { if (live) setListing(resp) })
       .catch((err) => { if (live) { setError(err.message); setListing({ folders: [], files: [] }) } })
     return () => { live = false }
-  }, [path, vault])
+  }, [cwd, vault])
 
   const toggle = (item) => {
     const next = new Map(chosen)
@@ -749,20 +754,28 @@ function VaultPicker({ path, vault, source, mode, onMode, initial, onBack, onClo
     setChosen(next)
   }
 
-  const here = path === '/' ? 'the vault' : path
+  const join = (dir, name) => (dir === '/' ? `/${name}` : `${dir}/${name}`)
+  const parent = cwd === '/' ? '/' : cwd.slice(0, cwd.lastIndexOf('/')) || '/'
+  const here = cwd === '/' ? 'the vault' : cwd
   const whole = {
     kind: 'folder',
-    path,
-    name: path === '/' ? (vault || 'vault') : path.slice(path.lastIndexOf('/') + 1),
+    path: cwd,
+    name: cwd === '/' ? (vault || 'vault') : cwd.slice(cwd.lastIndexOf('/') + 1),
   }
   const folders = (listing?.folders || []).map((name) => ({
-    kind: 'folder', name, path: path === '/' ? `/${name}` : `${path}/${name}`,
+    kind: 'folder', name, path: join(cwd, name),
   }))
   const files = (listing?.files || []).map((file) => ({
-    kind: 'file', name: file.name, path: path === '/' ? `/${file.name}` : `${path}/${file.name}`,
+    kind: 'file', name: file.name, path: join(cwd, file.name),
     size: file.size, legacy: !file.chunk_count,
   }))
   const rows = [...folders, ...files]
+
+  /* A row is covered when it, or a folder above it, is ticked: a file inside
+     a ticked folder is going already, and ticking it again would only be a
+     second line saying so. */
+  const covered = (item) => [...chosen.keys()].some((p) => p !== item.path
+    && (p === '/' || item.path.startsWith(`${p}/`)))
 
   return (
     <Modal
@@ -775,10 +788,17 @@ function VaultPicker({ path, vault, source, mode, onMode, initial, onBack, onClo
 
       <DirectionSwitch mode={mode} onMode={onMode} />
 
-      <div style={{ display: 'flex', gap: '8px', marginBottom: '12px', alignItems: 'center' }}>
+      <div style={{ display: 'flex', gap: '8px', marginBottom: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
         <Button size="sm" variant="ghost" onClick={onBack}>← Machines</Button>
+        {cwd !== '/' && (
+          <Button size="sm" onClick={() => setCwd(parent)} aria-label="Up">↑ Up</Button>
+        )}
+        <span style={{
+          fontFamily: FONT.mono, fontSize: '11px', color: COLORS.textMuted,
+          overflowWrap: 'anywhere', flex: 1, minWidth: 0,
+        }}>{cwd}</span>
         <Button size="sm" onClick={() => onPick([whole])} disabled={rows.length === 0}>
-          Everything in {here === 'the vault' ? 'the vault' : whole.name}
+          Everything in {cwd === '/' ? 'the vault' : whole.name}
         </Button>
       </div>
 
@@ -795,50 +815,77 @@ function VaultPicker({ path, vault, source, mode, onMode, initial, onBack, onClo
               maxHeight: '46vh', overflowY: 'auto', marginBottom: '12px',
               border: `1px solid ${COLORS.border}`, borderRadius: '6px',
             }}>
-              {rows.map((item) => (
-                <div key={item.path} style={{
-                  display: 'flex', alignItems: 'center', gap: '10px',
-                  padding: '8px 10px',
-                  borderBottom: `1px solid ${COLORS.border}`,
-                  opacity: item.legacy ? 0.55 : 1,
-                }}>
-                  <input
-                    type="checkbox"
-                    checked={chosen.has(item.path)}
-                    disabled={item.legacy}
-                    onChange={() => toggle(item)}
-                    aria-label={`Select ${item.name}`}
-                  />
-                  <span style={{ fontSize: '13px', width: '16px', textAlign: 'center' }}>
-                    {item.kind === 'folder' ? '📁' : '📄'}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => !item.legacy && toggle(item)}
-                    disabled={item.legacy}
-                    style={{
-                      flex: 1, textAlign: 'left', background: 'none', border: 'none', padding: 0,
-                      cursor: item.legacy ? 'default' : 'pointer',
-                      fontFamily: FONT.sans, fontSize: '12.5px', color: COLORS.text,
-                      overflowWrap: 'anywhere',
-                    }}
-                  >
-                    {item.name}
-                    {item.legacy && (
-                      <span style={{ display: 'block', fontSize: '11px', color: COLORS.warn }}>
-                        Stored in the old format — convert it before it can be sent
+              {rows.map((item) => {
+                const inherited = covered(item)
+                const off = item.legacy || inherited
+                return (
+                  <div key={item.path} style={{
+                    display: 'flex', alignItems: 'center', gap: '10px',
+                    padding: '8px 10px',
+                    borderBottom: `1px solid ${COLORS.border}`,
+                    opacity: item.legacy ? 0.55 : 1,
+                  }}>
+                    <input
+                      type="checkbox"
+                      checked={inherited || chosen.has(item.path)}
+                      disabled={off}
+                      onChange={() => toggle(item)}
+                      aria-label={`Select ${item.name}`}
+                      title={inherited ? 'Already going, inside a folder that is ticked' : undefined}
+                    />
+                    <span style={{ fontSize: '13px', width: '16px', textAlign: 'center' }}>
+                      {item.kind === 'folder' ? '📁' : '📄'}
+                    </span>
+                    {/* A folder's name opens it, so a file deep inside can be
+                        picked on its own; the tick beside it takes the whole
+                        folder. A file's name is its tick. */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (item.kind === 'folder') setCwd(item.path)
+                        else if (!off) toggle(item)
+                      }}
+                      disabled={item.kind === 'file' && off}
+                      aria-label={item.kind === 'folder' ? `Open ${item.name}` : undefined}
+                      style={{
+                        flex: 1, textAlign: 'left', background: 'none', border: 'none', padding: 0,
+                        cursor: item.kind === 'file' && off ? 'default' : 'pointer',
+                        fontFamily: FONT.sans, fontSize: '12.5px', color: COLORS.text,
+                        overflowWrap: 'anywhere',
+                      }}
+                    >
+                      {item.name}
+                      {item.kind === 'folder' && (
+                        <span style={{ marginLeft: '6px', fontSize: '11px', color: COLORS.textMuted }}>▸</span>
+                      )}
+                      {item.legacy && (
+                        <span style={{ display: 'block', fontSize: '11px', color: COLORS.warn }}>
+                          Stored in the old format — convert it before it can be sent
+                        </span>
+                      )}
+                    </button>
+                    {item.kind === 'file' && (
+                      <span style={{ fontFamily: FONT.mono, fontSize: '11px', color: COLORS.textMuted }}>
+                        {formatBytes(item.size)}
                       </span>
                     )}
-                  </button>
-                  {item.kind === 'file' && (
-                    <span style={{ fontFamily: FONT.mono, fontSize: '11px', color: COLORS.textMuted }}>
-                      {formatBytes(item.size)}
-                    </span>
-                  )}
-                </div>
-              ))}
+                  </div>
+                )
+              })}
             </div>
           )}
+
+      {/* What is ticked so far, wherever it was ticked: walking into a folder
+          hides its parent's rows, and a count alone would not say what the
+          count is of. */}
+      {chosen.size > 0 && (
+        <div style={{
+          marginBottom: '12px', fontFamily: FONT.mono, fontSize: '11px', color: COLORS.textMuted,
+          overflowWrap: 'anywhere',
+        }}>
+          Picked: {[...chosen.values()].map((item) => item.path).join(', ')}
+        </div>
+      )}
 
       <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
         <Button variant="primary" onClick={() => onPick([...chosen.values()])} disabled={chosen.size === 0}>
@@ -853,10 +900,11 @@ function VaultPicker({ path, vault, source, mode, onMode, initial, onBack, onClo
         marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}`,
         fontFamily: FONT.sans, fontSize: '11px', lineHeight: 1.55, color: COLORS.textMuted,
       }}>
-        Files leave the vault whole and decrypted, gathered from your clouds a
-        piece at a time and written straight onto the machine — nothing passes
-        through this browser, and nothing is held in this machine's memory
-        beyond the piece in flight.
+        A folder ticked sends everything under it, keeping its shape; open one
+        to pick single files inside it. Files leave the vault whole and
+        decrypted, gathered from your clouds a piece at a time and written
+        straight onto the machine — nothing passes through this browser, and
+        nothing is held in this machine's memory beyond the piece in flight.
       </p>
     </Modal>
   )

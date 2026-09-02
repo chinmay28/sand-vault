@@ -15,6 +15,7 @@
 
 import { useCallback, useState } from 'react'
 import { api } from './api'
+import { isStandalone } from './stream'
 
 /* Safari reads the blob out of the object URL after the click handler has
    returned, so it cannot be revoked on the spot. A minute is far longer than
@@ -59,16 +60,30 @@ export async function downloadFile(file) {
    the session cookie — which a home-screen app does not share with anything —
    is not needed for it to work.
 
-   The response is an attachment, which is what keeps this from being the
-   navigation trap above: a browser handed a download does not leave the page
-   for it. */
+   In a browser the response being an attachment is what keeps this from being
+   the navigation trap above: a page handed a download does not leave for it.
+   A home-screen app is the exception, and the one that bit: iOS ignores the
+   download attribute there and points the app's own window at the archive,
+   which it cannot show and cannot leave. So a standalone app hands the
+   address to the system browser instead — a new window from a home-screen
+   app opens in Safari — where Downloads can hold it and this app is still
+   where it was when the user comes back. The address carries its own
+   credential, so the browser needs no session to follow it.
+
+   Returns where the download went: 'saved' when this window is saving it,
+   'browser' when the system browser was handed the address. */
 export function downloadFromLink(url, filename) {
+  if (isStandalone()) {
+    window.open(url, '_blank', 'noopener')
+    return 'browser'
+  }
   const link = document.createElement('a')
   link.href = url
   link.download = filename
   document.body.appendChild(link)
   link.click()
   link.remove()
+  return 'saved'
 }
 
 /* Rebuilding a file takes as long as the slowest account holding a part, so
