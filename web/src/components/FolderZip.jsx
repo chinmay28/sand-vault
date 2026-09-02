@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react'
 import { COLORS, FONT, formatBytes } from '../theme'
 import { api } from '../api'
-import { downloadFromLink } from '../download'
+import { downloadFromLink, fetchToBlob, needsShareSheet } from '../download'
+import { SaveSheet } from './SaveSheet'
 import { absoluteURL } from '../stream'
 import { Banner, Button, CopyField, Modal, Spinner } from './ui'
 
@@ -19,7 +20,19 @@ import { Banner, Button, CopyField, Modal, Spinner } from './ui'
    place to receive 40 GB: paste it into a download manager, or curl, on a
    machine with the disk. It carries its own credential, lasts twelve hours
    without being used — sliding forward while a download runs — and dies the
-   moment the vault locks. */
+   moment the vault locks.
+
+   A home-screen app cannot save from an address at all: iOS ignores the
+   download attribute there and a new window is an in-app Safari view that
+   cannot save either. Its one door is the share sheet, which takes a file
+   and not an address — so there, and only there, the archive is read into
+   memory after all and offered to the sheet, up to a size a phone can hold.
+   Past that the honest answer is the address, on a machine with the disk. */
+
+/* How much archive a home-screen app will read into memory to share. A phone
+   has room for this; it does not have room for a film library, and a page that
+   tried would be killed partway with nothing to show for it. */
+const SHARE_LIMIT = 512 << 20
 export function FolderZip({ path, name, vault = '', onClose }) {
   const [link, setLink] = useState(null)
   const [error, setError] = useState(null)
@@ -27,6 +40,11 @@ export function FolderZip({ path, name, vault = '', onClose }) {
      downloadFromLink. A home-screen app cannot save a file itself, so it
      hands the address to the browser and says so. */
   const [started, setStarted] = useState(null)
+  /* The home-screen route: how much of the archive has arrived, and the blob
+     once all of it has, held for the share sheet's button. */
+  const [got, setGot] = useState(0)
+  const [pending, setPending] = useState(null)
+  const sheet = needsShareSheet()
 
   useEffect(() => {
     let live = true
@@ -36,9 +54,27 @@ export function FolderZip({ path, name, vault = '', onClose }) {
     return () => { live = false }
   }, [path, vault])
 
-  const save = () => {
+  const save = async () => {
     if (!link) return
-    setStarted(downloadFromLink(link.url, link.name))
+    if (!sheet) {
+      downloadFromLink(link.url, link.name)
+      setStarted('saved')
+      return
+    }
+    if (link.bytes > SHARE_LIMIT) {
+      setStarted('too-big')
+      return
+    }
+    setStarted('fetching')
+    setGot(0)
+    try {
+      const blob = await fetchToBlob(link.url, setGot)
+      setPending({ blob, name: link.name })
+      setStarted('ready')
+    } catch (err) {
+      setError(err)
+      setStarted(null)
+    }
   }
 
   return (
@@ -78,11 +114,38 @@ export function FolderZip({ path, name, vault = '', onClose }) {
           </div>
 
           <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '14px' }}>
-            <Button variant="primary" onClick={save}>
-              {started ? 'Save it again' : `↓ Save ${link.name}`}
+            <Button variant="primary" onClick={save} disabled={started === 'fetching'}>
+              {started === 'fetching'
+                ? 'Rebuilding…'
+                : started === 'ready' || started === 'saved' || started === 'browser'
+                  ? 'Save it again'
+                  : `↓ Save ${link.name}`}
             </Button>
-            <Button variant="ghost" onClick={onClose}>{started ? 'Done' : 'Cancel'}</Button>
+            <Button variant="ghost" onClick={onClose} disabled={started === 'fetching'}>
+              {started && started !== 'fetching' ? 'Done' : 'Cancel'}
+            </Button>
           </div>
+
+          {started === 'fetching' && (
+            <Banner tone="info">
+              Rebuilding the archive here first — {formatBytes(got)} of about {formatBytes(link.bytes)} so far.
+              Added to your home screen, SAND can only hand a file to the share
+              sheet, and the sheet takes a file rather than an address.
+            </Banner>
+          )}
+          {started === 'too-big' && (
+            <Banner tone="warn">
+              Too big to hold on a phone: a home-screen app can only save through the
+              share sheet, which needs the whole archive in memory first. Open SAND in
+              Safari and save it from there, or paste the address below into a
+              download manager on a machine with the disk for it.
+            </Banner>
+          )}
+          <SaveSheet
+            pending={pending}
+            zIndex={140}
+            onDone={() => { setPending(null); setStarted('shared') }}
+          />
 
           {started === 'saved' && (
             <Banner tone="info">
@@ -91,11 +154,9 @@ export function FolderZip({ path, name, vault = '', onClose }) {
               download running.
             </Banner>
           )}
-          {started === 'browser' && (
+          {started === 'shared' && (
             <Banner tone="info">
-              Handed to your browser, which can save it where this app cannot:
-              tap Download there and it goes to your Downloads. Come back here
-              whenever you like — nothing is waiting on this screen.
+              Handed to the share sheet. If you picked Save to Files, it is in Files now.
             </Banner>
           )}
 

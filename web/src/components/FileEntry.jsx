@@ -3,6 +3,7 @@ import { COLORS, FONT, accountColor, fileIcon, formatBytes, formatDate, formatDa
 import { api } from '../api'
 import { useDownload } from '../download'
 import { FolderZip } from './FolderZip'
+import { SaveSheet } from './SaveSheet'
 import { MachineTransfer } from './MachineTransfer'
 import { useEraseProgress } from '../hooks'
 import { ActionSheet, Banner, Button, ConfirmDialog, IconButton, Modal } from './ui'
@@ -47,7 +48,7 @@ export function useFileActions({
   onPreview, onInspect, onFilm, onRefresh, onError,
 }) {
   const [busy, setBusy] = useState(false)
-  const [download, downloading] = useDownload(onError)
+  const [download, downloading, pendingSave, dismissSave] = useDownload(onError)
   const [menu, setMenu] = useState(false)
   const [confirming, setConfirming] = useState(false)
   /* null, or 'play' when the stream dialog should reach for VLC on the way in
@@ -99,6 +100,9 @@ export function useFileActions({
 
   const dialogs = (
     <>
+      {/* A home-screen app holds a rebuilt file for the share sheet rather
+          than saving it, and this is where it is offered. Null elsewhere. */}
+      <SaveSheet pending={pendingSave} onDone={dismissSave} />
       {menu && (
         <ActionSheet
           title={file.name}

@@ -3,6 +3,7 @@ import { COLORS, FONT, accountColor, formatBytes, isPlayable, previewKind } from
 import { useIsMobile } from '../hooks'
 import { api } from '../api'
 import { useDownload } from '../download'
+import { SaveSheet } from './SaveSheet'
 import { thumbnailFromElement } from '../thumbs'
 import ImageViewer from './ImageViewer'
 import PdfPreview from './PdfPreview'
@@ -53,7 +54,7 @@ export default function PreviewModal({
   /* Kept apart from the preview's own error: a file whose download fails is
      still a file the preview above may be rendering perfectly well. */
   const [downloadError, setDownloadError] = useState(null)
-  const [download, downloading] = useDownload(setDownloadError)
+  const [download, downloading, pendingSave, dismissSave] = useDownload(setDownloadError)
 
   /* The preview above is the browser's best attempt at the file. For a film
      that means one long inline fetch and whichever codecs the browser happens
@@ -171,246 +172,249 @@ export default function PreviewModal({
   }
 
   return (
-    <Modal
-      title={filmLabel(record || film) || file.name}
-      /* Where the film has taken the title, the file name comes here — and the
-         line about the parts gets shorter on a phone, where the two of them
-         together were three lines of header in front of a dialog trying to fit
-         on one screen. It says the same thing either way. */
-      subtitle={[
-        film ? file.name : null,
-        mobile
-          ? `${formatBytes(file.size)} · ${parts} part${parts === 1 ? '' : 's'} · ${accounts} cloud${accounts === 1 ? '' : 's'} · any ${needed} rebuild it`
-          : `${formatBytes(file.size)} · ${schemeName(fileScheme(file))} — ${parts} shard${parts === 1 ? '' : 's'} across ${accounts} account${accounts === 1 ? '' : 's'}, any ${needed} of them rebuild it`,
-      ].filter(Boolean).join(' · ')}
-      onClose={onClose}
-      width={920}
-    >
-      <div style={{
-        background: COLORS.bg,
-        border: `1px solid ${COLORS.border}`,
-        borderRadius: '8px',
-        minHeight: '180px',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        overflow: 'hidden',
-        marginBottom: '16px',
-      }}>
-        {error && <Banner tone="error">{error}</Banner>}
-
-        {!error && kind === 'image' && (
-          <img
-            src={url}
-            alt={file.name}
-            title="View full screen"
-            style={{ maxWidth: '100%', maxHeight: PREVIEW_MAX, display: 'block', cursor: 'zoom-in' }}
-            onLoad={(e) => captureThumb(e.currentTarget)}
-            onClick={() => setViewer(true)}
-            onError={() => setError('This file could not be rebuilt or is not a readable image.')}
-          />
-        )}
-
-        {!error && kind === 'video' && (record && !playing ? (
-          <div style={{ width: '100%', padding: mobile ? '12px' : '18px', boxSizing: 'border-box' }}>
-            <FilmSummary
-              film={record}
-              fileId={file.id}
-              mobile={mobile}
-              /* Enough of the summary to know what it is, without pushing the
-                 rest of the dialog off a phone. The details view, which has the
-                 screen to itself, shows all of it. */
-              clamp={mobile ? 6 : 0}
-              /* Into the gap under the poster rather than onto rows of their
-                 own. Everything a film is worth doing is here, so the footer
-                 keeps only the one action that is about the file rather than
-                 the film. */
-              actions={(
-                <>
-                  <Button
-                    size="sm"
-                    variant="primary"
-                    onClick={() => setPlaying(true)}
-                    title="Play it in this page"
-                    style={action}
-                  >▶ Play</Button>
-                  {/* Terse on a phone because the column is 112px wide, and
-                      spelled out on a desk because there it is 150px and there
-                      is no reason to abbreviate. */}
-                  <Button
-                    size="sm"
-                    onClick={() => setStreaming('play')}
-                    title="Open it in VLC, or copy the address"
-                    style={action}
-                  >{mobile ? '▶ VLC' : '▶ Stream in VLC'}</Button>
-                  <Button size="sm" variant="ghost" onClick={onClose} style={action}>Close</Button>
-                </>
-              )}
+    <>
+      <SaveSheet pending={pendingSave} onDone={dismissSave} zIndex={140} />
+      <Modal
+        title={filmLabel(record || film) || file.name}
+        /* Where the film has taken the title, the file name comes here — and the
+           line about the parts gets shorter on a phone, where the two of them
+           together were three lines of header in front of a dialog trying to fit
+           on one screen. It says the same thing either way. */
+        subtitle={[
+          film ? file.name : null,
+          mobile
+            ? `${formatBytes(file.size)} · ${parts} part${parts === 1 ? '' : 's'} · ${accounts} cloud${accounts === 1 ? '' : 's'} · any ${needed} rebuild it`
+            : `${formatBytes(file.size)} · ${schemeName(fileScheme(file))} — ${parts} shard${parts === 1 ? '' : 's'} across ${accounts} account${accounts === 1 ? '' : 's'}, any ${needed} of them rebuild it`,
+        ].filter(Boolean).join(' · ')}
+        onClose={onClose}
+        width={920}
+      >
+        <div style={{
+          background: COLORS.bg,
+          border: `1px solid ${COLORS.border}`,
+          borderRadius: '8px',
+          minHeight: '180px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          overflow: 'hidden',
+          marginBottom: '16px',
+        }}>
+          {error && <Banner tone="error">{error}</Banner>}
+  
+          {!error && kind === 'image' && (
+            <img
+              src={url}
+              alt={file.name}
+              title="View full screen"
+              style={{ maxWidth: '100%', maxHeight: PREVIEW_MAX, display: 'block', cursor: 'zoom-in' }}
+              onLoad={(e) => captureThumb(e.currentTarget)}
+              onClick={() => setViewer(true)}
+              onError={() => setError('This file could not be rebuilt or is not a readable image.')}
             />
-          </div>
-        ) : (
-          <video
-            src={url}
-            controls
-            playsInline
-            autoPlay={playing}
-            /* The stored picture, which for a matched film is its poster and
-               for anything else is a frame off the film itself. Without it iOS
-               draws a black rectangle until the first frame decodes. */
-            poster={hasThumb ? api.thumbURL(file.id) : undefined}
-            preload="metadata"
-            onTimeUpdate={(e) => captureThumb(e.currentTarget)}
-            style={{ maxWidth: '100%', maxHeight: PREVIEW_MAX }}
-          />
-        ))}
-
-        {!error && kind === 'audio' && (
-          <audio src={url} controls style={{ width: '90%', margin: '32px 0' }} />
-        )}
-
-        {/* Drawn here rather than framed for the browser to deal with: a
-            framed PDF is a blank box or one unscrollable page on iOS Safari,
-            which used to leave a phone with an apology instead of the
-            document. */}
-        {!error && kind === 'pdf' && (
-          <PdfPreview url={url} name={file.name} onFirstPage={captureThumb} />
-        )}
-
-        {!error && kind === 'text' && (
-          loading ? <div style={{ padding: '40px' }}><Spinner size={20} /></div> : (
-            <pre style={{
-              margin: 0,
-              padding: '16px',
-              width: '100%',
-              maxHeight: PREVIEW_MAX,
-              overflow: 'auto',
-              fontFamily: FONT.mono,
-              fontSize: '12px',
+          )}
+  
+          {!error && kind === 'video' && (record && !playing ? (
+            <div style={{ width: '100%', padding: mobile ? '12px' : '18px', boxSizing: 'border-box' }}>
+              <FilmSummary
+                film={record}
+                fileId={file.id}
+                mobile={mobile}
+                /* Enough of the summary to know what it is, without pushing the
+                   rest of the dialog off a phone. The details view, which has the
+                   screen to itself, shows all of it. */
+                clamp={mobile ? 6 : 0}
+                /* Into the gap under the poster rather than onto rows of their
+                   own. Everything a film is worth doing is here, so the footer
+                   keeps only the one action that is about the file rather than
+                   the film. */
+                actions={(
+                  <>
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      onClick={() => setPlaying(true)}
+                      title="Play it in this page"
+                      style={action}
+                    >▶ Play</Button>
+                    {/* Terse on a phone because the column is 112px wide, and
+                        spelled out on a desk because there it is 150px and there
+                        is no reason to abbreviate. */}
+                    <Button
+                      size="sm"
+                      onClick={() => setStreaming('play')}
+                      title="Open it in VLC, or copy the address"
+                      style={action}
+                    >{mobile ? '▶ VLC' : '▶ Stream in VLC'}</Button>
+                    <Button size="sm" variant="ghost" onClick={onClose} style={action}>Close</Button>
+                  </>
+                )}
+              />
+            </div>
+          ) : (
+            <video
+              src={url}
+              controls
+              playsInline
+              autoPlay={playing}
+              /* The stored picture, which for a matched film is its poster and
+                 for anything else is a frame off the film itself. Without it iOS
+                 draws a black rectangle until the first frame decodes. */
+              poster={hasThumb ? api.thumbURL(file.id) : undefined}
+              preload="metadata"
+              onTimeUpdate={(e) => captureThumb(e.currentTarget)}
+              style={{ maxWidth: '100%', maxHeight: PREVIEW_MAX }}
+            />
+          ))}
+  
+          {!error && kind === 'audio' && (
+            <audio src={url} controls style={{ width: '90%', margin: '32px 0' }} />
+          )}
+  
+          {/* Drawn here rather than framed for the browser to deal with: a
+              framed PDF is a blank box or one unscrollable page on iOS Safari,
+              which used to leave a phone with an apology instead of the
+              document. */}
+          {!error && kind === 'pdf' && (
+            <PdfPreview url={url} name={file.name} onFirstPage={captureThumb} />
+          )}
+  
+          {!error && kind === 'text' && (
+            loading ? <div style={{ padding: '40px' }}><Spinner size={20} /></div> : (
+              <pre style={{
+                margin: 0,
+                padding: '16px',
+                width: '100%',
+                maxHeight: PREVIEW_MAX,
+                overflow: 'auto',
+                fontFamily: FONT.mono,
+                fontSize: '12px',
+                lineHeight: 1.6,
+                color: COLORS.text,
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+                boxSizing: 'border-box',
+              }}>{text}</pre>
+            )
+          )}
+  
+          {!error && !kind && (
+            <div style={{
+              padding: '46px 24px',
+              textAlign: 'center',
+              fontFamily: FONT.sans,
+              fontSize: '13px',
+              color: COLORS.textMuted,
               lineHeight: 1.6,
-              color: COLORS.text,
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word',
-              boxSizing: 'border-box',
-            }}>{text}</pre>
-          )
+            }}>
+              <div style={{ fontSize: '30px', marginBottom: '10px', opacity: 0.5 }}>📦</div>
+              No inline preview for {file.mime || 'this file type'}.<br />
+              Download it to open with something else.
+            </div>
+          )}
+        </div>
+  
+        {film && (
+          <button
+            onClick={() => setDetails(true)}
+            title="The full summary and cast, how this file was matched, and how to correct it"
+            style={{
+              display: 'block', width: '100%',
+              padding: '8px 2px', marginBottom: '10px',
+              background: 'none', border: 'none', textAlign: mobile ? 'center' : 'right',
+              minHeight: mobile ? '44px' : 0,
+              cursor: 'pointer',
+              fontFamily: FONT.mono, fontSize: '11px', color: COLORS.accent,
+            }}
+          >🎬 Film details, or fix the match →</button>
         )}
-
-        {!error && !kind && (
-          <div style={{
-            padding: '46px 24px',
-            textAlign: 'center',
-            fontFamily: FONT.sans,
-            fontSize: '13px',
-            color: COLORS.textMuted,
-            lineHeight: 1.6,
-          }}>
-            <div style={{ fontSize: '30px', marginBottom: '10px', opacity: 0.5 }}>📦</div>
-            No inline preview for {file.mime || 'this file type'}.<br />
-            Download it to open with something else.
-          </div>
+  
+        {downloadError && (
+          <Banner tone="error" onDismiss={() => setDownloadError(null)}>{downloadError}</Banner>
         )}
-      </div>
-
-      {film && (
-        <button
-          onClick={() => setDetails(true)}
-          title="The full summary and cast, how this file was matched, and how to correct it"
-          style={{
-            display: 'block', width: '100%',
-            padding: '8px 2px', marginBottom: '10px',
-            background: 'none', border: 'none', textAlign: mobile ? 'center' : 'right',
-            minHeight: mobile ? '44px' : 0,
-            cursor: 'pointer',
-            fontFamily: FONT.mono, fontSize: '11px', color: COLORS.accent,
-          }}
-        >🎬 Film details, or fix the match →</button>
-      )}
-
-      {downloadError && (
-        <Banner tone="error" onDismiss={() => setDownloadError(null)}>{downloadError}</Banner>
-      )}
-
-      <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
-        {/* Close and the player are under the poster when there is one, so
-            repeating them here would be two rows of the same three buttons. */}
-        {!filmShown && (
-          <Button variant="ghost" onClick={onClose}
-            style={mobile ? { flex: 1, justifyContent: 'center' } : null}>Close</Button>
-        )}
-        {/* The picture above is capped at part of a screen so the dialog fits;
-            this is the rest of the screen, plus zoom and the folder's other
-            images. Tapping the image itself does the same — the button says
-            it is there. */}
-        {kind === 'image' && !error && (
+  
+        <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+          {/* Close and the player are under the poster when there is one, so
+              repeating them here would be two rows of the same three buttons. */}
+          {!filmShown && (
+            <Button variant="ghost" onClick={onClose}
+              style={mobile ? { flex: 1, justifyContent: 'center' } : null}>Close</Button>
+          )}
+          {/* The picture above is capped at part of a screen so the dialog fits;
+              this is the rest of the screen, plus zoom and the folder's other
+              images. Tapping the image itself does the same — the button says
+              it is there. */}
+          {kind === 'image' && !error && (
+            <Button
+              onClick={() => setViewer(true)}
+              title={images.length > 1
+                ? 'Full screen — zoom, and step through the folder as a slide show'
+                : 'Full screen, with zoom'}
+              style={mobile ? { flex: 1, justifyContent: 'center' } : null}
+            >⛶ Full screen</Button>
+          )}
+          {/* A player for the files a player is for; for everything else the
+              same dialog, opened for the address it is really wanted for. */}
+          {!filmShown && (
+            <Button
+              onClick={() => setStreaming(playable ? 'play' : 'link')}
+              title={playable
+                ? 'Open this in VLC, or copy the address'
+                : 'A link any player or app can open'}
+              style={mobile ? { flex: 1, justifyContent: 'center' } : null}
+            >{playable ? '▶ Stream in VLC' : '⧉ Copy the address'}</Button>
+          )}
           <Button
-            onClick={() => setViewer(true)}
-            title={images.length > 1
-              ? 'Full screen — zoom, and step through the folder as a slide show'
-              : 'Full screen, with zoom'}
-            style={mobile ? { flex: 1, justifyContent: 'center' } : null}
-          >⛶ Full screen</Button>
+            variant="primary"
+            onClick={() => download(file)}
+            disabled={downloading}
+            title="Download the rebuilt, decrypted file"
+            style={mobile ? { flex: 2, justifyContent: 'center' } : null}
+          >
+            {downloading
+              ? <><Spinner size={12} color={COLORS.bg} /> Rebuilding…</>
+              : '↓ Download decrypted'}
+          </Button>
+        </div>
+  
+        {viewer && (
+          <ImageViewer
+            images={images}
+            start={viewerStart}
+            onShown={captureViewerThumb}
+            onClose={(at) => {
+              setViewer(false)
+              /* Whatever image the viewer was left on is the one this dialog
+                 should be about now — coming back to the photo you started
+                 twelve slides ago reads as the viewer having thrown the walk
+                 away. */
+              const landed = images[at]
+              if (landed && landed.file.id !== file.id) onNavigate?.(landed)
+            }}
+          />
         )}
-        {/* A player for the files a player is for; for everything else the
-            same dialog, opened for the address it is really wanted for. */}
-        {!filmShown && (
-          <Button
-            onClick={() => setStreaming(playable ? 'play' : 'link')}
-            title={playable
-              ? 'Open this in VLC, or copy the address'
-              : 'A link any player or app can open'}
-            style={mobile ? { flex: 1, justifyContent: 'center' } : null}
-          >{playable ? '▶ Stream in VLC' : '⧉ Copy the address'}</Button>
+  
+        {streaming && (
+          <StreamLink
+            file={file}
+            autoplay={streaming === 'play'}
+            /* Opened from inside a dialog, so it has to sit above the one that
+               opened it rather than wherever the portal happened to put it. */
+            zIndex={120}
+            onClose={() => setStreaming(null)}
+          />
         )}
-        <Button
-          variant="primary"
-          onClick={() => download(file)}
-          disabled={downloading}
-          title="Download the rebuilt, decrypted file"
-          style={mobile ? { flex: 2, justifyContent: 'center' } : null}
-        >
-          {downloading
-            ? <><Spinner size={12} color={COLORS.bg} /> Rebuilding…</>
-            : '↓ Download decrypted'}
-        </Button>
-      </div>
-
-      {viewer && (
-        <ImageViewer
-          images={images}
-          start={viewerStart}
-          onShown={captureViewerThumb}
-          onClose={(at) => {
-            setViewer(false)
-            /* Whatever image the viewer was left on is the one this dialog
-               should be about now — coming back to the photo you started
-               twelve slides ago reads as the viewer having thrown the walk
-               away. */
-            const landed = images[at]
-            if (landed && landed.file.id !== file.id) onNavigate?.(landed)
-          }}
-        />
-      )}
-
-      {streaming && (
-        <StreamLink
-          file={file}
-          autoplay={streaming === 'play'}
-          /* Opened from inside a dialog, so it has to sit above the one that
-             opened it rather than wherever the portal happened to put it. */
-          zIndex={120}
-          onClose={() => setStreaming(null)}
-        />
-      )}
-
-      {details && (
-        <FilmDetails
-          file={file}
-          zIndex={120}
-          onClose={() => setDetails(false)}
-          onChanged={onFilmChanged}
-        />
-      )}
-    </Modal>
+  
+        {details && (
+          <FilmDetails
+            file={file}
+            zIndex={120}
+            onClose={() => setDetails(false)}
+            onChanged={onFilmChanged}
+          />
+        )}
+      </Modal>
+    </>
   )
 }
 
