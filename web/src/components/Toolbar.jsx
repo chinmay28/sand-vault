@@ -215,7 +215,8 @@ export function FolderHeader({
             disabled={!canUpload}
             aria-label="Bring files in from a machine, or send files to one"
             title={canUpload ? `Bring files into ${path} from a machine, or send files from it to one` : 'Connect a cloud account first'}
-            style={{ flexShrink: 0, minHeight: '44px', fontSize: '13px' }}
+            /* A glyph is narrower than a word, and a target is a target. */
+            style={{ flexShrink: 0, minWidth: '44px', minHeight: '44px', fontSize: '13px' }}
           >⇅</Button>
         )}
 
