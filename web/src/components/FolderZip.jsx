@@ -22,7 +22,10 @@ import { Banner, Button, CopyField, Modal, Spinner } from './ui'
 export function FolderZip({ path, name, vault = '', onClose }) {
   const [link, setLink] = useState(null)
   const [error, setError] = useState(null)
-  const [started, setStarted] = useState(false)
+  /* null until Save is pressed, then where the download went — see
+     downloadFromLink. A home-screen app cannot save a file itself, so it
+     hands the address to the browser and says so. */
+  const [started, setStarted] = useState(null)
 
   useEffect(() => {
     let live = true
@@ -34,8 +37,7 @@ export function FolderZip({ path, name, vault = '', onClose }) {
 
   const save = () => {
     if (!link) return
-    downloadFromLink(link.url, link.name)
-    setStarted(true)
+    setStarted(downloadFromLink(link.url, link.name))
   }
 
   return (
@@ -81,11 +83,18 @@ export function FolderZip({ path, name, vault = '', onClose }) {
             <Button variant="ghost" onClick={onClose}>{started ? 'Done' : 'Cancel'}</Button>
           </div>
 
-          {started && (
+          {started === 'saved' && (
             <Banner tone="info">
               Your browser is saving it. There is nothing to wait for here — the
               archive is built as it downloads, and closing this leaves the
               download running.
+            </Banner>
+          )}
+          {started === 'browser' && (
+            <Banner tone="info">
+              Handed to your browser, which can save it where this app cannot:
+              tap Download there and it goes to your Downloads. Come back here
+              whenever you like — nothing is waiting on this screen.
             </Banner>
           )}
 

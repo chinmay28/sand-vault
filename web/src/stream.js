@@ -20,10 +20,22 @@ export function absoluteURL(path) {
 
 /* iPadOS 13 and later report themselves as a Mac, so the platform string alone
    is not enough; a Mac with a touchscreen is the thing that does not exist. */
-function isIOS() {
+export function isIOS() {
   const ua = navigator.userAgent || ''
   if (/iPad|iPhone|iPod/.test(ua)) return true
   return /Mac/.test(ua) && navigator.maxTouchPoints > 1
+}
+
+/* Added to a home screen, the vault runs as its own window: no address bar,
+   no tabs, no back button — and, on iOS, no downloads either, so anything the
+   window is pointed at that it cannot show becomes a dead end with nothing to
+   press. Safari's own flag and the display-mode query between them cover
+   every platform that does this. */
+export function isStandalone() {
+  if (typeof navigator !== 'undefined' && navigator.standalone) return true
+  return typeof window !== 'undefined'
+    && typeof window.matchMedia === 'function'
+    && window.matchMedia('(display-mode: standalone)').matches
 }
 
 /* How the handoff is made on this device.
