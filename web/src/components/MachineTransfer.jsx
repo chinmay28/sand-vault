@@ -515,7 +515,12 @@ function SourceBrowser({ source, mode, onMode, path, vault, preset, onBack, onCl
   const exporting = mode === 'export'
   const machineHere = cwd ? `${source.root}/${cwd}` : source.root
   const vaultHere = path === '/' ? 'the vault' : path
-  const totalBytes = items.reduce((sum, item) => sum + (item.size || 0), 0)
+  // A folder's weight is in the levels below it and is not known here, so a
+  // size is shown only when every item is a file — a total that left the
+  // folders out would read as smaller than what is about to move.
+  const totalBytes = items.every((item) => item.kind === 'file')
+    ? items.reduce((sum, item) => sum + (item.size || 0), 0)
+    : 0
 
   if (exporting && choosing) {
     return (
