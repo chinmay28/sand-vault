@@ -165,6 +165,14 @@ type Vault struct {
 	healthMu      sync.Mutex
 	healthSeen    map[string]CloudHealth
 	healthSweptAt time.Time
+
+	// pruneSeen is what the last automatic prune did to each account, and
+	// prunedAt when the last one ran — the clock the daily prune is measured
+	// from. The same shape as the health record above, for the same reasons:
+	// a leaf lock, and memory rather than the vault file. See autoprune.go.
+	pruneMu   sync.Mutex
+	pruneSeen map[string]PruneRecord
+	prunedAt  time.Time
 }
 
 // Open returns a handle to the vault at path. The vault starts locked; if no
@@ -900,6 +908,7 @@ func (v *Vault) forgetProvider(id string) {
 	// account stops being counted the moment it goes rather than at the next
 	// sweep. See health.go.
 	v.forgetHealth(id)
+	v.forgetPrune(id)
 
 	closeProvider(dropped)
 }
@@ -1033,6 +1042,12 @@ type ProviderEdit struct {
 	// rather than a wall — see provider.Config.Quota.
 	Quota *int64
 
+	// AutoPrune is whether the old versions the account keeps beneath SAND's
+	// objects are erased on a schedule rather than only when asked. Refused
+	// on a backend that keeps no versions, since there would be nothing for
+	// the setting to mean — see provider.Config.AutoPrune.
+	AutoPrune *bool
+
 	// Options is how the account reaches the backend: its keys, its secrets,
 	// the bucket or folder it writes into. Unlike the fields above this one
 	// does touch the account — an edit here is verified against the
@@ -1123,6 +1138,14 @@ func (v *Vault) UpdateProvider(ctx context.Context, id string, edit ProviderEdit
 		after.Quota = *edit.Quota
 	}
 
+	if edit.AutoPrune != nil {
+		if *edit.AutoPrune && !keepsVersions(after) {
+			return provider.Config{}, fmt.Errorf(
+				"%s keeps no old versions, so there is nothing to prune automatically", after.Name)
+		}
+		after.AutoPrune = *edit.AutoPrune
+	}
+
 	reconnected := false
 	if len(edit.Options) > 0 {
 		merged, err := provider.MergeOptions(before.Kind, before.Options, edit.Options)
@@ -1136,7 +1159,8 @@ func (v *Vault) UpdateProvider(ctx context.Context, id string, edit ProviderEdit
 	}
 
 	if after.Name == before.Name && after.Color == before.Color &&
-		after.Capacity == before.Capacity && after.Quota == before.Quota && !reconnected {
+		after.Capacity == before.Capacity && after.Quota == before.Quota &&
+		after.AutoPrune == before.AutoPrune && !reconnected {
 		return after.Redacted(), nil
 	}
 

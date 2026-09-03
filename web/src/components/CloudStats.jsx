@@ -379,6 +379,130 @@ function monthName(key, full = false) {
   return month === '01' ? `${name} ${year.slice(2)}` : name
 }
 
+/* What a bucket that keeps every version is storing beneath the objects it
+   shows, and the offer to erase it.
+
+   Backblaze B2 does this out of the box: a write goes beneath the old version
+   rather than over it, a delete leaves a marker on top, and every version is
+   billed. SAND rewrites the index backup on every change and never reads an
+   old one back, and every part it has deleted is still down there. None of it
+   shows in the count above — a listing sees only the current version of each
+   key — which is how the bar can say one thing and the provider's cap warning
+   another.
+
+   Asked when pressed rather than on the way in: the answer is a listing of
+   every version on every account, and a panel opened to read a bar has no
+   business starting one. The scan is vault-wide and this shows its row for
+   the account in hand; erasing is aimed at this account alone. */
+function StaleVersions({ provider, onChanged }) {
+  const [account, setAccount] = useState(null)
+  const [reason, setReason] = useState('')
+  const [busy, setBusy] = useState('')
+  const [error, setError] = useState(null)
+  const [erased, setErased] = useState(null)
+
+  const look = useCallback(async () => {
+    setBusy('looking')
+    setError(null)
+    try {
+      const scan = await api.versionScan()
+      const row = (scan.accounts || []).find((a) => a.provider_id === provider.id) || null
+      setAccount(row)
+      // Why nothing on this account may go, when nothing may: the reason is
+      // on the rows, and one is enough to say.
+      const held = (scan.items || []).find((item) => item.provider_id === provider.id && !item.deletable)
+      setReason(row && row.deletable === 0 && held ? held.reason : '')
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy('')
+    }
+  }, [provider.id])
+
+  const erase = useCallback(async () => {
+    setBusy('erasing')
+    setError(null)
+    try {
+      const report = await api.sweepVersions({ accounts: [provider.id] })
+      setErased(report)
+      if (report.warnings?.length) setError(report.warnings.join(' '))
+      onChanged?.()
+      await look()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy('')
+    }
+  }, [provider.id, onChanged, look])
+
+  let line
+  if (!account) {
+    line = 'A bucket that keeps every version stores what it shows and everything beneath it: '
+      + 'every rewrite of the index backup, every part ever deleted. None of that is in the count above.'
+  } else if (account.error) {
+    line = `Could not list the versions here: ${account.error}`
+  } else if (!account.versioned) {
+    line = 'This account keeps no old versions.'
+  } else if (account.stale === 0) {
+    line = `Storing only the current version of each of its ${account.current} object${account.current === 1 ? '' : 's'}.`
+  } else {
+    line = `${account.stale} old version${account.stale === 1 ? '' : 's'} (${formatBytes(account.stale_bytes)}) `
+      + `beneath ${account.current} current object${account.current === 1 ? '' : 's'} (${formatBytes(account.current_bytes)})`
+      + (account.markers > 0 ? `, ${account.markers} of them delete marker${account.markers === 1 ? '' : 's'}` : '')
+      + (account.other > 0 ? `, and ${formatBytes(account.other_bytes)} of history under files that are not SAND's, left alone` : '')
+      + '.'
+  }
+
+  const offer = account && account.deletable > 0
+
+  // What the schedule has done, when there is one: said beside the figures
+  // so that a bucket somebody set to tidy itself reads as looked after rather
+  // than as never looked at.
+  let scheduled = ''
+  if (provider.auto_prune) {
+    const last = account?.last_prune
+    scheduled = !last
+      ? 'Erased daily; the first run is due shortly after the vault was unlocked.'
+      : last.error
+        ? `Erased daily; the last run, ${formatDate(last.at)}, failed: ${last.error}`
+        : `Erased daily; the last run, ${formatDate(last.at)}, freed ${formatBytes(last.bytes)}.`
+  }
+
+  return (
+    <Section
+      title="Old versions"
+      hint={'Only SAND\'s own objects are looked at, and the current version of every one of them stays.'
+        + (provider.auto_prune ? '' : ' Edit account can make this happen daily.')}
+    >
+      {scheduled && <p style={{ ...noteStyle, margin: '0 0 8px', color: COLORS.textDim }}>{scheduled}</p>}
+      {error && <Banner tone="error" onDismiss={() => setError(null)}>{error}</Banner>}
+      {erased && !error && (
+        <Banner tone="info" onDismiss={() => setErased(null)}>
+          Erased {erased.deleted} old version{erased.deleted === 1 ? '' : 's'}, freeing {formatBytes(erased.bytes)}.
+          The bucket keeps doing this: set its lifecycle to keep only the latest version to stop the next pile.
+        </Banner>
+      )}
+      <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+        <span style={{ ...noteStyle, flex: 1, minWidth: '160px' }}>
+          {busy === 'looking' ? 'Listing every version on every account…'
+            : busy === 'erasing' ? 'Erasing…'
+              : line}
+          {reason && !busy && ` Not erasing any of it: ${reason}`}
+        </span>
+        {offer ? (
+          <Button size="sm" variant="danger" onClick={erase} disabled={Boolean(busy)}>
+            {busy === 'erasing' ? <Spinner size={11} /> : `Erase ${formatBytes(account.deletable_bytes)}`}
+          </Button>
+        ) : (
+          <Button size="sm" onClick={look} disabled={Boolean(busy)}>
+            {busy === 'looking' ? <Spinner size={11} /> : account ? 'Look again' : 'Look'}
+          </Button>
+        )}
+      </div>
+    </Section>
+  )
+}
+
 const noteStyle = {
   fontFamily: FONT.sans,
   fontSize: '11.5px',
@@ -679,6 +803,13 @@ export default function CloudStats({ provider, onClose, onChanged }) {
         )}
         {countError && <Banner tone="error" onDismiss={() => setCountError(null)}>{countError}</Banner>}
       </Section>
+
+      {/* Only the backends that can be counted can be asked for versions —
+          today both are the S3 face — and a folder on a disk has nothing
+          beneath its files to ask about. */}
+      {provider.measurable && (
+        <StaleVersions provider={provider} onChanged={onChanged} />
+      )}
 
       {stats && (
         <>

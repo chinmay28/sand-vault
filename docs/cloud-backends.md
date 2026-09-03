@@ -148,7 +148,7 @@ yet built: browsing a machine and importing files off it into a vault folder.
 | Candidate | Why | Notes |
 |---|---|---|
 | **Azure Blob Storage** | The biggest real gap — the third hyperscaler, and the only one with no S3 face | SharedKey signing, same exercise as the SigV4 code in `s3.go` |
-| **Backblaze B2 native** | — | Low value: the S3 preset already covers B2, and B2's own API reports no bucket size either — usage there is counted by listing and measured against a declared capacity (`UsageMeasurer`, `Config.Capacity`) |
+| **Backblaze B2 native** | — | Low value: the S3 preset already covers B2, and B2's own API reports no bucket size either — usage there is counted by listing and measured against a declared capacity (`UsageMeasurer`, `Config.Capacity`). B2's "keep all versions" default is handled through the S3 face too: `Versioner` lists and erases the versions a bucket keeps beneath what it shows (`sand vault prune`) |
 
 ---
 

@@ -306,6 +306,14 @@ func (s *Server) Handler() (http.Handler, error) {
 		// it either. The scan rides along with the GET above; erasing them is
 		// its own POST, for the same reason the sweep is.
 		"POST /api/vault/orphans/leftovers": s.handleLeftoverSweep,
+		// What the buckets that keep every version are storing beneath the
+		// objects they show: a copy of the index backup per change ever
+		// made, and every part SAND ever deleted under a marker. Looking is
+		// a GET and erasing is a POST that re-scans first, and the POST's
+		// progress is read beside it. See handlers_versions.go.
+		"GET /api/vault/versions":         s.handleVersionScan,
+		"POST /api/vault/versions":        s.handleVersionSweep,
+		"GET /api/vault/versions/erasing": s.handleVersionErasing,
 		// The recovery kit: one sealed file that reconnects every cloud on a
 		// fresh install, rather than only rebuilding the index. Exporting one
 		// and testing one both need the vault open; reading and importing one
@@ -652,6 +660,9 @@ func (s *Server) Start() error {
 	// whole: are the clouds themselves still there. A ping each, on the vault's
 	// own schedule, and nothing at all while it is locked — see healthLoop.
 	go s.healthLoop()
+	// The old versions on the buckets that asked to have them erased on a
+	// schedule, once a day, and nothing while locked — see pruneLoop.
+	go s.pruneLoop()
 
 	addr := net.JoinHostPort(s.Bind, fmt.Sprint(s.Port))
 	v, _ := s.Vault()

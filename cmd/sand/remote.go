@@ -201,6 +201,7 @@ func remoteEditCmd() *cobra.Command {
 		color    string
 		capacity string
 		quota    string
+		prune    string
 		settings []string
 	)
 
@@ -270,8 +271,8 @@ token by hand.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !cmd.Flags().Changed("name") && !cmd.Flags().Changed("color") &&
 				!cmd.Flags().Changed("capacity") && !cmd.Flags().Changed("quota") &&
-				!cmd.Flags().Changed("set") {
-				return fmt.Errorf("nothing to change — pass --name, --color, --capacity, --quota, or --set")
+				!cmd.Flags().Changed("auto-prune") && !cmd.Flags().Changed("set") {
+				return fmt.Errorf("nothing to change — pass --name, --color, --capacity, --quota, --auto-prune, or --set")
 			}
 
 			v, err := openVault(cmd)
@@ -322,6 +323,17 @@ token by hand.`,
 				}
 				edit.Quota = &bytes
 			}
+			if cmd.Flags().Changed("auto-prune") {
+				var on bool
+				switch strings.ToLower(strings.TrimSpace(prune)) {
+				case "on", "yes", "true", "1":
+					on = true
+				case "off", "no", "false", "0":
+				default:
+					return fmt.Errorf("--auto-prune takes on or off, not %q", prune)
+				}
+				edit.AutoPrune = &on
+			}
 			if len(settings) > 0 {
 				if edit.Options, err = parseSettings(settings); err != nil {
 					return err
@@ -345,7 +357,11 @@ token by hand.`,
 			if updated.Quota > 0 {
 				limit = "quota " + formatBytes(updated.Quota)
 			}
-			fmt.Printf("%s (%s) — colour %s, %s, %s\n", updated.Name, updated.Kind, shade, held, limit)
+			pruning := ""
+			if updated.AutoPrune {
+				pruning = ", old versions pruned daily"
+			}
+			fmt.Printf("%s (%s) — colour %s, %s, %s%s\n", updated.Name, updated.Kind, shade, held, limit, pruning)
 
 			// The settings by name only. Half of them are credentials, and a
 			// command that echoes a freshly pasted secret back onto the screen
@@ -368,6 +384,8 @@ token by hand.`,
 		"how big this account is, for backends that do not report it — '10 GB', or 'none' to clear it")
 	cmd.Flags().StringVar(&quota, "quota", "",
 		"how much of this account SAND may fill before it warns — '200 GB', or 'none' to clear it")
+	cmd.Flags().StringVar(&prune, "auto-prune", "",
+		"'on' to erase the old versions this bucket keeps once a day while 'sand serve' runs, 'off' to stop — see 'sand vault prune'")
 	cmd.Flags().StringArrayVar(&settings, "set", nil,
 		"a connection setting as key=value, repeatable — see 'sand remote kinds' for the keys")
 	return cmd

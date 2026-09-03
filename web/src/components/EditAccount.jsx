@@ -157,6 +157,10 @@ function Appearance({ provider, providers, busy, setBusy, onClose, onChanged }) 
   const [quota, setQuota] = useState(
     () => (provider.quota > 0 ? formatBytes(provider.quota) : ''),
   )
+  // Whether the old versions a bucket keeps beneath SAND's objects are erased
+  // once a day rather than only when somebody opens the account's stats and
+  // presses the button. Only a bucket can carry it — see below.
+  const [autoPrune, setAutoPrune] = useState(() => Boolean(provider.auto_prune))
   const [error, setError] = useState(null)
   // The full palette opens on its own when the account is already wearing a
   // shade the named row does not show — otherwise the dialog would open with
@@ -187,10 +191,12 @@ function Appearance({ provider, providers, busy, setBusy, onClose, onChanged }) 
   const capacityChanged = capacity.trim() !== declaredCapacity
   const setQuotaText = provider.quota > 0 ? formatBytes(provider.quota) : ''
   const quotaChanged = quota.trim() !== setQuotaText
+  const autoPruneChanged = autoPrune !== Boolean(provider.auto_prune)
   const unchanged = trimmed === (provider.name || '')
     && color === normalizeHex(provider.color)
     && !capacityChanged
     && !quotaChanged
+    && !autoPruneChanged
 
   const submit = async (e) => {
     e.preventDefault()
@@ -204,6 +210,7 @@ function Appearance({ provider, providers, busy, setBusy, onClose, onChanged }) 
         color,
         ...(capacityChanged ? { capacity: capacity.trim() } : null),
         ...(quotaChanged ? { quota: quota.trim() } : null),
+        ...(autoPruneChanged ? { autoPrune } : null),
       })
       onChanged()
       onClose()
@@ -285,6 +292,49 @@ function Appearance({ provider, providers, busy, setBusy, onClose, onChanged }) 
           + 'Blank means nobody is watching this account\'s share.'}
         onChange={(e) => setQuota(e.target.value)}
       />
+
+      {/* Erasing the history a bucket keeps, without being asked each time.
+
+          A bucket with versioning on — Backblaze B2 out of the box — stores
+          every rewrite of the index backup and every part SAND has deleted
+          beneath what it shows, and bills for it. The stats panel's Old
+          versions section erases it on request; this does the same once a day
+          while the server runs, with the same holds. Offered on the accounts
+          that can be counted, which today are exactly the ones that can keep
+          versions: a folder on a disk has nothing beneath its files. */}
+      {(provider.measurable || provider.auto_prune) && (
+        <label style={{
+          display: 'flex',
+          alignItems: 'flex-start',
+          gap: '10px',
+          padding: '11px 12px',
+          marginBottom: '14px',
+          background: COLORS.bg,
+          border: `1px solid ${COLORS.border}`,
+          borderRadius: '6px',
+          cursor: busy ? 'not-allowed' : 'pointer',
+        }}>
+          <input
+            type="checkbox"
+            checked={autoPrune}
+            disabled={busy}
+            onChange={(e) => setAutoPrune(e.target.checked)}
+            style={{
+              width: '18px', height: '18px', flexShrink: 0,
+              marginTop: '1px', accentColor: COLORS.accent,
+            }}
+          />
+          <span style={{ fontFamily: FONT.sans, fontSize: '12px', lineHeight: 1.55, color: COLORS.text }}>
+            Erase old versions daily
+            <span style={{ display: 'block', marginTop: '4px', color: COLORS.textMuted }}>
+              A bucket that keeps every version stores each rewrite of the index backup and every
+              part SAND has deleted beneath what it shows, and bills for it. Once a day, while the
+              server runs, this erases what SAND wrote and would never read back. The current version
+              of every object stays, and so does anything SAND did not write.
+            </span>
+          </span>
+        </label>
+      )}
 
       <span style={{
         display: 'block',

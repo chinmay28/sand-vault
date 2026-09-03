@@ -160,6 +160,25 @@ export const api = {
      the scan is skipped rather than pulled out from under it. */
   sweepLeftovers: ({ names = [], dryRun = false } = {}) =>
     request('/api/vault/orphans/leftovers', { method: 'POST', body: { names, dry_run: dryRun } }),
+  /* What the buckets that keep every version are storing beneath the objects
+     they show. Backblaze B2 does this out of the box: a write goes beneath the
+     old version rather than over it, a delete leaves a marker on top, and all
+     of it is billed. SAND rewrites the index backup on every change and never
+     reads an old one back, and every part it has deleted is still down there.
+     None of it shows in a plain listing, which is all the usage bar sees.
+
+     One listing of versions per account, so asked when somebody opens the
+     panel rather than on a timer. Nothing is written by it. */
+  versionScan: () => request('/api/vault/versions'),
+  /* Erases them — every superseded version and delete marker under SAND's own
+     keys, on the `accounts` named (ids; empty means every one), leaving the
+     current version of every object exactly where it is. The server re-scans
+     first. Ask with dryRun to be told what would go. */
+  sweepVersions: ({ accounts = [], dryRun = false } = {}) =>
+    request('/api/vault/versions', { method: 'POST', body: { accounts, dry_run: dryRun } }),
+  /* Where the sweep above has got to while it runs, read beside a POST that
+     can only answer at the end. */
+  versionErasing: () => request('/api/vault/versions/erasing'),
   /* The recovery kit: one sealed file that reconnects every cloud on a fresh
      install rather than only rebuilding the index.
 
@@ -308,7 +327,7 @@ export const api = {
      Only the settings named are changed, and a secret handed back as the
      placeholder the server showed means "keep the one you have": the browser is
      never given a stored secret to send back. */
-  updateProvider: (id, { name, color, capacity, quota, options } = {}) =>
+  updateProvider: (id, { name, color, capacity, quota, autoPrune, options } = {}) =>
     request(`/api/providers/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       body: {
@@ -316,6 +335,7 @@ export const api = {
         ...(color === undefined ? null : { color }),
         ...(capacity === undefined ? null : { capacity }),
         ...(quota === undefined ? null : { quota }),
+        ...(autoPrune === undefined ? null : { auto_prune: autoPrune }),
         ...(options === undefined ? null : { options }),
       },
     }),

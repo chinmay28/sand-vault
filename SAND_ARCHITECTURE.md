@@ -569,6 +569,72 @@ per-account listings, and it is the same question asked of the last place it had
 not been asked of. Erasing is its own `POST`, because looking is safe and
 erasing is not.
 
+### 3.7.4 Old versions on the buckets that keep them
+
+The three sections above are about objects nothing wants. This one is about
+objects a bucket is keeping *underneath* the ones it shows. An object store
+with versioning switched on — Backblaze B2 out of the box, under the name "keep
+all versions"; Amazon S3 and MinIO when asked — never overwrites and never
+deletes. A `Put` adds a version beneath the key and a `Delete` adds a *delete
+marker* on top, and every version goes on being stored and billed until
+something erases it by version ID. A plain listing shows none of it: it answers
+with the latest live version of each key, which is what `Get` would return and
+all the rest of SAND ever asks for. So `MeasureUsage` says a gigabyte, the
+provider's bill says ten, and both are right.
+
+SAND makes two kinds of it and would never read either back. The index backup
+(`manifest.sand`, §3.7) is rewritten on every change to the index — every
+upload, rename and move — so a bucket that keeps versions holds one copy of
+the index per change ever made, and only the newest is the index. And every
+part SAND has ever deleted is still there under a marker: the delete reached
+the bucket, the bucket wrote it down and kept the bytes. A recovery opens the
+latest backup; a file is fetched from the latest version of its parts; nothing
+anywhere asks for a version by ID.
+
+`provider.Versioner` is the contract for seeing it: `ListVersions` returns every
+version and marker under SAND's prefix, and `DeleteVersion` is the only delete a
+versioned bucket honours as a removal. The S3 backend implements it with
+`ListObjectVersions` and `DELETE ?versionId=`; on a bucket with versioning off,
+the first reports each object once as its own latest version and the second is
+`Delete`, so nothing above needs to know which kind of bucket it is talking to.
+`Vault.ScanForStaleVersions` asks every account that implements it, and
+`classifyVersions` — pure, no I/O — sorts what comes back:
+
+| The version is | It is |
+|---|---|
+| The latest live version of any key | The object. Never touched, whether or not the index points at it — a part nothing wants is §3.7.1's business, with its guards |
+| Under a key SAND did not write (not `manifest.sand`, not a `partKeyPattern` name) | Somebody else's history, sharing the bucket. Counted on the account row (`Other`) so the room is accounted for; never touched |
+| A superseded version or a marker under `manifest.sand` | Stale. A marker in the middle of the stack — the backup switched off, its object deleted, and switched on again — is stale too |
+| A superseded version under a part, or the marker and versions of a deleted part nobody points at | Stale |
+| A marker on top of a part the index still points at | **Held.** The index says the part exists; the bucket says it was deleted — from the console, by a lifecycle rule, by anything but SAND. The versions under that marker are the only copies left, and erasing them turns a file that can be repaired into one that cannot |
+| Anything on an account carrying a `manifest.sand` this vault's key cannot open | **Held**, the account over. Another vault's deleted parts are its own business, and a marker it did not write is the case above |
+
+`SweepStaleVersions` erases what a scan found, re-running the scan itself for
+the reason `SweepOrphans` does, and in a fixed order per account: **data first,
+markers last.** A marker over an unwanted key is what keeps it out of listings,
+so erasing it before the versions beneath it — and then being interrupted —
+would bring an object back to life as an orphan. The other way round, an
+interruption leaves a marker over nothing, which is what a finished delete
+looks like. It takes an optional list of account IDs, reports its progress
+through the same window the orphan sweep does (`GET /api/vault/versions/erasing`),
+and is `sand vault prune` on the command line.
+
+It can also run on a schedule. `provider.Config.AutoPrune` is a per-account
+setting — refused by `UpdateProvider` on a backend that is not a `Versioner`,
+since there would be nothing for it to mean — and `Vault.AutoPrune` is
+`SweepStaleVersions` aimed at the accounts that carry it, once every
+`AutoPruneInterval` (a day) while the server has the vault open, from
+`pruneLoop` in the server. Daily rather than after every change because the
+question is a listing of every version, billed per thousand entries at
+Backblaze. The clock and the per-account outcome (`PruneRecord`) live in
+memory, the way the health check's do, and the scan's account row carries
+both so the panel can say when it last ran.
+
+It does not stop the history piling up again — that is the bucket's lifecycle
+setting, which is the provider's to hold, not SAND's: "keep only the last
+version" on B2, a rule expiring noncurrent versions and expired delete markers
+on S3. The command says so.
+
 ### 3.8 Searching is a property of the open vault
 
 Every store SAND writes to could answer "what do you hold?" with a list of
@@ -2313,6 +2379,9 @@ reveals only whether a vault exists.
 | POST | `/api/vault/orphans` | Erase it (`targets` — `{provider_id, archive_id}` pairs, empty for all; `dry_run`). Re-scans before deleting |
 | POST | `/api/vault/orphans/reattach` | Record back the shards a disconnect mislaid (`dry_run`). Moves no bytes (§3.7.2) |
 | POST | `/api/vault/orphans/leftovers` | Erase the working files left in the vault's own directory (`names`, empty for all; `dry_run`). The scan of them rides on the `GET` above (§3.7.3) |
+| GET | `/api/vault/versions` | What the buckets that keep every version are storing beneath the objects they show: superseded index backups and deleted parts, per account and per key, with what is held back and why (§3.7.4) |
+| POST | `/api/vault/versions` | Erase it (`accounts` — IDs, empty for all; `dry_run`). Re-scans before deleting; the current version of every object stays |
+| GET | `/api/vault/versions/erasing` | Where a running version sweep has got to |
 | GET | `/api/subvaults` | The vaults inside this one, and whether each is open (§3.8) |
 | POST | `/api/subvaults` | Make one, sealed under a password of its own |
 | POST | `/api/subvaults/{id}/unlock` | Open one — a second password on top of the session, never a way around it |
@@ -2338,7 +2407,7 @@ reveals only whether a vault exists.
 | GET | `/api/providers/health` | What the last check found: every connected account with whether it answered, when, how long it took, and how long a failing one has been failing, plus the schedule and when it next comes round (§8.8). A read of memory — nothing is contacted, which is what lets the accounts panel poll it |
 | POST | `/api/providers/health/check` | Ping every account now and answer with the same report |
 | POST | `/api/providers/health/schedule` | How often that happens: `interval_minutes` (5 min to 7 days) and `enabled`. Omitting either leaves it alone, so switching the check off keeps the interval it had |
-| PATCH | `/api/providers/{id}` | Rename it / set its colour / declare its capacity / set the quota of it SAND may fill — index only, the backend is never contacted (§3.9). `capacity` and `quota` arrive as typed text and are read by `provider.ParseSize`. Also its `options`, which is the one field here that does reach the backend: it is pinged with the new settings before they are stored (§3.10) |
+| PATCH | `/api/providers/{id}` | Rename it / set its colour / declare its capacity / set the quota of it SAND may fill / switch `auto_prune` on or off (§3.7.4; refused on a backend that keeps no versions) — index only, the backend is never contacted (§3.9). `capacity` and `quota` arrive as typed text and are read by `provider.ParseSize`. Also its `options`, which is the one field here that does reach the backend: it is pinged with the new settings before they are stored (§3.10) |
 | DELETE | `/api/providers/{id}` | Disconnect (`?force=1` to override the guard) |
 | GET | `/api/files?path=` | List a folder (`&vault=` for a sub vault; absent is the main one) |
 | GET | `/api/search?q=` | Find files and folders by name (`&path=` scopes to a subtree, `&vault=`, `&type=file\|folder`, `&limit=`) |
