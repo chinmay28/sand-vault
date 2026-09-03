@@ -298,3 +298,41 @@ func TestDecodePackRejectsTruncated(t *testing.T) {
 		t.Fatal("expected an error for a truncated pack, got none")
 	}
 }
+
+// A batch delete rewrites each folder's pack once, and only the files in the
+// batch leave it.
+func TestDeleteManyDropsTheThumbnailsOfTheBatch(t *testing.T) {
+	v, _ := newTestVault(t, 3)
+	ctx := context.Background()
+
+	keep, _, err := v.Upload(ctx, MainScope, "/", "keep.jpg", []byte("x"), UploadOptions{})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	var doomed []string
+	for _, name := range []string{"one.jpg", "two.jpg"} {
+		entry, _, err := v.Upload(ctx, MainScope, "/", name, []byte(name), UploadOptions{})
+		if err != nil {
+			t.Fatalf("Upload: %v", err)
+		}
+		storeThumb(t, v, entry.ID, name+"-thumb")
+		doomed = append(doomed, entry.ID)
+	}
+	storeThumb(t, v, keep.ID, "keep-thumb")
+
+	if _, err := v.DeleteMany(ctx, doomed, nil); err != nil {
+		t.Fatalf("DeleteMany: %v", err)
+	}
+
+	for _, id := range doomed {
+		if _, err := v.Thumb(ctx, id); err == nil {
+			t.Errorf("deleted file %s still has a thumbnail", id)
+		}
+	}
+	if _, err := v.Thumb(ctx, keep.ID); err != nil {
+		t.Errorf("the batch cost another file its thumbnail: %v", err)
+	}
+	if ids := v.ThumbIDs(MainScope, "/"); len(ids) != 1 || ids[0] != keep.ID {
+		t.Errorf("ThumbIDs = %v, want [%s]", ids, keep.ID)
+	}
+}

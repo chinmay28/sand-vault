@@ -47,6 +47,13 @@ func eraseKey(scope vault.Scope, path string) string {
 	return string(scope) + "\x00" + vault.CleanDir(path)
 }
 
+// batchEraseKey names one batch delete (POST /api/files/delete) by the token
+// the browser gave it. The leading NUL keeps it apart from every folder key,
+// which starts with a scope.
+func batchEraseKey(batch string) string {
+	return "\x00files\x00" + batch
+}
+
 func (ew *eraseWatch) set(key string, at folderErase) {
 	ew.mu.Lock()
 	ew.byPath[key] = at

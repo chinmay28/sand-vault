@@ -666,8 +666,8 @@ func (v *Vault) Delete(ctx context.Context, id string) ([]string, error) {
 	return warnings, nil
 }
 
-// rmdirEraseWindow is how many files of a doomed folder have their parts
-// erased at once.
+// eraseWindow is how many doomed files have their parts erased at once, by
+// Rmdir and DeleteMany alike.
 //
 // One at a time is what made a big delete slow: each file already erases its
 // own parts in parallel, but a file's round is over only when the slowest of
@@ -675,7 +675,156 @@ func (v *Vault) Delete(ctx context.Context, id string) ([]string, error) {
 // worst-of-three latency three hundred times in a row. A few files abreast
 // overlaps the waits without turning the delete into the burst of requests
 // per account that gets rate-limited.
-const rmdirEraseWindow = 4
+const eraseWindow = 4
+
+// eraseEntries erases the parts of every entry given, a few abreast, and
+// returns a warning per part that could not be erased. It touches no index:
+// the caller takes the entries out of the manifest afterwards, in one write,
+// whatever came of their parts — a dead account must not pin a file in the
+// browser forever.
+//
+// onProgress, when given, is told how many files are done out of how many:
+// once with (0, total) before the erasing starts, then once per file, in
+// order. It is a window for whoever is waiting, nothing more.
+func (v *Vault) eraseEntries(ctx context.Context, doomed []*Entry, onProgress func(done, total int)) []string {
+	if onProgress != nil {
+		onProgress(0, len(doomed))
+	}
+
+	var warnings []string
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	finished := 0
+	window := make(chan struct{}, eraseWindow)
+	for _, e := range doomed {
+		wg.Add(1)
+		window <- struct{}{}
+		go func(e *Entry) {
+			defer wg.Done()
+			defer func() { <-window }()
+			found := v.deleteEntryShards(ctx, e)
+			mu.Lock()
+			warnings = append(warnings, found...)
+			finished++
+			// Under the lock, so the counts leave in the order they were
+			// taken — two goroutines reporting outside it could hand a
+			// watcher 2 and then 1, and a bar that steps backwards reads as
+			// a bug in whatever is drawing it.
+			if onProgress != nil {
+				onProgress(finished, len(doomed))
+			}
+			mu.Unlock()
+		}(e)
+	}
+	wg.Wait()
+	return warnings
+}
+
+// DeleteReport is what DeleteMany came to.
+type DeleteReport struct {
+	// Deleted counts the files taken out of the index. Every part of each was
+	// asked for on every account holding one; any that could not be erased
+	// are in Warnings, and the file is gone from the listing either way.
+	Deleted int `json:"deleted"`
+
+	// Missing lists the IDs that named no file. Most often that is a batch
+	// tried again after a failure part-way through: the files it already took
+	// are not an error the second time.
+	Missing []string `json:"missing"`
+
+	// Warnings are parts left behind on accounts, one line each, naming the
+	// file, the part and the account.
+	Warnings []string `json:"warnings"`
+}
+
+// DeleteMany removes a set of files, wherever in the vault they sit, in one
+// index write.
+//
+// Delete, one file at a time, pays the full cost of a change on every call:
+// a round of erasures bounded by the slowest account, then the whole index
+// re-sealed and written to disk, then the folder's thumbnail pack rewritten.
+// Seven thousand duplicates deleted that way is seven thousand of each. Here
+// the parts are erased a few files abreast (see eraseWindow), the index is
+// written once for the lot, and each folder's thumbnail pack is rewritten
+// once, however many of its files went.
+//
+// An ID given twice is one file, deleted once. An ID naming nothing is
+// reported in Missing rather than failing the batch, and the rest go ahead.
+// The error return is for the vault as a whole — locked, or the index could
+// not be written — never for one file.
+func (v *Vault) DeleteMany(ctx context.Context, ids []string, onProgress func(done, total int)) (*DeleteReport, error) {
+	report := &DeleteReport{Missing: []string{}, Warnings: []string{}}
+
+	type folder struct {
+		scope Scope
+		dir   string
+	}
+
+	v.mu.RLock()
+	if v.dataKey == nil {
+		v.mu.RUnlock()
+		return nil, ErrLocked
+	}
+	seen := make(map[string]bool, len(ids))
+	doomed := make([]*Entry, 0, len(ids))
+	byScope := map[Scope][]string{}
+	byFolder := map[folder][]string{}
+	for _, id := range ids {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		scope, entry, ok := v.scopeOfEntryLocked(id)
+		if !ok {
+			report.Missing = append(report.Missing, id)
+			continue
+		}
+		// A copy, as Delete takes: the erasing runs outside the lock, and the
+		// manifest must not be read while it does.
+		copied := *entry
+		copied.Shards = append([]Shard(nil), entry.Shards...)
+		doomed = append(doomed, &copied)
+		byScope[scope] = append(byScope[scope], id)
+		key := folder{scope, entry.Dir}
+		byFolder[key] = append(byFolder[key], id)
+	}
+	v.mu.RUnlock()
+
+	report.Warnings = append(report.Warnings, v.eraseEntries(ctx, doomed, onProgress)...)
+	report.Deleted = len(doomed)
+	if len(doomed) == 0 {
+		return report, nil
+	}
+
+	v.mu.Lock()
+	for scope, ids := range byScope {
+		m, err := v.manifestForLocked(scope)
+		if err != nil {
+			v.mu.Unlock()
+			return report, err
+		}
+		for _, id := range ids {
+			m.remove(id)
+		}
+		// Everything a file's record carried goes with it, in the same write
+		// — see Delete for why each of these matters.
+		m.forgetMovies(ids...)
+		m.forgetRepos(ids...)
+		m.forgetFolderArt(ids...)
+	}
+	err := v.persistLocked()
+	v.mu.Unlock()
+	if err != nil {
+		return report, err
+	}
+
+	// After the files are gone, so a failure to rewrite a pack cannot keep a
+	// deleted file in the listing — and once per folder, not once per file.
+	for key, ids := range byFolder {
+		v.removeThumbs(ctx, key.scope, key.dir, ids...)
+	}
+	return report, nil
+}
 
 // Rmdir removes a folder. Without recursive it refuses to touch a folder that
 // still has contents.
@@ -708,38 +857,11 @@ func (v *Vault) Rmdir(ctx context.Context, scope Scope, dir string, recursive bo
 		return nil, fmt.Errorf("%s is not empty", dir)
 	}
 
-	if onProgress != nil {
-		onProgress(0, len(doomed))
-	}
-
-	var warnings []string
 	ids := make([]string, len(doomed))
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	finished := 0
-	window := make(chan struct{}, rmdirEraseWindow)
 	for i, e := range doomed {
 		ids[i] = e.ID
-		wg.Add(1)
-		window <- struct{}{}
-		go func(e *Entry) {
-			defer wg.Done()
-			defer func() { <-window }()
-			found := v.deleteEntryShards(ctx, e)
-			mu.Lock()
-			warnings = append(warnings, found...)
-			finished++
-			// Under the lock, so the counts leave in the order they were
-			// taken — two goroutines reporting outside it could hand a
-			// watcher 2 and then 1, and a bar that steps backwards reads as
-			// a bug in whatever is drawing it.
-			if onProgress != nil {
-				onProgress(finished, len(doomed))
-			}
-			mu.Unlock()
-		}(e)
 	}
-	wg.Wait()
+	warnings := v.eraseEntries(ctx, doomed, onProgress)
 
 	v.mu.Lock()
 	if m, err = v.manifestForLocked(scope); err != nil {

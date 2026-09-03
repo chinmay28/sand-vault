@@ -441,6 +441,17 @@ export const api = {
   convertFile: (id) => request(`/api/files/${encodeURIComponent(id)}/convert`, { method: 'POST' }),
   fileHealth: (id) => request(`/api/files/${encodeURIComponent(id)}/health`),
   deleteFile: (id) => request(`/api/files/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  /* A batch of files in one request and one index write — what a selection
+     of thousands needs, where deleteFile that many times over rewrites the
+     index for each. `batch` is a token made up by the caller, so where the
+     erasing has got to can be read beside the request; see filesErasing.
+     Answers with what went, what was already gone, and the parts left
+     behind. */
+  deleteFiles: (ids, batch) =>
+    request('/api/files/delete', { method: 'POST', body: { ids, batch } }),
+  /* Where a running deleteFiles has got to, by its token — asked only while
+     one is running, see useBatchEraseProgress. */
+  filesErasing: (batch) => request(`/api/files/erasing?batch=${encodeURIComponent(batch)}`),
   /* Move a file into another folder, rename it, or both. An empty `dir` or
      `name` leaves that half alone. Nothing is uploaded or downloaded: a file's
      folder is a field in the index, and its parts are named after the file

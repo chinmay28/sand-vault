@@ -80,10 +80,12 @@ export function DuplicatesTool({ path, vault, onClose, onDone, onSelect }) {
     )
   }
 
-  return <Found found={found} onClose={onClose} onDone={onDone} onSelect={onSelect} />
+  return (
+    <Found found={found} vault={vault} onClose={onClose} onDone={onDone} onSelect={onSelect} />
+  )
 }
 
-function Found({ found, onClose, onDone, onSelect }) {
+function Found({ found, vault, onClose, onDone, onSelect }) {
   const mobile = useIsMobile()
   /* Which question is being read. It opens on whichever of the three found
      something, strongest first: landing on an empty "Identical" in a vault

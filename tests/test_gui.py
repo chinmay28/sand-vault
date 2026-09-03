@@ -2045,6 +2045,44 @@ class TestSelection:
         app.get_by_role("checkbox").nth(3).click(modifiers=["Shift"])
         app.wait_for_selector("text=3 of 3 selected", timeout=10000)
 
+    def test_deleting_a_selection_is_one_request_for_all_the_files(self, app, tmp_path):
+        """Three ticked files leave in one POST, not three DELETEs.
+
+        Deleting a file one request at a time rewrites the index once per
+        file, and a few thousand ticked duplicates would pay that a few
+        thousand times over. The dialog sends the files in batches instead,
+        each one index write on the server, so the requests are what to
+        count — the listing afterwards looks the same either way.
+        """
+        make_folder(app, "pick-batched")
+        app.get_by_text("pick-batched").first.click()
+        app.wait_for_load_state("networkidle")
+
+        for name in ("batch-a.txt", "batch-b.txt", "batch-c.txt"):
+            source = tmp_path / name
+            source.write_text(name)
+            upload_and_settle(app, source)
+
+        app.locator('button[aria-label="Select files and folders"]').click()
+        app.get_by_role("button", name="Select all").click()
+        app.wait_for_selector("text=3 of 3 selected", timeout=10000)
+
+        requests_seen = []
+        app.on("request", lambda req: requests_seen.append((req.method, req.url)))
+
+        app.get_by_role("button", name=re.compile("^✕ Delete")).click()
+        dialog = app.get_by_role("dialog", name="Delete 3 items?")
+        dialog.wait_for(timeout=10000)
+        dialog.get_by_role("button", name="Delete 3").click()
+        app.wait_for_selector("text=3 deleted", timeout=60000)
+        app.get_by_role("dialog").get_by_role("button", name="Done").click()
+        app.wait_for_selector("text=This folder is empty", timeout=20000)
+
+        batches = [u for m, u in requests_seen if m == "POST" and u.endswith("/api/files/delete")]
+        singles = [u for m, u in requests_seen if m == "DELETE" and "/api/files/" in u]
+        assert len(batches) == 1, f"expected one batch delete, saw {batches}"
+        assert singles == [], f"files still deleted one at a time: {singles}"
+
     def test_select_all_then_delete_empties_the_folder(self, app, tmp_path):
         make_folder(app, "pick-doomed")
         app.get_by_text("pick-doomed").first.click()
@@ -2078,6 +2116,54 @@ class TestSelection:
         app.get_by_role("dialog").get_by_role("button", name="Done").click()
 
         app.wait_for_selector("text=This folder is empty", timeout=20000)
+
+
+class TestDuplicates:
+    """The copies of things, found and erased from the Find duplicates dialog.
+
+    Deleting from here hands what is ticked to the same confirmation the
+    selection bar uses, so the round trip is the thing to check: the ticks
+    become a "Delete N items?" dialog, that dialog erases them, and the listing
+    behind is refreshed to show what survived. A dialog that never appears is
+    the failure this guards against — the button once threw on the way to it,
+    and an uncaught render error unmounts the whole app to a blank page.
+    """
+
+    def test_delete_from_find_duplicates_reaches_the_confirmation(self, app, tmp_path):
+        make_folder(app, "dupes-doomed")
+        app.get_by_text("dupes-doomed").first.click()
+        app.wait_for_load_state("networkidle")
+
+        # Two names, one set of bytes: an identical group of two, one spare.
+        for name in ("twin-a.txt", "twin-b.txt"):
+            source = tmp_path / name
+            source.write_bytes(b"the same bytes under two names\n")
+            upload_and_settle(app, source)
+
+        app.locator('button[aria-label="Organize and automate this folder"]').click()
+        app.get_by_role("button", name=re.compile("Find duplicates")).click()
+
+        finder = app.get_by_role("dialog", name="Find duplicates")
+        finder.wait_for(timeout=20000)
+        expect(finder.get_by_text("1 spare copy")).to_be_visible(timeout=20000)
+        expect(finder.get_by_text(re.compile(r"^1 file ticked"))).to_be_visible()
+
+        # The regression: this button used to throw before the confirmation
+        # could render, and the page went white.
+        finder.get_by_role("button", name="Delete 1").click()
+        confirm = app.get_by_role("dialog", name="Delete 1 item?")
+        confirm.wait_for(timeout=10000)
+        assert app.get_by_role("dialog").count() == 1, "the finder gives way to the confirmation"
+
+        confirm.get_by_role("button", name="Delete 1").click()
+        app.wait_for_selector("text=1 deleted", timeout=60000)
+        app.get_by_role("dialog").get_by_role("button", name="Done").click()
+
+        # One twin is gone and the other is exactly where it was; which one
+        # went is the dialog's suggestion, not this test's business.
+        app.wait_for_timeout(500)
+        rows = app.locator('button[title="Open"]', has_text="twin-")
+        expect(rows).to_have_count(1, timeout=20000)
 
 
 class TestSearch:
