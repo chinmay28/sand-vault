@@ -322,6 +322,137 @@ func (p *s3Provider) List(ctx context.Context, prefix string) ([]ObjectInfo, err
 	}
 }
 
+// s3VersionsResult mirrors the subset of ListObjectVersions output SAND needs.
+// Versions and delete markers arrive as two element types under one parent;
+// the service sorts the whole list by key and then newest first.
+type s3VersionsResult struct {
+	IsTruncated         bool             `xml:"IsTruncated"`
+	NextKeyMarker       string           `xml:"NextKeyMarker"`
+	NextVersionIdMarker string           `xml:"NextVersionIdMarker"`
+	Versions            []s3VersionEntry `xml:"Version"`
+	DeleteMarkers       []s3VersionEntry `xml:"DeleteMarker"`
+}
+
+type s3VersionEntry struct {
+	Key          string `xml:"Key"`
+	VersionID    string `xml:"VersionId"`
+	IsLatest     bool   `xml:"IsLatest"`
+	Size         int64  `xml:"Size"`
+	LastModified string `xml:"LastModified"`
+}
+
+// ListVersions lists every version of every key under SAND's prefix, delete
+// markers included, which on a versioned bucket is what is actually being
+// stored and billed rather than what a plain listing shows.
+//
+// Cost: one request per thousand versions, a class C transaction at Backblaze
+// and a LIST elsewhere. Nothing calls this on a timer.
+func (p *s3Provider) ListVersions(ctx context.Context, prefix string) ([]ObjectVersion, error) {
+	var out []ObjectVersion
+	keyMarker, versionMarker := "", ""
+
+	for {
+		u := p.bucketURL()
+		q := url.Values{}
+		q.Set("versions", "")
+		q.Set("prefix", p.prefix+prefix)
+		if keyMarker != "" {
+			q.Set("key-marker", keyMarker)
+		}
+		if versionMarker != "" {
+			q.Set("version-id-marker", versionMarker)
+		}
+		u.RawQuery = q.Encode()
+
+		resp, err := p.do(ctx, http.MethodGet, u, nil)
+		if err != nil {
+			return nil, fmt.Errorf("s3 list versions: %w", err)
+		}
+		if !isSuccess(resp.StatusCode) {
+			err := httpError("s3 list versions", resp)
+			drainAndClose(resp)
+			return nil, err
+		}
+		body, err := readAllBody(resp)
+		drainAndClose(resp)
+		if err != nil {
+			return nil, fmt.Errorf("s3 list versions: %w", err)
+		}
+
+		var result s3VersionsResult
+		if err := xml.Unmarshal(body, &result); err != nil {
+			return nil, fmt.Errorf("s3 list versions: parsing response: %w", err)
+		}
+		for _, item := range result.Versions {
+			out = append(out, p.objectVersion(item, false))
+		}
+		for _, item := range result.DeleteMarkers {
+			out = append(out, p.objectVersion(item, true))
+		}
+
+		if !result.IsTruncated || result.NextKeyMarker == "" {
+			break
+		}
+		keyMarker, versionMarker = result.NextKeyMarker, result.NextVersionIdMarker
+
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("s3 list versions: %w", err)
+		}
+	}
+
+	// Two element types per page come back as two lists, so the order the
+	// service put them in is lost by the time they are one. Put it back: by
+	// key, and newest first within a key, which is what every reader of a
+	// version list expects and what makes "the latest" the first row of each.
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Key != out[j].Key {
+			return out[i].Key < out[j].Key
+		}
+		if out[i].Latest != out[j].Latest {
+			return out[i].Latest
+		}
+		return out[i].Modified.After(out[j].Modified)
+	})
+	return out, nil
+}
+
+// objectVersion turns one listed entry into the shape the rest of SAND reads,
+// with the bucket prefix taken back off the key.
+func (p *s3Provider) objectVersion(item s3VersionEntry, marker bool) ObjectVersion {
+	modified, _ := time.Parse(time.RFC3339Nano, item.LastModified)
+	return ObjectVersion{
+		Key:          strings.TrimPrefix(item.Key, p.prefix),
+		VersionID:    item.VersionID,
+		Size:         item.Size,
+		Latest:       item.IsLatest,
+		DeleteMarker: marker,
+		Modified:     modified,
+	}
+}
+
+// DeleteVersion erases one version of one key for good. This is the only
+// delete a versioned bucket honours as a removal: a plain Delete there adds a
+// marker on top and keeps everything underneath.
+func (p *s3Provider) DeleteVersion(ctx context.Context, key, versionID string) error {
+	u := p.objectURL(key)
+	q := url.Values{}
+	q.Set("versionId", versionID)
+	u.RawQuery = q.Encode()
+
+	resp, err := p.do(ctx, http.MethodDelete, u, nil)
+	if err != nil {
+		return fmt.Errorf("s3 delete version: %w", err)
+	}
+	defer drainAndClose(resp)
+	if resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	if !isSuccess(resp.StatusCode) {
+		return httpError("s3 delete version", resp)
+	}
+	return nil
+}
+
 func (p *s3Provider) Ping(ctx context.Context) error {
 	// A zero-key list is the cheapest call that proves both that the bucket
 	// exists and that the credentials are accepted.

@@ -396,6 +396,56 @@ type UsageMeasurer interface {
 	MeasureUsage(ctx context.Context) (Usage, error)
 }
 
+// ObjectVersion is one stored version of one key, on a backend that keeps more
+// than the latest.
+//
+// An object store with versioning switched on never overwrites and never
+// deletes: a Put adds a version under the key and a Delete adds a delete
+// marker on top of the ones already there, and every one of them goes on
+// being stored — and billed — until something erases it by version. Backblaze
+// B2 does exactly this by default ("keep all versions"), so a bucket SAND has
+// written a few hundred index backups to holds a few hundred copies of the
+// index, and every part SAND ever deleted is still there underneath a marker.
+type ObjectVersion struct {
+	Key       string `json:"key"`
+	VersionID string `json:"version_id"`
+	Size      int64  `json:"size"`
+
+	// Latest marks the version a Get would answer with — or, when it is a
+	// delete marker, the fact that a Get answers not-found. Exactly one
+	// version of each key is latest.
+	Latest bool `json:"latest"`
+
+	// DeleteMarker says this is not data at all but the record of a delete:
+	// the placeholder a versioned bucket puts on top of a key so that the
+	// versions underneath it stop answering.
+	DeleteMarker bool `json:"delete_marker"`
+
+	Modified time.Time `json:"modified,omitzero"`
+}
+
+// Versioner is implemented by backends that keep every version of an object
+// and can be asked for them by version.
+//
+// List answers with what a Get would see: the latest live version of each key.
+// ListVersions answers with what the account is actually storing, which on a
+// versioned bucket is a superset of that and is the figure the bill is drawn
+// against. DeleteVersion is the only way to make a version go away for good —
+// Delete on a versioned bucket adds a marker rather than removing anything.
+//
+// On a bucket with versioning off, ListVersions reports each object once as
+// its own latest version and DeleteVersion of that version is the same as
+// Delete, so a caller need not know which kind of bucket it is talking to.
+type Versioner interface {
+	// ListVersions returns every stored version of every key starting with
+	// prefix, delete markers included.
+	ListVersions(ctx context.Context, prefix string) ([]ObjectVersion, error)
+
+	// DeleteVersion erases one version of one key permanently. Erasing a
+	// version that is already gone is not an error.
+	DeleteVersion(ctx context.Context, key, versionID string) error
+}
+
 // Identifier is implemented by backends that can say whose account they are
 // pointed at — the signed-in email, usually. A freshly authorized account can
 // then name itself instead of asking the user to invent a label.

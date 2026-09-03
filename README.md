@@ -1315,6 +1315,44 @@ Nothing is erased without `--yes`, and the web sweep re-scans before it deletes,
 so an archive that has stopped being abandoned between being shown to you and
 being confirmed is skipped rather than erased.
 
+### Old versions on buckets that keep them — prune them
+
+A bucket with versioning switched on keeps everything. **Backblaze B2 does this
+out of the box** — its default lifecycle is "keep all versions" — and Amazon S3
+and MinIO do it when asked. On such a bucket a write never overwrites and a
+delete never deletes: the new version goes beneath the old one, a delete
+leaves a *marker* on top, and every version underneath goes on being stored
+and billed until something erases it by version.
+
+SAND writes two kinds of that history without ever wanting it back. The index
+backup, `manifest.sand`, is rewritten on every change to the index — every
+upload, rename and move — so a bucket in use for a while holds one copy of the
+index per change ever made. And every part SAND has deleted is still there
+under a marker. None of it shows in a plain listing, which is all the usage bar
+and `sand remote measure` ever see, so SAND says a gigabyte while the provider
+says ten and warns about the cap. Both are telling the truth.
+
+```bash
+./sand vault prune              # what each bucket is storing beneath what it shows
+./sand vault prune --verbose    # every object with old versions, and why any is held back
+./sand vault prune --yes        # erase them
+./sand vault prune --yes --account r2-cold   # on one account only
+```
+
+Only SAND's own objects are looked at — the index backup and parts, named the
+way SAND names them — and the current version of every one of them stays
+exactly where it is. Anything else in the bucket keeps its history, counted so
+you can see where the room went. One thing is held back even under SAND's own
+names: a part the index still points at whose current version is a delete
+marker. That is a part deleted from the bucket's console or by a lifecycle
+rule, and the versions beneath the marker are the only copies left.
+
+**The buckets keep doing it.** Pruning clears the history; it does not stop
+the next one. To stop it, set the bucket's lifecycle in your provider's
+console to keep only the latest version — on B2, *"Keep only the last version
+of the file"*, which also drops hidden files after a day; on S3, a rule that
+expires noncurrent versions and removes expired delete markers.
+
 ### Working files left on the machine
 
 The same scan asks one more question, of the disk SAND itself writes to: the
