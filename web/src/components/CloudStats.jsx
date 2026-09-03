@@ -455,11 +455,26 @@ function StaleVersions({ provider, onChanged }) {
 
   const offer = account && account.deletable > 0
 
+  // What the schedule has done, when there is one: said beside the figures
+  // so that a bucket somebody set to tidy itself reads as looked after rather
+  // than as never looked at.
+  let scheduled = ''
+  if (provider.auto_prune) {
+    const last = account?.last_prune
+    scheduled = !last
+      ? 'Erased daily; the first run is due shortly after the vault was unlocked.'
+      : last.error
+        ? `Erased daily; the last run, ${formatDate(last.at)}, failed: ${last.error}`
+        : `Erased daily; the last run, ${formatDate(last.at)}, freed ${formatBytes(last.bytes)}.`
+  }
+
   return (
     <Section
       title="Old versions"
-      hint="Only SAND's own objects are looked at, and the current version of every one of them stays."
+      hint={'Only SAND\'s own objects are looked at, and the current version of every one of them stays.'
+        + (provider.auto_prune ? '' : ' Edit account can make this happen daily.')}
     >
+      {scheduled && <p style={{ ...noteStyle, margin: '0 0 8px', color: COLORS.textDim }}>{scheduled}</p>}
       {error && <Banner tone="error" onDismiss={() => setError(null)}>{error}</Banner>}
       {erased && !error && (
         <Banner tone="info" onDismiss={() => setErased(null)}>

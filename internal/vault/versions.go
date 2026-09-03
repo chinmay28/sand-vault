@@ -133,6 +133,11 @@ type VersionAccount struct {
 	Backup  bool `json:"backup"`
 	Foreign bool `json:"foreign"`
 
+	// AutoPrune says the account is pruned on a schedule, and LastPrune what
+	// the last scheduled run did to it — see autoprune.go.
+	AutoPrune bool         `json:"auto_prune,omitempty"`
+	LastPrune *PruneRecord `json:"last_prune,omitempty"`
+
 	// Error is why the account could not be asked.
 	Error string `json:"error,omitempty"`
 }
@@ -286,6 +291,8 @@ func (v *Vault) scanAccountForStaleVersions(
 		ProviderID: cfg.ID,
 		Name:       cfg.Name,
 		Kind:       string(cfg.Kind),
+		AutoPrune:  cfg.AutoPrune,
+		LastPrune:  v.lastPrune(cfg.ID),
 	}
 
 	p, err := v.buildProvider(cfg)
@@ -445,10 +452,25 @@ type VersionSweepReport struct {
 	Markers int   `json:"markers"`
 	Bytes   int64 `json:"bytes"`
 
+	// Accounts is the same, per account swept, keyed by account ID — what a
+	// scheduled prune writes down for each account it was aimed at.
+	Accounts map[string]SweepOutcome `json:"accounts,omitempty"`
+
 	// Skipped names the accounts that were asked for and refused, and why.
 	Skipped []string `json:"skipped,omitempty"`
 
 	Warnings []string `json:"warnings,omitempty"`
+}
+
+// SweepOutcome is what a sweep did to one account.
+type SweepOutcome struct {
+	Deleted int   `json:"deleted"`
+	Markers int   `json:"markers"`
+	Bytes   int64 `json:"bytes"`
+
+	// Error is the first thing that went wrong on this account, if anything
+	// did; the rest are in the report's warnings.
+	Error string `json:"error,omitempty"`
 }
 
 // SweepStaleVersions erases the stale versions a scan reported: every
@@ -473,7 +495,7 @@ func (v *Vault) SweepStaleVersions(ctx context.Context, accounts []string, dryRu
 	if err != nil {
 		return nil, err
 	}
-	report := &VersionSweepReport{Warnings: scan.Warnings}
+	report := &VersionSweepReport{Warnings: scan.Warnings, Accounts: map[string]SweepOutcome{}}
 
 	known := map[string]VersionAccount{}
 	for _, account := range scan.Accounts {
@@ -499,12 +521,15 @@ func (v *Vault) SweepStaleVersions(ctx context.Context, accounts []string, dryRu
 	}
 
 	if dryRun {
-		for _, d := range wanted {
-			report.Deleted += d.count()
-			report.Markers += len(d.markers)
+		for id, d := range wanted {
+			outcome := SweepOutcome{Deleted: d.count(), Markers: len(d.markers)}
 			for _, ver := range d.data {
-				report.Bytes += ver.Size
+				outcome.Bytes += ver.Size
 			}
+			report.Accounts[id] = outcome
+			report.Deleted += outcome.Deleted
+			report.Markers += outcome.Markers
+			report.Bytes += outcome.Bytes
 		}
 		sort.Strings(report.Skipped)
 		return report, nil
@@ -554,6 +579,11 @@ func (v *Vault) SweepStaleVersions(ctx context.Context, accounts []string, dryRu
 
 			mu.Lock()
 			defer mu.Unlock()
+			outcome := SweepOutcome{Deleted: deleted, Markers: markers, Bytes: bytes}
+			if len(warnings) > 0 {
+				outcome.Error = warnings[0]
+			}
+			report.Accounts[cfg.ID] = outcome
 			report.Deleted += deleted
 			report.Markers += markers
 			report.Bytes += bytes

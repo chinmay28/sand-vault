@@ -134,6 +134,11 @@ type editProviderRequest struct {
 	Capacity *string           `json:"capacity"`
 	Quota    *string           `json:"quota"`
 	Options  map[string]string `json:"options"`
+
+	// AutoPrune switches the daily prune of old versions on or off for this
+	// account — see handlers_versions.go. Refused on a backend that keeps no
+	// versions.
+	AutoPrune *bool `json:"auto_prune"`
 }
 
 func (s *Server) handleProviderUpdate(w http.ResponseWriter, r *http.Request) {
@@ -148,7 +153,7 @@ func (s *Server) handleProviderUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	edit := vault.ProviderEdit{Name: req.Name, Color: req.Color, Options: req.Options}
+	edit := vault.ProviderEdit{Name: req.Name, Color: req.Color, Options: req.Options, AutoPrune: req.AutoPrune}
 	if req.Capacity != nil {
 		bytes, err := provider.ParseSize(*req.Capacity)
 		if err != nil {

@@ -103,6 +103,15 @@ type Config struct {
 	// together and refusing one of them mid-scatter would leave the file
 	// less durable than the code it was cut with promises.
 	Quota int64 `json:"quota,omitempty"`
+
+	// AutoPrune says the old versions this account keeps beneath SAND's
+	// objects may be erased without asking — once a day, while the vault is
+	// open under the server. Only meaningful on a backend that keeps versions
+	// at all (see Versioner); the vault refuses to set it on any other. What
+	// it erases is exactly what a manual prune would: never the current
+	// version of anything, never an object SAND did not write, never a part
+	// the index still points at whose current version is a delete marker.
+	AutoPrune bool `json:"auto_prune,omitempty"`
 }
 
 // ParseSize reads a size as somebody would write it — "10 GB", "1.5t",

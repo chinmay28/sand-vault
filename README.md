@@ -1347,6 +1347,12 @@ names: a part the index still points at whose current version is a delete
 marker. That is a part deleted from the bucket's console or by a lifecycle
 rule, and the versions beneath the marker are the only copies left.
 
+**Or let it happen on its own.** *Edit account → Erase old versions daily*
+(or `sand remote edit b2-cold --auto-prune on`) runs the same prune, with the
+same holds, once a day while `sand serve` is running and the vault is open.
+The account's stats panel says when it last ran and what it freed. The setting
+is only offered on accounts that can keep versions.
+
 **The buckets keep doing it.** Pruning clears the history; it does not stop
 the next one. To stop it, set the bucket's lifecycle in your provider's
 console to keep only the latest version — on B2, *"Keep only the last version

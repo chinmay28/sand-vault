@@ -619,6 +619,17 @@ looks like. It takes an optional list of account IDs, reports its progress
 through the same window the orphan sweep does (`GET /api/vault/versions/erasing`),
 and is `sand vault prune` on the command line.
 
+It can also run on a schedule. `provider.Config.AutoPrune` is a per-account
+setting — refused by `UpdateProvider` on a backend that is not a `Versioner`,
+since there would be nothing for it to mean — and `Vault.AutoPrune` is
+`SweepStaleVersions` aimed at the accounts that carry it, once every
+`AutoPruneInterval` (a day) while the server has the vault open, from
+`pruneLoop` in the server. Daily rather than after every change because the
+question is a listing of every version, billed per thousand entries at
+Backblaze. The clock and the per-account outcome (`PruneRecord`) live in
+memory, the way the health check's do, and the scan's account row carries
+both so the panel can say when it last ran.
+
 It does not stop the history piling up again — that is the bucket's lifecycle
 setting, which is the provider's to hold, not SAND's: "keep only the last
 version" on B2, a rule expiring noncurrent versions and expired delete markers
@@ -2396,7 +2407,7 @@ reveals only whether a vault exists.
 | GET | `/api/providers/health` | What the last check found: every connected account with whether it answered, when, how long it took, and how long a failing one has been failing, plus the schedule and when it next comes round (§8.8). A read of memory — nothing is contacted, which is what lets the accounts panel poll it |
 | POST | `/api/providers/health/check` | Ping every account now and answer with the same report |
 | POST | `/api/providers/health/schedule` | How often that happens: `interval_minutes` (5 min to 7 days) and `enabled`. Omitting either leaves it alone, so switching the check off keeps the interval it had |
-| PATCH | `/api/providers/{id}` | Rename it / set its colour / declare its capacity / set the quota of it SAND may fill — index only, the backend is never contacted (§3.9). `capacity` and `quota` arrive as typed text and are read by `provider.ParseSize`. Also its `options`, which is the one field here that does reach the backend: it is pinged with the new settings before they are stored (§3.10) |
+| PATCH | `/api/providers/{id}` | Rename it / set its colour / declare its capacity / set the quota of it SAND may fill / switch `auto_prune` on or off (§3.7.4; refused on a backend that keeps no versions) — index only, the backend is never contacted (§3.9). `capacity` and `quota` arrive as typed text and are read by `provider.ParseSize`. Also its `options`, which is the one field here that does reach the backend: it is pinged with the new settings before they are stored (§3.10) |
 | DELETE | `/api/providers/{id}` | Disconnect (`?force=1` to override the guard) |
 | GET | `/api/files?path=` | List a folder (`&vault=` for a sub vault; absent is the main one) |
 | GET | `/api/search?q=` | Find files and folders by name (`&path=` scopes to a subtree, `&vault=`, `&type=file\|folder`, `&limit=`) |

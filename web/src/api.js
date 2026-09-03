@@ -327,7 +327,7 @@ export const api = {
      Only the settings named are changed, and a secret handed back as the
      placeholder the server showed means "keep the one you have": the browser is
      never given a stored secret to send back. */
-  updateProvider: (id, { name, color, capacity, quota, options } = {}) =>
+  updateProvider: (id, { name, color, capacity, quota, autoPrune, options } = {}) =>
     request(`/api/providers/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       body: {
@@ -335,6 +335,7 @@ export const api = {
         ...(color === undefined ? null : { color }),
         ...(capacity === undefined ? null : { capacity }),
         ...(quota === undefined ? null : { quota }),
+        ...(autoPrune === undefined ? null : { auto_prune: autoPrune }),
         ...(options === undefined ? null : { options }),
       },
     }),

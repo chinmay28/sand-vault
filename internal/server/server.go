@@ -660,6 +660,9 @@ func (s *Server) Start() error {
 	// whole: are the clouds themselves still there. A ping each, on the vault's
 	// own schedule, and nothing at all while it is locked — see healthLoop.
 	go s.healthLoop()
+	// The old versions on the buckets that asked to have them erased on a
+	// schedule, once a day, and nothing while locked — see pruneLoop.
+	go s.pruneLoop()
 
 	addr := net.JoinHostPort(s.Bind, fmt.Sprint(s.Port))
 	v, _ := s.Vault()
