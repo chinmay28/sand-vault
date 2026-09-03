@@ -43,27 +43,13 @@ export function useMediaQuery(query) {
    finishing and come back "not running", and a bar that has watched 76 of 79
    go should hold there rather than blink empty on the way out. */
 export function useEraseProgress(path, vault, active) {
-  const [at, setAt] = useState(null)
+  return useErasing(() => api.folderErasing(path, vault), active, [path, vault])
+}
 
-  useEffect(() => {
-    setAt(null)
-    if (!active) return undefined
-
-    let live = true
-    const ask = () => api.folderErasing(path, vault)
-      .then((resp) => {
-        if (live && resp.running) setAt({ done: resp.done, total: resp.total })
-      })
-      // Silence on purpose: this is the answer to a question nobody typed,
-      // and the delete it watches reports its own failures.
-      .catch(() => {})
-
-    ask()
-    const timer = setInterval(ask, 900)
-    return () => { live = false; clearInterval(timer) }
-  }, [path, vault, active])
-
-  return at
+/* The same window, opened onto a batch delete (api.deleteFiles) by the token
+   the batch was given. */
+export function useBatchEraseProgress(batch, active) {
+  return useErasing(() => api.filesErasing(batch), active, [batch])
 }
 
 /* The same window, opened onto the orphan sweep. Erasing the abandoned parts
@@ -75,6 +61,16 @@ export function useEraseProgress(path, vault, active) {
    asked. The count holds rather than blinking empty when the last poll races
    the sweep finishing, for the reason above. */
 export function useOrphanEraseProgress(active) {
+  return useErasing(() => api.orphanErasing(), active, [])
+}
+
+/* One poll of an erasing window, whichever request it is beside. `ask` is
+   called every 900ms while active and answers {running, done, total}; the
+   count is kept while it is running and left standing afterwards, so the last
+   figure does not blink empty when the final poll races the request
+   finishing. Silence on failure is on purpose: this is the answer to a
+   question nobody typed, and the delete it watches reports its own failures. */
+function useErasing(ask, active, deps) {
   const [at, setAt] = useState(null)
 
   useEffect(() => {
@@ -82,17 +78,16 @@ export function useOrphanEraseProgress(active) {
     if (!active) return undefined
 
     let live = true
-    const ask = () => api.orphanErasing()
+    const poll = () => ask()
       .then((resp) => {
         if (live && resp.running) setAt({ done: resp.done, total: resp.total })
       })
-      // Silence on purpose, as above: the sweep reports its own failures.
       .catch(() => {})
 
-    ask()
-    const timer = setInterval(ask, 900)
+    poll()
+    const timer = setInterval(poll, 900)
     return () => { live = false; clearInterval(timer) }
-  }, [active])
+  }, [active, ...deps])
 
   return at
 }

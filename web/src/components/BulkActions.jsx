@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { COLORS, FONT, formatBytes } from '../theme'
 import { api } from '../api'
 import { downloadFile } from '../download'
-import { useEraseProgress } from '../hooks'
+import { useBatchEraseProgress, useEraseProgress } from '../hooks'
 import { Banner, Button, Modal, Spinner } from './ui'
 
 /* What a handful of picked rows can be told to do at once.
@@ -67,8 +67,14 @@ export function useRun(chosen, perform, onFinished) {
 }
 
 export function Progress({ items, at, verb, note }) {
-  const item = items[at]
+  return <Meter count={at + 1} total={items.length} verb={verb} label={items[at]?.name} note={note} />
+}
 
+/* The bar itself: "Deleting 412 of 7364", a label for what it is standing on,
+   and a note beside it. Progress above counts items; a batch delete counts
+   files through it directly, because its unit of work is not its unit of
+   progress. */
+export function Meter({ count, total, verb, label, note }) {
   return (
     <div style={{ marginBottom: '16px' }}>
       <div style={{
@@ -76,11 +82,11 @@ export function Progress({ items, at, verb, note }) {
         fontFamily: FONT.mono, fontSize: '11.5px', color: COLORS.textDim,
       }}>
         <Spinner size={11} />
-        <span>{verb} {at + 1} of {items.length}</span>
+        <span>{verb} {count} of {total}</span>
         <span style={{
           flex: 1, minWidth: 0, color: COLORS.textMuted,
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-        }}>{item?.name}</span>
+        }}>{label}</span>
         {/* Inside the item, when the item is itself a slow plural — a folder
             being deleted counts its files here, so the bar below standing
             still on one item for minutes has a number that is moving. */}
@@ -89,7 +95,7 @@ export function Progress({ items, at, verb, note }) {
       <div style={{ height: '3px', background: COLORS.border, borderRadius: '2px', overflow: 'hidden' }}>
         <div style={{
           height: '100%',
-          width: `${Math.max(4, ((at + 1) / items.length) * 100)}%`,
+          width: `${Math.max(4, (count / Math.max(1, total)) * 100)}%`,
           background: COLORS.accent,
           transition: 'width 0.2s ease',
         }} />
@@ -99,7 +105,8 @@ export function Progress({ items, at, verb, note }) {
 }
 
 function Outcome({ done, total, verb }) {
-  const failed = done.failures.length
+  // A batch delete fails by the hundred under one line, so it says how many.
+  const failed = done.failed ?? done.failures.length
 
   return (
     <>
@@ -124,27 +131,41 @@ function Outcome({ done, total, verb }) {
 
 /* Erasing everything picked. A folder takes what is inside it, which is why
    the dialog counts the two kinds separately rather than saying "12 items" and
-   leaving the folders to be discovered afterwards. */
-export function BulkDelete({ items, vault = '', onClose, onDone }) {
-  const run = useRun(items, async (item) => {
-    const resp = item.kind === 'folder'
-      ? await api.deleteFolder(item.path, true, vault)
-      : await api.deleteFile(item.file.id)
-    return resp?.warnings
-  }, onDone)
+   leaving the folders to be discovered afterwards.
 
-  const batch = run.items
+   Files do not go one request each. Deleting a file is a round of erasures
+   bounded by the slowest account and then the whole index re-sealed and
+   written, and seven thousand duplicates ticked in one go would pay both
+   seven thousand times over. They go a few hundred to a request instead
+   (api.deleteFiles), each request one index write, with the server erasing a
+   few files abreast — the same pace a folder delete already runs at — and
+   counting itself down through the same window. A folder is still a request
+   of its own: the server takes its contents in one write already.
+
+   Batches rather than one request for everything, so the bar moves, no single
+   request outlives its timeout, and a dialog closed part-way through stops
+   at the next batch rather than after all of them. */
+export function BulkDelete({ items, vault = '', onClose, onDone }) {
+  /* Taken once, when the dialog opens, for the reason useRun gives: a
+     finished run clears the selection it came from, and a dialog still
+     reading it would say "0 deleted" over the two things it just deleted. */
+  const [batch] = useState(() => items)
+  const [steps] = useState(() => planDeletes(batch))
+  const run = useDeletes(steps, vault, onDone)
+
   const folders = batch.filter((i) => i.kind === 'folder')
   const files = batch.filter((i) => i.kind !== 'folder')
   const bytes = files.reduce((sum, f) => sum + (f.file.size || 0), 0)
 
-  /* A folder in the batch is one item out here and hundreds of erasures on
-     the server, so while the run is standing on one, its own count is
-     followed too — otherwise the bar sits on "3 of 12" for minutes with
-     nothing to say about why. */
-  const current = run.running ? batch[run.at] : null
-  const folderInFlight = Boolean(run.running && current?.kind === 'folder')
-  const erasing = useEraseProgress(folderInFlight ? current.path : '', '', folderInFlight)
+  /* What the step in flight has done so far, read beside its request: a
+     folder counts its files, a batch counts the files erased out of its
+     own. Either way the bar below moves while one request runs for
+     minutes. */
+  const current = run.running ? steps[run.at] : null
+  const folderInFlight = Boolean(current?.kind === 'folder')
+  const batchInFlight = Boolean(current?.kind === 'files')
+  const erasingFolder = useEraseProgress(folderInFlight ? current.path : '', vault, folderInFlight)
+  const erasingBatch = useBatchEraseProgress(batchInFlight ? current.batch : '', batchInFlight)
 
   const close = () => { if (!run.running) onClose() }
 
@@ -163,11 +184,12 @@ export function BulkDelete({ items, vault = '', onClose, onDone }) {
           </div>
         </>
       ) : run.running ? (
-        <Progress
-          items={batch}
-          at={run.at}
+        <Meter
+          count={run.finished + (erasingBatch?.done || 0)}
+          total={batch.length}
           verb="Deleting"
-          note={erasing ? `${erasing.done} of ${erasing.total} files` : ''}
+          label={folderInFlight ? current.name : ''}
+          note={erasingFolder ? `${erasingFolder.done} of ${erasingFolder.total} files` : ''}
         />
       ) : (
         <>
@@ -187,6 +209,92 @@ export function BulkDelete({ items, vault = '', onClose, onDone }) {
       )}
     </Modal>
   )
+}
+
+/* How many files go in one request. Enough that a few thousand is a few
+   dozen index writes rather than a few thousand; few enough that a request
+   answers within minutes on slow accounts and a closed dialog does not have
+   long to wait. */
+export const DELETE_BATCH = 200
+
+/* The requests a selection turns into: files a batch at a time, then each
+   folder on its own. Files first, so a file ticked inside a folder that is
+   also ticked is counted once as deleted rather than once as already gone.
+   Every step says how many of the items it stands for, which is what the
+   bar and the outcome count in. */
+export function planDeletes(items) {
+  const steps = []
+  const files = items.filter((i) => i.kind !== 'folder')
+  for (let i = 0; i < files.length; i += DELETE_BATCH) {
+    const slice = files.slice(i, i + DELETE_BATCH)
+    steps.push({
+      kind: 'files',
+      ids: slice.map((f) => f.file.id),
+      count: slice.length,
+      name: `${slice.length} file${slice.length === 1 ? '' : 's'}`,
+      batch: `${Date.now().toString(36)}-${i}-${Math.random().toString(36).slice(2, 8)}`,
+    })
+  }
+  for (const item of items) {
+    if (item.kind !== 'folder') continue
+    steps.push({ kind: 'folder', path: item.path, count: 1, name: item.name })
+  }
+  return steps
+}
+
+/* Running the plan, one request at a time, and keeping count in items rather
+   than requests: `finished` is how many items the completed steps stood for,
+   and the outcome says how many failed, however many lines that took.
+   Left in whatever state it finished in, like useRun. */
+function useDeletes(steps, vault, onFinished) {
+  const [at, setAt] = useState(-1)
+  const [finished, setFinished] = useState(0)
+  const [done, setDone] = useState(null)
+  const live = useRef(true)
+  useEffect(() => {
+    live.current = true
+    return () => { live.current = false }
+  }, [])
+
+  const running = at >= 0 && !done
+
+  const start = async () => {
+    const failures = []
+    const warnings = []
+    let failed = 0
+    let gone = 0
+    let counted = 0
+
+    for (let i = 0; i < steps.length; i++) {
+      if (!live.current) return
+      const step = steps[i]
+      setAt(i)
+      try {
+        if (step.kind === 'folder') {
+          const resp = await api.deleteFolder(step.path, true, vault)
+          for (const w of resp?.warnings || []) warnings.push(`${step.name}: ${w}`)
+        } else {
+          const resp = await api.deleteFiles(step.ids, step.batch)
+          warnings.push(...(resp?.warnings || []))
+          gone += resp?.missing?.length || 0
+        }
+      } catch (err) {
+        failures.push(`${step.name}: ${err.message}`)
+        failed += step.count
+      }
+      counted += step.count
+      setFinished(counted)
+    }
+
+    if (gone > 0) {
+      warnings.push(`${gone} file${gone === 1 ? ' was' : 's were'} already gone before this reached ${gone === 1 ? 'it' : 'them'}.`)
+    }
+    if (!live.current) return
+    setDone({ failures, warnings, failed })
+    onFinished?.()
+  }
+
+  return { at, finished, running, done, start }
 }
 
 function describe(folders, files, bytes) {

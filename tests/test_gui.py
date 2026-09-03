@@ -2045,6 +2045,44 @@ class TestSelection:
         app.get_by_role("checkbox").nth(3).click(modifiers=["Shift"])
         app.wait_for_selector("text=3 of 3 selected", timeout=10000)
 
+    def test_deleting_a_selection_is_one_request_for_all_the_files(self, app, tmp_path):
+        """Three ticked files leave in one POST, not three DELETEs.
+
+        Deleting a file one request at a time rewrites the index once per
+        file, and a few thousand ticked duplicates would pay that a few
+        thousand times over. The dialog sends the files in batches instead,
+        each one index write on the server, so the requests are what to
+        count — the listing afterwards looks the same either way.
+        """
+        make_folder(app, "pick-batched")
+        app.get_by_text("pick-batched").first.click()
+        app.wait_for_load_state("networkidle")
+
+        for name in ("batch-a.txt", "batch-b.txt", "batch-c.txt"):
+            source = tmp_path / name
+            source.write_text(name)
+            upload_and_settle(app, source)
+
+        app.locator('button[aria-label="Select files and folders"]').click()
+        app.get_by_role("button", name="Select all").click()
+        app.wait_for_selector("text=3 of 3 selected", timeout=10000)
+
+        requests_seen = []
+        app.on("request", lambda req: requests_seen.append((req.method, req.url)))
+
+        app.get_by_role("button", name=re.compile("^✕ Delete")).click()
+        dialog = app.get_by_role("dialog", name="Delete 3 items?")
+        dialog.wait_for(timeout=10000)
+        dialog.get_by_role("button", name="Delete 3").click()
+        app.wait_for_selector("text=3 deleted", timeout=60000)
+        app.get_by_role("dialog").get_by_role("button", name="Done").click()
+        app.wait_for_selector("text=This folder is empty", timeout=20000)
+
+        batches = [u for m, u in requests_seen if m == "POST" and u.endswith("/api/files/delete")]
+        singles = [u for m, u in requests_seen if m == "DELETE" and "/api/files/" in u]
+        assert len(batches) == 1, f"expected one batch delete, saw {batches}"
+        assert singles == [], f"files still deleted one at a time: {singles}"
+
     def test_select_all_then_delete_empties_the_folder(self, app, tmp_path):
         make_folder(app, "pick-doomed")
         app.get_by_text("pick-doomed").first.click()

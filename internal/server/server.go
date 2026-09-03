@@ -417,9 +417,14 @@ func (s *Server) Handler() (http.Handler, error) {
 		// Which files of a choice are already stored at their destination with
 		// the same name and size, asked before a byte of them is sent — the
 		// browser drops those from the upload rather than storing copies.
-		"POST /api/files/precheck":   s.handleFilesPrecheck,
-		"GET /api/files/{id}":        s.handleFileMeta,
-		"DELETE /api/files/{id}":     s.handleFileDelete,
+		"POST /api/files/precheck": s.handleFilesPrecheck,
+		"GET /api/files/{id}":      s.handleFileMeta,
+		"DELETE /api/files/{id}":   s.handleFileDelete,
+		// A batch of files in one index write, and where it has got to while
+		// it runs — the folder delete's pair, for a selection rather than a
+		// folder.
+		"POST /api/files/delete":     s.handleFilesDelete,
+		"GET /api/files/erasing":     s.handleFilesErasing,
 		"POST /api/files/{id}/move":  s.handleFileMove,
 		"GET /api/files/{id}/health": s.handleFileHealth,
 		// Converting a pre-chunking file into the chunked format, which is what

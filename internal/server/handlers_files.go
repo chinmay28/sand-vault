@@ -640,6 +640,68 @@ func (s *Server) handleFileDelete(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "warnings": warnings})
 }
 
+// filesDeleteRequest names a batch of files to erase together. Batch, when
+// given, is a token the browser made up so it can watch the erasing through
+// GET /api/files/erasing while this request is still running.
+type filesDeleteRequest struct {
+	IDs   []string `json:"ids"`
+	Batch string   `json:"batch"`
+}
+
+// handleFilesDelete erases a batch of files in one index write — the dialog's
+// answer to a few thousand ticked duplicates, where DELETE /api/files/{id} a
+// few thousand times over would rewrite the index for each. See
+// vault.DeleteMany for what it comes back with.
+func (s *Server) handleFilesDelete(w http.ResponseWriter, r *http.Request) {
+	var req filesDeleteRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
+		return
+	}
+	if len(req.IDs) == 0 {
+		writeError(w, http.StatusBadRequest, "no files named", "BAD_REQUEST")
+		return
+	}
+
+	ctx, cancel := contextWithTimeout(r, 30*time.Minute)
+	defer cancel()
+
+	// Counted as it goes, like a folder delete, for whoever is waiting.
+	var onProgress func(done, total int)
+	if req.Batch != "" {
+		key := batchEraseKey(req.Batch)
+		defer s.erases.clear(key)
+		onProgress = func(done, total int) {
+			s.erases.set(key, folderErase{Done: done, Total: total})
+		}
+	}
+
+	v, _ := s.Vault()
+	report, err := v.DeleteMany(ctx, req.IDs, onProgress)
+	if err != nil {
+		vaultErrorResponse(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":   "deleted",
+		"deleted":  report.Deleted,
+		"missing":  report.Missing,
+		"warnings": report.Warnings,
+	})
+}
+
+// handleFilesErasing answers with where a running batch delete has got to,
+// by the token the batch was given. Not running is an ordinary answer, for
+// the same reason as a folder's: the poller and the request race.
+func (s *Server) handleFilesErasing(w http.ResponseWriter, r *http.Request) {
+	at, ok := s.erases.get(batchEraseKey(r.URL.Query().Get("batch")))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"running": ok,
+		"done":    at.Done,
+		"total":   at.Total,
+	})
+}
+
 type moveRequest struct {
 	Dir  string `json:"dir"`
 	Name string `json:"name"`

@@ -1200,3 +1200,49 @@ func TestIndexPointsPhonesAtTheHomeScreenIcon(t *testing.T) {
 		t.Errorf("apple-touch-icon is %dx%d, want 180x180", cfg.Width, cfg.Height)
 	}
 }
+
+// A batch of files goes in one request and comes back counted: what went,
+// what was not there to go, and what parts were left behind. Nothing named
+// is a bad request rather than a no-op.
+func TestFilesDeleteBatchOverHTTP(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("pw", 3)
+
+	one := c.upload("one.bin", "/", []byte("one"))["id"].(string)
+	two := c.upload("two.bin", "/", []byte("two"))["id"].(string)
+	kept := c.upload("kept.bin", "/", []byte("kept"))["id"].(string)
+
+	w, body := c.json(http.MethodPost, "/api/files/delete",
+		map[string]any{"ids": []string{one, two, "never-was"}, "batch": "b-1"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("batch delete: %d %v", w.Code, body)
+	}
+	if body["deleted"] != float64(2) {
+		t.Errorf("deleted = %v, want 2", body["deleted"])
+	}
+	if missing, _ := body["missing"].([]any); len(missing) != 1 || missing[0] != "never-was" {
+		t.Errorf("missing = %v, want [never-was]", body["missing"])
+	}
+	if warnings, _ := body["warnings"].([]any); len(warnings) != 0 {
+		t.Errorf("warnings = %v, want none", body["warnings"])
+	}
+
+	for _, id := range []string{one, two} {
+		if w, _ := c.json(http.MethodGet, "/api/files/"+id, nil); w.Code != http.StatusNotFound {
+			t.Errorf("metadata of %s after batch delete = %d, want 404", id, w.Code)
+		}
+	}
+	if w, _ := c.json(http.MethodGet, "/api/files/"+kept, nil); w.Code != http.StatusOK {
+		t.Errorf("a file outside the batch is gone: %d", w.Code)
+	}
+
+	// The window is down once the request has answered.
+	w, body = c.json(http.MethodGet, "/api/files/erasing?batch=b-1", nil)
+	if w.Code != http.StatusOK || body["running"] != false {
+		t.Errorf("erasing after the batch = %d %v, want running=false", w.Code, body)
+	}
+
+	if w, _ := c.json(http.MethodPost, "/api/files/delete", map[string]any{"ids": []string{}}); w.Code != http.StatusBadRequest {
+		t.Errorf("empty batch = %d, want 400", w.Code)
+	}
+}

@@ -1013,3 +1013,116 @@ func TestMkdirKeepsNothingWhenPartOfThePathFails(t *testing.T) {
 		t.Errorf("folders = %v, want just the root — a failed Mkdir kept part of its path", folders)
 	}
 }
+
+// A batch of files is one index write, wherever they sit — and the batch is
+// honest about what it was handed: an ID twice is one file, and an ID naming
+// nothing is reported rather than refused, because a batch tried again after
+// a failure part-way through names files it already took.
+func TestDeleteManyErasesEveryFileNamedOnce(t *testing.T) {
+	v, roots := newTestVault(t, 3)
+	ctx := context.Background()
+
+	if err := v.Mkdir(MainScope, "/photos"); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	var doomed []*Entry
+	for _, at := range []struct{ dir, name string }{
+		{"/", "a.txt"}, {"/", "b.txt"}, {"/photos", "c.txt"},
+	} {
+		entry, _, err := v.Upload(ctx, MainScope, at.dir, at.name, []byte(at.name), UploadOptions{})
+		if err != nil {
+			t.Fatalf("Upload %s: %v", at.name, err)
+		}
+		doomed = append(doomed, entry)
+	}
+	kept, _, err := v.Upload(ctx, MainScope, "/photos", "kept.txt", []byte("kept"), UploadOptions{})
+	if err != nil {
+		t.Fatalf("Upload kept: %v", err)
+	}
+
+	ids := []string{doomed[0].ID, doomed[1].ID, doomed[1].ID, "no-such-file", doomed[2].ID}
+	report, err := v.DeleteMany(ctx, ids, nil)
+	if err != nil {
+		t.Fatalf("DeleteMany: %v", err)
+	}
+	if report.Deleted != 3 {
+		t.Errorf("Deleted = %d, want 3", report.Deleted)
+	}
+	if len(report.Missing) != 1 || report.Missing[0] != "no-such-file" {
+		t.Errorf("Missing = %v, want [no-such-file]", report.Missing)
+	}
+	if len(report.Warnings) != 0 {
+		t.Errorf("unexpected warnings: %v", report.Warnings)
+	}
+
+	for _, entry := range doomed {
+		if _, err := v.Entry(entry.ID); err == nil {
+			t.Errorf("%s still listed after DeleteMany", entry.Name)
+		}
+		for _, shard := range entry.Shards {
+			for _, root := range roots {
+				candidate := filepath.Join(root, filepath.FromSlash(shard.Key))
+				if _, err := os.Stat(candidate); err == nil {
+					t.Errorf("shard %s of %s still present at %s", shard.Key, entry.Name, candidate)
+				}
+			}
+		}
+	}
+	if _, err := v.Entry(kept.ID); err != nil {
+		t.Errorf("a file not in the batch went with it: %v", err)
+	}
+
+	// Nothing named is nothing done, and not an error.
+	report, err = v.DeleteMany(ctx, []string{"gone-too"}, nil)
+	if err != nil {
+		t.Fatalf("DeleteMany of nothing: %v", err)
+	}
+	if report.Deleted != 0 || len(report.Missing) != 1 {
+		t.Errorf("report for nothing = %+v", report)
+	}
+}
+
+// The same contract as Rmdir's callback: opens on (0, total), every count
+// once, never backwards.
+func TestDeleteManyReportsProgressInOrder(t *testing.T) {
+	v, _ := newTestVault(t, 3)
+	ctx := context.Background()
+
+	const files = 9
+	var ids []string
+	for i := 0; i < files; i++ {
+		name := fmt.Sprintf("f%d.txt", i)
+		entry, _, err := v.Upload(ctx, MainScope, "/", name, []byte(name), UploadOptions{})
+		if err != nil {
+			t.Fatalf("Upload %s: %v", name, err)
+		}
+		ids = append(ids, entry.ID)
+	}
+
+	var counts []int
+	if _, err := v.DeleteMany(ctx, ids, func(done, total int) {
+		if total != files {
+			t.Errorf("total reported as %d, want %d", total, files)
+		}
+		counts = append(counts, done)
+	}); err != nil {
+		t.Fatalf("DeleteMany: %v", err)
+	}
+
+	if len(counts) != files+1 {
+		t.Fatalf("got %d progress reports, want %d: %v", len(counts), files+1, counts)
+	}
+	for i, n := range counts {
+		if n != i {
+			t.Fatalf("progress arrived out of order: %v", counts)
+		}
+	}
+}
+
+func TestDeleteManyRefusesALockedVault(t *testing.T) {
+	v, _ := newTestVault(t, 3)
+	v.Lock()
+	if _, err := v.DeleteMany(context.Background(), []string{"x"}, nil); err != ErrLocked {
+		t.Errorf("DeleteMany on a locked vault: %v, want ErrLocked", err)
+	}
+}
