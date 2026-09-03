@@ -2080,6 +2080,54 @@ class TestSelection:
         app.wait_for_selector("text=This folder is empty", timeout=20000)
 
 
+class TestDuplicates:
+    """The copies of things, found and erased from the Find duplicates dialog.
+
+    Deleting from here hands what is ticked to the same confirmation the
+    selection bar uses, so the round trip is the thing to check: the ticks
+    become a "Delete N items?" dialog, that dialog erases them, and the listing
+    behind is refreshed to show what survived. A dialog that never appears is
+    the failure this guards against — the button once threw on the way to it,
+    and an uncaught render error unmounts the whole app to a blank page.
+    """
+
+    def test_delete_from_find_duplicates_reaches_the_confirmation(self, app, tmp_path):
+        make_folder(app, "dupes-doomed")
+        app.get_by_text("dupes-doomed").first.click()
+        app.wait_for_load_state("networkidle")
+
+        # Two names, one set of bytes: an identical group of two, one spare.
+        for name in ("twin-a.txt", "twin-b.txt"):
+            source = tmp_path / name
+            source.write_bytes(b"the same bytes under two names\n")
+            upload_and_settle(app, source)
+
+        app.locator('button[aria-label="Organize and automate this folder"]').click()
+        app.get_by_role("button", name=re.compile("Find duplicates")).click()
+
+        finder = app.get_by_role("dialog", name="Find duplicates")
+        finder.wait_for(timeout=20000)
+        expect(finder.get_by_text("1 spare copy")).to_be_visible(timeout=20000)
+        expect(finder.get_by_text(re.compile(r"^1 file ticked"))).to_be_visible()
+
+        # The regression: this button used to throw before the confirmation
+        # could render, and the page went white.
+        finder.get_by_role("button", name="Delete 1").click()
+        confirm = app.get_by_role("dialog", name="Delete 1 item?")
+        confirm.wait_for(timeout=10000)
+        assert app.get_by_role("dialog").count() == 1, "the finder gives way to the confirmation"
+
+        confirm.get_by_role("button", name="Delete 1").click()
+        app.wait_for_selector("text=1 deleted", timeout=60000)
+        app.get_by_role("dialog").get_by_role("button", name="Done").click()
+
+        # One twin is gone and the other is exactly where it was; which one
+        # went is the dialog's suggestion, not this test's business.
+        app.wait_for_timeout(500)
+        rows = app.locator('button[title="Open"]', has_text="twin-")
+        expect(rows).to_have_count(1, timeout=20000)
+
+
 class TestSearch:
     """The search box, which reaches past the folder the browser is standing in.
 
