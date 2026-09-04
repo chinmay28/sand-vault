@@ -494,6 +494,14 @@ func (s *Server) Handler() (http.Handler, error) {
 		"DELETE /api/files/{id}/movie":         s.handleMovieForget,
 		"GET /api/files/{id}/movie/candidates": s.handleMovieCandidates,
 
+		// The chat assistant: a model the user runs on their own network,
+		// reading the index through three tools. Where it runs is a setting;
+		// a question is one POST that holds open while the model answers.
+		// See assistant.go.
+		"GET /api/assistant":           s.handleAssistantSettings,
+		"POST /api/assistant/settings": s.handleAssistantSet,
+		"POST /api/assistant/ask":      s.handleAssistantAsk,
+
 		// Moving a file or a folder onto other clouds. One endpoint for both,
 		// because it is one operation over a set of files and the only
 		// difference is how the set was named.

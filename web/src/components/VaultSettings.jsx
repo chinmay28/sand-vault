@@ -6,6 +6,7 @@ import ChangePassword from './ChangePassword'
 import CloudHealth from './CloudHealth'
 import MountDrive from './MountDrive'
 import { FilmKeySettings } from './FilmDetails'
+import { AssistantSettings } from './Assistant'
 import SubVaults from './SubVaults'
 import RecoveryKit from './RecoveryKit'
 import { StrayParts } from './CleanOrphans'
@@ -53,6 +54,7 @@ export default function VaultSettings({
 }) {
   const [open, setOpen] = useState(null)
   const [filmKey, setFilmKey] = useState(null)
+  const [assistant, setAssistant] = useState(null)
   const [kit, setKit] = useState(null)
 
   const defaults = (stats?.default_accounts || []).filter(
@@ -65,6 +67,9 @@ export default function VaultSettings({
     let cancelled = false
     api.movieSettings()
       .then((resp) => { if (!cancelled) setFilmKey(!!resp.has_key) })
+      .catch(() => {})
+    api.assistantSettings()
+      .then((resp) => { if (!cancelled) setAssistant(resp) })
       .catch(() => {})
     return () => { cancelled = true }
   }, [])
@@ -171,6 +176,20 @@ export default function VaultSettings({
           onClick={() => setOpen('film')}
         />
 
+        {/* The model that answers questions about the vault, which is the
+            vault's setting in exactly the way the film key is: one server,
+            used from wherever the question is asked. The line names the
+            model rather than the address, since the model is what you chose
+            and the address is where it happened to be. */}
+        <Setting
+          icon="✦"
+          label="Assistant"
+          hint="A model on your own network that answers questions about the vault"
+          status={assistant === null ? '…' : assistant.configured ? assistant.model : 'Not set'}
+          tone={assistant?.configured ? COLORS.textDim : COLORS.textMuted}
+          onClick={() => setOpen('assistant')}
+        />
+
         {/* Absent unless the server was started with --webdav: telling
             someone to mount a share that is not being served is worse than
             not mentioning it. */}
@@ -246,6 +265,14 @@ export default function VaultSettings({
           onClose={close}
           /* This menu's own line, kept honest without another round trip. */
           onChanged={setFilmKey}
+        />
+      )}
+
+      {open === 'assistant' && (
+        <AssistantSettings
+          zIndex={CHILD_Z}
+          onClose={close}
+          onChanged={setAssistant}
         />
       )}
 

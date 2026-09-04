@@ -11,6 +11,7 @@ import RecoverVault from './components/RecoverVault'
 import CleanOrphans from './components/CleanOrphans'
 import ReattachShards from './components/ReattachShards'
 import FilmDetails from './components/FilmDetails'
+import Assistant from './components/Assistant'
 import { Brand, DevMark } from './components/Brand'
 import { Banner, Button } from './components/ui'
 import { UnlockSubVault } from './components/SubVaults'
@@ -56,6 +57,10 @@ export default function App() {
   const [preview, setPreview] = useState(null)
   const [inspecting, setInspecting] = useState(null)
   const [filming, setFilming] = useState(null)
+  /* The assistant's conversation, kept here so closing the panel does not
+     end it; locking the vault does. */
+  const [asking, setAsking] = useState(false)
+  const [chat, setChat] = useState([])
   const [accountsOpen, setAccountsOpen] = useState(false)
   const [recovery, setRecovery] = useState(null)
   const [recovering, setRecovering] = useState(false)
@@ -308,6 +313,8 @@ export default function App() {
     setPreview(null)
     setInspecting(null)
     setFilming(null)
+    setAsking(false)
+    setChat([])
     setAccountsOpen(false)
     setRecovery(null)
     openRecovery(false)
@@ -446,6 +453,14 @@ export default function App() {
 
           {/* Narrow enough and the labels are dropped; the glyphs carry the
               meaning and the accessible name comes off aria-label. */}
+          {/* A question in plain words, answered by a model on the user's own
+              network. Up here with the other whole-vault controls because
+              the question is about the vault, not about the folder open
+              underneath. */}
+          <Button size="sm" variant="ghost" onClick={() => setAsking(true)}
+            data-icon-button={mobile || undefined}
+            style={mobile ? { fontSize: '16px', padding: '4px 8px', minWidth: '44px', justifyContent: 'center' } : null}
+            title="Ask the vault" aria-label="Ask the vault">✦{mobile ? '' : ' Ask'}</Button>
           <Button size="sm" variant="ghost" onClick={refreshAll}
             data-icon-button={mobile || undefined}
             style={mobile ? { fontSize: '16px', padding: '4px 8px', minWidth: '44px', justifyContent: 'center' } : null}
@@ -569,6 +584,14 @@ export default function App() {
           onThumbStored={() => refreshListing()}
           /* And a match made from in there changes the same listing. */
           onFilmChanged={() => refreshListing()}
+        />
+      )}
+      {asking && (
+        <Assistant
+          chat={chat}
+          onChat={setChat}
+          vault={nav.vault}
+          onClose={() => setAsking(false)}
         />
       )}
       {filming && (
