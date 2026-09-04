@@ -232,6 +232,14 @@ type vaultSettings struct {
 	// how every vault starts — means no film lookup can happen at all.
 	MovieAPIKey string `json:"movie_api_key,omitempty"`
 
+	// Assistant is where the chat assistant's model server is, and which
+	// model on it to talk to. It lives beside the film key rather than in
+	// the manifest for the same reason: the manifest is replicated to every
+	// connected account, and the address of a machine on the user's own
+	// network — with, sometimes, a token that opens it — is not index. See
+	// Vault.Assistant.
+	Assistant *AssistantSettings `json:"assistant,omitempty"`
+
 	// KitCodes are the recovery codes for the kits this vault has exported, by
 	// kit id, so that Settings → Recovery kit → Show code can answer.
 	//
@@ -263,7 +271,7 @@ type vaultSettings struct {
 // empty reports whether anything is set, so that a vault which has never
 // touched these writes no section rather than an encrypted empty object.
 func (s *vaultSettings) empty() bool {
-	return s == nil || (s.MovieAPIKey == "" && len(s.KitCodes) == 0 && len(s.Sources) == 0)
+	return s == nil || (s.MovieAPIKey == "" && s.Assistant == nil && len(s.KitCodes) == 0 && len(s.Sources) == 0)
 }
 
 // subVaultRecord is one sub vault as it sits on disk: its own KDF salt, its own

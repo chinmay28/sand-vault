@@ -855,6 +855,25 @@ export const api = {
   forgetMovie: (id) =>
     request(`/api/files/${encodeURIComponent(id)}/movie`, { method: 'DELETE' }),
 
+  /* The chat assistant: a model the user runs on a machine of their own,
+     reading the index through the server. Where it runs is a setting; the
+     token, when there is one, is stored and never read back. */
+  assistantSettings: () => request('/api/assistant'),
+  /* `key` undefined keeps whatever token is stored; '' clears it. An empty
+     url clears the assistant altogether. */
+  setAssistant: ({ url, model, key }) =>
+    request('/api/assistant/settings', {
+      method: 'POST',
+      body: key === undefined ? { url, model } : { url, model, key },
+    }),
+  /* One question, with the conversation before it. The server keeps
+     nothing between calls, so the browser sends the transcript each time —
+     text only, oldest first, ending with the question. Holds open while the
+     model answers, which on a cold model server is a while. */
+  askAssistant: (messages, { vault = '', signal } = {}) =>
+    request(`/api/assistant/ask${vault ? `?vault=${encodeURIComponent(vault)}` : ''}`,
+      { method: 'POST', body: { messages }, signal }),
+
   /* Asks which of a choice's files the vault already holds at this
      destination with the same name and the same size — the ones not worth
      sending, since the server would only store a second copy beside the
