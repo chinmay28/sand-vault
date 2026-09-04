@@ -4,9 +4,9 @@ import { useIsMobile } from '../hooks'
 import { api } from '../api'
 import { Banner, Button, Input, Modal, PasswordInput, Spinner } from './ui'
 
-/* Ask the vault a question in plain words.
+/* Sandy. Ask the vault a question in plain words.
 
-   The answer comes from a language model the user runs on a machine of their
+   Sandy is a language model the user runs on a machine of their
    own — Ollama on the PC with the graphics card, say — which SAND hands three
    tools: list the films, search the vault by name, search the film database.
    The model sees what those tools return and nothing else: names, paths,
@@ -16,8 +16,8 @@ import { Banner, Button, Input, Modal, PasswordInput, Spinner } from './ui'
    question. The server keeps nothing between questions, which is what makes
    locking the vault end the conversation the way it ends everything else. */
 
-/* What the assistant sends, said where it is set up and where it is used. */
-const PRIVACY = 'The assistant sends the names of your files and folders, and the ' +
+/* What Sandy sends, said where he is set up and where he is used. */
+const PRIVACY = 'Sandy sends the names of your files and folders, and the ' +
   'film titles stored against them, to the model server at the address you ' +
   'give it — and nothing else: not a file’s contents, not an account, not a ' +
   'key. Run the model on a machine you own, on your own network. The one ' +
@@ -32,6 +32,77 @@ const URL_HELP = 'The server’s OpenAI-compatible address. Ollama is ' +
 const MODEL_HELP = 'A model the server already holds — for Ollama, one you have ' +
   'pulled. It must be able to call tools: qwen3:14b or gpt-oss:20b on a ' +
   '16 GB card, llama3.1:8b on less.'
+
+const WINDOW_HELP = 'How many tokens the server actually runs the model with. ' +
+  'Leave it empty to trust what the server says. Ollama runs every model at ' +
+  '4096 unless OLLAMA_CONTEXT_LENGTH says otherwise, whatever the model was ' +
+  'trained for, and a conversation that outgrows it is silently cut from the ' +
+  'front — so if Sandy starts forgetting the start of a chat, this is why.'
+
+/* Tokens, the way a person reads them: 1,512 up to a thousand, 6.2k after. */
+function tokens(n) {
+  if (n < 1000) return String(n)
+  if (n < 10000) return `${(n / 1000).toFixed(1)}k`
+  return `${Math.round(n / 1000)}k`
+}
+
+/* How full the model's window was by the end of the last question.
+
+   Drawn from the server's own count of the last request — the whole
+   transcript plus every tool result — against the window Sandy was set up
+   with. Turns amber at three quarters and red at nine tenths, because past
+   that the next question is the one that loses its beginning. When nobody
+   knows the window the count is shown on its own, with the dialog to set it
+   one click away. */
+function ContextMeter({ usage, onSettings }) {
+  if (!usage?.tokens) return null
+  const { tokens: used, window: total } = usage
+  const share = total > 0 ? Math.min(1, used / total) : 0
+  const tone = share >= 0.9 ? COLORS.error : share >= 0.75 ? COLORS.warn : COLORS.info
+
+  return (
+    <div
+      role="meter"
+      aria-label="Context in use"
+      aria-valuemin={0}
+      aria-valuemax={total || undefined}
+      aria-valuenow={used}
+      title={total > 0
+        ? `${used.toLocaleString()} of ${total.toLocaleString()} tokens in the model’s window after the last question`
+        : `${used.toLocaleString()} tokens in the last question; the window is not known`}
+      style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}
+    >
+      <span style={{ fontFamily: FONT.mono, fontSize: '10px', letterSpacing: '0.5px', color: COLORS.textMuted, whiteSpace: 'nowrap' }}>
+        CONTEXT
+      </span>
+      <span aria-hidden="true" style={{
+        width: '90px', height: '6px', borderRadius: '3px',
+        background: COLORS.surfaceRaised, border: `1px solid ${COLORS.border}`,
+        overflow: 'hidden', flexShrink: 0,
+      }}>
+        <span style={{
+          display: 'block', height: '100%', width: `${Math.round(share * 100)}%`,
+          background: tone, transition: 'width 0.3s ease',
+        }} />
+      </span>
+      <span style={{ fontFamily: FONT.mono, fontSize: '10.5px', color: total > 0 ? tone : COLORS.textMuted, whiteSpace: 'nowrap' }}>
+        {total > 0
+          ? `${tokens(used)} of ${tokens(total)} · ${Math.round(share * 100)}%`
+          : `${tokens(used)} tokens`}
+      </span>
+      {!(total > 0) && (
+        <button
+          type="button"
+          onClick={onSettings}
+          style={{
+            background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+            fontFamily: FONT.mono, fontSize: '10.5px', color: COLORS.textDim, textDecoration: 'underline',
+          }}
+        >window?</button>
+      )}
+    </div>
+  )
+}
 
 /* The questions a first-timer is most likely to want, offered as buttons so
    the panel explains itself by example rather than by paragraph. */
@@ -90,9 +161,15 @@ function Bubble({ turn }) {
       alignItems: mine ? 'flex-end' : 'flex-start',
       gap: '6px',
     }}>
+      {!mine && (
+        <span style={{
+          fontFamily: FONT.mono, fontSize: '10px', letterSpacing: '1px',
+          textTransform: 'uppercase', color: COLORS.accent, marginLeft: '2px',
+        }}>Sandy</span>
+      )}
       <div
         role="article"
-        aria-label={mine ? 'You' : 'Assistant'}
+        aria-label={mine ? 'You' : 'Sandy'}
         style={{
           maxWidth: '88%',
           padding: '9px 12px',
@@ -158,7 +235,9 @@ export default function Assistant({ chat, onChat, vault = '', onClose }) {
          were reached, not part of the conversation. */
       const transcript = next.map(({ role, content: c }) => ({ role, content: c }))
       const resp = await api.askAssistant(transcript, { vault })
-      onChat([...next, { role: 'assistant', content: resp.text, steps: resp.steps || [] }])
+      onChat([...next, {
+        role: 'assistant', content: resp.text, steps: resp.steps || [], context: resp.context || null,
+      }])
     } catch (err) {
       if (err.code === 'NO_ASSISTANT') {
         setSettings((s) => ({ ...(s || {}), configured: false }))
@@ -174,12 +253,15 @@ export default function Assistant({ chat, onChat, vault = '', onClose }) {
 
   const clear = () => { onChat([]); setError(null) }
 
+  /* The newest figure, which is the one that says how much room is left. */
+  const lastContext = [...chat].reverse().find((turn) => turn.context)?.context || null
+
   return (
     <Modal
-      title="Ask the vault"
+      title="Sandy"
       subtitle={configured
-        ? `${settings.model} on your own network, reading the index`
-        : 'A model on your own network, reading the index'}
+        ? `Your vault’s archivist · ${settings.model} on your own network`
+        : 'Your vault’s archivist, once he has a model to think with'}
       onClose={() => !busy && onClose()}
       width={640}
     >
@@ -194,17 +276,17 @@ export default function Assistant({ chat, onChat, vault = '', onClose }) {
           <div style={{
             fontFamily: FONT.mono, fontSize: '12px', fontWeight: 600, color: COLORS.text,
             marginBottom: '6px',
-          }}>No model server yet</div>
+          }}>Sandy needs a model to think with</div>
           <div style={{
             fontFamily: FONT.sans, fontSize: '12px', lineHeight: 1.55, color: COLORS.textDim,
             marginBottom: '12px',
           }}>
-            Point SAND at a model running on a machine of your own — Ollama or
-            vLLM on the PC with the graphics card — and it can answer questions
+            Point him at a model running on a machine of your own — Ollama or
+            vLLM on the PC with the graphics card — and he can answer questions
             like “what Batman films am I missing?” from your index.
           </div>
           <Button variant="primary" size="sm" onClick={() => setSettingsOpen(true)}>
-            Set up the assistant
+            Set Sandy up
           </Button>
         </div>
       )}
@@ -230,8 +312,12 @@ export default function Assistant({ chat, onChat, vault = '', onClose }) {
               fontFamily: FONT.sans, fontSize: '12px', lineHeight: 1.55, color: COLORS.textMuted,
               marginBottom: '14px',
             }}>
-              It can list your films, search by name, and check the film
-              database for what a series has that you do not. Try one of these:
+              <span style={{ color: COLORS.textDim }}>
+                I’m Sandy. I keep the index of this vault, and I can find things
+                in it by name, list your films, and check the film database for
+                what a series has that you do not. I never open a file, and I
+                never send anything anywhere. Ask me something.
+              </span>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', alignItems: 'center' }}>
               {SUGGESTIONS.map((s) => (
@@ -268,7 +354,7 @@ export default function Assistant({ chat, onChat, vault = '', onClose }) {
         <input
           ref={inputRef}
           aria-label="Your question"
-          placeholder={configured ? 'Ask about your files or films…' : 'Set up a model server first'}
+          placeholder={configured ? 'Ask Sandy about your files or films…' : 'Give Sandy a model server first'}
           value={question}
           autoComplete="off"
           disabled={!configured || busy}
@@ -291,24 +377,27 @@ export default function Assistant({ chat, onChat, vault = '', onClose }) {
         </Button>
       </form>
 
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap',
-        marginTop: '12px',
-      }}>
+      {/* Two rows: the caveat, then the meter with the buttons beside it.
+          One row wrapped as soon as the meter appeared, which put "Model…"
+          on a line of its own. */}
+      <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
         <span style={{
-          flex: 1, minWidth: '200px',
           fontFamily: FONT.sans, fontSize: '10.5px', lineHeight: 1.5, color: COLORS.textMuted,
         }}>
-          Answers are made only from what the tools return, and say what was
-          looked up. The model can still misread a list — check the answer
-          against your files before acting on it.
+          Sandy answers only from what his tools return, and says what he
+          looked up. He can still misread a list — check the answer against
+          your files before acting on it.
         </span>
-        {chat.length > 0 && (
-          <Button size="sm" variant="ghost" disabled={busy} onClick={clear}>Clear</Button>
-        )}
-        <Button size="sm" variant="ghost" onClick={() => setSettingsOpen(true)}>
-          {configured ? 'Model…' : 'Settings…'}
-        </Button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+          <ContextMeter usage={lastContext} onSettings={() => setSettingsOpen(true)} />
+          <span style={{ flex: 1 }} />
+          {chat.length > 0 && (
+            <Button size="sm" variant="ghost" disabled={busy} onClick={clear}>Clear</Button>
+          )}
+          <Button size="sm" variant="ghost" onClick={() => setSettingsOpen(true)}>
+            {configured ? 'Model…' : 'Settings…'}
+          </Button>
+        </div>
       </div>
 
       {settingsOpen && (
@@ -322,7 +411,7 @@ export default function Assistant({ chat, onChat, vault = '', onClose }) {
   )
 }
 
-/* Where the assistant's model runs: a URL, a model name, and a token for the
+/* Where Sandy's model runs: a URL, a model name, and a token for the
    servers that want one. Kept where the rest of the vault's own settings are,
    beside the film key, because it is the vault's rather than any folder's. */
 export function AssistantSettings({ onClose, onChanged, zIndex }) {
@@ -331,6 +420,7 @@ export function AssistantSettings({ onClose, onChanged, zIndex }) {
   const [model, setModel] = useState('')
   const [key, setKey] = useState('')
   const [keyTouched, setKeyTouched] = useState(false)
+  const [contextTokens, setContextTokens] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const [saved, setSaved] = useState(false)
@@ -341,6 +431,7 @@ export function AssistantSettings({ onClose, onChanged, zIndex }) {
         setSettings(resp)
         setUrl(resp.url || '')
         setModel(resp.model || '')
+        setContextTokens(resp.context_tokens ? String(resp.context_tokens) : '')
       })
       .catch((err) => setError(err.message))
   }, [])
@@ -357,6 +448,7 @@ export function AssistantSettings({ onClose, onChanged, zIndex }) {
       setSettings(resp)
       setUrl(resp.url || '')
       setModel(resp.model || '')
+      setContextTokens(resp.context_tokens ? String(resp.context_tokens) : '')
       setKey('')
       setKeyTouched(false)
       setSaved(resp.configured)
@@ -370,13 +462,17 @@ export function AssistantSettings({ onClose, onChanged, zIndex }) {
 
   const submit = (e) => {
     e.preventDefault()
-    store({ url: url.trim(), model: model.trim(), key: keyTouched ? key.trim() : undefined })
+    store({
+      url: url.trim(), model: model.trim(),
+      key: keyTouched ? key.trim() : undefined,
+      contextTokens: parseInt(contextTokens, 10) || 0,
+    })
   }
 
   return (
     <Modal
-      title="Assistant"
-      subtitle="A model on a machine you own answers questions about the vault"
+      title="Sandy"
+      subtitle="The model on a machine you own that Sandy thinks with"
       onClose={() => !busy && onClose()}
       width={560}
       zIndex={zIndex}
@@ -384,7 +480,10 @@ export function AssistantSettings({ onClose, onChanged, zIndex }) {
       {error && <Banner tone="error" onDismiss={() => setError(null)}>{error}</Banner>}
       {saved && (
         <Banner tone="success" onDismiss={() => setSaved(false)}>
-          The server answered and has {settings?.model}. The assistant is ready.
+          The server answered and has {settings?.model}. Sandy is ready.
+          {settings?.context_window > 0
+            ? ` He has a window of ${settings.context_window.toLocaleString()} tokens to think in.`
+            : ' It did not say how big the model’s window is — set it below if you know.'}
         </Banner>
       )}
 
@@ -412,6 +511,19 @@ export function AssistantSettings({ onClose, onChanged, zIndex }) {
             placeholder="qwen3:14b"
             onChange={(e) => setModel(e.target.value)}
             help={MODEL_HELP}
+          />
+          <Input
+            label="Context window"
+            type="number"
+            min="0"
+            step="1024"
+            inputMode="numeric"
+            value={contextTokens}
+            placeholder={settings.context_reported > 0
+              ? `${settings.context_reported.toLocaleString()} — what the server reports`
+              : 'The server did not say'}
+            onChange={(e) => setContextTokens(e.target.value)}
+            help={WINDOW_HELP}
           />
           <PasswordInput
             label={settings.has_key ? 'Token (one is stored — leave blank to keep it)' : 'Token (optional)'}

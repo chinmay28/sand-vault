@@ -45,6 +45,10 @@ type Hit struct {
 	Path string `json:"path"`
 	Size int64  `json:"size,omitempty"`
 
+	// Modified is when the file last changed, as a date, which is what "the
+	// latest one" is decided by.
+	Modified string `json:"modified,omitempty"`
+
 	// Film is the stored film title, when the file has one.
 	Film string `json:"film,omitempty"`
 }
@@ -99,9 +103,10 @@ func Tools(c Collection) []Tool {
 		{
 			ToolSpec: ToolSpec{
 				Name: "search_vault",
-				Description: "Find files and folders in the vault by name. The query is a " +
-					"case-insensitive substring, or a pattern using * and ? wildcards. " +
-					"Returns paths, sizes and, for matched videos, the film title.",
+				Description: "Find files and folders in the vault by name. The query is one " +
+					"case-insensitive word or substring, or a pattern using * and ? wildcards; " +
+					"search one word at a time rather than a phrase. Returns paths, sizes, " +
+					"modified dates and, for matched videos, the film title.",
 				Parameters: schema(`{
 					"type": "object",
 					"properties": {

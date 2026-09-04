@@ -19,6 +19,11 @@ type fakeServer struct {
 	status   int
 	requests []map[string]any
 	auth     string
+
+	// maxModelLen is what a vLLM-style model list reports for the window;
+	// show is what Ollama's own show call answers, nil for "not Ollama".
+	maxModelLen int
+	show        map[string]any
 }
 
 func newFakeServer(t *testing.T) *fakeServer {
@@ -30,9 +35,20 @@ func newFakeServer(t *testing.T) *fakeServer {
 		f.auth = r.Header.Get("Authorization")
 		data := []map[string]any{}
 		for _, m := range f.models {
-			data = append(data, map[string]any{"id": m, "object": "model"})
+			entry := map[string]any{"id": m, "object": "model"}
+			if f.maxModelLen > 0 {
+				entry["max_model_len"] = f.maxModelLen
+			}
+			data = append(data, entry)
 		}
 		json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": data})
+	})
+	mux.HandleFunc("POST /api/show", func(w http.ResponseWriter, r *http.Request) {
+		if f.show == nil {
+			http.NotFound(w, r)
+			return
+		}
+		json.NewEncoder(w).Encode(f.show)
 	})
 	mux.HandleFunc("POST /v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
 		f.auth = r.Header.Get("Authorization")
@@ -56,6 +72,7 @@ func assistantReply(content string, calls ...map[string]any) map[string]any {
 	return map[string]any{
 		"id": "chatcmpl-1", "object": "chat.completion", "model": "qwen3:14b",
 		"choices": []map[string]any{{"index": 0, "message": msg, "finish_reason": "stop"}},
+		"usage":   map[string]any{"prompt_tokens": 1200, "completion_tokens": 45, "total_tokens": 1245},
 	}
 }
 
@@ -127,6 +144,9 @@ func TestChatReadsAPlainAnswer(t *testing.T) {
 	}
 	if got.Content != "You have three." || len(got.ToolCalls) != 0 {
 		t.Errorf("got %+v", got)
+	}
+	if got.Usage == nil || got.Usage.Prompt != 1200 || got.Usage.Completion != 45 {
+		t.Errorf("usage %+v, want the server's count", got.Usage)
 	}
 	if f.auth != "Bearer secret" {
 		t.Errorf("Authorization %q", f.auth)
@@ -227,5 +247,67 @@ func TestValidateBaseURL(t *testing.T) {
 		if ok && strings.HasSuffix(got, "/") {
 			t.Errorf("%q kept its trailing slash: %q", raw, got)
 		}
+	}
+}
+
+func TestDescribeReadsTheWindowFromAVLLMModelList(t *testing.T) {
+	f := newFakeServer(t)
+	f.maxModelLen = 32768
+	info, err := (&ChatCompletions{BaseURL: f.URL + "/v1", Model: "qwen3:14b"}).Describe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.ContextTokens != 32768 || info.Tools != nil {
+		t.Errorf("info %+v, want the window and no opinion on tools", info)
+	}
+}
+
+func TestDescribeAsksOllamaWhatItKnows(t *testing.T) {
+	f := newFakeServer(t)
+	f.show = map[string]any{
+		"parameters":   "stop \"<|im_end|>\"\nnum_ctx 16384\ntemperature 0.6",
+		"model_info":   map[string]any{"general.architecture": "qwen3", "qwen3.context_length": 40960, "qwen3.embedding_length": 5120},
+		"capabilities": []string{"completion", "tools", "thinking"},
+	}
+	c := &ChatCompletions{BaseURL: f.URL + "/v1", Model: "qwen3:14b"}
+	info, err := c.Describe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The Modelfile's num_ctx is what the model is run at, and outranks what
+	// it was trained for.
+	if info.ContextTokens != 16384 {
+		t.Errorf("window %d, want num_ctx 16384 over context_length 40960", info.ContextTokens)
+	}
+	if info.Tools == nil || !*info.Tools {
+		t.Errorf("tools %v, want true", info.Tools)
+	}
+
+	// Without a num_ctx, the trained length is what there is.
+	f.show["parameters"] = "temperature 0.6"
+	info, err = c.Describe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.ContextTokens != 40960 {
+		t.Errorf("window %d, want context_length 40960", info.ContextTokens)
+	}
+
+	// A model Ollama says cannot call tools is refused here, not on the
+	// first question.
+	f.show["capabilities"] = []string{"completion"}
+	if _, err := c.Describe(context.Background()); !errors.Is(err, ErrNoToolSupport) {
+		t.Errorf("a model without tools: %v", err)
+	}
+}
+
+func TestDescribeIsQuietAboutAServerThatIsNotOllama(t *testing.T) {
+	f := newFakeServer(t)
+	info, err := (&ChatCompletions{BaseURL: f.URL + "/v1", Model: "qwen3:14b"}).Describe(context.Background())
+	if err != nil {
+		t.Fatalf("a 404 on the show call was treated as an error: %v", err)
+	}
+	if info.ContextTokens != 0 || info.Tools != nil {
+		t.Errorf("info %+v, want nothing known", info)
 	}
 }

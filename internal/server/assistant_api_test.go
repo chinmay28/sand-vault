@@ -44,8 +44,23 @@ func newFakeModelServer(t *testing.T) *fakeModelServer {
 		f.requests = append(f.requests, req)
 		f.mu.Unlock()
 
+		// A token count the way a real server gives one: the whole
+		// transcript in, the reply out. Four characters a token is close
+		// enough for a fake.
+		raw, _ := json.Marshal(req["messages"])
+		reply := f.reply(req)
 		json.NewEncoder(w).Encode(map[string]any{
-			"choices": []map[string]any{{"message": f.reply(req)}},
+			"choices": []map[string]any{{"message": reply}},
+			"usage": map[string]any{
+				"prompt_tokens":     len(raw) / 4,
+				"completion_tokens": len(fmt.Sprint(reply["content"])) / 4,
+			},
+		})
+	})
+	mux.HandleFunc("POST /api/show", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"model_info":   map[string]any{"qwen3.context_length": 40960},
+			"capabilities": []string{"completion", "tools"},
 		})
 	})
 
@@ -253,6 +268,27 @@ func TestAssistantSettingsAreCheckedBeforeTheyAreStored(t *testing.T) {
 	if body["url"] != f.URL+"/v1" || body["model"] != "qwen3:14b" {
 		t.Errorf("stored as %v", body)
 	}
+	if body["context_reported"] != float64(40960) || body["context_window"] != float64(40960) || body["context_tokens"] != float64(0) {
+		t.Errorf("the window the server reported was not kept: %v", body)
+	}
+
+	// Setting the window by hand outranks what the server said, and clearing
+	// it goes back to the server's figure.
+	w, body = c.json(http.MethodPost, "/api/assistant/settings",
+		map[string]any{"url": f.URL + "/v1", "model": "qwen3:14b", "context_tokens": 8192})
+	if w.Code != http.StatusOK || body["context_window"] != float64(8192) || body["context_reported"] != float64(40960) {
+		t.Errorf("an override: %d %v", w.Code, body)
+	}
+	w, body = c.json(http.MethodPost, "/api/assistant/settings",
+		map[string]any{"url": f.URL + "/v1", "model": "qwen3:14b", "context_tokens": -1})
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("a negative window: %d %v", w.Code, body)
+	}
+	w, body = c.json(http.MethodPost, "/api/assistant/settings",
+		map[string]any{"url": f.URL + "/v1", "model": "qwen3:14b"})
+	if w.Code != http.StatusOK || body["context_window"] != float64(40960) {
+		t.Errorf("back to the server's figure: %d %v", w.Code, body)
+	}
 	if _, echoed := body["key"]; echoed {
 		t.Error("the token was echoed back")
 	}
@@ -301,6 +337,13 @@ func TestWhichBatmanFilmsAreMissing(t *testing.T) {
 	steps := body["steps"].([]any)
 	if len(steps) != 2 {
 		t.Fatalf("steps %v, want list_films then search_film_database", steps)
+	}
+
+	// How full the window was: the last request's count, against the window
+	// the server reported when Sandy was set up.
+	usage, _ := body["context"].(map[string]any)
+	if usage == nil || usage["tokens"].(float64) < 500 || usage["window"] != float64(40960) {
+		t.Errorf("context usage %v, want a real count of 40960", usage)
 	}
 	if steps[0].(map[string]any)["tool"] != "list_films" || steps[1].(map[string]any)["tool"] != "search_film_database" {
 		t.Errorf("steps %v", steps)

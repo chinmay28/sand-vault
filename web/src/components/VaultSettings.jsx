@@ -176,15 +176,15 @@ export default function VaultSettings({
           onClick={() => setOpen('film')}
         />
 
-        {/* The model that answers questions about the vault, which is the
-            vault's setting in exactly the way the film key is: one server,
-            used from wherever the question is asked. The line names the
-            model rather than the address, since the model is what you chose
-            and the address is where it happened to be. */}
+        {/* Sandy's model, which is the vault's setting in exactly the way
+            the film key is: one server, used from wherever the question is
+            asked. The line names the model rather than the address, since
+            the model is what you chose and the address is where it happened
+            to be. */}
         <Setting
           icon="✦"
-          label="Assistant"
-          hint="A model on your own network that answers questions about the vault"
+          label="Sandy"
+          hint="The assistant — a model on your own network that answers questions about the vault"
           status={assistant === null ? '…' : assistant.configured ? assistant.model : 'Not set'}
           tone={assistant?.configured ? COLORS.textDim : COLORS.textMuted}
           onClick={() => setOpen('assistant')}

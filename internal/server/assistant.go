@@ -12,8 +12,8 @@ import (
 	"github.com/chinmay28/sand-vault/internal/vault"
 )
 
-// The chat assistant is a model the user runs on a machine of their own,
-// given three tools that read the open index. What it can see is exactly
+// Sandy, the chat assistant, is a model the user runs on a machine of their
+// own, given three tools that read the open index. What it can see is exactly
 // what the tools hand it, and the tools are written here, over the vault, so
 // that the answer to "what does the assistant send to the model server" is
 // three functions long.
@@ -120,6 +120,9 @@ func (c vaultCollection) Search(ctx context.Context, query, dir string, limit in
 		h := assistant.Hit{Type: hit.Type, Path: hit.Path}
 		if hit.File != nil {
 			h.Size = hit.File.Size
+			if !hit.File.ModifiedAt.IsZero() {
+				h.Modified = hit.File.ModifiedAt.UTC().Format("2006-01-02")
+			}
 			if brief, ok := results.Movies[hit.File.ID]; ok {
 				h.Film = brief.Title
 				if brief.Year > 0 {
@@ -172,6 +175,7 @@ func (s *Server) assistantFor(scope vault.Scope) (*assistant.Assistant, error) {
 		Model: &assistant.ChatCompletions{
 			BaseURL: settings.URL, Model: settings.Model, APIKey: settings.APIKey,
 		},
-		Tools: assistant.Tools(vaultCollection{server: s, scope: scope}),
+		Tools:         assistant.Tools(vaultCollection{server: s, scope: scope}),
+		ContextTokens: settings.ContextWindow(),
 	}, nil
 }

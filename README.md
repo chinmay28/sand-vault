@@ -1029,34 +1029,37 @@ one of them is a reason to throw away what may be the last copy in the world.
 
 Deleting it is a thing you turn on (`--prune`), never a thing that happens.
 
-## Asking the vault a question
+## Sandy, the vault's archivist
 
-**✦ Ask**, in the header, opens a chat. Type a question in plain words —
-*what Batman movies are missing from my collection?* — and a language model
-answers it from the index.
+**✦ Sandy**, in the header, opens a chat. Type a question in plain words —
+*what Batman movies are missing from my collection?*, *where are my water
+bills?* — and Sandy answers it from the index.
 
-The model is **one you run yourself**, on a machine of your own: Ollama or
-vLLM on the PC with the graphics card, reached over your network. SAND hands
-it three tools — list the films, search the vault by name, search the film
-database — and the model sees exactly what those tools return: names, paths,
-sizes and the film titles already stored against your videos. Never a file's
-contents, never an account, never a key. The one lookup that leaves your
-network is the film database search, which sends the title being searched
-for and nothing about the vault, the same as matching a folder does.
+Sandy is an archivist by temperament: quiet, exact, a little dry, and
+unwilling to say anything he has not looked up. He is a language model **you
+run yourself**, on a machine of your own — Ollama or vLLM on the PC with the
+graphics card, reached over your network. SAND hands him three tools — list
+the films, search the vault by name, search the film database — and he sees
+exactly what those tools return: names, paths, sizes, modified dates and the
+film titles already stored against your videos. Never a file's contents,
+never an account, never a key. The one lookup that leaves your network is the
+film database search, which sends the title being searched for and nothing
+about the vault, the same as matching a folder does.
 
-Every answer says what it looked up, as tags under the reply, so it can be
+Every answer says what he looked up, as tags under the reply, so it can be
 judged by what it was made from. The transcript lives in the browser and is
 sent back with each question; the server keeps nothing between questions, so
 locking the vault ends the conversation the way it ends everything else.
 
-### Setting it up
+### Giving Sandy a model
 
 Run a model server that speaks the OpenAI-compatible chat protocol, which
 both Ollama and vLLM do, and make sure it listens on your network rather than
 loopback only — for Ollama that is `OLLAMA_HOST=0.0.0.0`. Pull a model that
 can call tools; on a 16 GB card `qwen3:14b` or `gpt-oss:20b` fit entirely in
-memory, and `llama3.1:8b` on less. Then, in **Vault settings → Assistant**, or
-from the chat's own **Set up** button, give the address and the model name:
+memory, and `llama3.1:8b` on less. Then, in **Vault settings → Sandy**, or
+from the chat's own **Set Sandy up** button, give the address and the model
+name:
 
 ```
 Model server   http://gaming-pc:11434/v1
@@ -1065,7 +1068,24 @@ Model          qwen3:14b
 
 Saving checks that the server answers and lists the model, so a PC that is
 off or a model never pulled fails in the dialog rather than on the first
-question. The setting is sealed in the vault beside the film key and is not
+question. On Ollama it also asks whether the model can call tools, and
+refuses one that cannot.
+
+### How much of his window is in use
+
+Every answer carries the server's own count of the tokens the last request
+took — the whole transcript plus every tool result — and the panel draws it
+as a meter against the model's context window: *6.2k of 40k · 15%*. It turns
+amber at three quarters and red at nine tenths, because past that the next
+question is the one whose beginning the model no longer sees. **Clear** starts
+a fresh conversation and empties it.
+
+The window comes from the server where it says: vLLM reports it on its model
+list, Ollama on its own model details. **Ollama runs every model at 4,096
+tokens unless `OLLAMA_CONTEXT_LENGTH` says otherwise**, whatever the model
+was trained for, and cuts a longer conversation silently from the front — so
+if Sandy seems to forget how a chat started, that is why. Set the real figure
+in the same dialog, and the meter measures against it instead. The setting is sealed in the vault beside the film key and is not
 replicated to the connected accounts; a token, for a server started with one,
 goes in the same place and is never read back.
 

@@ -128,6 +128,10 @@ type wireResponse struct {
 	Choices []struct {
 		Message wireMessage `json:"message"`
 	} `json:"choices"`
+	Usage *struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+	} `json:"usage,omitempty"`
 	Error *struct {
 		Message string `json:"message"`
 	} `json:"error,omitempty"`
@@ -175,6 +179,9 @@ func (c *ChatCompletions) Chat(ctx context.Context, msgs []Message, tools []Tool
 
 	wm := resp.Choices[0].Message
 	out := Message{Role: RoleAssistant, Content: wm.Content}
+	if resp.Usage != nil {
+		out.Usage = &Usage{Prompt: resp.Usage.PromptTokens, Completion: resp.Usage.CompletionTokens}
+	}
 	for i, call := range wm.ToolCalls {
 		id := call.ID
 		if id == "" {
@@ -196,40 +203,149 @@ func (c *ChatCompletions) Chat(ctx context.Context, msgs []Message, tools []Tool
 	return out, nil
 }
 
-// Ping checks that the server answers and holds the configured model. It is
-// what storing the settings runs, so that a mistyped address or a model that
-// was never pulled fails in the settings dialog rather than on the first
-// question.
+// ModelInfo is what the server says about the configured model.
+type ModelInfo struct {
+	// ContextTokens is the context window, or zero when the server did not
+	// say. vLLM reports it on its model list; Ollama on its own show call.
+	ContextTokens int
+
+	// Tools reports whether the model can call tools, when the server says
+	// either way. Ollama lists a model's capabilities; most servers do not.
+	Tools *bool
+}
+
+// ErrNoToolSupport is returned by Describe when the server says outright
+// that the model cannot call tools, which is the one thing Sandy needs it
+// to do.
+var ErrNoToolSupport = errors.New("the model server says that model cannot call tools")
+
+// Ping checks that the server answers and holds the configured model. It
+// is Describe with the answer thrown away.
 func (c *ChatCompletions) Ping(ctx context.Context) error {
+	_, err := c.Describe(ctx)
+	return err
+}
+
+// Describe checks that the server answers and holds the configured model,
+// and reports what it will say about it: the context window, and whether
+// the model can call tools.
+//
+// It is what storing the settings runs, so that a mistyped address, a model
+// that was never pulled, or a model that cannot call tools fails in the
+// settings dialog rather than on the first question.
+//
+// The context window matters because Ollama runs every model at a window of
+// its own choosing — 4096 tokens unless told otherwise — regardless of what
+// the model was trained for, and a transcript that outgrows it is silently
+// cut from the front. Knowing the number is what lets the panel show how
+// close a conversation is to that.
+func (c *ChatCompletions) Describe(ctx context.Context) (ModelInfo, error) {
 	base, err := ValidateBaseURL(c.BaseURL)
 	if err != nil {
-		return err
+		return ModelInfo{}, err
 	}
 	model := strings.TrimSpace(c.Model)
 	if model == "" {
-		return errors.New("name the model to use")
+		return ModelInfo{}, errors.New("name the model to use")
 	}
 
 	var listed struct {
 		Data []struct {
 			ID string `json:"id"`
+			// vLLM's model list carries the window; Ollama's does not.
+			MaxModelLen int `json:"max_model_len"`
 		} `json:"data"`
 	}
 	if err := c.get(ctx, base+"/models", &listed); err != nil {
-		return err
+		return ModelInfo{}, err
 	}
 
+	info := ModelInfo{}
+	found := false
 	names := make([]string, 0, len(listed.Data))
 	for _, m := range listed.Data {
 		if m.ID == model {
-			return nil
+			found = true
+			info.ContextTokens = m.MaxModelLen
+			break
 		}
 		names = append(names, m.ID)
 	}
-	if len(names) == 0 {
-		return fmt.Errorf("%w: it lists no models at all", ErrNoSuchModel)
+	if !found {
+		if len(names) == 0 {
+			return ModelInfo{}, fmt.Errorf("%w: it lists no models at all", ErrNoSuchModel)
+		}
+		return ModelInfo{}, fmt.Errorf("%w: it has %s", ErrNoSuchModel, strings.Join(names, ", "))
 	}
-	return fmt.Errorf("%w: it has %s", ErrNoSuchModel, strings.Join(names, ", "))
+
+	// Ollama's own show call, beside the compatible endpoint, is the only
+	// place it says how big the window is and whether the model can call
+	// tools. Any other server answers 404 here, which is not an error: it is
+	// simply not Ollama.
+	if err := c.describeOllama(ctx, base, model, &info); err != nil {
+		return ModelInfo{}, err
+	}
+	return info, nil
+}
+
+// describeOllama asks Ollama's native API about the model, when the server
+// turns out to be Ollama. It fills what it learns into info and is silent
+// about a server that does not answer the call at all.
+func (c *ChatCompletions) describeOllama(ctx context.Context, base, model string, info *ModelInfo) error {
+	origin := strings.TrimSuffix(base, "/v1")
+	if origin == base {
+		return nil
+	}
+
+	var shown struct {
+		Parameters   string                     `json:"parameters"`
+		ModelInfo    map[string]json.RawMessage `json:"model_info"`
+		Capabilities []string                   `json:"capabilities"`
+	}
+	err := c.post(ctx, origin+"/api/show", map[string]string{"model": model}, &shown)
+	if err != nil {
+		var status statusError
+		if errors.As(err, &status) {
+			// Not Ollama, or an Ollama too old to have the call.
+			return nil
+		}
+		return err
+	}
+
+	// What the model was trained to hold.
+	for key, raw := range shown.ModelInfo {
+		if !strings.HasSuffix(key, ".context_length") {
+			continue
+		}
+		var n int
+		if json.Unmarshal(raw, &n) == nil && n > 0 {
+			info.ContextTokens = n
+		}
+	}
+	// What it is actually run at, when the Modelfile says.
+	for _, line := range strings.Split(shown.Parameters, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && fields[0] == "num_ctx" {
+			var n int
+			if _, err := fmt.Sscanf(fields[1], "%d", &n); err == nil && n > 0 {
+				info.ContextTokens = n
+			}
+		}
+	}
+
+	if shown.Capabilities != nil {
+		tools := false
+		for _, cap := range shown.Capabilities {
+			if cap == "tools" {
+				tools = true
+			}
+		}
+		info.Tools = &tools
+		if !tools {
+			return fmt.Errorf("%w: pull one that can, such as qwen3:14b", ErrNoToolSupport)
+		}
+	}
+	return nil
 }
 
 func (c *ChatCompletions) get(ctx context.Context, target string, out any) error {
@@ -279,7 +395,7 @@ func (c *ChatCompletions) do(req *http.Request, out any) error {
 		// whatever it likes. Show the first line of either.
 		var e wireResponse
 		if json.Unmarshal(raw, &e) == nil && e.Error != nil && e.Error.Message != "" {
-			return fmt.Errorf("the model server answered %d: %s", resp.StatusCode, e.Error.Message)
+			return statusError{resp.StatusCode, e.Error.Message}
 		}
 		line := strings.TrimSpace(string(raw))
 		if i := strings.IndexByte(line, '\n'); i >= 0 {
@@ -291,11 +407,23 @@ func (c *ChatCompletions) do(req *http.Request, out any) error {
 		if line == "" {
 			line = http.StatusText(resp.StatusCode)
 		}
-		return fmt.Errorf("the model server answered %d: %s", resp.StatusCode, line)
+		return statusError{resp.StatusCode, line}
 	}
 
 	if err := json.Unmarshal(raw, out); err != nil {
 		return fmt.Errorf("the model server's answer was not JSON: %w", err)
 	}
 	return nil
+}
+
+// statusError is an answer the server gave that was not success: reachable,
+// but refusing. Telling it apart from a server that never answered is what
+// lets an optional call be skipped on a 404 and reported on a timeout.
+type statusError struct {
+	code    int
+	message string
+}
+
+func (e statusError) Error() string {
+	return fmt.Sprintf("the model server answered %d: %s", e.code, e.message)
 }

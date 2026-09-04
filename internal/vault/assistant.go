@@ -19,6 +19,25 @@ type AssistantSettings struct {
 	// APIKey is sent as a bearer token when the server wants one. Most home
 	// servers do not; vLLM can be started with one.
 	APIKey string `json:"api_key,omitempty"`
+
+	// ContextTokens is the model's context window as the user set it, for
+	// the panel to show how full a conversation is. Zero means use what the
+	// server reported.
+	ContextTokens int `json:"context_tokens,omitempty"`
+
+	// ReportedContext is the window the server reported when the settings
+	// were checked, kept so the dialog can show what it said and the panel
+	// has a figure without asking again.
+	ReportedContext int `json:"reported_context,omitempty"`
+}
+
+// ContextWindow is the window the panel measures against: what the user
+// set, or failing that what the server said, or zero when neither.
+func (s AssistantSettings) ContextWindow() int {
+	if s.ContextTokens > 0 {
+		return s.ContextTokens
+	}
+	return s.ReportedContext
 }
 
 // Configured reports whether there is a server to talk to.
@@ -32,6 +51,12 @@ func (s AssistantSettings) normalize() AssistantSettings {
 	s.URL = strings.TrimRight(strings.TrimSpace(s.URL), "/")
 	s.Model = strings.TrimSpace(s.Model)
 	s.APIKey = strings.TrimSpace(s.APIKey)
+	if s.ContextTokens < 0 {
+		s.ContextTokens = 0
+	}
+	if s.ReportedContext < 0 {
+		s.ReportedContext = 0
+	}
 	if s.URL == "" {
 		return AssistantSettings{}
 	}

@@ -39,6 +39,8 @@ func assistantErrorResponse(w http.ResponseWriter, err error) {
 			"no assistant has been set up — point SAND at a model server in Settings first", "NO_ASSISTANT")
 	case errors.Is(err, assistant.ErrNoSuchModel):
 		writeError(w, http.StatusBadGateway, err.Error(), "NO_SUCH_MODEL")
+	case errors.Is(err, assistant.ErrNoToolSupport):
+		writeError(w, http.StatusBadGateway, err.Error(), "NO_TOOL_SUPPORT")
 	case errors.Is(err, assistant.ErrEmptyQuestion):
 		writeError(w, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
 	case errors.Is(err, assistant.ErrTooManySteps):
@@ -56,13 +58,22 @@ func assistantErrorResponse(w http.ResponseWriter, err error) {
 // for one it already gave.
 func (s *Server) handleAssistantSettings(w http.ResponseWriter, r *http.Request) {
 	v, _ := s.Vault()
-	settings := v.Assistant()
-	writeJSON(w, http.StatusOK, map[string]any{
-		"configured": settings.Configured(),
-		"url":        settings.URL,
-		"model":      settings.Model,
-		"has_key":    settings.APIKey != "",
-	})
+	writeJSON(w, http.StatusOK, assistantSettingsView(v.Assistant()))
+}
+
+// assistantSettingsView is the settings as the browser sees them. The
+// window comes in three figures: what the server said, what the user set
+// over it, and which of those the panel measures against.
+func assistantSettingsView(settings vault.AssistantSettings) map[string]any {
+	return map[string]any{
+		"configured":       settings.Configured(),
+		"url":              settings.URL,
+		"model":            settings.Model,
+		"has_key":          settings.APIKey != "",
+		"context_reported": settings.ReportedContext,
+		"context_tokens":   settings.ContextTokens,
+		"context_window":   settings.ContextWindow(),
+	}
 }
 
 type assistantSettingsRequest struct {
@@ -74,6 +85,11 @@ type assistantSettingsRequest struct {
 	// Key is a bearer token for a server that wants one. Absent means keep
 	// whatever is stored; empty means clear it.
 	Key *string `json:"key,omitempty"`
+
+	// ContextTokens overrides the window the server reports, for a server
+	// that runs the model at less than the model allows — Ollama, by
+	// default. Zero means trust the server.
+	ContextTokens int `json:"context_tokens,omitempty"`
 }
 
 // handleAssistantSet stores where the assistant runs, after checking that
@@ -95,12 +111,17 @@ func (s *Server) handleAssistantSet(w http.ResponseWriter, r *http.Request) {
 	current := v.Assistant()
 
 	next := vault.AssistantSettings{
-		URL:    strings.TrimSpace(req.URL),
-		Model:  strings.TrimSpace(req.Model),
-		APIKey: current.APIKey,
+		URL:           strings.TrimSpace(req.URL),
+		Model:         strings.TrimSpace(req.Model),
+		APIKey:        current.APIKey,
+		ContextTokens: req.ContextTokens,
 	}
 	if req.Key != nil {
 		next.APIKey = strings.TrimSpace(*req.Key)
+	}
+	if next.ContextTokens < 0 {
+		writeError(w, http.StatusBadRequest, "the context window cannot be negative", "BAD_REQUEST")
+		return
 	}
 
 	if next.URL != "" {
@@ -118,23 +139,19 @@ func (s *Server) handleAssistantSet(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := contextWithTimeout(r, 30*time.Second)
 		defer cancel()
 		model := &assistant.ChatCompletions{BaseURL: next.URL, Model: next.Model, APIKey: next.APIKey}
-		if err := model.Ping(ctx); err != nil {
+		info, err := model.Describe(ctx)
+		if err != nil {
 			assistantErrorResponse(w, err)
 			return
 		}
+		next.ReportedContext = info.ContextTokens
 	}
 
 	if err := v.SetAssistant(next); err != nil {
 		vaultErrorResponse(w, err)
 		return
 	}
-	stored := v.Assistant()
-	writeJSON(w, http.StatusOK, map[string]any{
-		"configured": stored.Configured(),
-		"url":        stored.URL,
-		"model":      stored.Model,
-		"has_key":    stored.APIKey != "",
-	})
+	writeJSON(w, http.StatusOK, assistantSettingsView(v.Assistant()))
 }
 
 type assistantAskRequest struct {

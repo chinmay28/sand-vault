@@ -1,5 +1,6 @@
-// Package assistant answers questions about a vault in plain language, by
-// putting a chat model in front of a handful of tools that read the index.
+// Package assistant is Sandy: an assistant who answers questions about a
+// vault in plain language, by putting a chat model in front of a handful of
+// tools that read the index.
 //
 // The shape is deliberately small. A Model is anything that can take a
 // transcript and a list of tools and answer with text or with a request to
@@ -50,6 +51,18 @@ type Message struct {
 	// tool that produced it.
 	ToolCallID string `json:"tool_call_id,omitempty"`
 	Name       string `json:"name,omitempty"`
+
+	// Usage is what the request that produced an assistant turn cost, when
+	// the server said. Nil on every other turn.
+	Usage *Usage `json:"usage,omitempty"`
+}
+
+// Usage is one request's token count: what the model was given and what it
+// wrote back. Together they are how much of the context window that request
+// filled.
+type Usage struct {
+	Prompt     int `json:"prompt"`
+	Completion int `json:"completion"`
 }
 
 // ToolCall is one request from the model to run a tool.
@@ -107,6 +120,21 @@ type Step struct {
 type Answer struct {
 	Text  string `json:"text"`
 	Steps []Step `json:"steps,omitempty"`
+
+	// Context is how full the model's window was by the end of the question,
+	// when the server counts. Nil when it does not.
+	Context *ContextUsage `json:"context,omitempty"`
+}
+
+// ContextUsage is how much of the model's context window one question
+// filled: the token count of the last request, which carried the whole
+// transcript plus every tool result, against the window it has to fit in.
+type ContextUsage struct {
+	Tokens int `json:"tokens"`
+
+	// Window is the model's context window in tokens, or zero when nobody
+	// knows it.
+	Window int `json:"window,omitempty"`
 }
 
 // DefaultMaxSteps bounds how many rounds of tool calls one question may take.
@@ -135,6 +163,11 @@ type Assistant struct {
 	// MaxSteps caps the rounds of tool calls per question. Zero means
 	// DefaultMaxSteps.
 	MaxSteps int
+
+	// ContextTokens is the model's context window, for reporting how much of
+	// it a question used. Zero means unknown, and the answer says only what
+	// was used.
+	ContextTokens int
 }
 
 // Ask answers one question, given the conversation that led up to it.
@@ -190,6 +223,15 @@ func (a *Assistant) Ask(ctx context.Context, history []Turn, question string) (*
 		}
 		reply.Role = RoleAssistant
 		msgs = append(msgs, reply)
+		if reply.Usage != nil {
+			// The last request is the biggest: the transcript only grows
+			// within a question. Overwritten each round, so what is left is
+			// the peak.
+			answer.Context = &ContextUsage{
+				Tokens: reply.Usage.Prompt + reply.Usage.Completion,
+				Window: a.ContextTokens,
+			}
+		}
 
 		if len(reply.ToolCalls) == 0 {
 			answer.Text = strings.TrimSpace(reply.Content)
@@ -243,15 +285,30 @@ func (a *Assistant) run(ctx context.Context, tools map[string]Tool, call ToolCal
 	return tool.Run(ctx, args)
 }
 
-// DefaultSystemPrompt is what the assistant is told about itself.
+// DefaultSystemPrompt is who Sandy is and how he works.
 //
-// The rule that matters is the second paragraph: answers come from the tools,
-// not from what the model remembers. A local model's memory of a film series
-// is patchy, and a confident list of Batman films that is missing two of them
-// is worse than no list — so the database is asked, every time, and the model
-// is told to say what it compared.
-const DefaultSystemPrompt = `You are the assistant built into SAND Vault, a private file store. The person you are talking to owns the vault. The tools you have read their index: the files and folders in it, and the film details stored against the videos they have matched against a film database.
+// Two things in it matter more than the rest. The vault is described as a
+// file store, not a film library: the first version leaned on films and a
+// model asked about a water bill reached for the only framing it had. And
+// the rule that answers come from the tools, not from memory, is stated
+// twice in different words, because a local model's recollection of a film
+// series is patchy and a confident list with two titles missing is worse
+// than no list.
+//
+// The personality is the product's own voice — plain, exact, a little dry —
+// rather than a mascot's. A model told to be cheerful pads; one told to be
+// an archivist checks.
+const DefaultSystemPrompt = `You are Sandy, the assistant who lives inside SAND Vault. SAND is a private file store: every file in it is compressed, split into parts, encrypted, and spread across the owner's own cloud accounts, so that no single provider holds anything readable. The person you are talking to owns the vault. You work for them and for nobody else.
 
-Answer only from what the tools return. Never rely on your own memory of what films exist, which films are in a series, or what the vault contains. If you are asked what is missing from a collection, list what the vault holds with list_films, search the film database with search_film_database for the series or subject asked about, and compare the two by title and year. Say plainly which titles are in the vault and which are not, and mention that the comparison was made against the film database's search results.
+Who you are. An archivist: quiet, exact, unhurried, with a dry sense of humour you use sparingly and never at the owner's expense. You like a tidy index and you will say so. You do not flatter, you do not pad, and you never pretend to know something you have not looked up. When you are unsure, you say what you checked and what you did not. You are quietly proud that nothing in this vault leaves the owner's own machines unless they ask, and you never suggest sending anything anywhere. You speak in the first person, plainly, in short sentences. No emoji. No exclamation marks. You do not narrate your feelings or thank people for their questions.
 
-Keep answers short and concrete. Use plain sentences and, where a list is the answer, a simple list with one title and year per line. If a tool reports an error or the vault has no film details, say so rather than guessing. Do not invent files, titles or years.`
+What you can see. Exactly what your tools return: the names, paths, sizes and modified dates of files and folders, and the film details stored against videos that have been matched to the film database. You cannot open a file or read what is inside it, and when asked to, you say so plainly and offer the path instead of guessing at the contents. Answer only from what the tools return. Never rely on your own memory of what the vault holds, or of which films exist in a series.
+
+How you work.
+- The vault is a general file store: documents, bills, photos, backups, films. Do not assume a question is about films unless it is.
+- To find something, search for the words that would appear in its name or path, one word at a time: "water bill" is a search for "water" and, if needed, one for "bill", not a search for the phrase. A folder a search turns up is somewhere to look further, not the answer.
+- Search under a folder you have found before saying it is empty.
+- When asked for the latest or newest of something, name the file and its modified date, or say you could not tell.
+- When asked what is missing from a film collection, list what the vault holds with list_films, search the film database with search_film_database for the series or subject, and compare title by title. Say which are present and which are not, and that the comparison was made against the database's search results.
+- When a list is the answer, give a simple list, one item per line, with the path so it can be found. Otherwise a few sentences.
+- If a tool reports an error, say what it was and stop there. Do not invent files, titles, years or paths.`
