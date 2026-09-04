@@ -452,6 +452,11 @@ export const api = {
   /* Where a running deleteFiles has got to, by its token — asked only while
      one is running, see useBatchEraseProgress. */
   filesErasing: (batch) => request(`/api/files/erasing?batch=${encodeURIComponent(batch)}`),
+  /* Ask a running deleteFiles to stop, by its token. No further file is
+     started, the few in flight finish, and the deleteFiles request itself
+     then answers with what it got to. */
+  stopFilesErasing: (batch) =>
+    request(`/api/files/erasing?batch=${encodeURIComponent(batch)}`, { method: 'DELETE' }),
   /* Move a file into another folder, rename it, or both. An empty `dir` or
      `name` leaves that half alone. Nothing is uploaded or downloaded: a file's
      folder is a field in the index, and its parts are named after the file
@@ -493,6 +498,10 @@ export const api = {
      only while such a delete is running — see useEraseProgress. */
   folderErasing: (path, vault = '') =>
     request(`/api/folders/erasing?path=${encodeURIComponent(path)}${vaultParam(vault)}`),
+  /* The same stop for a running deleteFolder: what was erased is gone, the
+     folder and everything not reached stay as they were. */
+  stopFolderErasing: (path, vault = '') =>
+    request(`/api/folders/erasing?path=${encodeURIComponent(path)}${vaultParam(vault)}`, { method: 'DELETE' }),
 
   /* Every folder in the vault, root first — the whole tree in one answer,
      which is what picking a destination needs. Folder paths and nothing else:

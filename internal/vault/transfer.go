@@ -677,32 +677,45 @@ func (v *Vault) Delete(ctx context.Context, id string) ([]string, error) {
 // per account that gets rate-limited.
 const eraseWindow = 4
 
-// eraseEntries erases the parts of every entry given, a few abreast, and
-// returns a warning per part that could not be erased. It touches no index:
-// the caller takes the entries out of the manifest afterwards, in one write,
-// whatever came of their parts — a dead account must not pin a file in the
-// browser forever.
+// eraseEntries erases the parts of the entries given, in order and a few
+// abreast, and returns how many it got to along with a warning per part that
+// could not be erased. It touches no index: the caller takes the attempted
+// entries out of the manifest afterwards, in one write, whatever came of
+// their parts — a dead account must not pin a file in the browser forever.
+//
+// ctx done means stop: no further file is started, the ones in flight are
+// allowed to finish their round rather than be left half erased, and the
+// count returned is what the caller may take out of the index. Everything
+// after it is exactly as it was.
 //
 // onProgress, when given, is told how many files are done out of how many:
 // once with (0, total) before the erasing starts, then once per file, in
 // order. It is a window for whoever is waiting, nothing more.
-func (v *Vault) eraseEntries(ctx context.Context, doomed []*Entry, onProgress func(done, total int)) []string {
+func (v *Vault) eraseEntries(ctx context.Context, doomed []*Entry, onProgress func(done, total int)) (attempted int, warnings []string) {
 	if onProgress != nil {
 		onProgress(0, len(doomed))
 	}
 
-	var warnings []string
+	// A stop is "start no more", not "drop everything": a file whose round
+	// has begun finishes it, or it would be gone from the index with parts
+	// still on the accounts for the orphan sweep to find later.
+	inflight := context.WithoutCancel(ctx)
+
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	finished := 0
 	window := make(chan struct{}, eraseWindow)
 	for _, e := range doomed {
+		if ctx.Err() != nil {
+			break
+		}
+		attempted++
 		wg.Add(1)
 		window <- struct{}{}
 		go func(e *Entry) {
 			defer wg.Done()
 			defer func() { <-window }()
-			found := v.deleteEntryShards(ctx, e)
+			found := v.deleteEntryShards(inflight, e)
 			mu.Lock()
 			warnings = append(warnings, found...)
 			finished++
@@ -717,7 +730,7 @@ func (v *Vault) eraseEntries(ctx context.Context, doomed []*Entry, onProgress fu
 		}(e)
 	}
 	wg.Wait()
-	return warnings
+	return attempted, warnings
 }
 
 // DeleteReport is what DeleteMany came to.
@@ -750,15 +763,16 @@ type DeleteReport struct {
 //
 // An ID given twice is one file, deleted once. An ID naming nothing is
 // reported in Missing rather than failing the batch, and the rest go ahead.
-// The error return is for the vault as a whole — locked, or the index could
-// not be written — never for one file.
+//
+// ctx done part-way is a stop rather than a failure: no further file is
+// started, the ones in flight finish, the index is written for exactly the
+// files that were erased — Deleted says how many, in the order given — and
+// the error returned is ctx.Err(), so the caller can tell a batch cut short
+// from one that ran out. The files after it are untouched. Any other error
+// is for the vault as a whole — locked, or the index could not be written —
+// never for one file.
 func (v *Vault) DeleteMany(ctx context.Context, ids []string, onProgress func(done, total int)) (*DeleteReport, error) {
 	report := &DeleteReport{Missing: []string{}, Warnings: []string{}}
-
-	type folder struct {
-		scope Scope
-		dir   string
-	}
 
 	v.mu.RLock()
 	if v.dataKey == nil {
@@ -767,8 +781,7 @@ func (v *Vault) DeleteMany(ctx context.Context, ids []string, onProgress func(do
 	}
 	seen := make(map[string]bool, len(ids))
 	doomed := make([]*Entry, 0, len(ids))
-	byScope := map[Scope][]string{}
-	byFolder := map[folder][]string{}
+	scopes := make([]Scope, 0, len(ids))
 	for _, id := range ids {
 		if seen[id] {
 			continue
@@ -784,16 +797,30 @@ func (v *Vault) DeleteMany(ctx context.Context, ids []string, onProgress func(do
 		copied := *entry
 		copied.Shards = append([]Shard(nil), entry.Shards...)
 		doomed = append(doomed, &copied)
-		byScope[scope] = append(byScope[scope], id)
-		key := folder{scope, entry.Dir}
-		byFolder[key] = append(byFolder[key], id)
+		scopes = append(scopes, scope)
 	}
 	v.mu.RUnlock()
 
-	report.Warnings = append(report.Warnings, v.eraseEntries(ctx, doomed, onProgress)...)
-	report.Deleted = len(doomed)
-	if len(doomed) == 0 {
-		return report, nil
+	attempted, warnings := v.eraseEntries(ctx, doomed, onProgress)
+	report.Warnings = append(report.Warnings, warnings...)
+	report.Deleted = attempted
+	stopped := ctx.Err()
+	if attempted == 0 {
+		return report, stopped
+	}
+
+	// Only what was erased leaves the index; a stop leaves the rest exactly
+	// where it was, parts and record alike.
+	type folder struct {
+		scope Scope
+		dir   string
+	}
+	byScope := map[Scope][]string{}
+	byFolder := map[folder][]string{}
+	for i, e := range doomed[:attempted] {
+		byScope[scopes[i]] = append(byScope[scopes[i]], e.ID)
+		key := folder{scopes[i], e.Dir}
+		byFolder[key] = append(byFolder[key], e.ID)
 	}
 
 	v.mu.Lock()
@@ -820,10 +847,13 @@ func (v *Vault) DeleteMany(ctx context.Context, ids []string, onProgress func(do
 
 	// After the files are gone, so a failure to rewrite a pack cannot keep a
 	// deleted file in the listing — and once per folder, not once per file.
+	// On a context that may already be done, because this is tidying after
+	// files that are gone whichever way the batch ended.
+	tidy := context.WithoutCancel(ctx)
 	for key, ids := range byFolder {
-		v.removeThumbs(ctx, key.scope, key.dir, ids...)
+		v.removeThumbs(tidy, key.scope, key.dir, ids...)
 	}
-	return report, nil
+	return report, stopped
 }
 
 // Rmdir removes a folder. Without recursive it refuses to touch a folder that
@@ -833,6 +863,10 @@ func (v *Vault) DeleteMany(ctx context.Context, ids []string, onProgress func(do
 // parts erased so far — once with (0, total) before the erasing starts, then
 // once per file. It is a window for whoever is waiting on the request, nothing
 // more: no job state, nothing written down. Calls arrive in order.
+//
+// ctx done part-way is a stop, as for DeleteMany: the files already erased
+// leave the index, the folder and everything not yet reached stay as they
+// were, and the error returned is ctx.Err().
 func (v *Vault) Rmdir(ctx context.Context, scope Scope, dir string, recursive bool, onProgress func(done, total int)) ([]string, error) {
 	dir = CleanDir(dir)
 	if dir == "/" {
@@ -857,27 +891,35 @@ func (v *Vault) Rmdir(ctx context.Context, scope Scope, dir string, recursive bo
 		return nil, fmt.Errorf("%s is not empty", dir)
 	}
 
+	// Read before the erasing rather than after: these are the manifest's own
+	// entries, and a move under a delete is the one race worth a line.
 	ids := make([]string, len(doomed))
+	dirs := make([]string, len(doomed))
 	for i, e := range doomed {
 		ids[i] = e.ID
+		dirs[i] = e.Dir
 	}
-	warnings := v.eraseEntries(ctx, doomed, onProgress)
+	attempted, warnings := v.eraseEntries(ctx, doomed, onProgress)
+	stopped := ctx.Err()
+	whole := attempted == len(doomed) && stopped == nil
 
 	v.mu.Lock()
 	if m, err = v.manifestForLocked(scope); err != nil {
 		v.mu.Unlock()
 		return warnings, err
 	}
-	for _, id := range ids {
+	for _, id := range ids[:attempted] {
 		m.remove(id)
 	}
-	m.forgetMovies(ids...)
-	m.forgetRepos(ids...)
-	m.forgetFolderArt(ids...)
-	m.removeFolders(dir)
-	m.dropMovieFolders(dir)
-	m.dropAutomations(dir)
-	m.dropFolderArt(dir)
+	m.forgetMovies(ids[:attempted]...)
+	m.forgetRepos(ids[:attempted]...)
+	m.forgetFolderArt(ids[:attempted]...)
+	if whole {
+		m.removeFolders(dir)
+		m.dropMovieFolders(dir)
+		m.dropAutomations(dir)
+		m.dropFolderArt(dir)
+	}
 	err = v.persistLocked()
 	v.mu.Unlock()
 
@@ -885,9 +927,24 @@ func (v *Vault) Rmdir(ctx context.Context, scope Scope, dir string, recursive bo
 		return warnings, err
 	}
 
+	tidy := context.WithoutCancel(ctx)
+	if !whole {
+		// Stopped part-way: what was erased has left the index and its
+		// folders' packs; the folder itself and everything after stay
+		// exactly as they were, and the caller is told it was cut short.
+		byDir := map[string][]string{}
+		for i := 0; i < attempted; i++ {
+			byDir[dirs[i]] = append(byDir[dirs[i]], ids[i])
+		}
+		for d, gone := range byDir {
+			v.removeThumbs(tidy, scope, d, gone...)
+		}
+		return warnings, stopped
+	}
+
 	// The folder and everything under it is gone, and so are the thumbnails
 	// that were stored a folder at a time.
-	v.dropThumbFolders(ctx, scope, dir)
+	v.dropThumbFolders(tidy, scope, dir)
 	return warnings, nil
 }
 
