@@ -33,6 +33,77 @@ const MODEL_HELP = 'A model the server already holds — for Ollama, one you hav
   'pulled. It must be able to call tools: qwen3:14b or gpt-oss:20b on a ' +
   '16 GB card, llama3.1:8b on less.'
 
+const WINDOW_HELP = 'How many tokens the server actually runs the model with. ' +
+  'Leave it empty to trust what the server says. Ollama runs every model at ' +
+  '4096 unless OLLAMA_CONTEXT_LENGTH says otherwise, whatever the model was ' +
+  'trained for, and a conversation that outgrows it is silently cut from the ' +
+  'front — so if Sandy starts forgetting the start of a chat, this is why.'
+
+/* Tokens, the way a person reads them: 1,512 up to a thousand, 6.2k after. */
+function tokens(n) {
+  if (n < 1000) return String(n)
+  if (n < 10000) return `${(n / 1000).toFixed(1)}k`
+  return `${Math.round(n / 1000)}k`
+}
+
+/* How full the model's window was by the end of the last question.
+
+   Drawn from the server's own count of the last request — the whole
+   transcript plus every tool result — against the window Sandy was set up
+   with. Turns amber at three quarters and red at nine tenths, because past
+   that the next question is the one that loses its beginning. When nobody
+   knows the window the count is shown on its own, with the dialog to set it
+   one click away. */
+function ContextMeter({ usage, onSettings }) {
+  if (!usage?.tokens) return null
+  const { tokens: used, window: total } = usage
+  const share = total > 0 ? Math.min(1, used / total) : 0
+  const tone = share >= 0.9 ? COLORS.error : share >= 0.75 ? COLORS.warn : COLORS.info
+
+  return (
+    <div
+      role="meter"
+      aria-label="Context in use"
+      aria-valuemin={0}
+      aria-valuemax={total || undefined}
+      aria-valuenow={used}
+      title={total > 0
+        ? `${used.toLocaleString()} of ${total.toLocaleString()} tokens in the model’s window after the last question`
+        : `${used.toLocaleString()} tokens in the last question; the window is not known`}
+      style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}
+    >
+      <span style={{ fontFamily: FONT.mono, fontSize: '10px', letterSpacing: '0.5px', color: COLORS.textMuted, whiteSpace: 'nowrap' }}>
+        CONTEXT
+      </span>
+      <span aria-hidden="true" style={{
+        width: '90px', height: '6px', borderRadius: '3px',
+        background: COLORS.surfaceRaised, border: `1px solid ${COLORS.border}`,
+        overflow: 'hidden', flexShrink: 0,
+      }}>
+        <span style={{
+          display: 'block', height: '100%', width: `${Math.round(share * 100)}%`,
+          background: tone, transition: 'width 0.3s ease',
+        }} />
+      </span>
+      <span style={{ fontFamily: FONT.mono, fontSize: '10.5px', color: total > 0 ? tone : COLORS.textMuted, whiteSpace: 'nowrap' }}>
+        {total > 0
+          ? `${tokens(used)} of ${tokens(total)} · ${Math.round(share * 100)}%`
+          : `${tokens(used)} tokens`}
+      </span>
+      {!(total > 0) && (
+        <button
+          type="button"
+          onClick={onSettings}
+          style={{
+            background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+            fontFamily: FONT.mono, fontSize: '10.5px', color: COLORS.textDim, textDecoration: 'underline',
+          }}
+        >window?</button>
+      )}
+    </div>
+  )
+}
+
 /* The questions a first-timer is most likely to want, offered as buttons so
    the panel explains itself by example rather than by paragraph. */
 const SUGGESTIONS = [
@@ -164,7 +235,9 @@ export default function Assistant({ chat, onChat, vault = '', onClose }) {
          were reached, not part of the conversation. */
       const transcript = next.map(({ role, content: c }) => ({ role, content: c }))
       const resp = await api.askAssistant(transcript, { vault })
-      onChat([...next, { role: 'assistant', content: resp.text, steps: resp.steps || [] }])
+      onChat([...next, {
+        role: 'assistant', content: resp.text, steps: resp.steps || [], context: resp.context || null,
+      }])
     } catch (err) {
       if (err.code === 'NO_ASSISTANT') {
         setSettings((s) => ({ ...(s || {}), configured: false }))
@@ -179,6 +252,9 @@ export default function Assistant({ chat, onChat, vault = '', onClose }) {
   }
 
   const clear = () => { onChat([]); setError(null) }
+
+  /* The newest figure, which is the one that says how much room is left. */
+  const lastContext = [...chat].reverse().find((turn) => turn.context)?.context || null
 
   return (
     <Modal
@@ -301,24 +377,27 @@ export default function Assistant({ chat, onChat, vault = '', onClose }) {
         </Button>
       </form>
 
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap',
-        marginTop: '12px',
-      }}>
+      {/* Two rows: the caveat, then the meter with the buttons beside it.
+          One row wrapped as soon as the meter appeared, which put "Model…"
+          on a line of its own. */}
+      <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
         <span style={{
-          flex: 1, minWidth: '200px',
           fontFamily: FONT.sans, fontSize: '10.5px', lineHeight: 1.5, color: COLORS.textMuted,
         }}>
           Sandy answers only from what his tools return, and says what he
           looked up. He can still misread a list — check the answer against
           your files before acting on it.
         </span>
-        {chat.length > 0 && (
-          <Button size="sm" variant="ghost" disabled={busy} onClick={clear}>Clear</Button>
-        )}
-        <Button size="sm" variant="ghost" onClick={() => setSettingsOpen(true)}>
-          {configured ? 'Model…' : 'Settings…'}
-        </Button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+          <ContextMeter usage={lastContext} onSettings={() => setSettingsOpen(true)} />
+          <span style={{ flex: 1 }} />
+          {chat.length > 0 && (
+            <Button size="sm" variant="ghost" disabled={busy} onClick={clear}>Clear</Button>
+          )}
+          <Button size="sm" variant="ghost" onClick={() => setSettingsOpen(true)}>
+            {configured ? 'Model…' : 'Settings…'}
+          </Button>
+        </div>
       </div>
 
       {settingsOpen && (
@@ -341,6 +420,7 @@ export function AssistantSettings({ onClose, onChanged, zIndex }) {
   const [model, setModel] = useState('')
   const [key, setKey] = useState('')
   const [keyTouched, setKeyTouched] = useState(false)
+  const [contextTokens, setContextTokens] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const [saved, setSaved] = useState(false)
@@ -351,6 +431,7 @@ export function AssistantSettings({ onClose, onChanged, zIndex }) {
         setSettings(resp)
         setUrl(resp.url || '')
         setModel(resp.model || '')
+        setContextTokens(resp.context_tokens ? String(resp.context_tokens) : '')
       })
       .catch((err) => setError(err.message))
   }, [])
@@ -367,6 +448,7 @@ export function AssistantSettings({ onClose, onChanged, zIndex }) {
       setSettings(resp)
       setUrl(resp.url || '')
       setModel(resp.model || '')
+      setContextTokens(resp.context_tokens ? String(resp.context_tokens) : '')
       setKey('')
       setKeyTouched(false)
       setSaved(resp.configured)
@@ -380,7 +462,11 @@ export function AssistantSettings({ onClose, onChanged, zIndex }) {
 
   const submit = (e) => {
     e.preventDefault()
-    store({ url: url.trim(), model: model.trim(), key: keyTouched ? key.trim() : undefined })
+    store({
+      url: url.trim(), model: model.trim(),
+      key: keyTouched ? key.trim() : undefined,
+      contextTokens: parseInt(contextTokens, 10) || 0,
+    })
   }
 
   return (
@@ -395,6 +481,9 @@ export function AssistantSettings({ onClose, onChanged, zIndex }) {
       {saved && (
         <Banner tone="success" onDismiss={() => setSaved(false)}>
           The server answered and has {settings?.model}. Sandy is ready.
+          {settings?.context_window > 0
+            ? ` He has a window of ${settings.context_window.toLocaleString()} tokens to think in.`
+            : ' It did not say how big the model’s window is — set it below if you know.'}
         </Banner>
       )}
 
@@ -422,6 +511,19 @@ export function AssistantSettings({ onClose, onChanged, zIndex }) {
             placeholder="qwen3:14b"
             onChange={(e) => setModel(e.target.value)}
             help={MODEL_HELP}
+          />
+          <Input
+            label="Context window"
+            type="number"
+            min="0"
+            step="1024"
+            inputMode="numeric"
+            value={contextTokens}
+            placeholder={settings.context_reported > 0
+              ? `${settings.context_reported.toLocaleString()} — what the server reports`
+              : 'The server did not say'}
+            onChange={(e) => setContextTokens(e.target.value)}
+            help={WINDOW_HELP}
           />
           <PasswordInput
             label={settings.has_key ? 'Token (one is stored — leave blank to keep it)' : 'Token (optional)'}

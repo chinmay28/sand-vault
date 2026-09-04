@@ -861,10 +861,13 @@ export const api = {
   assistantSettings: () => request('/api/assistant'),
   /* `key` undefined keeps whatever token is stored; '' clears it. An empty
      url clears the assistant altogether. */
-  setAssistant: ({ url, model, key }) =>
+  setAssistant: ({ url, model, key, contextTokens = 0 }) =>
     request('/api/assistant/settings', {
       method: 'POST',
-      body: key === undefined ? { url, model } : { url, model, key },
+      body: {
+        url, model, context_tokens: contextTokens,
+        ...(key === undefined ? {} : { key }),
+      },
     }),
   /* One question, with the conversation before it. The server keeps
      nothing between calls, so the browser sends the transcript each time —

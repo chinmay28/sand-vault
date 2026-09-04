@@ -244,3 +244,29 @@ func TestAnEmptyAnswerIsAnError(t *testing.T) {
 		t.Fatal("an answer of nothing was accepted")
 	}
 }
+
+func TestContextUsageIsTheLastRequestsCount(t *testing.T) {
+	m := &scripted{replies: []Message{
+		{ToolCalls: []ToolCall{call("a", "list_films", `{}`)}, Usage: &Usage{Prompt: 900, Completion: 20}},
+		{Content: "Two films.", Usage: &Usage{Prompt: 1500, Completion: 12}},
+	}}
+	a := &Assistant{Model: m, Tools: []Tool{echoTool("list_films")}, ContextTokens: 8192}
+
+	got, err := a.Ask(context.Background(), nil, "how many?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Context == nil || got.Context.Tokens != 1512 || got.Context.Window != 8192 {
+		t.Errorf("context %+v, want the last request's 1512 of 8192", got.Context)
+	}
+
+	// A server that does not count leaves the answer without a figure.
+	m = &scripted{replies: []Message{{Content: "Two films."}}}
+	got, err = (&Assistant{Model: m}).Ask(context.Background(), nil, "how many?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Context != nil {
+		t.Errorf("context %+v from a server that sent no usage", got.Context)
+	}
+}

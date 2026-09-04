@@ -1068,7 +1068,24 @@ Model          qwen3:14b
 
 Saving checks that the server answers and lists the model, so a PC that is
 off or a model never pulled fails in the dialog rather than on the first
-question. The setting is sealed in the vault beside the film key and is not
+question. On Ollama it also asks whether the model can call tools, and
+refuses one that cannot.
+
+### How much of his window is in use
+
+Every answer carries the server's own count of the tokens the last request
+took — the whole transcript plus every tool result — and the panel draws it
+as a meter against the model's context window: *6.2k of 40k · 15%*. It turns
+amber at three quarters and red at nine tenths, because past that the next
+question is the one whose beginning the model no longer sees. **Clear** starts
+a fresh conversation and empties it.
+
+The window comes from the server where it says: vLLM reports it on its model
+list, Ollama on its own model details. **Ollama runs every model at 4,096
+tokens unless `OLLAMA_CONTEXT_LENGTH` says otherwise**, whatever the model
+was trained for, and cuts a longer conversation silently from the front — so
+if Sandy seems to forget how a chat started, that is why. Set the real figure
+in the same dialog, and the meter measures against it instead. The setting is sealed in the vault beside the film key and is not
 replicated to the connected accounts; a token, for a server started with one,
 goes in the same place and is never read back.
 

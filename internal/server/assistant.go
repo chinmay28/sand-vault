@@ -175,6 +175,7 @@ func (s *Server) assistantFor(scope vault.Scope) (*assistant.Assistant, error) {
 		Model: &assistant.ChatCompletions{
 			BaseURL: settings.URL, Model: settings.Model, APIKey: settings.APIKey,
 		},
-		Tools: assistant.Tools(vaultCollection{server: s, scope: scope}),
+		Tools:         assistant.Tools(vaultCollection{server: s, scope: scope}),
+		ContextTokens: settings.ContextWindow(),
 	}, nil
 }

@@ -51,6 +51,18 @@ type Message struct {
 	// tool that produced it.
 	ToolCallID string `json:"tool_call_id,omitempty"`
 	Name       string `json:"name,omitempty"`
+
+	// Usage is what the request that produced an assistant turn cost, when
+	// the server said. Nil on every other turn.
+	Usage *Usage `json:"usage,omitempty"`
+}
+
+// Usage is one request's token count: what the model was given and what it
+// wrote back. Together they are how much of the context window that request
+// filled.
+type Usage struct {
+	Prompt     int `json:"prompt"`
+	Completion int `json:"completion"`
 }
 
 // ToolCall is one request from the model to run a tool.
@@ -108,6 +120,21 @@ type Step struct {
 type Answer struct {
 	Text  string `json:"text"`
 	Steps []Step `json:"steps,omitempty"`
+
+	// Context is how full the model's window was by the end of the question,
+	// when the server counts. Nil when it does not.
+	Context *ContextUsage `json:"context,omitempty"`
+}
+
+// ContextUsage is how much of the model's context window one question
+// filled: the token count of the last request, which carried the whole
+// transcript plus every tool result, against the window it has to fit in.
+type ContextUsage struct {
+	Tokens int `json:"tokens"`
+
+	// Window is the model's context window in tokens, or zero when nobody
+	// knows it.
+	Window int `json:"window,omitempty"`
 }
 
 // DefaultMaxSteps bounds how many rounds of tool calls one question may take.
@@ -136,6 +163,11 @@ type Assistant struct {
 	// MaxSteps caps the rounds of tool calls per question. Zero means
 	// DefaultMaxSteps.
 	MaxSteps int
+
+	// ContextTokens is the model's context window, for reporting how much of
+	// it a question used. Zero means unknown, and the answer says only what
+	// was used.
+	ContextTokens int
 }
 
 // Ask answers one question, given the conversation that led up to it.
@@ -191,6 +223,15 @@ func (a *Assistant) Ask(ctx context.Context, history []Turn, question string) (*
 		}
 		reply.Role = RoleAssistant
 		msgs = append(msgs, reply)
+		if reply.Usage != nil {
+			// The last request is the biggest: the transcript only grows
+			// within a question. Overwritten each round, so what is left is
+			// the peak.
+			answer.Context = &ContextUsage{
+				Tokens: reply.Usage.Prompt + reply.Usage.Completion,
+				Window: a.ContextTokens,
+			}
+		}
 
 		if len(reply.ToolCalls) == 0 {
 			answer.Text = strings.TrimSpace(reply.Content)
