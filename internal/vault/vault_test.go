@@ -1126,3 +1126,110 @@ func TestDeleteManyRefusesALockedVault(t *testing.T) {
 		t.Errorf("DeleteMany on a locked vault: %v, want ErrLocked", err)
 	}
 }
+
+// A stop part-way is exactly that: the files reached are gone from the index
+// and the accounts, the ones after it are untouched in both, and the caller
+// is told the batch was cut short rather than that it failed.
+func TestDeleteManyStopsWhereItIsAsked(t *testing.T) {
+	v, roots := newTestVault(t, 3)
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+
+	const files = 12
+	var entries []*Entry
+	for i := 0; i < files; i++ {
+		name := fmt.Sprintf("f%02d.txt", i)
+		entry, _, err := v.Upload(ctx, MainScope, "/", name, []byte(name), UploadOptions{})
+		if err != nil {
+			t.Fatalf("Upload %s: %v", name, err)
+		}
+		entries = append(entries, entry)
+	}
+	ids := make([]string, len(entries))
+	for i, e := range entries {
+		ids[i] = e.ID
+	}
+
+	report, err := v.DeleteMany(ctx, ids, func(done, total int) {
+		if done == 2 {
+			stop()
+		}
+	})
+	if err != context.Canceled {
+		t.Fatalf("DeleteMany after a stop: err = %v, want context.Canceled", err)
+	}
+	if report.Deleted < 2 || report.Deleted >= files {
+		t.Fatalf("Deleted = %d, want at least 2 and fewer than %d", report.Deleted, files)
+	}
+
+	// The first Deleted files, in the order given, are gone everywhere; the
+	// rest are still listed with every part on disk.
+	for i, entry := range entries {
+		_, listed := v.Entry(entry.ID)
+		onDisk := 0
+		for _, shard := range entry.Shards {
+			for _, root := range roots {
+				if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(shard.Key))); err == nil {
+					onDisk++
+				}
+			}
+		}
+		if i < report.Deleted {
+			if listed == nil {
+				t.Errorf("%s was counted as deleted but is still listed", entry.Name)
+			}
+			if onDisk != 0 {
+				t.Errorf("%s was counted as deleted but %d parts remain on disk", entry.Name, onDisk)
+			}
+		} else {
+			if listed != nil {
+				t.Errorf("%s is after the stop but is no longer listed", entry.Name)
+			}
+			if onDisk != len(entry.Shards) {
+				t.Errorf("%s is after the stop but has %d of %d parts on disk", entry.Name, onDisk, len(entry.Shards))
+			}
+		}
+	}
+
+	// A context already done before the start deletes nothing at all.
+	report, err = v.DeleteMany(ctx, ids[report.Deleted:], nil)
+	if err != context.Canceled || report.Deleted != 0 {
+		t.Errorf("DeleteMany on a done context: deleted %d, err %v", report.Deleted, err)
+	}
+}
+
+// The same for a folder: stopped part-way, the folder stands with what was
+// not reached still in it.
+func TestRmdirStopsWhereItIsAsked(t *testing.T) {
+	v, _ := newTestVault(t, 3)
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+
+	if err := v.Mkdir(MainScope, "/bulk"); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	const files = 12
+	for i := 0; i < files; i++ {
+		name := fmt.Sprintf("f%02d.txt", i)
+		if _, _, err := v.Upload(ctx, MainScope, "/bulk", name, []byte(name), UploadOptions{}); err != nil {
+			t.Fatalf("Upload %s: %v", name, err)
+		}
+	}
+
+	_, err := v.Rmdir(ctx, MainScope, "/bulk", true, func(done, total int) {
+		if done == 2 {
+			stop()
+		}
+	})
+	if err != context.Canceled {
+		t.Fatalf("Rmdir after a stop: err = %v, want context.Canceled", err)
+	}
+
+	listing, err := v.List(MainScope, "/bulk")
+	if err != nil {
+		t.Fatalf("the folder is gone after a stop: %v", err)
+	}
+	if len(listing.Files) == 0 || len(listing.Files) > files-2 {
+		t.Errorf("%d files left in the folder after a stop at 2, want between 1 and %d", len(listing.Files), files-2)
+	}
+}

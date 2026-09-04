@@ -666,10 +666,15 @@ func (s *Server) handleFilesDelete(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := contextWithTimeout(r, 30*time.Minute)
 	defer cancel()
 
-	// Counted as it goes, like a folder delete, for whoever is waiting.
+	// Counted as it goes, like a folder delete, for whoever is waiting — and
+	// stoppable by them through the same window, which cancels this context.
 	var onProgress func(done, total int)
 	if req.Batch != "" {
 		key := batchEraseKey(req.Batch)
+		var stop context.CancelFunc
+		ctx, stop = context.WithCancel(ctx)
+		defer stop()
+		s.erases.open(key, stop)
 		defer s.erases.clear(key)
 		onProgress = func(done, total int) {
 			s.erases.set(key, folderErase{Done: done, Total: total})
@@ -678,16 +683,30 @@ func (s *Server) handleFilesDelete(w http.ResponseWriter, r *http.Request) {
 
 	v, _ := s.Vault()
 	report, err := v.DeleteMany(ctx, req.IDs, onProgress)
-	if err != nil {
+	if err != nil && !errors.Is(err, context.Canceled) {
 		vaultErrorResponse(w, err)
 		return
 	}
+	// A stop is an answer, not a failure: what went is exactly what the
+	// report counts, and the rest is where it was.
+	status := "deleted"
+	if err != nil {
+		status = "stopped"
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":   "deleted",
+		"status":   status,
 		"deleted":  report.Deleted,
 		"missing":  report.Missing,
 		"warnings": report.Warnings,
 	})
+}
+
+// handleFilesErasingStop asks a running batch delete to stop, by its token.
+// Answers whether there was one running to ask; the batch's own request
+// answers with what it got to.
+func (s *Server) handleFilesErasingStop(w http.ResponseWriter, r *http.Request) {
+	stopped := s.erases.stop(batchEraseKey(r.URL.Query().Get("batch")))
+	writeJSON(w, http.StatusOK, map[string]any{"stopped": stopped})
 }
 
 // handleFilesErasing answers with where a running batch delete has got to,
@@ -1391,17 +1410,34 @@ func (s *Server) handleFolderDelete(w http.ResponseWriter, r *http.Request) {
 	// window left up would answer a later delete of a recreated folder with
 	// this one's count.
 	key := eraseKey(scope, path)
+	// And stoppable through the same window: a DELETE on it cancels this
+	// context, which Rmdir takes as "start no more" — see vault.Rmdir.
+	var stop context.CancelFunc
+	ctx, stop = context.WithCancel(ctx)
+	defer stop()
+	s.erases.open(key, stop)
 	defer s.erases.clear(key)
 
 	v, _ := s.Vault()
 	warnings, err := v.Rmdir(ctx, scope, path, recursive, func(done, total int) {
 		s.erases.set(key, folderErase{Done: done, Total: total})
 	})
-	if err != nil {
+	if err != nil && !errors.Is(err, context.Canceled) {
 		vaultErrorResponse(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "warnings": warnings})
+	status := "deleted"
+	if err != nil {
+		status = "stopped"
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": status, "warnings": warnings})
+}
+
+// handleFolderErasingStop asks a running recursive delete of the named
+// folder to stop. Answers whether there was one running to ask.
+func (s *Server) handleFolderErasingStop(w http.ResponseWriter, r *http.Request) {
+	stopped := s.erases.stop(eraseKey(requestScope(r), r.URL.Query().Get("path")))
+	writeJSON(w, http.StatusOK, map[string]any{"stopped": stopped})
 }
 
 // handleFolderErasing answers with where a running recursive delete of the

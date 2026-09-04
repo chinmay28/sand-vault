@@ -425,6 +425,7 @@ func (s *Server) Handler() (http.Handler, error) {
 		// folder.
 		"POST /api/files/delete":     s.handleFilesDelete,
 		"GET /api/files/erasing":     s.handleFilesErasing,
+		"DELETE /api/files/erasing":  s.handleFilesErasingStop,
 		"POST /api/files/{id}/move":  s.handleFileMove,
 		"GET /api/files/{id}/health": s.handleFileHealth,
 		// Converting a pre-chunking file into the chunked format, which is what
@@ -445,6 +446,8 @@ func (s *Server) Handler() (http.Handler, error) {
 		// recursive delete of a big folder runs for minutes and can only
 		// answer at the end. Read-only and in-memory; see erase_watch.go.
 		"GET /api/folders/erasing": s.handleFolderErasing,
+		// A DELETE on the window stops the delete it watches.
+		"DELETE /api/folders/erasing": s.handleFolderErasingStop,
 		// The picture a folder is drawn with: which file's thumbnail stands for
 		// it, and which others could. Nothing is stored by choosing — the
 		// answer is a file ID, drawn through that file's own thumbnail.

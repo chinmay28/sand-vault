@@ -105,15 +105,20 @@ export function Meter({ count, total, verb, label, note }) {
 }
 
 function Outcome({ done, total, verb }) {
-  // A batch delete fails by the hundred under one line, so it says how many.
+  // A batch delete fails by the hundred under one line, so it says how many;
+  // and it can be stopped, which is neither a failure nor the whole job.
   const failed = done.failed ?? done.failures.length
+  const stopped = done.stopped || 0
+  const went = done.deleted ?? total - failed
 
   return (
     <>
-      <Banner tone={failed ? 'warn' : 'success'}>
-        {failed
-          ? `${total - failed} of ${total} ${verb}. The rest are untouched — try them again once the accounts are answering.`
-          : `${total} ${verb}.`}
+      <Banner tone={failed || stopped ? 'warn' : 'success'}>
+        {stopped
+          ? `Stopped: ${went} of ${total} ${verb}. The other ${stopped === 1 ? 'one is' : `${stopped} are`} exactly where ${stopped === 1 ? 'it was' : 'they were'}.`
+          : failed
+            ? `${went} of ${total} ${verb}. The rest are untouched — try them again once the accounts are answering.`
+            : `${total} ${verb}.`}
       </Banner>
       {(done.failures.length > 0 || done.warnings.length > 0) && (
         <div style={{ maxHeight: '180px', overflowY: 'auto', marginBottom: '4px' }}>
@@ -184,13 +189,24 @@ export function BulkDelete({ items, vault = '', onClose, onDone }) {
           </div>
         </>
       ) : run.running ? (
-        <Meter
-          count={run.finished + (erasingBatch?.done || 0)}
-          total={batch.length}
-          verb="Deleting"
-          label={folderInFlight ? current.name : ''}
-          note={erasingFolder ? `${erasingFolder.done} of ${erasingFolder.total} files` : ''}
-        />
+        <>
+          <Meter
+            count={run.finished + (erasingBatch?.done || 0)}
+            total={batch.length}
+            verb={run.stopping ? 'Stopping at' : 'Deleting'}
+            label={folderInFlight ? current.name : ''}
+            note={erasingFolder ? `${erasingFolder.done} of ${erasingFolder.total} files` : ''}
+          />
+          {/* A stop is the one thing worth a button while this runs. It
+              lands between files, not between parts: the few in flight
+              finish their round, so nothing is left half erased, and the
+              outcome says exactly how many went. */}
+          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <Button variant="ghost" disabled={run.stopping} onClick={run.stop}>
+              {run.stopping ? 'Stopping…' : 'Stop'}
+            </Button>
+          </div>
+        </>
       ) : (
         <>
           <div style={{
@@ -245,12 +261,21 @@ export function planDeletes(items) {
 /* Running the plan, one request at a time, and keeping count in items rather
    than requests: `finished` is how many items the completed steps stood for,
    and the outcome says how many failed, however many lines that took.
-   Left in whatever state it finished in, like useRun. */
+   Left in whatever state it finished in, like useRun.
+
+   Stop asks the server to stop the step in flight and lets the loop end
+   there. The step's own request then answers with what it got to, so the
+   count is exact — a batch stopped at 130 of 200 says 130 — and nothing
+   after it is touched. Asked a few times if need be: the stop can arrive
+   before the request it is for has opened its window. */
 function useDeletes(steps, vault, onFinished) {
   const [at, setAt] = useState(-1)
   const [finished, setFinished] = useState(0)
+  const [stopping, setStopping] = useState(false)
   const [done, setDone] = useState(null)
   const live = useRef(true)
+  const halt = useRef(false)
+  const current = useRef(null)
   useEffect(() => {
     live.current = true
     return () => { live.current = false }
@@ -258,25 +283,56 @@ function useDeletes(steps, vault, onFinished) {
 
   const running = at >= 0 && !done
 
+  const stop = async () => {
+    if (halt.current) return
+    halt.current = true
+    setStopping(true)
+    const step = current.current
+    for (let tries = 0; tries < 5 && live.current && current.current === step; tries++) {
+      try {
+        const resp = step?.kind === 'folder'
+          ? await api.stopFolderErasing(step.path, vault)
+          : step ? await api.stopFilesErasing(step.batch) : { stopped: true }
+        if (resp?.stopped) return
+      } catch {
+        // The loop stops at the next step whatever this said.
+      }
+      await new Promise((r) => setTimeout(r, 400))
+    }
+  }
+
   const start = async () => {
     const failures = []
     const warnings = []
+    let deleted = 0
     let failed = 0
     let gone = 0
     let counted = 0
+    let cut = 0
 
     for (let i = 0; i < steps.length; i++) {
       if (!live.current) return
+      if (halt.current) break
       const step = steps[i]
+      current.current = step
       setAt(i)
       try {
         if (step.kind === 'folder') {
           const resp = await api.deleteFolder(step.path, true, vault)
           for (const w of resp?.warnings || []) warnings.push(`${step.name}: ${w}`)
+          if (resp?.status === 'stopped') {
+            warnings.push(`${step.name}: stopped part-way — what was already erased is gone, the rest of the folder is still there.`)
+            cut += step.count
+          } else {
+            deleted += step.count
+          }
         } else {
           const resp = await api.deleteFiles(step.ids, step.batch)
           warnings.push(...(resp?.warnings || []))
           gone += resp?.missing?.length || 0
+          const went = resp?.deleted ?? step.count
+          deleted += went
+          if (resp?.status === 'stopped') cut += step.count - went
         }
       } catch (err) {
         failures.push(`${step.name}: ${err.message}`)
@@ -285,16 +341,20 @@ function useDeletes(steps, vault, onFinished) {
       counted += step.count
       setFinished(counted)
     }
+    current.current = null
 
     if (gone > 0) {
       warnings.push(`${gone} file${gone === 1 ? ' was' : 's were'} already gone before this reached ${gone === 1 ? 'it' : 'them'}.`)
     }
     if (!live.current) return
-    setDone({ failures, warnings, failed })
+    // Stopped: what the halted step did not reach, and every step after it,
+    // is still where it was.
+    const stopped = halt.current ? steps.reduce((n, s) => n + s.count, 0) - counted + cut : 0
+    setDone({ failures, warnings, failed, deleted, stopped })
     onFinished?.()
   }
 
-  return { at, finished, running, done, start }
+  return { at, finished, running, stopping, done, start, stop }
 }
 
 function describe(folders, files, bytes) {

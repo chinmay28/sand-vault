@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"sync"
 
 	"github.com/chinmay28/sand-vault/internal/vault"
@@ -34,10 +35,35 @@ type folderErase struct {
 type eraseWatch struct {
 	mu     sync.Mutex
 	byPath map[string]folderErase
+	// stops holds, for each delete that can be stopped, the cancel of the
+	// context it runs under. A DELETE on the window calls it — see stop.
+	stops map[string]context.CancelFunc
 }
 
 func newEraseWatch() *eraseWatch {
-	return &eraseWatch{byPath: map[string]folderErase{}}
+	return &eraseWatch{byPath: map[string]folderErase{}, stops: map[string]context.CancelFunc{}}
+}
+
+// open registers a running delete as one that can be stopped: the cancel
+// given is what stop calls. Paired with clear, which takes it down again.
+func (ew *eraseWatch) open(key string, stop context.CancelFunc) {
+	ew.mu.Lock()
+	ew.stops[key] = stop
+	ew.mu.Unlock()
+}
+
+// stop asks a running delete to stop, and says whether there was one to
+// ask. Stopping is what vault.DeleteMany and Rmdir make of a done context:
+// no further file started, the ones in flight finished, the index written
+// for what went. The request itself then answers, and says it was stopped.
+func (ew *eraseWatch) stop(key string) bool {
+	ew.mu.Lock()
+	cancel, ok := ew.stops[key]
+	ew.mu.Unlock()
+	if ok {
+		cancel()
+	}
+	return ok
 }
 
 // eraseKey names one delete: the folder, inside whichever vault it is in. Two
@@ -65,6 +91,7 @@ func (ew *eraseWatch) set(key string, at folderErase) {
 func (ew *eraseWatch) clear(key string) {
 	ew.mu.Lock()
 	delete(ew.byPath, key)
+	delete(ew.stops, key)
 	ew.mu.Unlock()
 }
 

@@ -1246,3 +1246,19 @@ func TestFilesDeleteBatchOverHTTP(t *testing.T) {
 		t.Errorf("empty batch = %d, want 400", w.Code)
 	}
 }
+
+// The stop is a DELETE on the erasing window. With nothing running under the
+// token there is nothing to stop, and it says so rather than erring.
+func TestStoppingAnIdleEraseSaysSo(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("pw", 3)
+
+	w, body := c.json(http.MethodDelete, "/api/files/erasing?batch=nobody", nil)
+	if w.Code != http.StatusOK || body["stopped"] != false {
+		t.Errorf("stop of an idle batch = %d %v, want stopped=false", w.Code, body)
+	}
+	w, body = c.json(http.MethodDelete, "/api/folders/erasing?path=/nowhere", nil)
+	if w.Code != http.StatusOK || body["stopped"] != false {
+		t.Errorf("stop of an idle folder = %d %v, want stopped=false", w.Code, body)
+	}
+}
