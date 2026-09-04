@@ -13,9 +13,10 @@ export function Brand({ size = 'md' }) {
   return (
     <span style={{
       display: 'inline-flex',
-      // Two-line lockup, so hang everything from the top rather than centring
-      // against the taller text block.
-      alignItems: 'flex-start',
+      // The mark sits centred on the two-line text block. Hung from the top it
+      // lined up with nothing: it was shorter than name-plus-version, so it
+      // rode high against SAND and left the version line dangling under it.
+      alignItems: 'center',
       gap: large ? '12px' : '9px',
     }}>
       <img
@@ -67,6 +68,14 @@ export function Brand({ size = 'md' }) {
             // the one number to touch if the face ever changes — a script with
             // a smaller x-height wants noticeably more.
             fontSize: '1.35em',
+            // The size bump would otherwise make this the tallest thing on the
+            // line and push the row's top edge up above SAND's caps, with
+            // nothing but leading in the gap — which is what threw the mark's
+            // centring off. This brings the script's line box back down to the
+            // same height as SAND's (1.35 × 0.85 ≈ 1.15), so the row is as
+            // tall as the name and no taller. The glyphs can overhang it;
+            // nothing here clips.
+            lineHeight: 0.85,
             fontWeight: 500,
             // Deliberately not italic. Every face in the stack is already
             // written on a slant, so asking for italic on top of that makes
