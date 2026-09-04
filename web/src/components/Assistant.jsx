@@ -4,9 +4,9 @@ import { useIsMobile } from '../hooks'
 import { api } from '../api'
 import { Banner, Button, Input, Modal, PasswordInput, Spinner } from './ui'
 
-/* Ask the vault a question in plain words.
+/* Sandy. Ask the vault a question in plain words.
 
-   The answer comes from a language model the user runs on a machine of their
+   Sandy is a language model the user runs on a machine of their
    own — Ollama on the PC with the graphics card, say — which SAND hands three
    tools: list the films, search the vault by name, search the film database.
    The model sees what those tools return and nothing else: names, paths,
@@ -16,8 +16,8 @@ import { Banner, Button, Input, Modal, PasswordInput, Spinner } from './ui'
    question. The server keeps nothing between questions, which is what makes
    locking the vault end the conversation the way it ends everything else. */
 
-/* What the assistant sends, said where it is set up and where it is used. */
-const PRIVACY = 'The assistant sends the names of your files and folders, and the ' +
+/* What Sandy sends, said where he is set up and where he is used. */
+const PRIVACY = 'Sandy sends the names of your files and folders, and the ' +
   'film titles stored against them, to the model server at the address you ' +
   'give it — and nothing else: not a file’s contents, not an account, not a ' +
   'key. Run the model on a machine you own, on your own network. The one ' +
@@ -90,9 +90,15 @@ function Bubble({ turn }) {
       alignItems: mine ? 'flex-end' : 'flex-start',
       gap: '6px',
     }}>
+      {!mine && (
+        <span style={{
+          fontFamily: FONT.mono, fontSize: '10px', letterSpacing: '1px',
+          textTransform: 'uppercase', color: COLORS.accent, marginLeft: '2px',
+        }}>Sandy</span>
+      )}
       <div
         role="article"
-        aria-label={mine ? 'You' : 'Assistant'}
+        aria-label={mine ? 'You' : 'Sandy'}
         style={{
           maxWidth: '88%',
           padding: '9px 12px',
@@ -176,10 +182,10 @@ export default function Assistant({ chat, onChat, vault = '', onClose }) {
 
   return (
     <Modal
-      title="Ask the vault"
+      title="Sandy"
       subtitle={configured
-        ? `${settings.model} on your own network, reading the index`
-        : 'A model on your own network, reading the index'}
+        ? `Your vault’s archivist · ${settings.model} on your own network`
+        : 'Your vault’s archivist, once he has a model to think with'}
       onClose={() => !busy && onClose()}
       width={640}
     >
@@ -194,17 +200,17 @@ export default function Assistant({ chat, onChat, vault = '', onClose }) {
           <div style={{
             fontFamily: FONT.mono, fontSize: '12px', fontWeight: 600, color: COLORS.text,
             marginBottom: '6px',
-          }}>No model server yet</div>
+          }}>Sandy needs a model to think with</div>
           <div style={{
             fontFamily: FONT.sans, fontSize: '12px', lineHeight: 1.55, color: COLORS.textDim,
             marginBottom: '12px',
           }}>
-            Point SAND at a model running on a machine of your own — Ollama or
-            vLLM on the PC with the graphics card — and it can answer questions
+            Point him at a model running on a machine of your own — Ollama or
+            vLLM on the PC with the graphics card — and he can answer questions
             like “what Batman films am I missing?” from your index.
           </div>
           <Button variant="primary" size="sm" onClick={() => setSettingsOpen(true)}>
-            Set up the assistant
+            Set Sandy up
           </Button>
         </div>
       )}
@@ -230,8 +236,12 @@ export default function Assistant({ chat, onChat, vault = '', onClose }) {
               fontFamily: FONT.sans, fontSize: '12px', lineHeight: 1.55, color: COLORS.textMuted,
               marginBottom: '14px',
             }}>
-              It can list your films, search by name, and check the film
-              database for what a series has that you do not. Try one of these:
+              <span style={{ color: COLORS.textDim }}>
+                I’m Sandy. I keep the index of this vault, and I can find things
+                in it by name, list your films, and check the film database for
+                what a series has that you do not. I never open a file, and I
+                never send anything anywhere. Ask me something.
+              </span>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', alignItems: 'center' }}>
               {SUGGESTIONS.map((s) => (
@@ -268,7 +278,7 @@ export default function Assistant({ chat, onChat, vault = '', onClose }) {
         <input
           ref={inputRef}
           aria-label="Your question"
-          placeholder={configured ? 'Ask about your files or films…' : 'Set up a model server first'}
+          placeholder={configured ? 'Ask Sandy about your files or films…' : 'Give Sandy a model server first'}
           value={question}
           autoComplete="off"
           disabled={!configured || busy}
@@ -299,9 +309,9 @@ export default function Assistant({ chat, onChat, vault = '', onClose }) {
           flex: 1, minWidth: '200px',
           fontFamily: FONT.sans, fontSize: '10.5px', lineHeight: 1.5, color: COLORS.textMuted,
         }}>
-          Answers are made only from what the tools return, and say what was
-          looked up. The model can still misread a list — check the answer
-          against your files before acting on it.
+          Sandy answers only from what his tools return, and says what he
+          looked up. He can still misread a list — check the answer against
+          your files before acting on it.
         </span>
         {chat.length > 0 && (
           <Button size="sm" variant="ghost" disabled={busy} onClick={clear}>Clear</Button>
@@ -322,7 +332,7 @@ export default function Assistant({ chat, onChat, vault = '', onClose }) {
   )
 }
 
-/* Where the assistant's model runs: a URL, a model name, and a token for the
+/* Where Sandy's model runs: a URL, a model name, and a token for the
    servers that want one. Kept where the rest of the vault's own settings are,
    beside the film key, because it is the vault's rather than any folder's. */
 export function AssistantSettings({ onClose, onChanged, zIndex }) {
@@ -375,8 +385,8 @@ export function AssistantSettings({ onClose, onChanged, zIndex }) {
 
   return (
     <Modal
-      title="Assistant"
-      subtitle="A model on a machine you own answers questions about the vault"
+      title="Sandy"
+      subtitle="The model on a machine you own that Sandy thinks with"
       onClose={() => !busy && onClose()}
       width={560}
       zIndex={zIndex}
@@ -384,7 +394,7 @@ export function AssistantSettings({ onClose, onChanged, zIndex }) {
       {error && <Banner tone="error" onDismiss={() => setError(null)}>{error}</Banner>}
       {saved && (
         <Banner tone="success" onDismiss={() => setSaved(false)}>
-          The server answered and has {settings?.model}. The assistant is ready.
+          The server answered and has {settings?.model}. Sandy is ready.
         </Banner>
       )}
 

@@ -1029,34 +1029,37 @@ one of them is a reason to throw away what may be the last copy in the world.
 
 Deleting it is a thing you turn on (`--prune`), never a thing that happens.
 
-## Asking the vault a question
+## Sandy, the vault's archivist
 
-**✦ Ask**, in the header, opens a chat. Type a question in plain words —
-*what Batman movies are missing from my collection?* — and a language model
-answers it from the index.
+**✦ Sandy**, in the header, opens a chat. Type a question in plain words —
+*what Batman movies are missing from my collection?*, *where are my water
+bills?* — and Sandy answers it from the index.
 
-The model is **one you run yourself**, on a machine of your own: Ollama or
-vLLM on the PC with the graphics card, reached over your network. SAND hands
-it three tools — list the films, search the vault by name, search the film
-database — and the model sees exactly what those tools return: names, paths,
-sizes and the film titles already stored against your videos. Never a file's
-contents, never an account, never a key. The one lookup that leaves your
-network is the film database search, which sends the title being searched
-for and nothing about the vault, the same as matching a folder does.
+Sandy is an archivist by temperament: quiet, exact, a little dry, and
+unwilling to say anything he has not looked up. He is a language model **you
+run yourself**, on a machine of your own — Ollama or vLLM on the PC with the
+graphics card, reached over your network. SAND hands him three tools — list
+the films, search the vault by name, search the film database — and he sees
+exactly what those tools return: names, paths, sizes, modified dates and the
+film titles already stored against your videos. Never a file's contents,
+never an account, never a key. The one lookup that leaves your network is the
+film database search, which sends the title being searched for and nothing
+about the vault, the same as matching a folder does.
 
-Every answer says what it looked up, as tags under the reply, so it can be
+Every answer says what he looked up, as tags under the reply, so it can be
 judged by what it was made from. The transcript lives in the browser and is
 sent back with each question; the server keeps nothing between questions, so
 locking the vault ends the conversation the way it ends everything else.
 
-### Setting it up
+### Giving Sandy a model
 
 Run a model server that speaks the OpenAI-compatible chat protocol, which
 both Ollama and vLLM do, and make sure it listens on your network rather than
 loopback only — for Ollama that is `OLLAMA_HOST=0.0.0.0`. Pull a model that
 can call tools; on a 16 GB card `qwen3:14b` or `gpt-oss:20b` fit entirely in
-memory, and `llama3.1:8b` on less. Then, in **Vault settings → Assistant**, or
-from the chat's own **Set up** button, give the address and the model name:
+memory, and `llama3.1:8b` on less. Then, in **Vault settings → Sandy**, or
+from the chat's own **Set Sandy up** button, give the address and the model
+name:
 
 ```
 Model server   http://gaming-pc:11434/v1

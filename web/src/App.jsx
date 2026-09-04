@@ -57,8 +57,8 @@ export default function App() {
   const [preview, setPreview] = useState(null)
   const [inspecting, setInspecting] = useState(null)
   const [filming, setFilming] = useState(null)
-  /* The assistant's conversation, kept here so closing the panel does not
-     end it; locking the vault does. */
+  /* Sandy's conversation, kept here so closing the panel does not end it;
+     locking the vault does. */
   const [asking, setAsking] = useState(false)
   const [chat, setChat] = useState([])
   const [accountsOpen, setAccountsOpen] = useState(false)
@@ -453,14 +453,14 @@ export default function App() {
 
           {/* Narrow enough and the labels are dropped; the glyphs carry the
               meaning and the accessible name comes off aria-label. */}
-          {/* A question in plain words, answered by a model on the user's own
-              network. Up here with the other whole-vault controls because
-              the question is about the vault, not about the folder open
-              underneath. */}
+          {/* Sandy: a question in plain words, answered by a model on the
+              user's own network. Up here with the other whole-vault controls
+              because the question is about the vault, not about the folder
+              open underneath. */}
           <Button size="sm" variant="ghost" onClick={() => setAsking(true)}
             data-icon-button={mobile || undefined}
             style={mobile ? { fontSize: '16px', padding: '4px 8px', minWidth: '44px', justifyContent: 'center' } : null}
-            title="Ask the vault" aria-label="Ask the vault">✦{mobile ? '' : ' Ask'}</Button>
+            title="Ask Sandy" aria-label="Ask Sandy">✦{mobile ? '' : ' Sandy'}</Button>
           <Button size="sm" variant="ghost" onClick={refreshAll}
             data-icon-button={mobile || undefined}
             style={mobile ? { fontSize: '16px', padding: '4px 8px', minWidth: '44px', justifyContent: 'center' } : null}
