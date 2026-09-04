@@ -63,3 +63,46 @@ func TestAssistantSettingsNeedTheVaultOpen(t *testing.T) {
 		t.Fatalf("err %v, want ErrLocked", err)
 	}
 }
+
+func TestWebSettingsKeepOnlyWhatTheEngineUses(t *testing.T) {
+	v, _ := newTestVault(t, 2)
+
+	if v.Assistant().Web.Enabled() {
+		t.Fatal("a fresh vault has web access")
+	}
+
+	if err := v.SetAssistant(AssistantSettings{
+		URL: "http://x/v1", Model: "m",
+		Web: WebSettings{Engine: " SearXNG ", URL: "http://searx:8080/", Key: "stray"},
+	}); err != nil {
+		t.Fatalf("SetAssistant: %v", err)
+	}
+	got := v.Assistant().Web
+	if got.Engine != WebEngineSearXNG || got.URL != "http://searx:8080" || got.Key != "" {
+		t.Errorf("searxng stored as %+v", got)
+	}
+	if !got.Enabled() {
+		t.Error("searxng does not count as enabled")
+	}
+
+	if err := v.SetAssistant(AssistantSettings{
+		URL: "http://x/v1", Model: "m",
+		Web: WebSettings{Engine: "ollama", URL: "http://searx:8080", Key: " k "},
+	}); err != nil {
+		t.Fatalf("SetAssistant: %v", err)
+	}
+	got = v.Assistant().Web
+	if got.Engine != WebEngineOllama || got.URL != "" || got.Key != "k" {
+		t.Errorf("ollama stored as %+v", got)
+	}
+
+	if err := v.SetAssistant(AssistantSettings{
+		URL: "http://x/v1", Model: "m",
+		Web: WebSettings{Engine: "bing", Key: "k"},
+	}); err != nil {
+		t.Fatalf("SetAssistant: %v", err)
+	}
+	if got := v.Assistant().Web; got != (WebSettings{}) {
+		t.Errorf("an unknown engine stored as %+v", got)
+	}
+}

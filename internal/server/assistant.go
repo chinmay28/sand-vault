@@ -171,11 +171,34 @@ func (s *Server) assistantFor(scope vault.Scope) (*assistant.Assistant, error) {
 	if !settings.Configured() {
 		return nil, assistant.ErrNotConfigured
 	}
+	tools := assistant.Tools(vaultCollection{server: s, scope: scope})
+	if web := s.webFor(settings.Web); web != nil {
+		tools = append(tools, assistant.WebTools(web)...)
+	}
 	return &assistant.Assistant{
 		Model: &assistant.ChatCompletions{
 			BaseURL: settings.URL, Model: settings.Model, APIKey: settings.APIKey,
 		},
-		Tools:         assistant.Tools(vaultCollection{server: s, scope: scope}),
+		Tools:         tools,
 		ContextTokens: settings.ContextWindow(),
 	}, nil
+}
+
+// webFor builds Sandy's way onto the web from the settings, or nil when the
+// owner has not turned it on — in which case the web tools are not offered
+// at all, and the prompt tells him to say so.
+func (s *Server) webFor(settings vault.WebSettings) assistant.Web {
+	var engine assistant.Searcher
+	switch settings.Engine {
+	case vault.WebEngineSearXNG:
+		engine = &assistant.SearXNG{BaseURL: settings.URL}
+	case vault.WebEngineOllama:
+		engine = &assistant.OllamaSearch{Key: settings.Key, BaseURL: s.OllamaSearchURL}
+	default:
+		return nil
+	}
+	return assistant.Site{
+		Searcher: engine,
+		Fetcher:  &assistant.Fetcher{AllowPrivate: s.WebAllowPrivate},
+	}
 }

@@ -73,7 +73,22 @@ func assistantSettingsView(settings vault.AssistantSettings) map[string]any {
 		"context_reported": settings.ReportedContext,
 		"context_tokens":   settings.ContextTokens,
 		"context_window":   settings.ContextWindow(),
+		"web": map[string]any{
+			"engine":  settings.Web.Engine,
+			"url":     settings.Web.URL,
+			"has_key": settings.Web.Key != "",
+		},
 	}
+}
+
+// webSettingsRequest is Sandy's web access as the browser sends it.
+type webSettingsRequest struct {
+	// Engine is "searxng", "ollama", or empty to turn the web off.
+	Engine string `json:"engine"`
+	URL    string `json:"url,omitempty"`
+
+	// Key is the ollama.com key. Absent keeps the stored one; empty clears.
+	Key *string `json:"key,omitempty"`
 }
 
 type assistantSettingsRequest struct {
@@ -90,6 +105,10 @@ type assistantSettingsRequest struct {
 	// that runs the model at less than the model allows — Ollama, by
 	// default. Zero means trust the server.
 	ContextTokens int `json:"context_tokens,omitempty"`
+
+	// Web is whether and how Sandy may search the web. Absent keeps what is
+	// stored.
+	Web *webSettingsRequest `json:"web,omitempty"`
 }
 
 // handleAssistantSet stores where the assistant runs, after checking that
@@ -115,6 +134,7 @@ func (s *Server) handleAssistantSet(w http.ResponseWriter, r *http.Request) {
 		Model:         strings.TrimSpace(req.Model),
 		APIKey:        current.APIKey,
 		ContextTokens: req.ContextTokens,
+		Web:           current.Web,
 	}
 	if req.Key != nil {
 		next.APIKey = strings.TrimSpace(*req.Key)
@@ -122,6 +142,37 @@ func (s *Server) handleAssistantSet(w http.ResponseWriter, r *http.Request) {
 	if next.ContextTokens < 0 {
 		writeError(w, http.StatusBadRequest, "the context window cannot be negative", "BAD_REQUEST")
 		return
+	}
+	if req.Web != nil {
+		web := vault.WebSettings{
+			Engine: strings.ToLower(strings.TrimSpace(req.Web.Engine)),
+			URL:    strings.TrimSpace(req.Web.URL),
+			Key:    current.Web.Key,
+		}
+		if req.Web.Key != nil {
+			web.Key = strings.TrimSpace(*req.Web.Key)
+		}
+		switch web.Engine {
+		case vault.WebEngineNone:
+			web = vault.WebSettings{}
+		case vault.WebEngineSearXNG:
+			url, err := assistant.ValidateBaseURL(web.URL)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "the SearXNG address: "+err.Error(), "BAD_REQUEST")
+				return
+			}
+			web.URL, web.Key = url, ""
+		case vault.WebEngineOllama:
+			if web.Key == "" {
+				writeError(w, http.StatusBadRequest, "Ollama web search needs an ollama.com key", "BAD_REQUEST")
+				return
+			}
+			web.URL = ""
+		default:
+			writeError(w, http.StatusBadRequest, "the web engine must be searxng, ollama, or empty", "BAD_REQUEST")
+			return
+		}
+		next.Web = web
 	}
 
 	if next.URL != "" {

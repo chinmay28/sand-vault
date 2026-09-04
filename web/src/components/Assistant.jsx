@@ -20,9 +20,27 @@ import { Banner, Button, Input, Modal, PasswordInput, Spinner } from './ui'
 const PRIVACY = 'Sandy sends the names of your files and folders, and the ' +
   'film titles stored against them, to the model server at the address you ' +
   'give it — and nothing else: not a file’s contents, not an account, not a ' +
-  'key. Run the model on a machine you own, on your own network. The one ' +
-  'lookup that leaves that network is a film database search, which sends ' +
-  'the title being searched for and nothing about your vault.'
+  'key. Run the model on a machine you own, on your own network. What ' +
+  'leaves that network is a film database search, which sends the title ' +
+  'being searched for, and — only if you turn it on below — a web search, ' +
+  'which sends the question Sandy wrote and nothing about your vault.'
+
+/* The web, said once: what goes out, and to whom, per engine. */
+const WEB_HELP = {
+  '': 'Sandy stays off the web. Questions that need it — a chart, what came ' +
+    'out this year — get a plain “I have no web access.”',
+  searxng: 'Searches go to a SearXNG you run yourself, so they never leave ' +
+    'your network. Its JSON API has to be on: search.formats: [html, json] in ' +
+    'its settings.yml. Pages Sandy reads are fetched from this machine.',
+  ollama: 'Searches go to ollama.com’s search service with your own key, from ' +
+    'Settings → Keys on ollama.com. They see the query and your key, nothing ' +
+    'about the vault. Pages Sandy reads are fetched from this machine.',
+}
+
+const WEB_RULE = 'Whichever engine, Sandy is told never to put a file or folder ' +
+  'name from the vault into a query or a page address, every search and every ' +
+  'page is shown under his answer, and he cannot read anything on your own ' +
+  'network — not the vault, not the model server, not the router.'
 
 /* Where to start, said once. */
 const URL_HELP = 'The server’s OpenAI-compatible address. Ollama is ' +
@@ -126,7 +144,12 @@ function StepTag({ step }) {
     list_films: 'Listed the films',
     search_vault: 'Searched the vault',
     search_film_database: 'Searched the film database',
+    web_search: 'Searched the web',
+    fetch_page: 'Read a page',
   }[step.tool] || step.tool
+  if (step.tool === 'fetch_page' && step.arguments?.url) {
+    try { detail = new URL(step.arguments.url).hostname } catch { detail = step.arguments.url }
+  }
 
   return (
     <span
@@ -260,7 +283,7 @@ export default function Assistant({ chat, onChat, vault = '', onClose }) {
     <Modal
       title="Sandy"
       subtitle={configured
-        ? `Your vault’s archivist · ${settings.model} on your own network`
+        ? `Your vault’s archivist · ${settings.model} on your own network${settings.web?.engine ? ' · web on' : ''}`
         : 'Your vault’s archivist, once he has a model to think with'}
       onClose={() => !busy && onClose()}
       width={640}
@@ -421,6 +444,10 @@ export function AssistantSettings({ onClose, onChanged, zIndex }) {
   const [key, setKey] = useState('')
   const [keyTouched, setKeyTouched] = useState(false)
   const [contextTokens, setContextTokens] = useState('')
+  const [webEngine, setWebEngine] = useState('')
+  const [webUrl, setWebUrl] = useState('')
+  const [webKey, setWebKey] = useState('')
+  const [webKeyTouched, setWebKeyTouched] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const [saved, setSaved] = useState(false)
@@ -432,6 +459,8 @@ export function AssistantSettings({ onClose, onChanged, zIndex }) {
         setUrl(resp.url || '')
         setModel(resp.model || '')
         setContextTokens(resp.context_tokens ? String(resp.context_tokens) : '')
+        setWebEngine(resp.web?.engine || '')
+        setWebUrl(resp.web?.url || '')
       })
       .catch((err) => setError(err.message))
   }, [])
@@ -449,6 +478,10 @@ export function AssistantSettings({ onClose, onChanged, zIndex }) {
       setUrl(resp.url || '')
       setModel(resp.model || '')
       setContextTokens(resp.context_tokens ? String(resp.context_tokens) : '')
+      setWebEngine(resp.web?.engine || '')
+      setWebUrl(resp.web?.url || '')
+      setWebKey('')
+      setWebKeyTouched(false)
       setKey('')
       setKeyTouched(false)
       setSaved(resp.configured)
@@ -466,6 +499,11 @@ export function AssistantSettings({ onClose, onChanged, zIndex }) {
       url: url.trim(), model: model.trim(),
       key: keyTouched ? key.trim() : undefined,
       contextTokens: parseInt(contextTokens, 10) || 0,
+      web: {
+        engine: webEngine,
+        url: webUrl.trim(),
+        key: webKeyTouched ? webKey.trim() : undefined,
+      },
     })
   }
 
@@ -534,6 +572,65 @@ export function AssistantSettings({ onClose, onChanged, zIndex }) {
             help="Ollama needs none. Sent as a bearer token to a server started with one."
           />
 
+          {/* The web. Off by default, and a choice of who sees the query
+              rather than a switch, because that is the whole decision. */}
+          <div style={{
+            marginBottom: '14px', padding: '12px',
+            background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: '8px',
+          }}>
+            <label style={{
+              display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap',
+              fontFamily: FONT.mono, fontSize: '10px', fontWeight: 600,
+              letterSpacing: '1.5px', textTransform: 'uppercase', color: COLORS.textMuted,
+            }}>
+              <span>The web</span>
+              <select
+                value={webEngine}
+                onChange={(e) => setWebEngine(e.target.value)}
+                style={{
+                  fontFamily: FONT.mono, fontSize: '12px', padding: '6px 8px',
+                  background: COLORS.surfaceRaised, color: COLORS.text,
+                  border: `1px solid ${COLORS.border}`, borderRadius: '6px',
+                  textTransform: 'none', letterSpacing: 0,
+                }}
+              >
+                <option value="">Off — Sandy stays off the web</option>
+                <option value="searxng">Through my own SearXNG</option>
+                <option value="ollama">Through Ollama web search, with my key</option>
+              </select>
+            </label>
+            <div style={{
+              marginTop: '8px', fontFamily: FONT.sans, fontSize: '11px', lineHeight: 1.45,
+              color: COLORS.textMuted,
+            }}>
+              {WEB_HELP[webEngine]}
+              {webEngine && ` ${WEB_RULE}`}
+            </div>
+            {webEngine === 'searxng' && (
+              <div style={{ marginTop: '12px' }}>
+                <Input
+                  label="SearXNG address"
+                  value={webUrl}
+                  autoComplete="off"
+                  spellCheck="false"
+                  placeholder="http://gaming-pc:8080"
+                  onChange={(e) => setWebUrl(e.target.value)}
+                />
+              </div>
+            )}
+            {webEngine === 'ollama' && (
+              <div style={{ marginTop: '12px' }}>
+                <PasswordInput
+                  label={settings.web?.has_key ? 'ollama.com key (one is stored — leave blank to keep it)' : 'ollama.com key'}
+                  value={webKey}
+                  autoComplete="off"
+                  placeholder={settings.web?.has_key ? '••••••••' : 'From Settings → Keys on ollama.com'}
+                  onChange={(e) => { setWebKey(e.target.value); setWebKeyTouched(true) }}
+                />
+              </div>
+            )}
+          </div>
+
           <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
             {settings.configured && (
               <Button
@@ -541,7 +638,7 @@ export function AssistantSettings({ onClose, onChanged, zIndex }) {
                 variant="ghost"
                 disabled={busy}
                 title="Forget the server. Nothing else about the vault changes."
-                onClick={() => store({ url: '', model: '', key: '' })}
+                onClick={() => store({ url: '', model: '', key: '', web: { engine: '', key: '' } })}
               >Remove</Button>
             )}
             <Button type="submit" variant="primary" disabled={busy || !url.trim() || !model.trim()}>

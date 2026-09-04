@@ -1071,6 +1071,26 @@ off or a model never pulled fails in the dialog rather than on the first
 question. On Ollama it also asks whether the model can call tools, and
 refuses one that cannot.
 
+### Letting him onto the web
+
+Off by default. A question like *which of the IMDb top 250 am I missing?*
+needs the web, and with it off Sandy says so and stops. Turn it on in the
+same dialog by choosing who gets his searches:
+
+- **Your own SearXNG.** A metasearch engine you run on a machine of yours,
+  so the query never leaves your network. Its JSON API has to be enabled
+  (`search.formats: [html, json]` in its `settings.yml`).
+- **Ollama web search**, with your own key from ollama.com. The query and
+  the key go to Ollama; nothing about the vault does.
+
+Either way the pages he reads are fetched from the SAND machine and boiled
+down to text, so a page that only draws itself with JavaScript comes back
+thin. He gets two tools, `web_search` and `fetch_page`, and three rules: he
+never puts a file or folder name from the vault into a query or an address,
+every search and every page is shown under his answer, and he cannot read
+anything on your own network — the vault's own API, the model server and
+the router are all refused, by address, before a byte is sent.
+
 ### How much of his window is in use
 
 Every answer carries the server's own count of the tokens the last request

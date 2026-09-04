@@ -65,6 +65,14 @@ type Server struct {
 	MovieBaseURL      string
 	MovieImageBaseURL string
 
+	// OllamaSearchURL and WebAllowPrivate point Sandy's web tools at a fake
+	// and let them read it, for the same reason and in the same spirit: a
+	// test must never search the real web or read a real page, and the
+	// fetcher's refusal to touch a private address is the one thing a test
+	// on loopback has to switch off.
+	OllamaSearchURL string
+	WebAllowPrivate bool
+
 	vault      *vault.Vault
 	sessions   *sessionStore
 	streams    *streamStore

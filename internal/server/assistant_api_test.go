@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -82,6 +83,10 @@ func (f *fakeModelServer) reply(req map[string]any) map[string]any {
 				"function": map[string]any{"name": name, "arguments": args},
 			}},
 		}
+	}
+
+	if reply, ok := f.imdb(req); ok {
+		return reply
 	}
 
 	switch {
@@ -462,6 +467,278 @@ func TestTheAssistantIsLockedWithTheVault(t *testing.T) {
 		w, _ := c.json(route.method, route.path, map[string]any{})
 		if w.Code != http.StatusUnauthorized {
 			t.Errorf("%s %s while locked: %d", route.method, route.path, w.Code)
+		}
+	}
+}
+
+// A search engine and one page, for Sandy's web tools. The engine answers
+// any search with the chart; the chart lists four films.
+func newFakeWeb(t *testing.T) (*httptest.Server, *[]string) {
+	t.Helper()
+	var queries []string
+	mux := http.NewServeMux()
+	var site *httptest.Server
+	mux.HandleFunc("POST /api/web_search", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer ollama-key" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		var req map[string]any
+		json.NewDecoder(r.Body).Decode(&req)
+		queries = append(queries, req["query"].(string))
+		json.NewEncoder(w).Encode(map[string]any{"results": []map[string]any{
+			{"title": "IMDb Top 250", "url": site.URL + "/chart/top/", "content": "As rated by voters."},
+		}})
+	})
+	mux.HandleFunc("GET /chart/top/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte(`<html><head><title>IMDb Top 250</title></head><body><ul>
+			<li>1. The Shawshank Redemption 1994</li>
+			<li>2. The Godfather 1972</li>
+			<li>3. The Dark Knight 2008</li>
+			<li>4. Alien 1979</li></ul></body></html>`))
+	})
+	site = httptest.NewServer(mux)
+	t.Cleanup(site.Close)
+	return site, &queries
+}
+
+// The fake model's IMDb script, added beside the Batman one: search, read
+// the page, list the films, compare titles by line.
+func (f *fakeModelServer) imdb(req map[string]any) (map[string]any, bool) {
+	msgs := req["messages"].([]any)
+	last := msgs[len(msgs)-1].(map[string]any)
+	call := func(id, name, args string) map[string]any {
+		return map[string]any{"role": "assistant", "content": "", "tool_calls": []map[string]any{{
+			"id": id, "type": "function", "function": map[string]any{"name": name, "arguments": args},
+		}}}
+	}
+	asked := false
+	for _, raw := range msgs {
+		m := raw.(map[string]any)
+		if m["role"] == "user" && strings.Contains(strings.ToLower(fmt.Sprint(m["content"])), "imdb") {
+			asked = true
+		}
+	}
+	if !asked {
+		return nil, false
+	}
+	hasTool := func(name string) bool {
+		for _, raw := range req["tools"].([]any) {
+			if raw.(map[string]any)["function"].(map[string]any)["name"] == name {
+				return true
+			}
+		}
+		return false
+	}
+	switch {
+	case last["role"] == "user":
+		if !hasTool("web_search") {
+			return map[string]any{"role": "assistant", "content": "I have no web access. It can be turned on in my settings."}, true
+		}
+		return call("w1", "web_search", `{"query":"IMDb top 250"}`), true
+	case last["role"] == "tool" && last["name"] == "web_search":
+		var res struct {
+			Results []struct {
+				URL string `json:"url"`
+			} `json:"results"`
+		}
+		json.Unmarshal([]byte(last["content"].(string)), &res)
+		return call("w2", "fetch_page", `{"url":"`+res.Results[0].URL+`"}`), true
+	case last["role"] == "tool" && last["name"] == "fetch_page":
+		return call("w3", "list_films", `{}`), true
+	}
+	var page struct {
+		Text string `json:"text"`
+	}
+	var have struct {
+		Films []struct {
+			Title string `json:"title"`
+		} `json:"films"`
+	}
+	for _, raw := range msgs {
+		m := raw.(map[string]any)
+		if m["role"] != "tool" {
+			continue
+		}
+		switch m["name"] {
+		case "fetch_page":
+			json.Unmarshal([]byte(m["content"].(string)), &page)
+		case "list_films":
+			json.Unmarshal([]byte(m["content"].(string)), &have)
+		}
+	}
+	owned := map[string]bool{}
+	for _, film := range have.Films {
+		owned[strings.ToLower(film.Title)] = true
+	}
+	missing := []string{}
+	for _, line := range strings.Split(page.Text, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 || !strings.HasSuffix(fields[0], ".") {
+			continue
+		}
+		title := strings.Join(fields[1:len(fields)-1], " ")
+		if !owned[strings.ToLower(title)] {
+			missing = append(missing, "- "+title+" ("+fields[len(fields)-1]+")")
+		}
+	}
+	return map[string]any{"role": "assistant", "content": "Missing from the top 250:\n" + strings.Join(missing, "\n")}, true
+}
+
+func TestTheWebIsOffUntilTheOwnerTurnsItOn(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("correct horse battery staple", 3)
+	f := newFakeModelServer(t)
+	c.withAssistant(f)
+	c.batmanCollection(batmanDB(t))
+
+	w, body := c.json(http.MethodPost, "/api/assistant/ask", map[string]any{
+		"messages": []map[string]string{{"role": "user", "content": "which of the IMDb top 250 am I missing?"}},
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("ask: %d %v", w.Code, body)
+	}
+	if !strings.Contains(body["text"].(string), "no web access") {
+		t.Errorf("answer %q", body["text"])
+	}
+	f.mu.Lock()
+	tools := f.requests[0]["tools"].([]any)
+	f.mu.Unlock()
+	for _, raw := range tools {
+		if name := raw.(map[string]any)["function"].(map[string]any)["name"]; name == "web_search" || name == "fetch_page" {
+			t.Errorf("%s was offered with the web off", name)
+		}
+	}
+	if _, body = c.json(http.MethodGet, "/api/assistant", nil); body["web"].(map[string]any)["engine"] != "" {
+		t.Errorf("web settings of a fresh vault: %v", body["web"])
+	}
+}
+
+func TestWebSettingsAreCheckedAndTheKeyNeverEchoed(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("correct horse battery staple", 2)
+	f := newFakeModelServer(t)
+	c.withAssistant(f)
+
+	set := func(web map[string]any) (*httptest.ResponseRecorder, map[string]any) {
+		return c.json(http.MethodPost, "/api/assistant/settings", map[string]any{
+			"url": f.URL + "/v1", "model": "qwen3:14b", "web": web,
+		})
+	}
+
+	if w, body := set(map[string]any{"engine": "searxng", "url": "searx:8080"}); w.Code != http.StatusBadRequest {
+		t.Errorf("a SearXNG address with no scheme: %d %v", w.Code, body)
+	}
+	if w, body := set(map[string]any{"engine": "ollama"}); w.Code != http.StatusBadRequest {
+		t.Errorf("Ollama with no key: %d %v", w.Code, body)
+	}
+	if w, body := set(map[string]any{"engine": "bing", "key": "k"}); w.Code != http.StatusBadRequest {
+		t.Errorf("an unknown engine: %d %v", w.Code, body)
+	}
+
+	w, body := set(map[string]any{"engine": "ollama", "key": "ollama-key"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("ollama: %d %v", w.Code, body)
+	}
+	web := body["web"].(map[string]any)
+	if web["engine"] != "ollama" || web["has_key"] != true {
+		t.Errorf("stored as %v", web)
+	}
+	if _, echoed := web["key"]; echoed {
+		t.Error("the key was echoed back")
+	}
+
+	// Saving the model settings without a web field keeps the web as it was.
+	w, body = c.json(http.MethodPost, "/api/assistant/settings", map[string]any{"url": f.URL + "/v1", "model": "qwen3:14b"})
+	if w.Code != http.StatusOK || body["web"].(map[string]any)["engine"] != "ollama" {
+		t.Errorf("an update without a web field dropped it: %d %v", w.Code, body)
+	}
+
+	// Switching engines drops the other engine's credential.
+	w, body = set(map[string]any{"engine": "searxng", "url": "http://searx:8080/"})
+	web = body["web"].(map[string]any)
+	if w.Code != http.StatusOK || web["url"] != "http://searx:8080" || web["has_key"] != false {
+		t.Errorf("searxng: %d %v", w.Code, body)
+	}
+
+	w, body = set(map[string]any{"engine": ""})
+	if w.Code != http.StatusOK || body["web"].(map[string]any)["engine"] != "" {
+		t.Errorf("turning the web off: %d %v", w.Code, body)
+	}
+}
+
+func TestWhichOfTheIMDbTop250AreMissing(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("correct horse battery staple", 3)
+	f := newFakeModelServer(t)
+	c.withAssistant(f)
+	c.batmanCollection(batmanDB(t))
+
+	site, queries := newFakeWeb(t)
+	c.server.OllamaSearchURL = site.URL
+	c.server.WebAllowPrivate = true
+	w, body := c.json(http.MethodPost, "/api/assistant/settings", map[string]any{
+		"url": f.URL + "/v1", "model": "qwen3:14b",
+		"web": map[string]any{"engine": "ollama", "key": "ollama-key"},
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("turn the web on: %d %v", w.Code, body)
+	}
+
+	w, body = c.json(http.MethodPost, "/api/assistant/ask", map[string]any{
+		"messages": []map[string]string{{"role": "user", "content": "Look up the IMDb top 250. Which of those am I missing?"}},
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("ask: %d %v", w.Code, body)
+	}
+	text := body["text"].(string)
+	for _, want := range []string{"The Shawshank Redemption (1994)", "The Godfather (1972)"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("answer lacks %s: %q", want, text)
+		}
+	}
+	if strings.Contains(text, "Dark Knight") || strings.Contains(text, "Alien") {
+		t.Errorf("a film the vault holds was called missing: %q", text)
+	}
+	names := []string{}
+	for _, s := range body["steps"].([]any) {
+		names = append(names, s.(map[string]any)["tool"].(string))
+	}
+	if strings.Join(names, " ") != "web_search fetch_page list_films" {
+		t.Errorf("steps %v", names)
+	}
+	if len(*queries) != 1 || (*queries)[0] != "IMDb top 250" {
+		t.Errorf("the engine was sent %v", *queries)
+	}
+}
+
+func TestSandyCannotBeTalkedIntoReadingTheVaultsOwnAPI(t *testing.T) {
+	site, _ := newFakeWeb(t)
+	c := newTestClient(t)
+	c.setup("correct horse battery staple", 2)
+	f := newFakeModelServer(t)
+	c.withAssistant(f)
+	c.server.OllamaSearchURL = site.URL
+	// WebAllowPrivate deliberately left off: this is the production guard.
+	c.json(http.MethodPost, "/api/assistant/settings", map[string]any{
+		"url": f.URL + "/v1", "model": "qwen3:14b",
+		"web": map[string]any{"engine": "ollama", "key": "ollama-key"},
+	})
+
+	a, err := c.server.assistantFor("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range a.Tools {
+		if tool.Name != "fetch_page" {
+			continue
+		}
+		for _, address := range []string{"http://127.0.0.1:8123/api/vault", "http://localhost:11434/api/tags", site.URL} {
+			_, err := tool.Run(context.Background(), json.RawMessage(`{"url":"`+address+`"}`))
+			if err == nil || !strings.Contains(err.Error(), "private network") {
+				t.Errorf("%s: %v", address, err)
+			}
 		}
 	}
 }

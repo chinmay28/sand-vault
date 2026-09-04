@@ -29,6 +29,55 @@ type AssistantSettings struct {
 	// were checked, kept so the dialog can show what it said and the panel
 	// has a figure without asking again.
 	ReportedContext int `json:"reported_context,omitempty"`
+
+	// Web is whether, and through what, Sandy may search the web. Empty
+	// means he may not, which is how every vault starts.
+	Web WebSettings `json:"web,omitempty"`
+}
+
+// WebSettings say how Sandy reaches the public web, if at all.
+//
+// A query is the one thing about a question that leaves the owner's
+// network — the name of a chart, a series, a year — so which engine gets
+// it is the owner's choice. Their own SearXNG keeps it on their own
+// machines; Ollama's search service is a third party they have a key for.
+type WebSettings struct {
+	// Engine is "searxng", "ollama", or empty for no web at all.
+	Engine string `json:"engine,omitempty"`
+
+	// URL is the SearXNG instance, for that engine.
+	URL string `json:"url,omitempty"`
+
+	// Key is the ollama.com key, for that engine. A credential, sealed with
+	// the rest and never read back.
+	Key string `json:"key,omitempty"`
+}
+
+// Web engines.
+const (
+	WebEngineNone    = ""
+	WebEngineSearXNG = "searxng"
+	WebEngineOllama  = "ollama"
+)
+
+// Enabled reports whether Sandy may reach the web.
+func (w WebSettings) Enabled() bool { return w.Engine != WebEngineNone }
+
+// normalize trims what was typed and drops what the chosen engine does not
+// use, so a key typed under one engine does not sit forgotten under another.
+func (w WebSettings) normalize() WebSettings {
+	w.Engine = strings.ToLower(strings.TrimSpace(w.Engine))
+	w.URL = strings.TrimRight(strings.TrimSpace(w.URL), "/")
+	w.Key = strings.TrimSpace(w.Key)
+	switch w.Engine {
+	case WebEngineSearXNG:
+		w.Key = ""
+	case WebEngineOllama:
+		w.URL = ""
+	default:
+		return WebSettings{}
+	}
+	return w
 }
 
 // ContextWindow is the window the panel measures against: what the user
@@ -57,6 +106,7 @@ func (s AssistantSettings) normalize() AssistantSettings {
 	if s.ReportedContext < 0 {
 		s.ReportedContext = 0
 	}
+	s.Web = s.Web.normalize()
 	if s.URL == "" {
 		return AssistantSettings{}
 	}
