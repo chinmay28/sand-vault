@@ -50,3 +50,23 @@ func (s *Server) handleReadStatsForget(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"reads": v.ReadStats(window)})
 }
+
+// handleReadWatch answers with where the read under a token has got to.
+//
+// Unknown is an ordinary answer: the browser starts asking the moment it
+// sends the content request, and that request may not have reached the
+// handler yet. A token that could not have come from the browser is refused,
+// so the window cannot be probed with arbitrary strings.
+func (s *Server) handleReadWatch(w http.ResponseWriter, r *http.Request) {
+	token := r.PathValue("token")
+	if !validReadToken(token) {
+		writeError(w, http.StatusBadRequest, "not a read token", "BAD_REQUEST")
+		return
+	}
+	progress, ok := s.readWatches.get(token)
+	if !ok {
+		writeError(w, http.StatusNotFound, "no read by that token", "NOT_FOUND")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"read": progress})
+}

@@ -730,6 +730,12 @@ function Shell({ children }) {
     }}>
       <style>{`
         @keyframes sand-spin { to { transform: rotate(360deg); } }
+        /* An indeterminate bar: a short run sweeping the track, for the waits
+           that have no percentage — a cloud that has not answered yet. */
+        @keyframes sand-sweep {
+          from { left: -40%; }
+          to { left: 100%; }
+        }
         @keyframes sand-dev-veil {
           0% { opacity: 0; }
           7% { opacity: 1; }

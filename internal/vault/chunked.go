@@ -309,7 +309,7 @@ func (v *Vault) eraseShardChunks(ctx context.Context, target *transferTarget, pl
 // gatherChunk collects enough of one chunk's shards to rebuild it. It is the
 // per-chunk twin of gather: the same race across accounts, decided the same way
 // by whichever Scheme.Data distinct shards answer first.
-func (v *Vault) gatherChunk(ctx context.Context, entry *Entry, index int, configs map[string]provider.Config, dataKey []byte) ([]byte, error) {
+func (v *Vault) gatherChunk(ctx context.Context, entry *Entry, index int, configs map[string]provider.Config, dataKey []byte, obs ReadObserver) ([]byte, error) {
 	scheme := entry.Scheme()
 
 	fetchCtx, cancel := context.WithCancel(ctx)
@@ -317,6 +317,19 @@ func (v *Vault) gatherChunk(ctx context.Context, entry *Entry, index int, config
 
 	results := make(chan shardFetch, len(entry.Shards))
 	v.reads.race()
+
+	// Which shards are about to be sent for: the ones on an account that is
+	// still connected. Said once, up front, so a watcher can name who it is
+	// waiting on before anybody has answered.
+	if obs != nil {
+		var asked []Shard
+		for _, shard := range entry.Shards {
+			if _, ok := configs[shard.ProviderID]; ok {
+				asked = append(asked, shard)
+			}
+		}
+		notifyRead(obs, entry, ReadEvent{Kind: ReadChunkStarted, Chunk: index, Asked: asked})
+	}
 
 	pending := 0
 	for _, shard := range entry.Shards {
@@ -352,6 +365,7 @@ func (v *Vault) gatherChunk(ctx context.Context, entry *Entry, index int, config
 		if r.err != nil {
 			v.reads.record(r, lostOutcome(r))
 			failures = append(failures, r.err.Error())
+			notifyRead(obs, entry, ReadEvent{Kind: ReadShardFailed, Chunk: index, Shard: r.shard, Took: r.took, Err: r.err})
 			continue
 		}
 		if _, already := held[r.shard.Part]; already {
@@ -360,6 +374,7 @@ func (v *Vault) gatherChunk(ctx context.Context, entry *Entry, index int, config
 		}
 		held[r.shard.Part] = r.blob
 		v.reads.record(r, shardWon)
+		notifyRead(obs, entry, ReadEvent{Kind: ReadShardArrived, Chunk: index, Shard: r.shard, Took: r.took})
 		if len(held) >= scheme.Data {
 			break
 		}
@@ -373,6 +388,7 @@ func (v *Vault) gatherChunk(ctx context.Context, entry *Entry, index int, config
 			strings.Join(failures, "; "))
 	}
 
+	notifyRead(obs, entry, ReadEvent{Kind: ReadChunkDecrypting, Chunk: index})
 	decoded, err := archive.DecodeChunk(collectParts(held), dataKey)
 	if err != nil {
 		return nil, fmt.Errorf("rebuilding chunk %d of %s: %w", index, entry.Path(), err)
@@ -419,7 +435,7 @@ func (v *Vault) gatherChunkedFile(ctx context.Context, entry *Entry) ([]byte, er
 
 	out := make([]byte, 0, entry.Size)
 	for index := 0; index < entry.ChunkCount; index++ {
-		chunk, err := v.gatherChunk(ctx, entry, index, snap.configs, snap.dataKey)
+		chunk, err := v.gatherChunk(ctx, entry, index, snap.configs, snap.dataKey, nil)
 		if err != nil {
 			return nil, err
 		}

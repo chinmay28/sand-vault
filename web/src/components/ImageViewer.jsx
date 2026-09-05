@@ -1,8 +1,10 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { COLORS, FONT } from '../theme'
 import { useIsMobile } from '../hooks'
 import { api } from '../api'
+import { readToken } from '../readwatch'
+import ReadStatus from './ReadStatus'
 import { IconButton, Spinner } from './ui'
 
 /* How long a slide stays up before the show moves on. Long enough to actually
@@ -84,6 +86,11 @@ export default function ImageViewer({ images, start = 0, onClose, onShown }) {
   const entry = images[index]
   const broken = failed.has(entry.file.id)
   const zoomed = view.scale > 1.001
+
+  /* A token per image, so the wait for each can be named — the folder's
+     photos are on different clouds, and a slide show that stalls should say
+     which one it stalled on. */
+  const watch = useMemo(() => readToken(), [entry.file.id])
 
   const step = useCallback((delta) => {
     setIndex((i) => (i + delta + count) % count)
@@ -407,7 +414,7 @@ export default function ImageViewer({ images, start = 0, onClose, onShown }) {
                photograph must not sit there while the next one streams in
                behind the same src. */
             key={entry.file.id}
-            src={api.contentURL(entry.file.id)}
+            src={api.contentURL(entry.file.id, { watch })}
             alt={entry.file.name}
             draggable={false}
             onLoad={(e) => { setLoading(false); onShown?.(entry, e.currentTarget) }}
@@ -431,6 +438,12 @@ export default function ImageViewer({ images, start = 0, onClose, onShown }) {
           <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
             <Spinner size={22} />
           </div>
+        )}
+        {/* Under the spinner, once the wait is long enough to be worth a
+            sentence. The server counts the bytes: an <img> says nothing
+            until it has them all. */}
+        {!broken && (
+          <ReadStatus watch={watch} active={loading} size={entry.file.size} overlay untilDone />
         )}
 
         {count > 1 && arrow('left', -1, 'Previous image')}

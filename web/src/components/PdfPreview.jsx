@@ -3,6 +3,7 @@ import { COLORS, FONT } from '../theme'
 import { useIsMobile } from '../hooks'
 import { PDF_OPTIONS, loadPDFJS } from '../pdfjs'
 import { Banner, Spinner } from './ui'
+import ReadStatus from './ReadStatus'
 
 /* A PDF, drawn a page at a time onto a canvas.
 
@@ -45,7 +46,7 @@ const RESIZE_SLOP = 4
    under a scrollbar it caused. */
 const GUTTER = 10
 
-export default function PdfPreview({ url, name, onFirstPage }) {
+export default function PdfPreview({ url, name, onFirstPage, watch = '' }) {
   const mobile = useIsMobile()
   const boxRef = useRef(null)
   const canvasRef = useRef(null)
@@ -286,7 +287,11 @@ export default function PdfPreview({ url, name, onFirstPage }) {
             color: COLORS.textMuted,
           }}>
             <Spinner size={20} />
-            {progress !== null && progress < 1 && `Gathering… ${Math.round(progress * 100)}%`}
+            {progress !== null && progress < 1
+              ? `Gathering… ${Math.round(progress * 100)}%`
+              /* Before pdf.js has a byte to count, the server says what the
+                 wait is for: which cloud, or the decryption. */
+              : <ReadStatus watch={watch} active={waiting} size={0} />}
           </div>
         )}
       </div>

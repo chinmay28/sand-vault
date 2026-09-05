@@ -99,6 +99,12 @@ type Server struct {
 	// handlers_orphans.go.
 	erases *eraseWatch
 
+	// readWatches is the window onto files being opened right now: which
+	// account each is waiting on, and how much of it has been sent. Read by
+	// the browser beside the content request it is waiting for. See
+	// read_watch.go.
+	readWatches *readWatch
+
 	// externalActivity is when something outside the browser last read the
 	// vault — a mounted share, or a player following a stream link. Neither has
 	// a browser session to keep the vault alive, so without this it would lock
@@ -204,6 +210,9 @@ func (s *Server) Handler() (http.Handler, error) {
 	}
 	if s.erases == nil {
 		s.erases = newEraseWatch()
+	}
+	if s.readWatches == nil {
+		s.readWatches = newReadWatch()
 	}
 
 	mux := http.NewServeMux()
@@ -366,6 +375,11 @@ func (s *Server) Handler() (http.Handler, error) {
 		// See handlers_reads.go.
 		"GET /api/reads":         s.handleReadStats,
 		"POST /api/reads/forget": s.handleReadStatsForget,
+		// Where one file being opened has got to — which account it is
+		// waiting on, whether it is decrypting, how much has been sent —
+		// keyed by the token the browser put on the content request. Read-only
+		// and in memory; see read_watch.go.
+		"GET /api/reads/watch/{token}": s.handleReadWatch,
 
 		// Folders on this machine, for the backends configured with a path.
 		"GET /api/system/folders": s.handleSystemFolders,

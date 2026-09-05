@@ -48,7 +48,13 @@ export function useFileActions({
   onPreview, onInspect, onFilm, onRefresh, onError,
 }) {
   const [busy, setBusy] = useState(false)
-  const [download, downloading, pendingSave, dismissSave] = useDownload(onError)
+  const [download, downloading, pendingSave, dismissSave, downloadProgress] = useDownload(onError)
+  /* What the row's menu says while a download runs: the share of it that
+     has landed, once any has. Before that the clouds are still being asked,
+     and there is no honest number. */
+  const downloadPct = downloading && downloadProgress?.received > 0 && file.size > 0
+    ? Math.min(100, Math.round((downloadProgress.received / file.size) * 100))
+    : null
   const [menu, setMenu] = useState(false)
   const [confirming, setConfirming] = useState(false)
   /* null, or 'play' when the stream dialog should reach for VLC on the way in
@@ -148,7 +154,9 @@ export function useFileActions({
               // The sheet closes on the way out and the fetch carries on
               // behind it — a home-screen app has no tab to park a download
               // in, so nothing here may navigate.
-              label: downloading ? 'Downloading…' : 'Download',
+              label: downloading
+                ? (downloadPct === null ? 'Downloading…' : `Downloading… ${downloadPct}%`)
+                : 'Download',
               hint: 'Save the rebuilt, decrypted file',
               disabled: downloading,
               onSelect: () => download(file),
