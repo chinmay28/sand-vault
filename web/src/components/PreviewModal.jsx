@@ -2,11 +2,13 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { COLORS, FONT, accountColor, formatBytes, isPlayable, previewKind } from '../theme'
 import { useIsMobile } from '../hooks'
 import { api } from '../api'
-import { useDownload } from '../download'
+import { fetchToBlob, useDownload } from '../download'
+import { readToken } from '../readwatch'
 import { SaveSheet } from './SaveSheet'
 import { thumbnailFromElement } from '../thumbs'
 import ImageViewer from './ImageViewer'
 import PdfPreview from './PdfPreview'
+import ReadStatus from './ReadStatus'
 import StreamLink from './StreamLink'
 import { RelocateClouds, fileScheme, schemeName, storedParts } from './CloudSelect'
 import FilmDetails, { FilmSummary, filmLabel } from './FilmDetails'
@@ -16,6 +18,63 @@ import { Banner, Button, Modal, Spinner } from './ui'
    chrome and the buttons under it start being pushed off. */
 const PREVIEW_MAX = 'calc(var(--app-height) * 0.62)'
 
+/* How much of a text file is drawn. A multi-megabyte log should not freeze
+   the tab. */
+const TEXT_CAP = 512 * 1024
+
+/* A file rebuilt into this page's memory, for the previews that can take one
+   whole: an image, or a text file.
+
+   Fetched by hand rather than by pointing an <img> at the address, because an
+   <img> says nothing until it has everything — and the point of the wait is
+   to say what it is for. Read this way the bytes are counted as they land,
+   and the server, given the token, says which cloud it is waiting on before
+   any do. The picture is then the same bytes under an object URL, which is
+   let go of when the dialog is.
+
+   `wanted` is whether this preview takes a whole file at all; a video does
+   not, and is not fetched here. */
+function useRebuilt(file, wanted, asText) {
+  const [state, setState] = useState({ watch: null, url: null, text: null, received: 0, error: null })
+
+  useEffect(() => {
+    if (!wanted) return undefined
+    const watch = readToken()
+    const abort = new AbortController()
+    let live = true
+    setState({ watch, url: null, text: null, received: 0, error: null })
+
+    fetchToBlob(
+      api.contentURL(file.id, { watch }),
+      (received) => { if (live) setState((prev) => ({ ...prev, received })) },
+      { signal: abort.signal },
+    )
+      .then(async (blob) => {
+        if (!live) return
+        if (asText) {
+          const text = await blob.slice(0, TEXT_CAP).text()
+          if (live) setState((prev) => ({ ...prev, text }))
+        } else {
+          setState((prev) => ({ ...prev, url: URL.createObjectURL(blob) }))
+        }
+      })
+      .catch((err) => {
+        if (live && err?.name !== 'AbortError') {
+          setState((prev) => ({ ...prev, error: err.message }))
+        }
+      })
+
+    return () => { live = false; abort.abort() }
+  }, [file.id, wanted, asText])
+
+  /* The plaintext is reachable through the object URL for as long as it
+     lives, so it lives exactly as long as the preview does. */
+  const { url } = state
+  useEffect(() => () => { if (url) URL.revokeObjectURL(url) }, [url])
+
+  return state
+}
+
 /* Opening a file here is the whole point of the design: the server gathers two
    of its three parts from separate accounts, rebuilds the plaintext in memory
    and streams it back. Nothing decrypted is ever written to disk. */
@@ -23,7 +82,6 @@ export default function PreviewModal({
   file, hasThumb, film, gallery = [], onClose, onNavigate, onThumbStored, onFilmChanged,
 }) {
   const kind = previewKind(file.mime, file.name)
-  const url = api.contentURL(file.id)
   const mobile = useIsMobile()
   const captured = useRef(false)
 
@@ -47,14 +105,31 @@ export default function PreviewModal({
      looping a folder does not upload the same thumbnail every lap. */
   const galleryCaptured = useRef(new Set())
 
-  const [text, setText] = useState(null)
   const [error, setError] = useState(null)
-  const [loading, setLoading] = useState(kind === 'text')
+
+  /* The whole file, for the two previews that take one — see useRebuilt.
+     Its own error joins the preview's: a picture that could not be rebuilt
+     and one that could not be decoded are the same dark box to fill. */
+  const rebuilt = useRebuilt(file, kind === 'image' || kind === 'text', kind === 'text')
+  const text = rebuilt.text
+  const loading = kind === 'text' ? text === null && !rebuilt.error : rebuilt.url === null && !rebuilt.error
+  const shown = error || rebuilt.error
+
+  /* The token the player's own requests carry, so the wait before a film's
+     first frame can be named too. One per file: a player asks in ranges, and
+     the window follows whichever is running. */
+  const [playerWatch, setPlayerWatch] = useState(() => readToken())
+  const [playerReady, setPlayerReady] = useState(false)
+  useEffect(() => { setPlayerWatch(readToken()); setPlayerReady(false) }, [file.id])
+  const playerURL = api.contentURL(file.id, { watch: playerWatch })
 
   /* Kept apart from the preview's own error: a file whose download fails is
      still a file the preview above may be rendering perfectly well. */
   const [downloadError, setDownloadError] = useState(null)
-  const [download, downloading, pendingSave, dismissSave] = useDownload(setDownloadError)
+  const [download, downloading, pendingSave, dismissSave, downloadProgress] = useDownload(setDownloadError)
+  const downloadPct = downloading && downloadProgress?.received > 0 && file.size > 0
+    ? Math.min(100, Math.round((downloadProgress.received / file.size) * 100))
+    : null
 
   /* The preview above is the browser's best attempt at the file. For a film
      that means one long inline fetch and whichever codecs the browser happens
@@ -94,23 +169,6 @@ export default function PreviewModal({
      artwork the vault is already holding. So a matched film opens on the film,
      and the player takes over when somebody presses play. */
   const [playing, setPlaying] = useState(false)
-
-  useEffect(() => {
-    if (kind !== 'text') return
-    let cancelled = false
-
-    fetch(url, { credentials: 'same-origin' })
-      .then(async (resp) => {
-        if (!resp.ok) throw new Error(`could not rebuild this file (${resp.status})`)
-        // Cap what we render: a multi-megabyte log should not freeze the tab.
-        const blob = await resp.blob()
-        return blob.slice(0, 512 * 1024).text()
-      })
-      .then((body) => { if (!cancelled) { setText(body); setLoading(false) } })
-      .catch((err) => { if (!cancelled) { setError(err.message); setLoading(false) } })
-
-    return () => { cancelled = true }
-  }, [url, kind])
 
   /* The three under the poster. Narrower than the toolbar's buttons because
      the column is, and shorter than the 44px floor a lone control gets: three
@@ -190,6 +248,7 @@ export default function PreviewModal({
         width={920}
       >
         <div style={{
+          position: 'relative',
           background: COLORS.bg,
           border: `1px solid ${COLORS.border}`,
           borderRadius: '8px',
@@ -200,11 +259,23 @@ export default function PreviewModal({
           overflow: 'hidden',
           marginBottom: '16px',
         }}>
-          {error && <Banner tone="error">{error}</Banner>}
-  
-          {!error && kind === 'image' && (
+          {shown && <Banner tone="error">{shown}</Banner>}
+
+          {/* A whole file on its way in: what it is waiting on, once the wait
+              is long enough to be worth a sentence. */}
+          {!shown && (kind === 'image' || kind === 'text') && (
+            <ReadStatus
+              watch={rebuilt.watch}
+              active={loading}
+              received={rebuilt.received}
+              size={file.size}
+              overlay={false}
+            />
+          )}
+
+          {!shown && kind === 'image' && rebuilt.url && (
             <img
-              src={url}
+              src={rebuilt.url}
               alt={file.name}
               title="View full screen"
               style={{ maxWidth: '100%', maxHeight: PREVIEW_MAX, display: 'block', cursor: 'zoom-in' }}
@@ -213,7 +284,7 @@ export default function PreviewModal({
               onError={() => setError('This file could not be rebuilt or is not a readable image.')}
             />
           )}
-  
+
           {!error && kind === 'video' && (record && !playing ? (
             <div style={{ width: '100%', padding: mobile ? '12px' : '18px', boxSizing: 'border-box' }}>
               <FilmSummary
@@ -253,7 +324,7 @@ export default function PreviewModal({
             </div>
           ) : (
             <video
-              src={url}
+              src={playerURL}
               controls
               playsInline
               autoPlay={playing}
@@ -262,24 +333,40 @@ export default function PreviewModal({
                  draws a black rectangle until the first frame decodes. */
               poster={hasThumb ? api.thumbURL(file.id) : undefined}
               preload="metadata"
+              onLoadedMetadata={() => setPlayerReady(true)}
+              onError={() => setPlayerReady(true)}
               onTimeUpdate={(e) => captureThumb(e.currentTarget)}
               style={{ maxWidth: '100%', maxHeight: PREVIEW_MAX }}
             />
           ))}
-  
+
           {!error && kind === 'audio' && (
-            <audio src={url} controls style={{ width: '90%', margin: '32px 0' }} />
+            <audio
+              src={playerURL}
+              controls
+              onLoadedMetadata={() => setPlayerReady(true)}
+              onError={() => setPlayerReady(true)}
+              style={{ width: '90%', margin: '32px 0' }}
+            />
           )}
-  
+
+          {/* The wait before a player has anything to play: the first chunk
+              coming back off the clouds and being decrypted, which for a film
+              is most of the wait there is. Over the player rather than in
+              place of it, letting its controls through. */}
+          {!error && (kind === 'video' || kind === 'audio') && !filmShown && (
+            <ReadStatus watch={playerWatch} active={!playerReady} size={file.size} overlay untilDone />
+          )}
+
           {/* Drawn here rather than framed for the browser to deal with: a
               framed PDF is a blank box or one unscrollable page on iOS Safari,
               which used to leave a phone with an apology instead of the
               document. */}
           {!error && kind === 'pdf' && (
-            <PdfPreview url={url} name={file.name} onFirstPage={captureThumb} />
+            <PdfPreview url={playerURL} watch={playerWatch} name={file.name} onFirstPage={captureThumb} />
           )}
-  
-          {!error && kind === 'text' && (
+
+          {!shown && kind === 'text' && (
             loading ? <div style={{ padding: '40px' }}><Spinner size={20} /></div> : (
               <pre style={{
                 margin: 0,
@@ -332,7 +419,17 @@ export default function PreviewModal({
         {downloadError && (
           <Banner tone="error" onDismiss={() => setDownloadError(null)}>{downloadError}</Banner>
         )}
-  
+
+        {/* The download's own wait, said over the button that started it. */}
+        {downloading && downloadProgress && (
+          <ReadStatus
+            watch={downloadProgress.watch}
+            active={downloading}
+            received={downloadProgress.received}
+            size={file.size}
+          />
+        )}
+
         <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
           {/* Close and the player are under the poster when there is one, so
               repeating them here would be two rows of the same three buttons. */}
@@ -372,7 +469,7 @@ export default function PreviewModal({
             style={mobile ? { flex: 2, justifyContent: 'center' } : null}
           >
             {downloading
-              ? <><Spinner size={12} color={COLORS.bg} /> Rebuilding…</>
+              ? <><Spinner size={12} color={COLORS.bg} /> {downloadPct === null ? 'Rebuilding…' : `Rebuilding… ${downloadPct}%`}</>
               : '↓ Download decrypted'}
           </Button>
         </div>

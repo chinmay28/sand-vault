@@ -782,8 +782,21 @@ export const api = {
      the only credential a player can actually be handed. */
   streamLink: (id) => request(`/api/files/${encodeURIComponent(id)}/stream`, { method: 'POST' }),
 
-  contentURL: (id, { download = false } = {}) =>
-    `/api/files/${encodeURIComponent(id)}/content${download ? '?download=1' : ''}`,
+  contentURL: (id, { download = false, watch = '' } = {}) => {
+    const params = []
+    if (download) params.push('download=1')
+    /* A token the browser minted, for asking where the read has got to
+       while it waits on it — see readWatch and readwatch.js. */
+    if (watch) params.push(`watch=${encodeURIComponent(watch)}`)
+    return `/api/files/${encodeURIComponent(id)}/content${params.length ? `?${params.join('&')}` : ''}`
+  },
+
+  /* Where the read under a token has got to: which accounts it is waiting on,
+     whether it is decrypting, how much has been sent. Asked beside a content
+     request that carries the same token. Unknown before that request has
+     reached the server, which the poller treats as "not yet" rather than
+     as an error. */
+  readWatch: (token) => request(`/api/reads/watch/${encodeURIComponent(token)}`),
 
   /* The stored preview image. The first row of a folder to ask for one makes
      the server gather that folder's whole pack; the rest are answered from

@@ -1109,15 +1109,37 @@ func (s *Server) handleFileHealth(w http.ResponseWriter, r *http.Request) {
 // 337 MB to serve one range of a 256 MB file, and so about 5 GB for a 4 GB one,
 // per request in flight. Through the chunked reader the same request costs the
 // chunks that range covers, which does not grow with the file at all.
+//
+// With ?watch=<token> the read reports where it has got to, for the browser
+// to ask about beside this request — see read_watch.go. A token that is not
+// one is ignored rather than refused: the file is what was asked for.
 func (s *Server) handleFileContent(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := contextWithTimeout(r, 30*time.Minute)
 	defer cancel()
 
+	var ticket *readTicket
+	var opts []vault.ReadOption
+	if token := r.URL.Query().Get("watch"); validReadToken(token) {
+		ticket = s.readWatches.open(token)
+		opts = append(opts, vault.WatchRead(ticket))
+		w = &countingWriter{ResponseWriter: w, ticket: ticket}
+		// A chunk that could not be rebuilt has already been reported by the
+		// observer, and finish keeps that; what is left to say at the end is
+		// that the response is over.
+		defer ticket.finish(nil)
+	}
+
 	v, _ := s.Vault()
-	body, entry, err := v.OpenReadSeeker(ctx, r.PathValue("id"))
+	body, entry, err := v.OpenReadSeeker(ctx, r.PathValue("id"), opts...)
 	if err != nil {
+		if ticket != nil {
+			ticket.finish(err)
+		}
 		vaultErrorResponse(w, err)
 		return
+	}
+	if ticket != nil {
+		ticket.opened(entry.Size)
 	}
 
 	download := r.URL.Query().Get("download") == "1" || r.URL.Query().Get("download") == "true"

@@ -185,6 +185,9 @@ type ChunkedReader struct {
 	mu       sync.Mutex
 	held     int
 	heldData []byte
+
+	// observer hears where the read has got to, or is nil. See readwatch.go.
+	observer ReadObserver
 }
 
 // ErrNeedsConversion is returned for a file still stored in the pre-chunking
@@ -202,7 +205,9 @@ var ErrNeedsConversion = errors.New(
 // A file stored whole has no chunks to fetch individually, so it is refused
 // here rather than silently rebuilt in full behind an interface that promises
 // cheap seeks.
-func (v *Vault) OpenReader(id string) (*ChunkedReader, error) {
+//
+// Options adjust the reader; WatchRead is the one there is.
+func (v *Vault) OpenReader(id string, opts ...ReadOption) (*ChunkedReader, error) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 
@@ -219,7 +224,11 @@ func (v *Vault) OpenReader(id string) (*ChunkedReader, error) {
 
 	snapshot := *entry
 	snapshot.Shards = append([]Shard(nil), entry.Shards...)
-	return &ChunkedReader{v: v, entry: &snapshot}, nil
+	reader := &ChunkedReader{v: v, entry: &snapshot}
+	for _, opt := range opts {
+		opt(reader)
+	}
+	return reader, nil
 }
 
 // Size is the length of the file in bytes.
@@ -291,6 +300,11 @@ func (r *ChunkedReader) chunkAt(ctx context.Context, index int) ([]byte, error) 
 		return data, nil
 	}
 
+	// From here the chunk is a network away. Said before joining the flight,
+	// because a read that lands on another reader's fetch hears nothing from
+	// gatherChunk — that fetch is reporting to whoever started it.
+	notifyRead(r.observer, r.entry, ReadEvent{Kind: ReadChunkWaiting, Chunk: index})
+
 	data, err := r.v.flight.do(key, func() ([]byte, error) {
 		// Another caller may have finished while this one waited for its turn.
 		if data, ok := r.v.chunks.get(key); ok {
@@ -305,7 +319,7 @@ func (r *ChunkedReader) chunkAt(ctx context.Context, index int) ([]byte, error) 
 		}
 		defer crypto.ZeroBytes(snap.dataKey)
 
-		data, err := r.v.gatherChunk(ctx, r.entry, index, snap.configs, snap.dataKey)
+		data, err := r.v.gatherChunk(ctx, r.entry, index, snap.configs, snap.dataKey, r.observer)
 		if err != nil {
 			return nil, err
 		}
@@ -315,8 +329,10 @@ func (r *ChunkedReader) chunkAt(ctx context.Context, index int) ([]byte, error) 
 		return data, nil
 	})
 	if err != nil {
+		notifyRead(r.observer, r.entry, ReadEvent{Kind: ReadChunkFailed, Chunk: index, Err: err})
 		return nil, err
 	}
+	notifyRead(r.observer, r.entry, ReadEvent{Kind: ReadChunkReady, Chunk: index})
 	r.hold(index, data)
 	return data, nil
 }
@@ -388,8 +404,8 @@ func (v *Vault) OpenSequential(ctx context.Context, id string) (io.ReadSeeker, *
 // the file; it is the file being in a format this door cannot open, and the
 // caller is expected to offer Convert rather than to retry. Conversion is a
 // sequential read, which that format handles perfectly well — see convert.go.
-func (v *Vault) OpenReadSeeker(ctx context.Context, id string) (io.ReadSeeker, *Entry, error) {
-	reader, err := v.OpenReader(id)
+func (v *Vault) OpenReadSeeker(ctx context.Context, id string, opts ...ReadOption) (io.ReadSeeker, *Entry, error) {
+	reader, err := v.OpenReader(id, opts...)
 	if err != nil {
 		return nil, nil, err
 	}

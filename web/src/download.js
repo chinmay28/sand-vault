@@ -23,6 +23,7 @@
 import { useCallback, useState } from 'react'
 import { api } from './api'
 import { isStandalone } from './stream'
+import { readToken } from './readwatch'
 
 /* Safari reads the blob out of the object URL after the click handler has
    returned, so it cannot be revoked on the spot. A minute is far longer than
@@ -83,17 +84,17 @@ export async function shareBlob(blob, filename) {
 
 /* The whole file lands in memory, which is the bargain the server has already
    made on its side for a single file: it gathers the parts and rebuilds the
-   plaintext to answer this very request. */
-export async function fetchFileBlob(file) {
-  const resp = await fetch(api.contentURL(file.id, { download: true }), {
-    credentials: 'same-origin',
-  })
-  if (!resp.ok) throw new Error(await failureMessage(resp))
-  return resp.blob()
+   plaintext to answer this very request.
+
+   Read through fetchToBlob so the bytes are counted as they land, and with a
+   watch token so the server can say what it is waiting on before any do —
+   see readwatch.js. */
+export async function fetchFileBlob(file, { onProgress, watch = '' } = {}) {
+  return fetchToBlob(api.contentURL(file.id, { download: true, watch }), onProgress)
 }
 
-export async function downloadFile(file) {
-  saveBlob(await fetchFileBlob(file), file.name)
+export async function downloadFile(file, options) {
+  saveBlob(await fetchFileBlob(file, options), file.name)
 }
 
 /* Save from an address the browser must not read into memory first.
@@ -117,11 +118,13 @@ export function downloadFromLink(url, filename) {
   link.remove()
 }
 
-/* Read a streamed address into memory, saying how much has arrived on the
-   way. For the one case a streamed archive has to become a blob after all: a
-   home-screen app, whose share sheet takes a file and not an address. */
-export async function fetchToBlob(url, onProgress) {
-  const resp = await fetch(url, { credentials: 'same-origin' })
+/* Read an address into memory, saying how much has arrived on the way. For a
+   file being opened or saved, and for the one case a streamed archive has to
+   become a blob after all: a home-screen app, whose share sheet takes a file
+   and not an address. `signal` aborts it — a dialog closed mid-fetch should
+   stop pulling parts off the accounts. */
+export async function fetchToBlob(url, onProgress, { signal } = {}) {
+  const resp = await fetch(url, { credentials: 'same-origin', signal })
   if (!resp.ok) throw new Error(await failureMessage(resp))
   const type = resp.headers.get('Content-Type') || 'application/octet-stream'
   if (!resp.body || typeof resp.body.getReader !== 'function') {
@@ -151,26 +154,34 @@ export async function fetchToBlob(url, onProgress) {
 export function useDownload(onError) {
   const [downloading, setDownloading] = useState(false)
   const [pending, setPending] = useState(null)
+  /* Where the rebuild has got to: the token the server is reporting under,
+     how many bytes have landed, and how many there are. Null between
+     downloads. */
+  const [progress, setProgress] = useState(null)
 
   const start = useCallback(async (file) => {
+    const watch = readToken()
     setDownloading(true)
+    setProgress({ watch, received: 0, size: file.size || 0 })
+    const onProgress = (received) => setProgress((p) => (p && p.watch === watch ? { ...p, received } : p))
     try {
       if (needsShareSheet()) {
-        const blob = await fetchFileBlob(file)
+        const blob = await fetchFileBlob(file, { onProgress, watch })
         setPending({ blob, name: file.name })
       } else {
-        await downloadFile(file)
+        await downloadFile(file, { onProgress, watch })
       }
     } catch (err) {
       onError(err.message)
     } finally {
       setDownloading(false)
+      setProgress(null)
     }
   }, [onError])
 
   const dismiss = useCallback(() => setPending(null), [])
 
-  return [start, downloading, pending, dismiss]
+  return [start, downloading, pending, dismiss, progress]
 }
 
 /* A refused download carries the API's JSON error where the server got far

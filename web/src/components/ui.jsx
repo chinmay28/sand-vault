@@ -750,6 +750,69 @@ export function Spinner({ size = 16, color = COLORS.accent }) {
   )
 }
 
+/* A wait, said out loud: what is being waited on and, where one can honestly
+   be given, how far along it is.
+
+   `fraction` is 0..1 for a bar that fills, or null for one that only says
+   "still going" — a cloud that has not answered yet has no percentage. `label`
+   is the sentence over it, `detail` the smaller one under it. `tone` "error"
+   turns the bar red for a wait that ended badly. Sized for the inside of a
+   preview box or the foot of a dialog: one line of mono text and a 3px bar. */
+export function LoadProgress({ label, detail, fraction = null, tone = 'info', width = 260 }) {
+  const color = tone === 'error' ? COLORS.error : COLORS.accent
+  const determinate = typeof fraction === 'number' && Number.isFinite(fraction)
+  const pct = determinate ? Math.max(0, Math.min(1, fraction)) * 100 : 0
+
+  return (
+    <div
+      role="progressbar"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={determinate ? Math.round(pct) : undefined}
+      aria-valuetext={label}
+      aria-live="polite"
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        gap: '8px',
+        width: '100%',
+        maxWidth: `${width}px`,
+        fontFamily: FONT.mono,
+        fontSize: '11.5px',
+        color: tone === 'error' ? COLORS.error : COLORS.textDim,
+        textAlign: 'center',
+      }}
+    >
+      <span style={{ lineHeight: 1.4 }}>{label}</span>
+      <span
+        aria-hidden="true"
+        style={{
+          position: 'relative',
+          width: '100%',
+          height: '3px',
+          borderRadius: '2px',
+          background: `${color}2e`,
+          overflow: 'hidden',
+        }}
+      >
+        <span style={{
+          position: 'absolute',
+          top: 0,
+          bottom: 0,
+          left: determinate ? 0 : undefined,
+          width: determinate ? `${Math.max(2, pct)}%` : '38%',
+          borderRadius: '2px',
+          background: color,
+          transition: determinate ? 'width 0.25s ease-out' : undefined,
+          animation: determinate ? undefined : 'sand-sweep 1.3s ease-in-out infinite',
+        }} />
+      </span>
+      {detail && <span style={{ fontSize: '10.5px', lineHeight: 1.45, color: COLORS.textMuted, wordBreak: 'break-word' }}>{detail}</span>}
+    </div>
+  )
+}
+
 export function Empty({ icon, title, children }) {
   const mobile = useIsMobile()
 
