@@ -4,7 +4,7 @@ import { api } from '../api'
 import { useDownload } from '../download'
 import { FolderZip } from './FolderZip'
 import { SaveSheet } from './SaveSheet'
-import { MachineTransfer } from './MachineTransfer'
+import { MachineTransfer, fileItem } from './MachineTransfer'
 import { useEraseProgress } from '../hooks'
 import { ActionSheet, Banner, Button, ConfirmDialog, IconButton, Modal } from './ui'
 import StreamLink from './StreamLink'
@@ -65,6 +65,7 @@ export function useFileActions({
   const [moving, setMoving] = useState(false)
   const [renaming, setRenaming] = useState(false)
   const [assigning, setAssigning] = useState(false)
+  const [sending, setSending] = useState(false)
 
   /* Where this could be sent. Standing in the main vault that is every open
      sub vault; standing inside one it is the way back out. A locked sub vault
@@ -160,6 +161,21 @@ export function useFileActions({
               hint: 'Save the rebuilt, decrypted file',
               disabled: downloading,
               onSelect: () => download(file),
+            },
+            /* Under Download because it is the same thing aimed elsewhere:
+               the file leaves the vault whole and readable, but lands on a
+               machine you have a login on instead of in this browser. It goes
+               clouds → SAND → machine, so a phone can send a film it could
+               never hold. */
+            !legacy && {
+              key: 'send',
+              glyph: '⇡',
+              label: 'Send to a machine',
+              hint: dead
+                ? 'Too few parts remain to rebuild this file'
+                : 'Copy it onto a machine you have a login on — in the clear',
+              disabled: dead,
+              onSelect: () => setSending(true),
             },
             // Only where it could mean something: a folder that has asked for
             // film details, and a file a player would take. Everywhere else it
@@ -297,6 +313,19 @@ export function useFileActions({
           onDone={onRefresh}
         />
       )}
+
+      {sending && (
+        <MachineTransfer
+          /* Opened from the file, so it stands where the file does: the
+             picker, should the choice be changed, starts in its folder. */
+          path={file.dir || '/'}
+          vault={vault}
+          mode="export"
+          preset={[fileItem(file)]}
+          onClose={() => setSending(false)}
+          onChanged={onRefresh}
+        />
+      )}
     </>
   )
 
@@ -309,6 +338,7 @@ export function useFileActions({
     relocate: () => setRelocating(true),
     moveTo: () => setMoving(true),
     rename: () => setRenaming(true),
+    send: () => setSending(true),
   }
 }
 

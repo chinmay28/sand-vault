@@ -326,6 +326,18 @@ under it, keeping its shape, and the root puts its contents straight into
 scoped to, made if it is not there, and refused if it climbs out — the same
 `Under` check as browsing, made before a connection is dialled.
 
+In the browser the export has three doors, and all of them open the same
+dialog. The `⇅ Machine` button on the toolbar starts with the direction switch
+and a picker over the vault's own listing, for sending several things at
+once. A folder's menu carries **Send to a machine** with that folder already
+picked. And a single file offers the same, twice: in its own menu, under
+Download, and as a button beside **Download decrypted** in its preview — the
+photo on screen goes to a machine's folder in one step, without the browser
+ever holding it. In every case the dialog lands on the machine's listing with
+the selection made, and what is left to do is walk to the folder it should go
+in and press send; **Change** reopens the picker, starting in the file's own
+folder, for anyone who wants to add to it.
+
 The mechanics mirror the import's, seam for seam:
 
 - **The seam is `OpenSequential`.** The vault hands back an `io.ReadSeeker`

@@ -10,6 +10,7 @@ import ImageViewer from './ImageViewer'
 import PdfPreview from './PdfPreview'
 import ReadStatus from './ReadStatus'
 import StreamLink from './StreamLink'
+import { MachineTransfer, fileItem } from './MachineTransfer'
 import { RelocateClouds, fileScheme, schemeName, storedParts } from './CloudSelect'
 import FilmDetails, { FilmSummary, filmLabel } from './FilmDetails'
 import { Banner, Button, Modal, Spinner } from './ui'
@@ -79,7 +80,8 @@ function useRebuilt(file, wanted, asText) {
    of its three parts from separate accounts, rebuilds the plaintext in memory
    and streams it back. Nothing decrypted is ever written to disk. */
 export default function PreviewModal({
-  file, hasThumb, film, gallery = [], onClose, onNavigate, onThumbStored, onFilmChanged,
+  file, hasThumb, film, gallery = [], vault = '',
+  onClose, onNavigate, onThumbStored, onFilmChanged,
 }) {
   const kind = previewKind(file.mime, file.name)
   const mobile = useIsMobile()
@@ -137,6 +139,10 @@ export default function PreviewModal({
      answer — so the offer sits beside it rather than somewhere else. */
   const [streaming, setStreaming] = useState(null)
   const playable = isPlayable(file.mime, file.name)
+
+  /* Download's other destination: the same rebuilt file, landing whole on a
+     machine you have a login on instead of in this browser. */
+  const [sending, setSending] = useState(false)
 
   /* A film this file has already been matched to. Watching something is when
      "what is this, again?" gets asked, so the answer is here rather than only
@@ -461,6 +467,14 @@ export default function PreviewModal({
               style={mobile ? { flex: 1, justifyContent: 'center' } : null}
             >{playable ? '▶ Stream in VLC' : '⧉ Copy the address'}</Button>
           )}
+          {/* Beside Download because it is Download aimed elsewhere. The bytes
+              go clouds → SAND → machine and never through this page, which is
+              what lets a phone send a film it could never hold. */}
+          <Button
+            onClick={() => setSending(true)}
+            title="Copy it onto a machine you have a login on — in the clear"
+            style={mobile ? { flex: 1, justifyContent: 'center' } : null}
+          >⇡ Send to a machine</Button>
           <Button
             variant="primary"
             onClick={() => download(file)}
@@ -508,6 +522,17 @@ export default function PreviewModal({
             zIndex={120}
             onClose={() => setDetails(false)}
             onChanged={onFilmChanged}
+          />
+        )}
+
+        {sending && (
+          <MachineTransfer
+            path={file.dir || '/'}
+            vault={vault}
+            mode="export"
+            preset={[fileItem(file)]}
+            zIndex={120}
+            onClose={() => setSending(false)}
           />
         )}
       </Modal>
