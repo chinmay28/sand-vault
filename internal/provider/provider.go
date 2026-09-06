@@ -33,6 +33,7 @@ const (
 	KindBox      Kind = "box"
 	KindProton   Kind = "proton"
 	KindICloud   Kind = "icloud"
+	KindDrime    Kind = "drime"
 
 	// Proton Drive again, reached through Proton's own command-line client
 	// rather than through the folder its desktop app syncs. See protoncli.go

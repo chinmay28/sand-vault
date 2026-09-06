@@ -552,7 +552,7 @@ func TestProviderSpecsDescribeTheSignInFlow(t *testing.T) {
 		seen[spec.Kind] = true
 	}
 	for _, kind := range []provider.Kind{"gdrive", "dropbox", "onedrive", "box", "icloud", "proton",
-		"mega", "jottacloud", "synccom", "tresorit", "icedrive", "local", "s3", "webdav"} {
+		"mega", "jottacloud", "synccom", "tresorit", "icedrive", "drime", "local", "s3", "webdav"} {
 		if !seen[kind] {
 			t.Errorf("the connect dialog is not offered %s", kind)
 		}

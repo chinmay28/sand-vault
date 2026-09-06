@@ -40,7 +40,7 @@ product.
 | Interface | Archive / Restore forms | A file browser with folders and previews |
 | State | None — every run standalone | An encrypted index of what is stored where |
 | Retrieval | Find the right zips, extract, restore | Click the file |
-| Providers | — | Google Drive, OneDrive, Dropbox, Box, S3-compatible, WebDAV, iCloud Drive, Proton Drive, MEGA, Jottacloud, Sync.com, Tresorit, Icedrive, local disk |
+| Providers | — | Google Drive, OneDrive, Dropbox, Box, Drime, S3-compatible, WebDAV, iCloud Drive, Proton Drive, MEGA, Jottacloud, Sync.com, Tresorit, Icedrive, local disk |
 | Failure handling | Manual | Reads route around an account that is down |
 
 ---
@@ -2089,6 +2089,7 @@ credentials change as they are used.
 | `onedrive` | OneDrive, personal or work | Microsoft Graph, chunked upload sessions |
 | `dropbox` | Dropbox | API v2, OAuth refresh grant |
 | `box` | Box | API 2.0, OAuth with rotating refresh tokens |
+| `drime` | Drime | REST API v1 with a pasted access token, S3-style multipart uploads past 5 MiB |
 | `icloud` | iCloud Drive, via the folder macOS or iCloud for Windows syncs | Filesystem, plus `brctl` for an evicted part |
 | `proton`, `mega`, `jottacloud`, `synccom`, `tresorit`, `icedrive` | Proton Drive, MEGA, Jottacloud, Sync.com, Tresorit, Icedrive — each via the folder its desktop app syncs | Filesystem, atomic writes |
 
