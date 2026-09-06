@@ -148,6 +148,7 @@ yet built: browsing a machine and importing files off it into a vault folder.
 | Candidate | Why | Notes |
 |---|---|---|
 | **Azure Blob Storage** | The biggest real gap — the third hyperscaler, and the only one with no S3 face | SharedKey signing, same exercise as the SigV4 code in `s3.go` |
+| **Drime** — **done** | A European service with a token API and no OAuth | `drime.go`. Settings → Developer mints the token; parts land in one folder by ID, so the key-to-ID cache is Box's. Anything past 5 MiB goes through Drime's S3-style multipart flow — create, signed URL per part, complete, then an `/s3/entries` call to make it a file. Deletes are permanent, since a trash full of encrypted parts is quota spent on nothing |
 | **Backblaze B2 native** | — | Low value: the S3 preset already covers B2, and B2's own API reports no bucket size either — usage there is counted by listing and measured against a declared capacity (`UsageMeasurer`, `Config.Capacity`). B2's "keep all versions" default is handled through the S3 face too: `Versioner` lists and erases the versions a bucket keeps beneath what it shows (`sand vault prune`) |
 
 ---

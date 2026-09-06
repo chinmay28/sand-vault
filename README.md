@@ -180,6 +180,7 @@ Reads are a race, so a slow or offline account costs you nothing — it just los
 | `box` | Box | **Sign in** |
 | `s3` | Amazon S3, Cloudflare R2, Backblaze B2, Wasabi, MinIO | Bucket, keys, endpoint for non-AWS |
 | `webdav` | Nextcloud, ownCloud, pCloud, Koofr, Fastmail, anything behind `rclone serve webdav` | URL, username, app password |
+| `drime` | Drime, through its API | An access token from the Drime web app |
 | `sftp` | Any machine you have an SSH login on — a VPS, a NAS, rsync.net, a Hetzner Storage Box | Host, username, **a key SAND generates** or your own |
 | `icloud` | iCloud Drive, through the folder macOS or iCloud for Windows syncs | A path |
 | `protoncli` | Proton Drive, through Proton's own client — no desktop app needed | **Sign in** |
