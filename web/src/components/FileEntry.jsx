@@ -5,6 +5,7 @@ import { useDownload } from '../download'
 import { FolderZip } from './FolderZip'
 import { SaveSheet } from './SaveSheet'
 import { MachineTransfer, fileItem } from './MachineTransfer'
+import { Thumb } from './Thumb'
 import { useEraseProgress } from '../hooks'
 import { ActionSheet, Banner, Button, ConfirmDialog, IconButton, Modal } from './ui'
 import StreamLink from './StreamLink'
@@ -411,54 +412,6 @@ export function Row({ children, mobile, columns = COLUMNS, check, selected }) {
       {check}
       <div style={{ ...inner, flex: 1, minWidth: 0 }}>{children}</div>
     </div>
-  )
-}
-
-/* The picture in front of a file's name. It is a stored thumbnail — a small
-   JPEG the vault keeps a folder at a time — so drawing one costs nothing like
-   rebuilding the file it came from.
-
-   `size` is the edge in pixels: 52 on a phone, where the row is a stack and
-   the tile is the left column of it, and 26 on a desktop, where it stands in
-   for the emoji inside the Name column without changing the row's height. In
-   the grid it is `fill` instead, and the picture is the tile.
-
-   It falls back to that same emoji, and does so on any failure — a file
-   uploaded before thumbnails existed, an account that has gone quiet, a pack
-   that could not be read. The list has always been readable without pictures. */
-export function Thumb({ id, icon, size, expected, fill }) {
-  const [failed, setFailed] = useState(false)
-
-  // A new file in the same row position must not inherit the old one's state.
-  useEffect(() => { setFailed(false) }, [id])
-
-  if (!expected || failed) {
-    return (
-      <span style={{ flexShrink: 0, fontSize: fill ? '34px' : size >= 40 ? '26px' : '15px' }}>{icon}</span>
-    )
-  }
-
-  return (
-    <img
-      src={api.thumbURL(id)}
-      alt=""
-      width={fill ? undefined : size}
-      height={fill ? undefined : size}
-      loading="lazy"
-      decoding="async"
-      onError={() => setFailed(true)}
-      style={fill ? {
-        width: '100%', height: '100%', objectFit: 'cover', display: 'block',
-      } : {
-        width: `${size}px`,
-        height: `${size}px`,
-        flexShrink: 0,
-        objectFit: 'cover',
-        borderRadius: size >= 40 ? '6px' : '4px',
-        background: COLORS.surfaceRaised,
-        border: `1px solid ${COLORS.border}`,
-      }}
-    />
   )
 }
 

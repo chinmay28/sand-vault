@@ -1,8 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { COLORS, FONT, formatBytes } from '../theme'
+import { COLORS, FONT, fileIcon, formatBytes } from '../theme'
 import { api } from '../api'
 import { Banner, Button, Input, Modal, PasswordInput, Spinner } from './ui'
 import SshKeyField from './SshKeyField'
+import { Thumb } from './Thumb'
 
 /* Moving files between the vault and a machine you have an SSH login on, in
    either direction.
@@ -49,13 +50,18 @@ import SshKeyField from './SshKeyField'
    from an index entry, and this is the one place either turns it into an item,
    so a file sent from its row is exactly the file the picker would have ticked.
 
+   The id and type are for the picker's row, which draws the file's stored
+   thumbnail by the one and falls back to an icon for the other.
+
    `dir` is the folder the entry answers from, always normalised by the server;
    an entry without one is taken to be at the root rather than nowhere. */
 export function fileItem(file) {
   const dir = file.dir || '/'
   return {
     kind: 'file',
+    id: file.id,
     name: file.name,
+    mime: file.mime,
     path: dir === '/' ? `/${file.name}` : `${dir}/${file.name}`,
     size: file.size,
     legacy: !file.chunk_count,
@@ -751,6 +757,13 @@ function describeItems(items, short = false) {
   return parts.join(' and ')
 }
 
+/* The edge of the picture a picker row draws, in pixels. Nearer the phone
+   row's 52 than the desktop row's 26, whatever the screen, because this list
+   is where a photograph is told apart from the five beside it, and 26px of a
+   landscape is a smear; and no more than a tap target, so a folder of a
+   hundred rows is still a list rather than a wall. */
+const PICKER_THUMB = 44
+
 /* Choosing what to send, starting from the folder the browser is standing in.
 
    The vault's own listing, walked a level at a time with a tick per row: a
@@ -794,6 +807,11 @@ function VaultPicker({ path, vault, source, mode, onMode, initial, zIndex, onBac
   }))
   const files = (listing?.files || []).map(fileItem)
   const rows = [...folders, ...files]
+  /* Which rows have a picture to draw, straight from the listing, so no row
+     asks for a thumbnail it will not get. A folder of photographs is the
+     usual thing to send, and its file names — camera serials, mostly — say
+     nothing about which ones. */
+  const thumbs = new Set(listing?.thumbs || [])
 
   /* A row is covered when it, or a folder above it, is ticked: a file inside
      a ticked folder is going already, and ticking it again would only be a
@@ -858,8 +876,20 @@ function VaultPicker({ path, vault, source, mode, onMode, initial, zIndex, onBac
                       aria-label={`Select ${item.name}`}
                       title={inherited ? 'Already going, inside a folder that is ticked' : undefined}
                     />
-                    <span style={{ fontSize: '13px', width: '16px', textAlign: 'center' }}>
-                      {item.kind === 'folder' ? '📁' : '📄'}
+                    {/* A file with a stored thumbnail is drawn as it; a folder,
+                        and a file with none, keeps the glyph for what it is.
+                        The width is fixed either way so the names line up
+                        down a mixed list. */}
+                    <span style={{
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      width: `${PICKER_THUMB}px`, flexShrink: 0,
+                    }}>
+                      <Thumb
+                        id={item.id}
+                        icon={item.kind === 'folder' ? '📁' : fileIcon(item.mime, item.name)}
+                        size={PICKER_THUMB}
+                        expected={item.kind === 'file' && thumbs.has(item.id)}
+                      />
                     </span>
                     {/* A folder's name opens it, so a file deep inside can be
                         picked on its own; the tick beside it takes the whole

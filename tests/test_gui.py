@@ -4194,4 +4194,67 @@ class TestMovingFilesWithAMachine:
         app.keyboard.press("Escape")
         expect(dialog).to_have_count(0)
         expect(preview).to_be_visible()
+
+    def stub_machine(self, page, name="stub-box"):
+        """A machine to send to, without an sshd behind it.
+
+        The picker that chooses what leaves the vault only opens once a machine
+        has been chosen, and it never talks to the machine itself — what it
+        lists is the vault's own folder. So the four requests that name a
+        machine are answered here with one that has nothing in it, and
+        everything the picker actually draws still comes from the real server.
+        """
+        source = {"id": "stub", "name": name, "host": "box.example",
+                  "port": 22, "user": "sand", "root": "/srv/media"}
+        page.route("**/api/remote", lambda route: route.fulfill(json={"sources": [source]}))
+        page.route("**/api/remote/stub/files*",
+                   lambda route: route.fulfill(json={"entries": [], "at_root": True, "parent": ""}))
+        page.route("**/api/remote/stub/import", lambda route: route.fulfill(json={"imports": []}))
+        page.route("**/api/remote/stub/export", lambda route: route.fulfill(json={"exports": []}))
+
+    def test_the_picker_draws_the_picture_a_file_has(self, app, tmp_path):
+        """A folder of photographs is the usual thing to send, and its file
+        names say nothing about which ones — so a row whose file has a stored
+        thumbnail is drawn with it, and one whose file has none keeps its icon."""
+        make_folder(app, "outbound-pictures")
+        app.get_by_text("outbound-pictures").first.click()
+        app.wait_for_load_state("networkidle")
+
+        photo = tmp_path / "outbound-photo.png"
+        photo.write_bytes(png_bytes(120, 80, (40, 160, 90)))
+        upload_and_settle(app, photo)
+        note = tmp_path / "outbound-note.txt"
+        note.write_bytes(b"where the photo was taken\n")
+        upload_and_settle(app, note)
+
+        self.stub_machine(app)
+        app.get_by_role("button", name="⇅ Machine").click()
+        dialog = app.get_by_role("dialog", name="A machine you have a login on")
+        dialog.wait_for(timeout=20000)
+        dialog.get_by_role("button", name=re.compile("SEND OUT")).click()
+        dialog.get_by_role("button", name="Send here").click()
+
+        picker = app.get_by_role("dialog", name="stub-box")
+        picker.wait_for(timeout=20000)
+        expect(picker.get_by_text("What to send from /outbound-pictures", exact=False)).to_be_visible()
+
+        def row(name):
+            return picker.get_by_role("checkbox", name=f"Select {name}").locator("xpath=..")
+
+        # The photograph's row carries its own thumbnail, served by the vault,
+        # and it is a picture that actually decoded rather than a broken image
+        # the row would have fallen back from.
+        picture = row("outbound-photo.png").locator("img")
+        expect(picture).to_have_count(1, timeout=20000)
+        expect(picture).to_have_attribute("src", re.compile(r"^/api/files/[^/]+/thumb$"))
+        expect(picture).to_have_js_property("complete", True)
+        assert picture.evaluate("el => el.naturalWidth") > 0
+
+        # The note has nothing to draw, so it keeps the icon for what it is.
+        expect(row("outbound-note.txt").locator("img")).to_have_count(0)
+        expect(row("outbound-note.txt")).to_contain_text("📄")
+
+        # And it is still the picker it was: ticking the photograph picks it.
+        row("outbound-photo.png").get_by_role("checkbox").click()
+        expect(picker.get_by_text("Picked: /outbound-pictures/outbound-photo.png")).to_be_visible()
         app.keyboard.press("Escape")
