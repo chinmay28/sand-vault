@@ -574,6 +574,9 @@ export default function App() {
           hasThumb={preview.hasThumb}
           film={preview.film}
           gallery={preview.gallery || []}
+          /* Sending the file to a machine names it by its path, and a path is
+             only a file inside the vault it was listed from. */
+          vault={nav.vault}
           onClose={() => setPreview(null)}
           /* The viewer closed on a different image than it opened on, so that
              image is what the dialog is now about. */

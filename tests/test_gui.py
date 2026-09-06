@@ -4149,3 +4149,49 @@ class TestMovingFilesWithAMachine:
         expect(dialog.get_by_text("Send files from /outbound", exact=False)).to_be_visible()
         expect(dialog.get_by_role("button", name=re.compile("SEND OUT"))).to_have_attribute("aria-pressed", "true")
         app.keyboard.press("Escape")
+
+    def test_a_file_menu_opens_the_dialog_ready_to_send(self, app, tmp_path):
+        """A single file has the same door a folder does, one row under
+        Download — the same thing aimed at a machine instead of this browser."""
+        source = tmp_path / "outgoing.txt"
+        source.write_text("leaves whole")
+        upload_and_settle(app, source)
+
+        app.locator('button[aria-label="Actions for outgoing.txt"]').click()
+        sheet = app.get_by_role("dialog", name="outgoing.txt")
+        sheet.wait_for(timeout=20000)
+        # The direction that writes plaintext says so on the entry itself.
+        expect(sheet.get_by_text("in the clear", exact=False)).to_be_visible()
+        sheet.get_by_text("Send to a machine", exact=True).click()
+
+        dialog = app.get_by_role("dialog", name="A machine you have a login on")
+        dialog.wait_for(timeout=20000)
+        expect(dialog.get_by_text("Send files from the vault", exact=False)).to_be_visible()
+        expect(dialog.get_by_role("button", name=re.compile("SEND OUT"))).to_have_attribute("aria-pressed", "true")
+        app.keyboard.press("Escape")
+        expect(dialog).to_have_count(0)
+
+    def test_the_preview_offers_the_send_beside_download(self, app, tmp_path):
+        """The file on screen can be sent from where it is being looked at, and
+        the dialog that does it stands over the preview rather than in place
+        of it: closing the one leaves the other."""
+        body = "the file on screen, sent on\n"
+        source = tmp_path / "onscreen.txt"
+        source.write_text(body)
+        upload_and_settle(app, source)
+
+        app.locator('button[title="Open"]').first.click()
+        app.wait_for_selector(f"text={body.strip()}", timeout=60000)
+        preview = app.get_by_role("dialog", name="onscreen.txt")
+        preview.get_by_role("button", name=re.compile("Send to a machine")).click()
+
+        dialog = app.get_by_role("dialog", name="A machine you have a login on")
+        dialog.wait_for(timeout=20000)
+        expect(dialog.get_by_text("Send files from the vault", exact=False)).to_be_visible()
+        expect(dialog.get_by_role("button", name=re.compile("SEND OUT"))).to_have_attribute("aria-pressed", "true")
+
+        # Escape closes the dialog on top and only that one.
+        app.keyboard.press("Escape")
+        expect(dialog).to_have_count(0)
+        expect(preview).to_be_visible()
+        app.keyboard.press("Escape")

@@ -43,11 +43,34 @@ import SshKeyField from './SshKeyField'
    tab. Restarting SAND still ends it, and the answer to that is the answer to
    everything else in this file — run the same transfer again. */
 
+/* One file of the vault, as the export half of this dialog wants it: what to
+   call it, where it is, how big it is, and whether it is still in the format
+   the export cannot read. The vault's listing and a file's own menu both start
+   from an index entry, and this is the one place either turns it into an item,
+   so a file sent from its row is exactly the file the picker would have ticked.
+
+   `dir` is the folder the entry answers from, always normalised by the server;
+   an entry without one is taken to be at the root rather than nowhere. */
+export function fileItem(file) {
+  const dir = file.dir || '/'
+  return {
+    kind: 'file',
+    name: file.name,
+    path: dir === '/' ? `/${file.name}` : `${dir}/${file.name}`,
+    size: file.size,
+    legacy: !file.chunk_count,
+  }
+}
+
 /* `mode` is which way the bytes go: 'import' brings the machine's files into
    `path`, 'export' sends what is picked from the vault out. `preset` is a
-   selection already made — the folder whose menu opened this — so the export
-   skips straight to choosing where on the machine it lands. */
-export function MachineTransfer({ path, vault = '', mode: initialMode = 'import', preset = null, onClose, onChanged }) {
+   selection already made — the folder or the file whose menu opened this — so
+   the export skips straight to choosing where on the machine it lands.
+   `zIndex` is for when that menu was itself inside a dialog: the file's
+   preview opens this over itself, and it has to sit above what opened it. */
+export function MachineTransfer({
+  path, vault = '', mode: initialMode = 'import', preset = null, zIndex, onClose, onChanged,
+}) {
   const [mode, setMode] = useState(initialMode)
   const [sources, setSources] = useState(null)
   const [picked, setPicked] = useState(null)
@@ -88,6 +111,7 @@ export function MachineTransfer({ path, vault = '', mode: initialMode = 'import'
         path={path}
         vault={vault}
         preset={preset}
+        zIndex={zIndex}
         onBack={() => setPicked(null)}
         onClose={onClose}
         onChanged={onChanged}
@@ -101,6 +125,7 @@ export function MachineTransfer({ path, vault = '', mode: initialMode = 'import'
       subtitle={mode === 'import' ? `Bring files into ${here}` : `Send files from ${here}`}
       onClose={onClose}
       width={620}
+      zIndex={zIndex}
     >
       {error && <Banner tone="error">{error}</Banner>}
 
@@ -346,7 +371,7 @@ function ConnectSource({ onCancel, onConnected }) {
    In the import direction the listing is what you pick from; in the export
    direction it is where you are standing, and the button sends the vault's
    selection here. Both draw the same rows. */
-function SourceBrowser({ source, mode, onMode, path, vault, preset, onBack, onClose, onChanged }) {
+function SourceBrowser({ source, mode, onMode, path, vault, preset, zIndex, onBack, onClose, onChanged }) {
   const [cwd, setCwd] = useState('')
   const [listing, setListing] = useState(null)
   const [reload, setReload] = useState(0)
@@ -531,6 +556,7 @@ function SourceBrowser({ source, mode, onMode, path, vault, preset, onBack, onCl
         mode={mode}
         onMode={onMode}
         initial={items}
+        zIndex={zIndex}
         onBack={onBack}
         onClose={onClose}
         onPick={(chosen) => { setItems(chosen); setChoosing(false) }}
@@ -544,6 +570,7 @@ function SourceBrowser({ source, mode, onMode, path, vault, preset, onBack, onCl
       subtitle={exporting ? `${vaultHere} → ${machineHere}` : `${machineHere} → ${vaultHere}`}
       onClose={onClose}
       width={640}
+      zIndex={zIndex}
     >
       {error && <Banner tone="error">{error}</Banner>}
       {summary && <TransferSummary summary={summary} kind={summary.kind} onDismiss={() => setSummary(null)} />}
@@ -732,7 +759,7 @@ function describeItems(items, short = false) {
    walking around, so a selection can be gathered from several folders and
    sent in one go. The shortcut at the top is the case this is usually wanted
    in: the whole folder, as it is, onto the machine. */
-function VaultPicker({ path, vault, source, mode, onMode, initial, onBack, onClose, onPick }) {
+function VaultPicker({ path, vault, source, mode, onMode, initial, zIndex, onBack, onClose, onPick }) {
   const [cwd, setCwd] = useState(path)
   const [listing, setListing] = useState(null)
   const [error, setError] = useState(null)
@@ -765,10 +792,7 @@ function VaultPicker({ path, vault, source, mode, onMode, initial, onBack, onClo
   const folders = (listing?.folders || []).map((name) => ({
     kind: 'folder', name, path: join(cwd, name),
   }))
-  const files = (listing?.files || []).map((file) => ({
-    kind: 'file', name: file.name, path: join(cwd, file.name),
-    size: file.size, legacy: !file.chunk_count,
-  }))
+  const files = (listing?.files || []).map(fileItem)
   const rows = [...folders, ...files]
 
   /* A row is covered when it, or a folder above it, is ticked: a file inside
@@ -783,6 +807,7 @@ function VaultPicker({ path, vault, source, mode, onMode, initial, onBack, onClo
       subtitle={`What to send from ${here}`}
       onClose={onClose}
       width={640}
+      zIndex={zIndex}
     >
       {error && <Banner tone="error">{error}</Banner>}
 
