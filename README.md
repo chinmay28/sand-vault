@@ -150,6 +150,24 @@ Each account also receives `manifest.sand`, an encrypted copy of the index, so
 that losing your vault file is survivable. See
 [Losing the vault file](#losing-the-vault-file).
 
+### The date a file keeps
+
+A file does not become new by being stored somewhere else. **What a file shows
+as modified is the time it had where it came from** — the day the photograph was
+taken, not the afternoon it was uploaded — whether it was dropped on the window,
+put there by `sand files put`, or brought in from a machine. That is the date
+the browser sorts by, the one the WebDAV mount reports, the one a folder zip
+carries, and the one written back onto a machine you send the file out to.
+
+Earlier versions stamped every upload with the moment it landed, so a decade of
+holidays all read as one afternoon. **Choosing those files again is how you put
+them right.** Drop the same folder on the same place, or run the same import
+again: the files already stored are not sent a second time, and the ones filed
+under the wrong date have it corrected in place — an index write, with no byte
+of any file moving and no part on any account touched. The banner says how many
+were corrected. Where the dates already agree, nothing happens at all, so it is
+safe to do as often as you like.
+
 ### Retrieving
 
 ```
@@ -262,6 +280,14 @@ for adding one.
 > your files from seeing the shard store. Each gets its own key, and each
 > connect form offers to generate one — the same reversed paste as above, so
 > what you carry to the server is the public half.
+>
+> Files keep the dates they have on the machine, in both directions: what is
+> brought in is filed under the time it had there, and what is sent out is
+> written with the time the vault holds. Running an import again over files that
+> are already here corrects the dates of any that were imported before that was
+> true, without fetching them — the summary counts those separately from the
+> ones it simply passed over. See
+> [The date a file keeps](#the-date-a-file-keeps).
 >
 > Nothing is removed from either side, and nothing outside the folder you scope
 > the machine to can be seen or written — including through a symlink pointing
@@ -2537,7 +2563,9 @@ one walk, so comparing them costs nothing.
 | DELETE | `/api/providers/{id}` | Disconnect (`?force=1`) |
 | GET | `/api/files?path=` | List a folder |
 | GET | `/api/search?q=` | Find files and folders by name (`&path=` to scope, `&type=file\|folder`, `&limit=`) |
-| POST | `/api/files` | Upload (`files[]`, `path`, `overwrite`, `thumb-N` per file, `rel-N` for the path a file had inside an uploaded folder, `dirs` for the folders of one that hold no file). One request is capped at 2 GiB, and the browser cuts a bigger choice into several |
+| POST | `/api/files` | Upload (`files[]`, `path`, `overwrite`, `thumb-N` per file, `mod-N` for the file's own modified time, `rel-N` for the path a file had inside an uploaded folder, `dirs` for the folders of one that hold no file). One request is capped at 2 GiB, and the browser cuts a bigger choice into several |
+| POST | `/api/files/precheck` | Which files of a choice are already stored here at the same name and size, and which of those are filed under a different modified time — asked before a byte is sent |
+| POST | `/api/files/retime` | Put the modified times of those files back to the ones they have on this machine. No bytes move; the parts are untouched |
 | GET | `/api/files/{id}/content` | Serve at an offset — a range costs the chunks it covers, not the file (`?download=1`) |
 | GET | `/api/conversions` | Files still in the pre-chunking format |
 | POST | `/api/files/{id}/convert` | Move one out of it |

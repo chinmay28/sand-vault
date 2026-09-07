@@ -1084,6 +1084,55 @@ class TestUploadAndPreview:
         assert app.locator('button[title="Where the shards live"]').first.is_visible()
 
 
+class TestFileDates:
+    """A file keeps the date it had on the machine it came from, and choosing
+    the same files again puts right the dates of the ones already stored."""
+
+    @staticmethod
+    def _dated(tmp_path, name, text="a walk in 2019"):
+        source = tmp_path / name
+        source.write_text(text)
+        # Midday local, so that drawing it in local time cannot land the row on
+        # the day before or after — the assertion is on the year either way.
+        taken = time.mktime((2019, 7, 14, 12, 0, 0, 0, 0, -1))
+        os.utime(source, (taken, taken))
+        return source
+
+    def test_an_uploaded_file_keeps_its_own_date(self, app, tmp_path):
+        source = self._dated(tmp_path, "hike-2019.txt")
+
+        upload_and_settle(app, source)
+
+        row = app.locator('button[title="Open"]', has_text="hike-2019.txt").locator("xpath=..")
+        assert "2019" in row.inner_text(), row.inner_text()
+
+    def test_choosing_the_files_again_puts_a_wrong_date_right(self, app, server, unlocked, tmp_path):
+        """The retroactive half, from the browser: the file is already here,
+        stamped with the day it was uploaded, and choosing it again corrects the
+        date without sending a byte."""
+        source = self._dated(tmp_path, "stale-2019.txt")
+
+        # Stored the way every upload used to store it: with no time offered,
+        # so the entry is stamped with the moment it landed.
+        r = unlocked.post(
+            f"{server}/api/files",
+            files=[("files[]", (source.name, source.read_bytes(), "text/plain"))],
+            data={"path": "/", "overwrite": "false"},
+            headers={"Origin": server},
+            timeout=120,
+        )
+        assert r.status_code == 201, r.text
+        assert not r.json()["results"][0]["file"]["modified_at"].startswith("2019")
+
+        # Choosing it again: nothing to upload, so the destination dialog never
+        # opens — what happens instead is the correction, and it says so.
+        app.set_input_files(FILE_INPUT, str(source))
+        app.wait_for_selector("text=/modified time/", timeout=30000)
+
+        row = app.locator('button[title="Open"]', has_text="stale-2019.txt").locator("xpath=..")
+        assert "2019" in row.inner_text(), row.inner_text()
+
+
 class TestPdfPreview:
     """A PDF is drawn into the page by pdf.js rather than handed to the
     browser's own viewer, so the same document with the same controls comes up

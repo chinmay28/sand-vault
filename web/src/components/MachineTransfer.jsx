@@ -1061,10 +1061,11 @@ function TransferProgress({ run, onStop }) {
           fontFamily: FONT.mono, fontSize: '10.5px', color: COLORS.textMuted,
         }}>
           <span>
-            {(at.completed > 0 || at.skipped > 0 || at.failed > 0) && (
+            {(at.completed > 0 || at.skipped > 0 || at.retimed > 0 || at.failed > 0) && (
               <>
                 {at.completed} {exporting ? 'sent' : 'in'}
                 {at.skipped ? `, ${at.skipped} already there` : ''}
+                {at.retimed ? `, ${at.retimed} retimed` : ''}
                 {at.failed ? `, ${at.failed} failed` : ''}
               </>
             )}
@@ -1199,7 +1200,9 @@ function RemoteEntry({ entry, pickable, checked, disabled, onOpen, onToggle }) {
 
    Skipped is reported as loudly as moved, because on a second run it is the
    answer: it says the files are already there rather than that nothing
-   happened. */
+   happened. Retimed is the part of that answer where something did change: the
+   file was already here, and the date it is filed under has been put back to
+   the one it has on the machine. */
 function TransferSummary({ summary, kind, lead = '', onDismiss }) {
   const exporting = kind === 'export'
   const failures = (summary.results || []).filter((r) => r.error)
@@ -1215,6 +1218,7 @@ function TransferSummary({ summary, kind, lead = '', onDismiss }) {
         {lead && `${lead} `}
         {moved || 0} {exporting ? 'sent' : 'brought in'}
         {summary.skipped ? `, ${summary.skipped} already there` : ''}
+        {summary.retimed ? `, ${summary.retimed} already there with the date put right` : ''}
         {summary.failed ? `, ${summary.failed} failed` : ''}.
       </div>
       {inTheWay.slice(0, 5).map((r) => (

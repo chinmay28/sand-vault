@@ -69,9 +69,11 @@ type TransferProgress struct {
 	Size int64 `json:"size"`
 
 	// What has become of the files before this one: carried across, passed
-	// over because they were already there, or failed.
+	// over because they were already there, left where they were with their
+	// modification time put right, or failed.
 	Completed int `json:"completed"`
 	Skipped   int `json:"skipped"`
+	Retimed   int `json:"retimed"`
 	Failed    int `json:"failed"`
 }
 

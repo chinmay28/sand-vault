@@ -13,6 +13,7 @@ import hashlib
 import os
 import shutil
 import subprocess
+import time
 import urllib.parse
 
 import pytest
@@ -23,10 +24,15 @@ import requests
 # Helpers
 # ---------------------------------------------------------------------------
 
-def upload(session, server, name, content, path="/", overwrite=False, accounts=None):
+def upload(session, server, name, content, path="/", overwrite=False, accounts=None, mod=None):
     data = {"path": path, "overwrite": "true" if overwrite else "false"}
     if accounts:
         data["accounts"] = list(accounts)
+    # The file's own modification time, in milliseconds, exactly as a browser
+    # reports it for a chosen file. Named for the file's position, like the
+    # rest of an upload's per-file fields.
+    if mod is not None:
+        data["mod-0"] = str(int(mod * 1000))
     return session.post(
         f"{server}/api/files",
         files=[("files[]", (name, content, "application/octet-stream"))],
@@ -379,6 +385,50 @@ class TestStoreAndRetrieve:
         assert health["recoverable"] is True, "two parts should still be enough"
         assert sum(1 for s in health["shards"] if not s["present"]) == 1
 
+    def test_upload_keeps_the_files_own_modified_time(self, server, unlocked):
+        """A photograph from 2019 is filed under 2019, not under today."""
+        taken = 1563099720  # 2019-07-14 10:22:00 UTC
+        r = upload(unlocked, server, "hike-2019.jpg", os.urandom(1_000), mod=taken)
+        assert r.status_code == 201, r.text
+
+        entry = r.json()["results"][0]["file"]
+        assert entry["modified_at"].startswith("2019-07-14T10:22:00"), entry["modified_at"]
+
+    def test_reuploading_puts_a_wrong_modified_time_right(self, server, unlocked):
+        """The retroactive half: choose the same files again and the times of
+        the ones already stored are corrected, without a byte being sent."""
+        content = os.urandom(1_000)
+        r = upload(unlocked, server, "stale.jpg", content)
+        assert r.status_code == 201, r.text
+        entry = r.json()["results"][0]["file"]
+        assert not entry["modified_at"].startswith("2019"), "stamped with now, as uploads used to be"
+
+        taken = 1563099720  # 2019-07-14 10:22:00 UTC
+        choice = {"path": "/", "files": [
+            {"name": "stale.jpg", "size": len(content), "mod": taken * 1000},
+        ]}
+
+        # The check before a byte is sent: already here, and wrongly dated.
+        r = unlocked.post(f"{server}/api/files/precheck", json=choice,
+                          headers={"Origin": server}, timeout=30)
+        assert r.status_code == 200, r.text
+        assert r.json()["existing"] == [0]
+        assert r.json()["retime"] == [0]
+
+        r = unlocked.post(f"{server}/api/files/retime", json=choice,
+                          headers={"Origin": server}, timeout=30)
+        assert r.status_code == 200, r.text
+        assert r.json()["retimed"] == 1
+
+        stored = [f for f in listing(unlocked, server)["files"] if f["name"] == "stale.jpg"]
+        assert stored[0]["modified_at"].startswith("2019-07-14T10:22:00"), stored[0]
+        assert stored[0]["id"] == entry["id"], "the file itself was never in question"
+
+        # Asked again, there is nothing left to correct.
+        r = unlocked.post(f"{server}/api/files/retime", json=choice,
+                          headers={"Origin": server}, timeout=30)
+        assert r.json()["retimed"] == 0
+
     def test_name_collision_does_not_overwrite(self, server, unlocked):
         upload(unlocked, server, "collide.txt", b"first")
         r = upload(unlocked, server, "collide.txt", b"second")
@@ -701,6 +751,20 @@ class TestCLI:
         out = tmp_path / "restored.bin"
         cli(sand_bin, vault_dir, "get", "/cli-round-trip.bin", "-o", str(out))
         assert out.read_bytes() == payload
+
+    def test_put_keeps_the_files_own_modified_time(self, sand_bin, vault_dir, tmp_path):
+        """A file does not become new by being stored somewhere else."""
+        source = tmp_path / "hike.txt"
+        source.write_text("a walk in 2019")
+        # Midday local, so that printing it in local time cannot land the
+        # listing on the day before or after.
+        taken = time.mktime((2019, 7, 14, 12, 0, 0, 0, 0, -1))
+        os.utime(source, (taken, taken))
+
+        cli(sand_bin, vault_dir, "put", str(source))
+
+        result = cli(sand_bin, vault_dir, "ls")
+        assert "2019-07-14 12:00" in result.stdout, result.stdout
 
     def test_ls_shows_the_scheme_and_where_each_shard_landed(self, sand_bin, vault_dir, tmp_path):
         source = tmp_path / "spread.txt"

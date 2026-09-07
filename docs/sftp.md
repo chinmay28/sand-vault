@@ -220,6 +220,32 @@ different file of the same length.)
 Re-running an import *is* the resume mechanism. No job state, no partial-file
 bookkeeping, correct if the server is killed mid-import.
 
+The same comparison now answers a third question, which is what a re-run does
+about the file's **date**. An imported file keeps the modification time it had
+on the source (`UploadOptions.ModifiedAt`), so `importDecision` has three
+outcomes rather than two:
+
+| On the source | In the vault | What happens |
+|:---|:---|:---|
+| absent, or a different size | — | fetched |
+| touched since the import (`mod > CreatedAt`) | — | fetched: a different file of the same length is the case size alone gets wrong |
+| unchanged, times agree | same time | skipped, silently, as before |
+| unchanged, times disagree | stamped with the import | **retimed**: the entry's time is corrected in place, no bytes move |
+
+The comparison against `CreatedAt` rather than against the entry's own
+`ModifiedAt` is what keeps the safety property: `ModifiedAt` is now the source's
+own time and would agree with itself, so a genuinely changed file would look
+like a stale stamp. `CreatedAt` still answers "when did this arrive here", which
+is the question the guard was always asking.
+
+Retiming is `Vault.Retime`: an index write under the vault lock, persisted once,
+touching nothing on any account. It is counted separately in `ImportSummary`
+(`Retimed`) because it is the one kind of "already there" that changed
+something. The browser upload reaches the same behaviour through
+`POST /api/files/precheck` (which names them) and `POST /api/files/retime`
+(which corrects them) — the precheck stays a question so that it answers the
+same way however many times it is asked.
+
 **The granularity is the whole file, and that is not a detail the UI may
 mumble.** `UploadStream` commits an entry only once the file is spooled,
 scattered and placed, so an interrupted import leaves whole files and nothing

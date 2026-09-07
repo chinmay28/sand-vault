@@ -432,6 +432,7 @@ func (s *Server) Handler() (http.Handler, error) {
 		// the same name and size, asked before a byte of them is sent — the
 		// browser drops those from the upload rather than storing copies.
 		"POST /api/files/precheck": s.handleFilesPrecheck,
+		"POST /api/files/retime":   s.handleFilesRetime,
 		"GET /api/files/{id}":      s.handleFileMeta,
 		"DELETE /api/files/{id}":   s.handleFileDelete,
 		// A batch of files in one index write, and where it has got to while

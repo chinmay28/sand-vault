@@ -142,6 +142,13 @@ export function describeSkips(skipped, total) {
     + `The other ${left === 1 ? 'file is' : `${left} are`} going up.`
 }
 
+/* What was said about the files that were already here but filed under the
+   wrong time — corrected in place, since the bytes were never in question. */
+export function describeRetimes(retimed) {
+  if (retimed === 1) return 'One file was already here with the wrong modified time, now put back to its own.'
+  return `${retimed} files were already here with the wrong modified time, now put back to their own.`
+}
+
 /* The total, which is the file bytes: a folder costs nothing of its own. */
 export function totalBytes({ files }) {
   return files.reduce((sum, { file }) => sum + file.size, 0)

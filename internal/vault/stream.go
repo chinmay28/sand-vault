@@ -236,7 +236,14 @@ func (v *Vault) scatterStream(ctx context.Context, scope Scope, name string, src
 func (v *Vault) commitUpload(ctx context.Context, scope Scope, dir, name string, size int64, mime string, placed placement, opts UploadOptions) (*Entry, []string, error) {
 	shards, warnings := placed.shards, placed.warnings
 
+	// Two different questions, and only one of them is about now. CreatedAt is
+	// when the file entered this vault; ModifiedAt is the file's own age, which
+	// the upload keeps when it was given one — see UploadOptions.ModifiedAt.
 	now := time.Now().UTC()
+	modified := now
+	if !opts.ModifiedAt.IsZero() {
+		modified = opts.ModifiedAt.UTC()
+	}
 	entry := &Entry{
 		ID:          uuid.NewString(),
 		Dir:         dir,
@@ -247,7 +254,7 @@ func (v *Vault) commitUpload(ctx context.Context, scope Scope, dir, name string,
 		ArchiveID:   placed.archiveID,
 		KeyID:       placed.keyID,
 		CreatedAt:   now,
-		ModifiedAt:  now,
+		ModifiedAt:  modified,
 		Shards:      shards,
 		ChunkSize:   placed.chunkSize,
 		ChunkCount:  placed.chunkCount,
