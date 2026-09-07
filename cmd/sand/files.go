@@ -251,6 +251,10 @@ func putFile(ctx context.Context, v *vault.Vault, scope vault.Scope, dir, source
 		return fmt.Errorf("reading %s: %w", source, err)
 	}
 
+	// The file keeps its own modification time rather than taking the moment it
+	// was uploaded: it is the same file it was on disk a second ago.
+	opts.ModifiedAt = info.ModTime()
+
 	entry, warnings, err := v.UploadStreamAt(ctx, scope, dir, filepath.Base(source), f, info.Size(), opts)
 	if err != nil {
 		return fmt.Errorf("uploading %s: %w", source, err)

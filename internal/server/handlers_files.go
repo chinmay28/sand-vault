@@ -230,6 +230,10 @@ func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 			Overwrite: overwrite,
 			Accounts:  accounts,
 			Scheme:    scheme,
+			// The file's own age, when the browser said what it is: a
+			// photograph from 2019 is filed under 2019 rather than under the
+			// afternoon it was uploaded.
+			ModifiedAt: formModTime(r, i),
 		})
 		f.Close()
 		result.Warnings = warnings
@@ -278,6 +282,23 @@ type uploadPrecheckFile struct {
 	Name string `json:"name"`
 	Rel  string `json:"rel,omitempty"`
 	Size int64  `json:"size"`
+
+	// Mod is when the file was last modified on the machine it is being sent
+	// from, in milliseconds since the epoch — which is what a browser hands
+	// over for a chosen file, to the millisecond and no finer. Zero is "not
+	// said", and is how a client that knows nothing about times asks the
+	// question it always asked.
+	Mod int64 `json:"mod,omitempty"`
+}
+
+// modTime reads the file's modification time, or the zero time if the client
+// did not say. Milliseconds because that is the unit a browser keeps them in;
+// see uploadPrecheckFile.Mod.
+func (f uploadPrecheckFile) modTime() time.Time {
+	if f.Mod == 0 {
+		return time.Time{}
+	}
+	return time.UnixMilli(f.Mod).UTC()
 }
 
 // handleFilesPrecheck answers which files of a would-be upload are already
@@ -295,6 +316,14 @@ type uploadPrecheckFile struct {
 // whether to send it anyway is not this endpoint's call. Nothing is read from
 // any account and nothing is written anywhere — the answer comes from the
 // index alone, which is what makes it cheap enough to ask before every upload.
+//
+// Of the files that are already here, "retime" names the ones stored under a
+// different modification time from the one they are being offered with —
+// almost always a file uploaded before the time was kept, and so filed under
+// the day it was uploaded. They are still not worth sending; what they are
+// worth is POST /api/files/retime, which puts the time right without moving a
+// byte. Saying which they are rather than fixing them here keeps this a
+// question: it answers the same way however many times it is asked.
 func (s *Server) handleFilesPrecheck(w http.ResponseWriter, r *http.Request) {
 	var req uploadPrecheckRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -317,7 +346,7 @@ func (s *Server) handleFilesPrecheck(w http.ResponseWriter, r *http.Request) {
 	}
 
 	v, _ := s.Vault()
-	sizes, err := v.ExistingSizes(vault.Scope(req.Vault), paths)
+	stored, err := v.ExistingFiles(vault.Scope(req.Vault), paths)
 	if err != nil {
 		vaultErrorResponse(w, err)
 		return
@@ -327,15 +356,116 @@ func (s *Server) handleFilesPrecheck(w http.ResponseWriter, r *http.Request) {
 	// multi-file choice that is unique — the same reason the upload's own
 	// fields are numbered.
 	existing := []int{}
+	retime := []int{}
 	for i, f := range req.Files {
 		if places[i].Err != nil {
 			continue
 		}
-		if size, ok := sizes[vault.JoinPath(places[i].Dir, places[i].Name)]; ok && size == f.Size {
-			existing = append(existing, i)
+		have, ok := stored[vault.JoinPath(places[i].Dir, places[i].Name)]
+		if !ok || have.Size != f.Size {
+			continue
+		}
+		existing = append(existing, i)
+		if worthRetiming(have, f.Size, f.modTime()) {
+			retime = append(retime, i)
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"existing": existing})
+	writeJSON(w, http.StatusOK, map[string]any{"existing": existing, "retime": retime})
+}
+
+// worthRetiming says whether a file already in the vault should take the time
+// the client is offering for it.
+//
+// The size has to match, or it is a different file under the same name. The
+// time has to say something, and something different from what is recorded, or
+// there is nothing to correct. And it has to be *older* than the moment the
+// stored copy was uploaded: a file offered with a newer time is one that
+// changed on the machine since, and stamping the copy here — which is still the
+// old contents, since a file already here is not uploaded again — with the new
+// file's date would be describing one file with another's age. That is the same
+// question, asked the same way, as an import's re-fetch guard; see
+// vault.ImportFromSource.
+func worthRetiming(have vault.StoredFile, size int64, mod time.Time) bool {
+	if have.Size != size {
+		return false
+	}
+	if mod.IsZero() || vault.SameModTime(have.Modified, mod) {
+		return false
+	}
+	return !mod.After(have.Created)
+}
+
+// handleFilesRetime puts the modification times of files already in the vault
+// back to the times they have on the machine they were uploaded from.
+//
+// It is the other half of the precheck. A file that is already here is not
+// worth sending again, but the copy here may be stamped with the day it was
+// uploaded rather than with the file's own age — every upload was, before the
+// time was carried across — and re-uploading the folder to correct that would
+// mean sending every byte of it for the sake of one field. This corrects it
+// instead: the same files, chosen the same way, and the answer is how many
+// entries changed.
+//
+// Each file is resolved to the folder and name the upload would give it, by
+// the same rule the upload and the precheck use, so what is corrected is the
+// entry that file would be stored as. A path naming nothing is ignored, a size
+// that disagrees means it is a different file and is left alone, a time that
+// already agrees changes nothing — so asking twice is asking once — and a time
+// newer than the upload is not a correction at all; see worthRetiming.
+//
+// Nothing is read from or written to any account: a modification time lives in
+// the index, and the parts on the clouds are untouched.
+func (s *Server) handleFilesRetime(w http.ResponseWriter, r *http.Request) {
+	var req uploadPrecheckRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
+		return
+	}
+
+	dir := req.Path
+	if dir == "" {
+		dir = "/"
+	}
+
+	scope := vault.Scope(req.Vault)
+	v, _ := s.Vault()
+
+	// Where each file would land, and then one walk of the index for all of
+	// them — the same two steps, in the same order, as the precheck, so that
+	// what is corrected is exactly what the precheck called correctable.
+	places := make([]uploadPlace, len(req.Files))
+	paths := make([]string, 0, len(req.Files))
+	for i, f := range req.Files {
+		places[i] = placeUpload(dir, f.Rel, f.Name)
+		if places[i].Err == nil {
+			paths = append(paths, vault.JoinPath(places[i].Dir, places[i].Name))
+		}
+	}
+	stored, err := v.ExistingFiles(scope, paths)
+	if err != nil {
+		vaultErrorResponse(w, err)
+		return
+	}
+
+	want := make([]vault.FileTime, 0, len(req.Files))
+	for i, f := range req.Files {
+		if places[i].Err != nil {
+			continue
+		}
+		full := vault.JoinPath(places[i].Dir, places[i].Name)
+		have, ok := stored[full]
+		if !ok || !worthRetiming(have, f.Size, f.modTime()) {
+			continue
+		}
+		want = append(want, vault.FileTime{Path: full, Mod: f.modTime()})
+	}
+
+	retimed, err := v.Retime(scope, want)
+	if err != nil {
+		vaultErrorResponse(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"retimed": retimed})
 }
 
 // formatBytes writes a size the way the rest of SAND does, so a limit named in
@@ -531,6 +661,30 @@ func formRelPath(r *http.Request, index int) string {
 		return ""
 	}
 	return values[0]
+}
+
+// formModTime reads the modification time the browser reported for the nth file
+// of an upload, or the zero time if it reported none.
+//
+// Milliseconds since the epoch, which is what a browser has: File.lastModified
+// is in milliseconds, and a form field is the only way it can travel — a
+// multipart part carries a filename and a content type and nothing about the
+// file it was read from. Named for the file's position for the same reason
+// rel-N and thumb-N are: two files chosen together can share a name.
+//
+// Anything unreadable, negative or absent is no time at all rather than an
+// error: a client that says nothing about times gets what uploads always did,
+// which is the moment the file landed.
+func formModTime(r *http.Request, index int) time.Time {
+	values := r.MultipartForm.Value[fmt.Sprintf("mod-%d", index)]
+	if len(values) == 0 {
+		return time.Time{}
+	}
+	ms, err := strconv.ParseInt(strings.TrimSpace(values[0]), 10, 64)
+	if err != nil || ms <= 0 {
+		return time.Time{}
+	}
+	return time.UnixMilli(ms).UTC()
 }
 
 // formThumb reads the preview image the browser generated for the nth file of

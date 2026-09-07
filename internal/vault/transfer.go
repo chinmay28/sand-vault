@@ -48,6 +48,23 @@ type UploadOptions struct {
 	// tax records do not have to answer that question the same way.
 	Scheme archive.Scheme
 
+	// ModifiedAt is the time the file was last modified where it came from,
+	// kept as the entry's own ModifiedAt instead of the moment it landed here.
+	//
+	// A file does not become new by being stored somewhere else. A photograph
+	// taken in 2019 is a photograph from 2019 in the browser, in the WebDAV
+	// mount, in a folder zip and back on a machine it is exported to — all of
+	// which read Entry.ModifiedAt, and all of which used to read the day the
+	// upload happened, so a decade of holidays sorted as one afternoon.
+	//
+	// The zero value means the caller has no time to offer — a bundle SAND
+	// made itself, a WebDAV client that sent none — and the entry is stamped
+	// with now, which is what every upload did before this field existed.
+	// CreatedAt is always the moment it entered this vault, so "when did this
+	// arrive" is still answerable and is what the resume check leans on; see
+	// ImportFromSource.
+	ModifiedAt time.Time
+
 	// OnScattered, when set, is called as the file's bytes leave for the
 	// accounts, with how many have gone out of how many there are.
 	//

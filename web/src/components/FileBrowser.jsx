@@ -6,8 +6,8 @@ import { ActionSheet, Banner, Button, Empty, Modal, Spinner } from './ui'
 import { UploadDestination, RelocateClouds } from './CloudSelect'
 import { makeThumbnails } from '../thumbs'
 import {
-  batchBytes, batchPicks, describePicks, describeSkips, emptyDirs, picksFromDrop, picksFromInput,
-  totalBytes,
+  batchBytes, batchPicks, describePicks, describeRetimes, describeSkips, emptyDirs,
+  picksFromDrop, picksFromInput, totalBytes,
 } from '../upload'
 import {
   COLUMNS, FILM_COLUMNS, TILE_POSTER, TILE_SQUARE,
@@ -379,14 +379,38 @@ export default function FileBrowser({
        again would not replace it but store a copy beside it under a made-up
        name. Dropped quietly they would look lost, so what was skipped is
        said; and when everything was skipped there is nothing left to choose
-       clouds for, so the destination dialog never opens. */
-    let files = picks.files
+       clouds for, so the destination dialog never opens.
+
+       The ones the vault holds under a different modified time are not just
+       dropped: uploading the folder again is how somebody asks for the times
+       of what is already there to be put right — a file stored before SAND
+       kept them is filed under the day it was uploaded — and that is an index
+       write rather than a transfer. So they are corrected here, and said. */
+    const chosen = picks.files
+    let files = chosen
     try {
-      const existing = new Set(await api.uploadPrecheck(picks.files, path, { vault }))
+      const { existing: found, retime } = await api.uploadPrecheck(chosen, path, { vault })
+      const existing = new Set(found)
       if (existing.size) {
         setWarnings((prev) => [...prev,
-          describeSkips(files.filter((_, i) => existing.has(i)), files.length)])
-        files = files.filter((_, i) => !existing.has(i))
+          describeSkips(chosen.filter((_, i) => existing.has(i)), chosen.length)])
+        files = chosen.filter((_, i) => !existing.has(i))
+      }
+      if (retime.length) {
+        try {
+          const retimed = await api.uploadRetime(retime.map((i) => chosen[i]), path, { vault })
+          if (retimed) {
+            setWarnings((prev) => [...prev, describeRetimes(retimed)])
+            // The dates on screen are the ones just corrected, so the folder
+            // is read again — otherwise the banner says something the list
+            // still contradicts.
+            onRefresh()
+          }
+        } catch {
+          /* Same courtesy as the check itself: the files are here either way,
+             and a time that could not be corrected is not a reason to refuse
+             the upload of the rest. */
+        }
       }
     } catch {
       /* The check is a courtesy, not a gate: if it cannot be asked, the

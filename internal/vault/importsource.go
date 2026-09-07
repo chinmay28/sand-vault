@@ -64,7 +64,12 @@ type ImportResult struct {
 	OK      bool `json:"ok,omitempty"`
 	Skipped bool `json:"skipped,omitempty"`
 
-	// Reason says why a file was skipped, and is empty otherwise.
+	// Retimed says the file was already here and nothing was fetched, but the
+	// copy here was stamped with the day it was imported rather than with the
+	// file's own time, and that has been put right. See Retime.
+	Retimed bool `json:"retimed,omitempty"`
+
+	// Reason says why a file was skipped or retimed, and is empty otherwise.
 	Reason string `json:"reason,omitempty"`
 
 	Error    string   `json:"error,omitempty"`
@@ -89,6 +94,12 @@ type ImportSummary struct {
 	Imported int            `json:"imported"`
 	Skipped  int            `json:"skipped"`
 	Failed   int            `json:"failed"`
+
+	// Retimed counts the files that were already here and had their
+	// modification time corrected to the source's — no bytes moved for any of
+	// them. It is its own count rather than part of Skipped because it is the
+	// one kind of "already there" that changed something.
+	Retimed int `json:"retimed,omitempty"`
 
 	// Omitted counts the lines Results had no room for. The counts above are
 	// whole regardless; this says only that not every failure is listed.
@@ -126,6 +137,16 @@ type importFile struct {
 // The modification time is the guard on the one case a size alone would get
 // wrong: a file replaced on the source by a different file of the same length.
 // A source file newer than the import is fetched again rather than assumed.
+//
+// # Times
+//
+// A file keeps the modification time it had on the source, so a folder of
+// photographs arrives dated when the photographs were taken rather than when
+// the import ran. Files imported before that was true are put right on a
+// re-run: a file already here, the same size, and untouched on the source since
+// it was imported, has its recorded time corrected to the source's if the two
+// disagree — no bytes move, and it is counted as retimed rather than skipped.
+// A file whose times already agree is skipped in silence, as it always was.
 //
 // The granularity is worth being blunt about, because it is what the dialog has
 // to say out loud: **a file resumes, a transfer does not.** Interrupting an
@@ -193,7 +214,8 @@ func (v *Vault) ImportFromSource(ctx context.Context, scope Scope, id string, re
 			File: i + 1, Files: len(files),
 			Path: f.remote, Dest: path.Join(f.dir, f.name), Name: f.name,
 			Size:      f.size,
-			Completed: summary.Imported, Skipped: summary.Skipped, Failed: summary.Failed,
+			Completed: summary.Imported, Skipped: summary.Skipped,
+			Retimed: summary.Retimed, Failed: summary.Failed,
 		}
 		var report func(TransferStage, int64)
 		if req.OnProgress != nil {
@@ -207,6 +229,8 @@ func (v *Vault) ImportFromSource(ctx context.Context, scope Scope, id string, re
 		switch {
 		case result.OK:
 			summary.Imported++
+		case result.Retimed:
+			summary.Retimed++
 		case result.Skipped:
 			summary.Skipped++
 		default:
@@ -234,8 +258,20 @@ func (v *Vault) importOne(ctx context.Context, scope Scope, client *sandsftp.Cli
 	result := ImportResult{Path: f.remote, Dest: path.Join(f.dir, f.name)}
 
 	if !req.Overwrite {
-		if existing, why := v.alreadyImported(scope, f); existing {
+		switch what, why := v.importDecision(scope, f); what {
+		case leaveFile:
 			result.Skipped, result.Reason = true, why
+			return result
+		case retimeFile:
+			// Already here, byte for byte; only the time it is filed under is
+			// wrong. Correcting it is an index write and nothing else — see
+			// Retime — so it costs none of the transfer the file would.
+			dest := path.Join(f.dir, f.name)
+			if _, err := v.Retime(scope, []FileTime{{Path: dest, Mod: f.mod}}); err != nil {
+				result.Error = err.Error()
+				return result
+			}
+			result.Retimed, result.Reason = true, why
 			return result
 		}
 	}
@@ -263,7 +299,12 @@ func (v *Vault) importOne(ctx context.Context, scope Scope, client *sandsftp.Cli
 	// of the scatter, which is why the two stages report separately: the reader
 	// sees the file arrive, and only the upload can see it leave.
 	var src io.Reader = remote
-	opts := UploadOptions{Overwrite: req.Overwrite, Accounts: req.Accounts, Scheme: req.Scheme}
+	// The file keeps the time it has on the machine it came from: it is the
+	// same file, and it did not become new by being fetched.
+	opts := UploadOptions{
+		Overwrite: req.Overwrite, Accounts: req.Accounts, Scheme: req.Scheme,
+		ModifiedAt: f.mod,
+	}
 	if report != nil {
 		src = &progressReader{r: remote, say: func(done int64) { report(StageFetching, done) }}
 		opts.OnScattered = func(done, _ int64) { report(StageScattering, done) }
@@ -280,29 +321,57 @@ func (v *Vault) importOne(ctx context.Context, scope Scope, client *sandsftp.Cli
 	return result
 }
 
-// alreadyImported reports whether this file is in the vault already, and what
-// to say about it. See ImportFromSource for why a size comparison is enough.
-func (v *Vault) alreadyImported(scope Scope, f importFile) (bool, string) {
+// importChoice is what to do about a file the vault may already hold.
+type importChoice int
+
+const (
+	// fetchFile is the file being brought over: it is not here, or what is
+	// here is not it.
+	fetchFile importChoice = iota
+
+	// leaveFile is the file being passed over: the same file is here already,
+	// filed under the same time it has on the source.
+	leaveFile
+
+	// retimeFile is the same file being left where it is with its recorded
+	// modification time put back to the source's. It is what a file imported
+	// before the time was kept looks like on a re-run.
+	retimeFile
+)
+
+// importDecision says what to do about one file of a selection, and what to say
+// about it. See ImportFromSource for why a size comparison is enough to know
+// the file is here, and what the modification time is doing in the answer.
+func (v *Vault) importDecision(scope Scope, f importFile) (importChoice, string) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 
 	m, err := v.manifestForLocked(scope)
 	if err != nil {
-		return false, ""
+		return fetchFile, ""
 	}
 	entry := m.ByPath(path.Join(f.dir, f.name))
 	if entry == nil {
-		return false, ""
+		return fetchFile, ""
 	}
 	if entry.Size != f.size {
-		return false, ""
+		return fetchFile, ""
 	}
-	// Newer on the source than the copy here: a different file that happens to
-	// be the same length, which is the one case a size alone gets wrong.
+	// Touched on the source since it was imported: a different file that
+	// happens to be the same length, which is the one case a size alone gets
+	// wrong. Compared against when the copy here arrived rather than against
+	// the time it carries, because the time it carries is now the source's own
+	// and would agree with itself.
 	if f.mod.After(entry.CreatedAt) {
-		return false, ""
+		return fetchFile, ""
 	}
-	return true, "already imported"
+	// Here already, and unchanged where it came from — so nothing needs
+	// fetching either way, and all that is left is whether the copy here is
+	// filed under the file's own time or under the day it was imported.
+	if f.mod.IsZero() || SameModTime(entry.ModifiedAt, f.mod) {
+		return leaveFile, "already imported"
+	}
+	return retimeFile, "already imported; its modified time was put back to the source's"
 }
 
 // ensureFolder creates a destination folder once, remembering what it has made.

@@ -894,33 +894,52 @@ export const api = {
      destination with the same name and the same size — the ones not worth
      sending, since the server would only store a second copy beside the
      first. Asked before a byte of the choice leaves the machine; answers the
-     positions of those files within `picks`.
+     positions of those files within `picks`, as `existing`, and which of
+     those are stored under a different modified time from the one they carry
+     here, as `retime`.
+
+     `retime` is almost always a file uploaded before SAND kept the time,
+     which is filed under the day it was uploaded rather than under its own
+     age. Those are still not worth sending — uploadRetime puts them right
+     without moving a byte.
 
      Asked a page at a time because the server caps a JSON body well below
      what twenty thousand paths add up to, and one oversized request would
      turn the whole check into an error. */
   async uploadPrecheck(picks, path, { vault = '' } = {}) {
-    const PAGE = 1000
     const existing = []
-    for (let start = 0; start < picks.length; start += PAGE) {
-      const page = picks.slice(start, start + PAGE)
+    const retime = []
+    for (const { start, page } of precheckPages(picks)) {
       const resp = await request('/api/files/precheck', {
         method: 'POST',
-        body: {
-          path,
-          vault,
-          files: page.map(({ file, path: rel }) => ({
-            name: file.name,
-            // Absent for a file picked on its own, the same way upload()
-            // sends it.
-            rel: rel && rel !== file.name ? rel : undefined,
-            size: file.size,
-          })),
-        },
+        body: { path, vault, files: page.map(precheckFile) },
       })
       for (const i of resp.existing || []) existing.push(start + i)
+      for (const i of resp.retime || []) retime.push(start + i)
     }
-    return existing
+    return { existing, retime }
+  },
+
+  /* Puts the stored modified times of files already in the vault back to the
+     times they have on this machine, and answers how many entries changed.
+
+     The other half of the precheck, for the files it named in `retime`: the
+     bytes are already in the vault and only the time they are filed under is
+     wrong, so correcting it is an index write rather than an upload. The
+     server checks name and size again before touching anything, so a file
+     that is not the one stored under that name keeps its own time.
+
+     Paged like the precheck, and for the same reason. */
+  async uploadRetime(picks, path, { vault = '' } = {}) {
+    let retimed = 0
+    for (const { page } of precheckPages(picks)) {
+      const resp = await request('/api/files/retime', {
+        method: 'POST',
+        body: { path, vault, files: page.map(precheckFile) },
+      })
+      retimed += resp.retimed || 0
+    }
+    return retimed
   },
 
   /* Uploads go through XMLHttpRequest rather than fetch so the UI can show
@@ -944,6 +963,11 @@ export const api = {
            and for the same reason — twice over, since a dropped folder is
            where two files sharing a name is ordinary rather than unlucky. */
         if (rel && rel !== file.name) form.append(`rel-${i}`, rel)
+        /* The file's own age, in milliseconds, so the vault files it under
+           when it was written rather than under this afternoon. A multipart
+           part carries no such thing, so it travels as a field of its own,
+           numbered like the rest. */
+        if (file.lastModified) form.append(`mod-${i}`, String(file.lastModified))
         if (thumbs[i]) form.append(`thumb-${i}`, thumbs[i], 'thumb.jpg')
       })
       // The corners of the tree no file would make on the way past.
@@ -985,6 +1009,32 @@ export const api = {
       xhr.send(form)
     })
   },
+}
+
+/* How a choice is described to the two endpoints that answer questions about
+   it without being sent it — the precheck and the retime. The same shape both
+   ways, because they are the same question and its answer. */
+function precheckFile({ file, path: rel }) {
+  return {
+    name: file.name,
+    // Absent for a file picked on its own, the same way upload() sends it.
+    rel: rel && rel !== file.name ? rel : undefined,
+    size: file.size,
+    // Milliseconds, which is all a browser knows about a file's age. Zero
+    // where it knows nothing.
+    mod: file.lastModified || undefined,
+  }
+}
+
+/* A choice, cut into bodies the server will accept, each with the position its
+   first file had in the whole — so an answer about a page can be spoken about
+   the choice. */
+const PRECHECK_PAGE = 1000
+
+function* precheckPages(picks) {
+  for (let start = 0; start < picks.length; start += PRECHECK_PAGE) {
+    yield { start, page: picks.slice(start, start + PRECHECK_PAGE) }
+  }
 }
 
 /* The vault as an extra query parameter, for URLs that already carry one.

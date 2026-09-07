@@ -2414,7 +2414,9 @@ reveals only whether a vault exists.
 | DELETE | `/api/providers/{id}` | Disconnect (`?force=1` to override the guard) |
 | GET | `/api/files?path=` | List a folder (`&vault=` for a sub vault; absent is the main one) |
 | GET | `/api/search?q=` | Find files and folders by name (`&path=` scopes to a subtree, `&vault=`, `&type=file\|folder`, `&limit=`) |
-| POST | `/api/files` | Upload (multipart `files[]`, `path`, `overwrite`, `accounts`). A whole folder goes up as its files, each with the path it had inside it under `rel-N`, plus `dirs` for the folders holding no file; the tree is rebuilt under `path` and every segment is checked as a typed name is. One request is capped at `MaxUploadSize` (2 GiB), and the browser sends a bigger choice as several (§9.2.1) |
+| POST | `/api/files` | Upload (multipart `files[]`, `path`, `overwrite`, `accounts`). A whole folder goes up as its files, each with the path it had inside it under `rel-N`, plus `dirs` for the folders holding no file; the tree is rebuilt under `path` and every segment is checked as a typed name is. `mod-N` carries a file's own modification time (milliseconds, as a browser reports it) so the entry is filed under the file's age rather than the upload's. One request is capped at `MaxUploadSize` (2 GiB), and the browser sends a bigger choice as several (§9.2.1) |
+| POST | `/api/files/precheck` | Which files of a choice the vault already holds at the same name and size (`existing`), and which of those are stored under a different modification time (`retime`). Index only — nothing is read from an account, and nothing is written |
+| POST | `/api/files/retime` | Correct the stored modification times of those files to the ones they carry, and say how many entries changed. Name and size are checked again first, so a different file under the same name keeps its own time. An index write; the parts are untouched |
 | GET | `/api/files/{id}` | Metadata including part placement |
 | GET | `/api/files/{id}/content` | **Serve at an offset** through `ChunkedReader` (`?download=1` to save) |
 | GET | `/api/conversions` | Files still in the pre-chunking format |

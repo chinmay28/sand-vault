@@ -52,6 +52,15 @@ func stored(v *Vault, paths ...string) []string {
 	return out
 }
 
+// touch sets a source file's modification time, which is the thing every test
+// about times has to say.
+func touch(t *testing.T, path string, at time.Time) {
+	t.Helper()
+	if err := os.Chtimes(path, at, at); err != nil {
+		t.Fatalf("touching %s: %v", path, err)
+	}
+}
+
 func TestImportFiles(t *testing.T) {
 	v, id, root := importFixture(t)
 	seed(t, filepath.Join(root, "notes.txt"), "hello from the vps")
@@ -178,6 +187,128 @@ func TestImportRefetchesAFileThatChanged(t *testing.T) {
 	}
 	if got := read(t, v, "/a.txt"); got != "zzz" {
 		t.Errorf("vault holds %q, want the new contents", got)
+	}
+}
+
+// A file keeps the age it had on the machine it came from, so a folder of
+// photographs arrives dated when they were taken.
+func TestImportKeepsTheSourcesTime(t *testing.T) {
+	v, id, root := importFixture(t)
+	file := filepath.Join(root, "hike.jpg")
+	seed(t, file, "a photograph")
+	taken := time.Date(2019, 7, 14, 10, 22, 0, 0, time.UTC)
+	touch(t, file, taken)
+
+	if _, err := v.ImportFromSource(context.Background(), MainScope, id, ImportRequest{
+		Paths: []string{"hike.jpg"},
+		Dest:  "/",
+	}); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+
+	entry := v.manifest.ByPath("/hike.jpg")
+	if !SameModTime(entry.ModifiedAt, taken) {
+		t.Errorf("stored under %s, want the file's own time %s", entry.ModifiedAt, taken)
+	}
+	// When it arrived here is the other question, and still has today's answer.
+	if time.Since(entry.CreatedAt) > time.Minute {
+		t.Errorf("CreatedAt is %s, want the moment the import ran", entry.CreatedAt)
+	}
+}
+
+// The retroactive half: a file imported before the time was kept is filed under
+// the day it was imported, and running the import again puts it right without
+// fetching a byte of it.
+func TestImportRetimesAFileImportedUnderTheWrongTime(t *testing.T) {
+	v, id, root := importFixture(t)
+	file := filepath.Join(root, "hike.jpg")
+	seed(t, file, "a photograph")
+	taken := time.Date(2019, 7, 14, 10, 22, 0, 0, time.UTC)
+	touch(t, file, taken)
+
+	req := ImportRequest{Paths: []string{"hike.jpg"}, Dest: "/"}
+	if _, err := v.ImportFromSource(context.Background(), MainScope, id, req); err != nil {
+		t.Fatalf("first import: %v", err)
+	}
+	// Stamped the way every import used to stamp: with the moment it landed.
+	entry := v.manifest.ByPath("/hike.jpg")
+	was := entry.ID
+	entry.ModifiedAt = entry.CreatedAt
+
+	again, err := v.ImportFromSource(context.Background(), MainScope, id, req)
+	if err != nil {
+		t.Fatalf("second import: %v", err)
+	}
+	if again.Retimed != 1 || again.Imported != 0 || again.Skipped != 0 || again.Failed != 0 {
+		t.Fatalf("re-running gave %+v, want one file retimed and nothing fetched", again)
+	}
+	if !SameModTime(entry.ModifiedAt, taken) {
+		t.Errorf("the entry says %s, want the source's %s", entry.ModifiedAt, taken)
+	}
+	// Retiming is an index write: the file itself was never in question.
+	if entry.ID != was {
+		t.Errorf("the file was stored again rather than retimed")
+	}
+	if got := read(t, v, "/hike.jpg"); got != "a photograph" {
+		t.Errorf("vault holds %q, want the file's contents", got)
+	}
+	// Counted rather than listed, like every other "already here".
+	if len(again.Results) != 0 {
+		t.Errorf("retimed files were listed: %+v", again.Results)
+	}
+}
+
+// Once the times agree there is nothing left to do, and a third run says so by
+// skipping in silence.
+func TestImportSkipsWhenTheTimesAgree(t *testing.T) {
+	v, id, root := importFixture(t)
+	file := filepath.Join(root, "hike.jpg")
+	seed(t, file, "a photograph")
+	touch(t, file, time.Date(2019, 7, 14, 10, 22, 0, 0, time.UTC))
+
+	req := ImportRequest{Paths: []string{"hike.jpg"}, Dest: "/"}
+	if _, err := v.ImportFromSource(context.Background(), MainScope, id, req); err != nil {
+		t.Fatalf("first import: %v", err)
+	}
+
+	again, err := v.ImportFromSource(context.Background(), MainScope, id, req)
+	if err != nil {
+		t.Fatalf("second import: %v", err)
+	}
+	if again.Skipped != 1 || again.Retimed != 0 || again.Imported != 0 {
+		t.Errorf("re-running gave %+v, want one file skipped and nothing else", again)
+	}
+}
+
+// The safety the time guard was there for in the first place: a file touched on
+// the source since it was imported is fetched again, not quietly retimed.
+func TestImportRefetchesRatherThanRetimingAChangedFile(t *testing.T) {
+	v, id, root := importFixture(t)
+	file := filepath.Join(root, "a.txt")
+	seed(t, file, "aaa")
+	touch(t, file, time.Now().Add(-24*time.Hour))
+
+	req := ImportRequest{Paths: []string{"a.txt"}, Dest: "/", Overwrite: true}
+	if _, err := v.ImportFromSource(context.Background(), MainScope, id, req); err != nil {
+		t.Fatalf("first import: %v", err)
+	}
+
+	// Same length, different contents, and touched since — which is exactly
+	// what a stale recorded time looks like from the outside, and must not be
+	// mistaken for one.
+	seed(t, file, "zzz")
+	touch(t, file, time.Now().Add(time.Hour))
+
+	req.Overwrite = false
+	again, err := v.ImportFromSource(context.Background(), MainScope, id, req)
+	if err != nil {
+		t.Fatalf("second import: %v", err)
+	}
+	if again.Retimed != 0 {
+		t.Fatalf("a changed file was retimed rather than fetched: %+v", again)
+	}
+	if again.Imported != 1 {
+		t.Fatalf("a changed file was not fetched again: %+v", again.Results)
 	}
 }
 
