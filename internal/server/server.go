@@ -473,6 +473,12 @@ func (s *Server) Handler() (http.Handler, error) {
 		// organizer's four tools plan from this answer and then run over the
 		// move, delete and remove-folder endpoints above, one item at a time.
 		"GET /api/folders/survey": s.handleFolderSurvey,
+		// Where everything under a folder would go if it were filed by the
+		// date it was last modified — a flat folder of ten thousand files as
+		// 2026/January and the rest. Read-only like the survey: the browser
+		// makes the folders and moves the files over the endpoints above, one
+		// at a time.
+		"GET /api/folders/date-sort": s.handleFolderDateSort,
 		// What a folder is holding, in the few figures its menu shows before
 		// anything is done to it: the size of everything under it, how many
 		// files and folders that is, and which accounts hold the parts. The

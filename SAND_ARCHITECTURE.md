@@ -839,11 +839,11 @@ cheaper bargain in both directions.
 
 ### 3.13 Organizing a folder: one read, then the writes that already existed
 
-The organizer (`🗂`) does five things to a folder and everything under it —
-flatten it, remove the folders holding nothing, erase every file of a kind,
-select every file of a kind, find the copies of things. All five are the same
-shape: **one read to plan from, then the per-item endpoints the app already
-had.**
+The organizer (`🗂`) does six things to a folder and everything under it —
+flatten it, file it into `2026/January` by each file's modified date, remove the
+folders holding nothing, erase every file of a kind, select every file of a
+kind, find the copies of things. All six are the same shape: **one read to plan
+from, then the per-item endpoints the app already had.**
 
 The read is `Vault.Survey` (`organize.go`), answered by
 `GET /api/folders/survey`. It walks the index once and hands back every file at
@@ -857,10 +857,12 @@ has ever put a file in are in the answer too — `Manifest.AllFolders` includes
 them — since a folder created and never used is precisely what the empty-folder
 tool is looking for.
 
-The fifth takes a read of its own, for a reason given below. Nothing else was
-added on the server. A flatten is a `POST /api/files/{id}/move`
-per file followed by a `DELETE /api/folders` per emptied folder; a purge is a
-`DELETE /api/files/{id}` per match. The loop runs **in the browser, one item at
+Two of the six take a read of their own, each for a reason given below, and
+both are read-only for exactly the same reason the survey is. Nothing that
+writes was added on the server. A flatten is a `POST /api/files/{id}/move`
+per file followed by a `DELETE /api/folders` per emptied folder; a date sort is
+a `POST /api/folders` per date folder, then the same move per file and the same
+removal per emptied folder; a purge is a `DELETE /api/files/{id}` per match. The loop runs **in the browser, one item at
 a time**, which is the same bargain the bulk actions make (§9): a run that
 stalls on the fortieth of two hundred has moved thirty-nine things and can name
 the one that refused, and what did not move is untouched and still there to try
@@ -890,11 +892,59 @@ organizer exists:
   which folders are empty came from a survey taken some milliseconds ago; the
   server's is current, and the server's is the one that decides.
 
-Flattening and pruning move no bytes at all. A file records the folder it is in
-and its parts are named after the file rather than after the folder (§4.1), so
-both are rewrites of the encrypted index — a folder of four hundred films
-flattens as fast as a rename. Deleting is the exception it always was, and every
+Flattening, filing by date and pruning move no bytes at all. A file records the
+folder it is in and its parts are named after the file rather than after the
+folder (§4.1), so all three are rewrites of the encrypted index — a folder of
+four hundred films flattens as fast as a rename. Moving a file does not restamp
+its modified time either, for the same reason converting, rekeying and
+relocating one do not: a file does not become new by being called
+something else or by sitting somewhere else — and a date sort that restamped
+what it moved would destroy the dates it had just read. Deleting is the exception it always was, and every
 delete-shaped tool ends in the same confirmation the delete button uses.
+
+#### Filing by date: a plan the server draws, run the same way
+
+Filing by date is the one organizer tool whose plan is not a rearrangement of
+the survey, so it has a read of its own: `Vault.DateSort` (`datesort.go`),
+answered by `GET /api/folders/date-sort`. It needs three things the survey does
+not carry and that four other tools would never look at — each file's own
+modified time, a calendar, and a simulation of the tree afterwards — and it
+hands back the finished plan: which folders to make, which file goes to which
+and under what name, what that comes to, and which folders the moves would
+leave empty. The browser then runs it over `POST /api/folders`,
+`POST /api/files/{id}/move` and `DELETE /api/folders`, one item at a time, in
+that order, exactly as a flatten runs.
+
+Three decisions are the whole of the contract:
+
+- **A file already in the folder its date names is *settled*, not moved.** That
+  makes the tool idempotent: running it twice does nothing the second time, and
+  a run that stopped on the four hundredth of ten thousand is finished by
+  running it again. Nothing needs to be written down for a partial run to be
+  resumable, which is the same property the relocations rely on (§8.4).
+- **Names are never freed by the moves that vacate them.** Every landing name is
+  checked against what is in the destination now *and* against everything else
+  arriving there, and a name a file is moving out of stays spoken for. So the
+  plan holds whatever order it is run in — including the order a stalled run
+  left the folder in. The price is an occasional needless `(2)` in a re-sort of
+  an already-dated tree, which is cheap against a plan that could fail on its
+  own ordering.
+- **The folder is named in the viewer's clock, not the server's.** Times are
+  stored in UTC, and the browser's MODIFIED column renders them locally, so a
+  file shown as *31 December 23:40* must not be filed under January. The request
+  carries `offset`, the browser's distance from UTC in minutes; one fixed offset
+  is not a time zone, so a summer file planned from a winter browser can land an
+  hour out — visible only for a file modified within an hour of a month's end,
+  and the alternative is shipping `tzdata` in a static binary to move that error
+  from an hour to nothing.
+
+The month is its English name — `2026/January` — rather than a number. The
+folder is written into the vault and read out of a listing by a person, and it
+has to keep meaning the same folder when the vault is opened from a machine set
+to another language.
+
+A file stored with no modified time at all is counted and left where it is,
+never swept into a folder named for a date nobody claimed.
 
 #### Duplicates: three degrees of certainty, one walk
 
@@ -2429,6 +2479,7 @@ reveals only whether a vault exists.
 | DELETE | `/api/files/{id}` | Erase every part, drop the entry |
 | GET | `/api/folders` | Every folder in the vault, root first — the whole tree in one answer, for a destination picker |
 | GET | `/api/folders/survey?path=` | Everything under a folder in one walk of the index: every file with its kind and depth, every folder with what it holds. Read-only — the organizer plans from it and then runs the move/delete endpoints per item (§3.13) |
+| GET | `/api/folders/date-sort?path=&grain=&deep=&offset=` | Where everything under a folder would go filed by the date it was last modified — `grain=month` gives `2026/January`, `grain=year` gives `2026`; `offset` is the viewer's minutes east of UTC. Answers the folders to make, the moves with the name each file lands under, what the sort leaves settled, undated and emptied. Read-only — the browser runs it over `POST /api/folders`, the move and the folder delete, per item (§3.13) |
 | GET | `/api/folders/stats?path=` | What one folder holds, counted rather than listed: files and bytes at or below it, folders under it, what the parts weigh across the accounts, which accounts hold them, how many files are short a shard, and the newest change. What the folder menu draws in its header (§3.13) |
 | GET | `/api/folders/duplicates?path=` | Which files under a folder are copies of each other, three ways from one walk: same SHA-256, same size, or names a copy marker apart. Read-only; what is removed goes through `DELETE /api/files/{id}` (§3.13) |
 | GET | `/api/folders/art?path=` | Which file's thumbnail a folder is drawn with, if any, and every file under it that could be (§3.12) |

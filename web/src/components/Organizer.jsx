@@ -15,9 +15,12 @@ import { FolderRepos } from './FolderRepos'
    folder — the jobs nobody does one row at a time because doing them one row at
    a time is the reason they never get done.
 
-   Five of them tidy the tree as it stands:
+   Six of them tidy the tree as it stands:
 
      · Flatten     — bring every file under this folder up into it.
+     · By date     — file them the other way instead: 2026/January, from each
+                     file's own modified date. The counterpart to flattening,
+                     and the answer to the folder flattening leaves behind.
      · Empty folders — remove the ones holding nothing, however deep.
      · Remove by type — erase every .txt, or every .nfo, under this folder.
      · Select by type — pick them all instead, and use the selection bar.
@@ -25,7 +28,7 @@ import { FolderRepos } from './FolderRepos'
                      names. See Duplicates.jsx.
 
    Two are standing instructions rather than one-off jobs, and that is the whole
-   difference between the halves: the five above happen when you press them, and
+   difference between the halves: the six above happen when you press them, and
    these two keep happening afterwards.
 
      · Look after it — check the parts of every file on a schedule, or the
@@ -36,10 +39,11 @@ import { FolderRepos } from './FolderRepos'
 
    They live together because they answer the same question — "what can I do to
    this folder?" — and splitting them across three buttons on a phone toolbar
-   only meant three places to look. The first five are planned from one read — api.survey for the first four, and the
-   duplicate question's own walk for the last, since hashes are the whole of
-   what it needs and none of the other four wants them per file — and then run
-   over endpoints that already existed: move a file, delete a file, remove a
+   only meant three places to look. Each of the six is planned from one read —
+   api.survey for four of them, and the duplicate and date questions' own walks
+   for the other two, since hashes and calendars are the whole of what those
+   need and none of the four wants either per file — and then run over endpoints
+   that already existed: create a folder, move a file, delete a file, remove a
    folder, one item at a time, from here. That is the same bargain the bulk
    actions make: a run that stalls on the fortieth of two hundred has moved
    thirty-nine things and says so, and there is no new endpoint that could
@@ -78,7 +82,7 @@ export function OrganizerButton({ automation, mobile, onOpen }) {
     <IconButton
       glyph="🗂"
       label="Organize and automate this folder"
-      title={`Flatten it, clear out the empty folders, find the duplicates, act on every file of a kind — or have it looked after on a schedule (${summary})`}
+      title={`Flatten it, file it by date, clear out the empty folders, find the duplicates, act on every file of a kind — or have it looked after on a schedule (${summary})`}
       size={mobile ? 44 : 32}
       onClick={onOpen}
       style={{ fontSize: mobile ? '15px' : '13px', color: tint }}
@@ -91,7 +95,7 @@ export function OrganizerButton({ automation, mobile, onOpen }) {
    everything else in the toolbar asks a question.
 
    The two standing rows go last and carry their own state in the hint, because
-   that is the difference worth drawing: the five above are things you are about
+   that is the difference worth drawing: the six above are things you are about
    to do, and these two are things already happening — or not, which is equally
    worth being told at the moment you are looking for them. */
 export function OrganizerMenu({ path, automation, repoCount = 0, onClose, onPick }) {
@@ -101,7 +105,7 @@ export function OrganizerMenu({ path, automation, repoCount = 0, onClose, onPick
   return (
     <ActionSheet
       title="Organize and automate"
-      subtitle={`Five ways to tidy ${here} and everything under it, each counting what it would do before it does any of it — and two standing instructions that keep going afterwards.`}
+      subtitle={`Six ways to tidy ${here} and everything under it, each counting what it would do before it does any of it — and two standing instructions that keep going afterwards.`}
       onClose={onClose}
       items={[
         {
@@ -110,6 +114,13 @@ export function OrganizerMenu({ path, automation, repoCount = 0, onClose, onPick
           label: 'Flatten into this folder',
           hint: 'Bring every file below up to here, then drop the folders they came from',
           onSelect: () => onPick('flatten'),
+        },
+        {
+          key: 'bydate',
+          glyph: '🗓',
+          label: 'File into folders by date',
+          hint: 'Ten thousand loose files become 2026/January, from the date each was last changed',
+          onSelect: () => onPick('bydate'),
         },
         {
           key: 'prune',
@@ -200,10 +211,11 @@ export function OrganizerTool({ tool, path, vault, onClose, onDone, onSelect }) 
      shared: the same delete confirmation, the same selection bar, the same
      refresh of the listing behind. */
   const dupes = tool === 'dupes'
+  const bydate = tool === 'bydate'
   const standing = tool === 'automate' || tool === 'repos'
 
   useEffect(() => {
-    if (dupes || standing) return undefined
+    if (dupes || bydate || standing) return undefined
     let live = true
     setSurvey(null)
     setError(null)
@@ -211,7 +223,7 @@ export function OrganizerTool({ tool, path, vault, onClose, onDone, onSelect }) 
       .then((resp) => { if (live) setSurvey(resp) })
       .catch((err) => { if (live) setError(err.message) })
     return () => { live = false }
-  }, [path, vault, tool, dupes, standing])
+  }, [path, vault, tool, dupes, bydate, standing])
 
   /* A sweep can rebuild files and a refresh writes a new bundle into this
      folder, so in both cases what is on screen is out of date the moment the
@@ -226,6 +238,15 @@ export function OrganizerTool({ tool, path, vault, onClose, onDone, onSelect }) 
     return (
       <FolderRepos path={path} vault={vault} onClose={onClose} onChanged={onDone} />
     )
+  }
+
+  /* The date sort asks its own question of the index — when was each file last
+     changed, and what would the tree look like once they were filed by it —
+     which is neither a rearrangement of the survey nor worth carrying a time
+     per file in one that four other tools never read. So it takes its own read
+     and draws its own spinner over it, exactly as the duplicate finder does. */
+  if (bydate) {
+    return <ByDate path={path} vault={vault} onClose={onClose} onDone={onDone} />
   }
 
   if (dupes) {
@@ -259,6 +280,7 @@ export function OrganizerTool({ tool, path, vault, onClose, onDone, onSelect }) 
 
 const TITLES = {
   flatten: 'Flatten this folder',
+  bydate: 'File into folders by date',
   prune: 'Remove empty folders',
   purge: 'Remove files by type',
   pick: 'Select files by type',
@@ -373,7 +395,19 @@ function Flatten({ survey, vault, onClose, onDone }) {
             </Button>
           </div>
 
-          {showing && <Moves moves={moves} folders={prune ? survey.folders.length : 0} />}
+          {showing && (
+            <Moves
+              rows={moves.map((m) => ({ key: m.id, from: m.name, to: m.to, lit: m.to !== m.file }))}
+              note={(
+                <>
+                  Every name is against the folder as it will be, so nothing here lands on anything
+                  else here. A lit name is one the flatten had to change.
+                  {prune && survey.folders.length > 0
+                    && ` Then ${survey.folders.length} folder${survey.folders.length === 1 ? '' : 's'} go, deepest first.`}
+                </>
+              )}
+            />
+          )}
 
           <Actions>
             <Button variant="primary" onClick={() => setStarted(items)}>
@@ -452,24 +486,25 @@ function sample(moves) {
    than one that showed none of it. */
 const MOVES_SHOWN = 300
 
-/* The plan itself: where each file is now, and what it will be called when it
-   gets here.
+/* The plan itself: where each file is now, and where it is going.
 
    Both halves are needed and neither is enough. The source path is the only
-   thing that tells three files called IMG_0001.jpg apart, and the new name is
-   the whole question the naming choice above decides — a preview showing only
-   the second column would be a list of names nobody could trace back, and only
-   the first would be the survey again. Names the flatten had to change are lit,
-   so what the collision rule did is legible at a glance rather than by
-   comparing two columns line by line. */
-function Moves({ moves, folders }) {
+   thing that tells three files called IMG_0001.jpg apart, and the second column
+   is the whole question the choices above decide — a preview showing only the
+   destination would be a list of names nobody could trace back, and only the
+   source would be the survey again. A lit row is one the tool had to rename to
+   keep two files from landing on each other.
+
+   Shared by both tools that move files, because a plan is a plan: the flatten
+   shows a name and the date sort shows a folder and a name, and neither of them
+   is worth two scrolling lists that drift apart. */
+function Moves({ rows, note }) {
   // On a phone the two halves stack rather than share the line: a name is the
   // whole point of the row, and half a phone's width truncates most of them —
   // where the title attribute that saves a desk from the same fate is a
   // tooltip nothing can hover over.
   const mobile = useIsMobile()
-  const shown = moves.slice(0, MOVES_SHOWN)
-  const rest = moves.length - shown.length
+  const shown = rows.slice(0, MOVES_SHOWN)
 
   return (
     <>
@@ -477,53 +512,331 @@ function Moves({ moves, folders }) {
         maxHeight: '240px', overflowY: 'auto', marginBottom: '10px',
         border: `1px solid ${COLORS.border}`, borderRadius: '6px', background: COLORS.bg,
       }}>
-        {shown.map((move) => {
-          const renamed = move.to !== move.file
-          return (
-            <div
-              key={move.id}
-              style={{
-                display: 'flex',
-                flexDirection: mobile ? 'column' : 'row',
-                alignItems: mobile ? 'stretch' : 'baseline',
-                gap: mobile ? '2px' : '8px',
-                padding: '7px 11px',
-                borderBottom: `1px solid ${COLORS.border}`,
-                fontFamily: FONT.mono, fontSize: '11.5px',
-              }}
-            >
-              <span style={{
-                flex: mobile ? undefined : '1 1 45%', minWidth: 0, color: COLORS.textDim,
-                overflow: 'hidden', textOverflow: 'ellipsis',
-                whiteSpace: mobile ? 'normal' : 'nowrap',
-                wordBreak: mobile ? 'break-all' : undefined,
-              }} title={move.name}>{move.name}</span>
-              {!mobile && (
-                <span aria-hidden="true" style={{ flexShrink: 0, color: COLORS.textMuted }}>→</span>
-              )}
-              <span style={{
-                flex: mobile ? undefined : '1 1 40%', minWidth: 0,
-                overflow: 'hidden', textOverflow: 'ellipsis',
-                whiteSpace: mobile ? 'normal' : 'nowrap',
-                wordBreak: mobile ? 'break-all' : undefined,
-                color: renamed ? COLORS.accentBright : COLORS.textMuted,
-              }} title={move.to}>{mobile ? `→ ${move.to}` : move.to}</span>
-            </div>
-          )
-        })}
+        {shown.map((row) => (
+          <div
+            key={row.key}
+            style={{
+              display: 'flex',
+              flexDirection: mobile ? 'column' : 'row',
+              alignItems: mobile ? 'stretch' : 'baseline',
+              gap: mobile ? '2px' : '8px',
+              padding: '7px 11px',
+              borderBottom: `1px solid ${COLORS.border}`,
+              fontFamily: FONT.mono, fontSize: '11.5px',
+            }}
+          >
+            <span style={{
+              flex: mobile ? undefined : '1 1 45%', minWidth: 0, color: COLORS.textDim,
+              overflow: 'hidden', textOverflow: 'ellipsis',
+              whiteSpace: mobile ? 'normal' : 'nowrap',
+              wordBreak: mobile ? 'break-all' : undefined,
+            }} title={row.from}>{row.from}</span>
+            {!mobile && (
+              <span aria-hidden="true" style={{ flexShrink: 0, color: COLORS.textMuted }}>→</span>
+            )}
+            <span style={{
+              flex: mobile ? undefined : '1 1 40%', minWidth: 0,
+              overflow: 'hidden', textOverflow: 'ellipsis',
+              whiteSpace: mobile ? 'normal' : 'nowrap',
+              wordBreak: mobile ? 'break-all' : undefined,
+              color: row.lit ? COLORS.accentBright : COLORS.textMuted,
+            }} title={row.to}>{mobile ? `→ ${row.to}` : row.to}</span>
+          </div>
+        ))}
       </div>
       <p style={{
         margin: '0 0 16px', fontFamily: FONT.sans, fontSize: '11px',
         lineHeight: 1.5, color: COLORS.textMuted,
       }}>
-        {rest > 0
-          ? `The first ${MOVES_SHOWN} of ${moves.length}; the other ${rest} move the same way. `
+        {rows.length > shown.length
+          ? `The first ${MOVES_SHOWN} of ${rows.length}; the other ${rows.length - shown.length} move the same way. `
           : ''}
-        Every name is against the folder as it will be, so nothing here lands on anything
-        else here. A lit name is one the flatten had to change.
-        {folders > 0 && ` Then ${folders} folder${folders === 1 ? '' : 's'} go, deepest first.`}
+        {note}
       </p>
     </>
+  )
+}
+
+/* --- By date ---------------------------------------------------------- */
+
+/* The other direction from a flatten: a folder with no shape at all given one.
+
+   A folder that has been collected into rather than curated — a camera roll, a
+   scanner's output, ten years of statements — has one shape and it is flat. Ten
+   thousand rows in a listing is not a folder anybody navigates; it is a folder
+   people search and otherwise avoid. The one division that always applies to
+   such a folder, and the only one that needs nothing said about the files
+   themselves, is when each of them was last written: 2026, or 2026/January.
+
+   Unlike the four tools above it, the plan is the server's answer rather than a
+   reading of the survey — see api.datePlan and vault.DateSort. It needs each
+   file's own modified time, a calendar, and a walk of what the tree looks like
+   afterwards to say which folders it would leave empty, and none of those is a
+   rearrangement of what the survey carries. What comes back is the same kind of
+   plan the flatten builds for itself: where every file goes, what it is called
+   when it gets there, and what that comes to.
+
+   The run is three passes in one, in the only order they work in: make the
+   folders, move the files into them, then remove whatever the moves emptied.
+   Every one of those is an endpoint that already existed, taken one item at a
+   time, so a run that stops halfway has done exactly what it says. Stopping
+   halfway is also survivable in a way a flatten's is not: filing by date is
+   idempotent, because a file already in the folder its date names is settled
+   rather than moved — so pressing it again finishes what was left. */
+function ByDate({ path, vault, onClose, onDone }) {
+  const [grain, setGrain] = useState('month')
+  const [deep, setDeep] = useState(false)
+  const [prune, setPrune] = useState(true)
+  /* Whether the plan is on screen file by file. Off to begin with — the folders
+     below are the answer somebody came for, and ten thousand rows are not — but
+     one click away, because the count is a promise and the rows are the thing
+     itself. */
+  const [showing, setShowing] = useState(false)
+  const [plan, setPlan] = useState(null)
+  const [error, setError] = useState(null)
+  const [started, setStarted] = useState(null)
+
+  /* Asked again whenever either choice changes, because either changes the
+     answer entirely: by year is a different set of folders from by month, and
+     going deep is a different set of files. It is a walk of an index already
+     open — no account is contacted — which is what makes it cheap enough to
+     re-ask on a checkbox. */
+  useEffect(() => {
+    let live = true
+    setPlan(null)
+    setError(null)
+    api.datePlan(path, { grain, deep, vault })
+      .then((resp) => { if (live) setPlan(resp) })
+      .catch((err) => { if (live) setError(err.message) })
+    return () => { live = false }
+  }, [path, vault, grain, deep])
+
+  const emptied = plan?.emptied || []
+  const items = useMemo(() => {
+    if (!plan) return []
+    return [
+      ...plan.folders.filter((f) => !f.exists).map((f) => ({
+        kind: 'mkdir', path: f.path, name: f.label,
+      })),
+      ...plan.moves.map((m) => ({
+        kind: 'file', id: m.id, dir: m.to, to: m.as,
+        name: `${relative(`${m.dir}/${m.name}`, plan.path)} → ${relative(m.to, plan.path)}/${m.as}`,
+      })),
+      ...(prune ? emptied.map((folder) => ({
+        kind: 'folder', path: folder, name: relative(folder, plan.path),
+      })) : []),
+    ]
+  }, [plan, prune, emptied])
+
+  if (started) {
+    return (
+      <Run
+        title="File into folders by date"
+        subtitle={path}
+        items={started}
+        verb="Filing"
+        /* "done" rather than "filed": the run is folders made, files moved and
+           folders removed, and a count of all three is not a count of files. */
+        done="done"
+        vault={vault}
+        base={path}
+        onClose={onClose}
+        onDone={onDone}
+      />
+    )
+  }
+
+  const here = path === '/' ? 'The root of the vault' : path
+  if (error || !plan) {
+    return (
+      <Modal title={TITLES.bydate} subtitle={here} onClose={onClose} width={480}>
+        {error
+          ? <Banner tone="error">{error}</Banner>
+          : <div style={{ padding: '28px', textAlign: 'center' }}><Spinner size={18} /></div>}
+        <Buttons onClose={onClose} />
+      </Modal>
+    )
+  }
+
+  // What the sort is not touching, which is worth a line of its own: it is the
+  // difference between "there was nothing to do" and "there was nothing left".
+  const left = plan.settled + plan.undated
+
+  return (
+    <Modal title={TITLES.bydate} subtitle={here} onClose={onClose} width={480}>
+      <Grain grain={grain} onChange={setGrain} />
+      <Scope deep={deep} onChange={setDeep} />
+
+      {plan.moves.length === 0 ? (
+        <Banner tone="info">{nothingToFile(plan)}</Banner>
+      ) : (
+        <>
+          <Count
+            lines={[
+              [`${plan.moves.length} file${plan.moves.length === 1 ? '' : 's'}`,
+                `${plan.moves.length === 1 ? 'goes' : 'go'} into ${plan.folders.length} folder${plan.folders.length === 1 ? '' : 's'}, ${span(plan)}`],
+              [formatBytes(plan.bytes),
+                'none of which travels — a file records the folder it is in, and its parts stay where they are'],
+              ...(left > 0 ? [[`${left} left`, describeLeft(plan)]] : []),
+            ]}
+          />
+
+          <Calendar folders={plan.folders} />
+
+          {emptied.length > 0 && (
+            <Choice
+              checked={prune}
+              onChange={setPrune}
+              label={`Remove the ${emptied.length} folder${emptied.length === 1 ? '' : 's'} left holding nothing`}
+              hint="The ones the moves above empty, and any that were already empty — nothing is in them to lose either way. One that still holds something is refused rather than taken."
+            />
+          )}
+
+          <div style={{ marginBottom: showing ? '10px' : '16px' }}>
+            <Button size="sm" variant="ghost" onClick={() => setShowing(!showing)}>
+              {showing ? '▾ Hide the moves' : `▸ Show all ${plan.moves.length} move${plan.moves.length === 1 ? '' : 's'}`}
+            </Button>
+          </div>
+
+          {showing && (
+            <Moves
+              rows={plan.moves.map((m) => ({
+                key: m.id,
+                from: relative(`${m.dir}/${m.name}`, plan.path),
+                to: `${relative(m.to, plan.path)}/${m.as}`,
+                lit: m.as !== m.name,
+              }))}
+              note={(
+                <>
+                  Every name is against the folder as it will be, so nothing here lands on
+                  anything else here or on anything already there. A lit name is one the sort
+                  had to change.
+                  {prune && emptied.length > 0
+                    && ` Then ${emptied.length} folder${emptied.length === 1 ? '' : 's'} go, deepest first.`}
+                </>
+              )}
+            />
+          )}
+
+          <Actions>
+            <Button variant="primary" onClick={() => setStarted(items)}>
+              File {plan.moves.length} file{plan.moves.length === 1 ? '' : 's'}
+            </Button>
+            <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          </Actions>
+        </>
+      )}
+
+      {plan.moves.length === 0 && <Buttons onClose={onClose} />}
+    </Modal>
+  )
+}
+
+/* Why there is nothing to do, which is three different sentences and only one
+   of them means the folder is empty. */
+function nothingToFile(plan) {
+  if (plan.settled > 0 && plan.undated === 0) {
+    return `Every file ${plan.deep ? 'under this folder' : 'in this folder'} is already in the folder its date names.`
+  }
+  if (plan.undated > 0 && plan.settled === 0) {
+    return `Nothing here carries a modified date to file it by. ${plan.undated} file${plan.undated === 1 ? ' is' : 's are'} left where ${plan.undated === 1 ? 'it is' : 'they are'}.`
+  }
+  if (plan.settled + plan.undated > 0) {
+    return 'Everything here is either already filed by its date or has no date to file it by.'
+  }
+  return `There are no files ${plan.deep ? 'under this folder' : 'in this folder'}.`
+}
+
+/* What the sort spans, which is the figure that says whether the answer will be
+   two folders or two hundred. */
+function span(plan) {
+  const first = plan.folders[0]
+  const last = plan.folders[plan.folders.length - 1]
+  if (!first) return 'none of them yet'
+  if (first === last) return `all of it ${first.label}`
+  return `${first.label} to ${last.label}`
+}
+
+/* What the sort is not moving, said as one line rather than two counters
+   nobody can tell apart: one half is already right and the other has nothing to
+   go on, and both are left exactly where they are. */
+function describeLeft(plan) {
+  const parts = []
+  if (plan.settled > 0) {
+    parts.push(`${plan.settled} already in the folder ${plan.settled === 1 ? 'its' : 'their'} date names`)
+  }
+  if (plan.undated > 0) {
+    parts.push(`${plan.undated} stored with no modified date at all`)
+  }
+  return `${parts.join(', and ')} — left where they are`
+}
+
+/* A year, or a year and a month. Two buttons rather than a checkbox for the
+   same reason the scope has two: it is a question the whole answer below is
+   drawn against, and the examples on them are half the answer already. */
+function Grain({ grain, onChange }) {
+  const year = new Date().getFullYear()
+  const option = (on, label) => (
+    <button
+      type="button"
+      onClick={() => onChange(on)}
+      aria-pressed={grain === on}
+      style={{
+        flex: 1,
+        minHeight: '38px',
+        padding: '6px 10px',
+        background: grain === on ? COLORS.surfaceRaised : COLORS.bg,
+        border: `1px solid ${grain === on ? COLORS.accent : COLORS.border}`,
+        borderRadius: '6px',
+        color: grain === on ? COLORS.text : COLORS.textDim,
+        fontFamily: FONT.mono,
+        fontSize: '11.5px',
+        cursor: 'pointer',
+      }}
+    >{label}</button>
+  )
+
+  return (
+    <div style={{ display: 'flex', gap: '6px', marginBottom: '8px' }}>
+      {option('month', `${year}/January`)}
+      {option('year', `${year}`)}
+    </div>
+  )
+}
+
+/* Where everything is going, oldest first — which is the answer somebody opened
+   this for, and a far shorter list than the files.
+
+   A folder already there is said so rather than being drawn the same as one
+   about to be made: it is the difference between filing a folder and finishing
+   filing one, and it is what makes pressing this a second time legible. */
+function Calendar({ folders }) {
+  return (
+    <div style={{
+      maxHeight: '210px', overflowY: 'auto', marginBottom: '14px',
+      border: `1px solid ${COLORS.border}`, borderRadius: '6px', background: COLORS.bg,
+    }}>
+      {folders.map((folder) => (
+        <div key={folder.path} style={{
+          display: 'flex', alignItems: 'baseline', gap: '10px',
+          padding: '7px 11px', borderBottom: `1px solid ${COLORS.border}`,
+        }}>
+          <span style={{
+            flex: 1, minWidth: 0, fontFamily: FONT.mono, fontSize: '11.5px',
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            color: COLORS.text,
+          }}>{folder.label}</span>
+          {folder.exists && (
+            <span style={{
+              flexShrink: 0, fontFamily: FONT.sans, fontSize: '10.5px', color: COLORS.textMuted,
+            }}>already there</span>
+          )}
+          <span style={{
+            flexShrink: 0, fontFamily: FONT.mono, fontSize: '11px', color: COLORS.textMuted,
+          }}>{folder.files} · {formatBytes(folder.bytes)}</span>
+        </div>
+      ))}
+    </div>
   )
 }
 
@@ -764,8 +1077,8 @@ function Kind({ kind, chosen, onToggle }) {
 }
 
 /* This folder, or everything under it. Two buttons rather than a checkbox: it
-   is the question the whole dialog is answered against, and the counts on them
-   are half the answer already. */
+   is the question the whole dialog is answered against, and the counts on them,
+   where the tool has them to hand, are half the answer already. */
 function Scope({ deep, here, all, onChange }) {
   const option = (on, label, count) => (
     <button
@@ -784,7 +1097,7 @@ function Scope({ deep, here, all, onChange }) {
         fontSize: '11.5px',
         cursor: 'pointer',
       }}
-    >{label} · {count}</button>
+    >{count === undefined ? label : `${label} · ${count}`}</button>
   )
 
   return (
@@ -806,19 +1119,28 @@ function asItem(file) {
 
 /* --- The run --------------------------------------------------------- */
 
-/* Moving files up and removing folders, one at a time, with somewhere to say
-   how far it has got and what refused.
+/* Making folders, moving files and removing folders, one at a time, with
+   somewhere to say how far it has got and what refused.
 
-   One run for both kinds because a flatten is both: the folders can only go
-   once the files in them have come up, and splitting that into two progress
-   bars would be two dialogs for one decision. */
+   One run for all three kinds because each of these tools is more than one of
+   them and the order is the whole of why they work: a flatten's folders can only
+   go once the files in them have come up, and a date sort's folders have to
+   exist before anything can be moved into them. Splitting that into three
+   progress bars would be three dialogs for one decision.
+
+   A file's destination is its own — `item.dir`, falling back to the folder being
+   organized, which is where everything a flatten moves is going anyway. */
 function Run({ title, subtitle, items, verb, done, vault, base, onClose, onDone }) {
   const run = useRun(items, async (item) => {
+    if (item.kind === 'mkdir') {
+      await api.createFolder(item.path, vault)
+      return null
+    }
     if (item.kind === 'folder') {
       const resp = await api.deleteFolder(item.path, false, vault)
       return resp?.warnings
     }
-    await api.moveFile(item.id, base, item.to)
+    await api.moveFile(item.id, item.dir || base, item.to)
     return null
   }, onDone)
 

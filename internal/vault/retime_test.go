@@ -186,3 +186,30 @@ func TestExistingFilesAnswersSizeAndTime(t *testing.T) {
 		t.Errorf("answered created %s, want %s", have.Created, entry.CreatedAt)
 	}
 }
+
+// A file does not become new by being called something else or by sitting
+// somewhere else, which is the same rule the rest of this file is about — and
+// the one that filing a folder by date leans on entirely: a sort that restamped
+// what it moved would file every file under today the second time it ran.
+func TestMovingAFileKeepsTheTimeItCameWith(t *testing.T) {
+	ctx := context.Background()
+	v, _ := newTestVault(t, 3)
+	if err := v.Mkdir(MainScope, "/photos/2019"); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+
+	taken := time.Date(2019, time.July, 4, 11, 30, 0, 0, time.UTC)
+	entry, _, err := v.Upload(ctx, MainScope, "/photos", "hike.jpg", []byte("photo"),
+		UploadOptions{ModifiedAt: taken})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+
+	moved, err := v.Move(ctx, entry.ID, "/photos/2019", "july hike.jpg")
+	if err != nil {
+		t.Fatalf("Move: %v", err)
+	}
+	if !SameModTime(moved.ModifiedAt, taken) {
+		t.Errorf("after moving and renaming the file reads as %v, want %v", moved.ModifiedAt, taken)
+	}
+}

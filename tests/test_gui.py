@@ -10,6 +10,7 @@ Skipped automatically when the frontend has not been built.  If Playwright
 cannot launch its bundled Chromium, set PLAYWRIGHT_CHROMIUM_EXECUTABLE to a
 browser on the machine.
 """
+import datetime
 import os
 import re
 import time
@@ -2213,6 +2214,109 @@ class TestDuplicates:
         app.wait_for_timeout(500)
         rows = app.locator('button[title="Open"]', has_text="twin-")
         expect(rows).to_have_count(1, timeout=20000)
+
+
+class TestFileIntoFoldersByDate:
+    """A flat folder given a shape: 2026/January, from each file's own date.
+
+    The whole of this one is that the browser never sees a folder tree until it
+    makes one, so the round trip is the only thing worth checking — the plan the
+    server draws, the folders the run creates, the files landing in them, and
+    the second press finding nothing left to do. It is also the tool that most
+    depends on a move keeping a file's modified date: a sort that restamped what
+    it moved would file everything under today the second time it ran.
+    """
+
+    def _upload_dated(self, app, tmp_path, name, when):
+        """Upload a file the machine says was last written at a given time.
+
+        The browser sends File.lastModified, which is the file's mtime on disk,
+        so setting that is how a test says "this is a photograph from 2019".
+        """
+        source = tmp_path / name
+        source.write_text(name)
+        stamp = time.mktime(when.timetuple())
+        os.utime(source, (stamp, stamp))
+        upload_and_settle(app, source)
+
+    def test_a_flat_folder_becomes_a_year_and_a_month(self, app, tmp_path):
+        make_folder(app, "roll")
+        app.get_by_text("roll").first.click()
+        app.wait_for_load_state("networkidle")
+
+        self._upload_dated(app, tmp_path, "winter.txt", datetime.datetime(2019, 1, 14, 9, 0))
+        self._upload_dated(app, tmp_path, "summer.txt", datetime.datetime(2019, 7, 4, 9, 0))
+        self._upload_dated(app, tmp_path, "later.txt", datetime.datetime(2021, 3, 2, 9, 0))
+
+        app.locator('button[aria-label="Organize and automate this folder"]').click()
+        app.get_by_role("button", name=re.compile("File into folders by date")).click()
+
+        dialog = app.get_by_role("dialog", name="File into folders by date")
+        dialog.wait_for(timeout=20000)
+
+        # The plan: three files into three folders, oldest first, none of which
+        # is there yet.
+        expect(dialog.get_by_text("3 files", exact=True)).to_be_visible(timeout=20000)
+        for label in ("2019/January", "2019/July", "2021/March"):
+            expect(dialog.get_by_text(label, exact=True)).to_be_visible()
+        expect(dialog.get_by_text("already there")).to_have_count(0)
+
+        dialog.get_by_role("button", name=re.compile(r"^File 3 files")).click()
+        app.wait_for_selector("text=6 done", timeout=60000)
+        app.get_by_role("dialog").get_by_role("button", name="Done").click()
+
+        # The folders are there and the files are not loose any more.
+        app.wait_for_timeout(500)
+        expect(app.get_by_text("2019", exact=True)).to_be_visible(timeout=20000)
+        expect(app.get_by_text("2021", exact=True)).to_be_visible()
+        expect(app.locator('button[title="Open"]', has_text="winter.txt")).to_have_count(0)
+
+        # And the file is where its date says, still readable — which is the
+        # proof the move was an index change and nothing more.
+        app.get_by_text("2019", exact=True).first.click()
+        app.wait_for_load_state("networkidle")
+        app.get_by_text("July", exact=True).first.click()
+        app.wait_for_selector("text=summer.txt", timeout=20000)
+        app.locator('button[title="Open"]').first.click()
+        app.wait_for_selector("text=summer.txt", timeout=60000)
+
+    def test_pressing_it_again_finds_nothing_left_to_do(self, app, tmp_path):
+        """The property the whole tool leans on: filing is idempotent.
+
+        A file already in the folder its date names is settled rather than
+        moved, so a second press has nothing to do — which is also what makes a
+        run that stopped halfway safe to finish by pressing it again. Asked of
+        the same folder both times, reaching under it the second time, because
+        that is where the first press put everything.
+        """
+        make_folder(app, "already-filed")
+        app.get_by_text("already-filed").first.click()
+        app.wait_for_load_state("networkidle")
+        self._upload_dated(app, tmp_path, "one.txt", datetime.datetime(2020, 5, 6, 9, 0))
+
+        app.locator('button[aria-label="Organize and automate this folder"]').click()
+        app.get_by_role("button", name=re.compile("File into folders by date")).click()
+        dialog = app.get_by_role("dialog", name="File into folders by date")
+        dialog.wait_for(timeout=20000)
+        # One folder to make and one file to move into it.
+        dialog.get_by_role("button", name=re.compile(r"^File 1 file")).click()
+        app.wait_for_selector("text=2 done", timeout=60000)
+        app.get_by_role("dialog").get_by_role("button", name="Done").click()
+        app.wait_for_timeout(500)
+
+        # The second press, on the same folder and reaching under it: the file
+        # is already where its date names, so there is nothing to do and no
+        # button to do it with.
+        app.locator('button[aria-label="Organize and automate this folder"]').click()
+        app.get_by_role("button", name=re.compile("File into folders by date")).click()
+        dialog = app.get_by_role("dialog", name="File into folders by date")
+        dialog.wait_for(timeout=20000)
+        dialog.get_by_role("button", name="Everything under it").click()
+        expect(dialog.get_by_text(
+            "Every file under this folder is already in the folder its date names."
+        )).to_be_visible(timeout=20000)
+        expect(dialog.get_by_role("button", name=re.compile(r"^File \d"))).to_have_count(0)
+        dialog.get_by_text("Close", exact=True).click()
 
 
 class TestSearch:

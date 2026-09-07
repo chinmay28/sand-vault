@@ -1453,6 +1453,49 @@ func (s *Server) handleFolderSurvey(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, survey)
 }
 
+// handleFolderDateSort answers where every file under a folder would go if it
+// were filed by the date it was last modified — /2026, or /2026/January.
+//
+// Read-only, like the survey above and for the same reason: the browser runs
+// the plan it gets back over the endpoints that already existed — create a
+// folder, move a file, remove a folder — one item at a time, so a run that
+// stalls has done exactly what its progress said it had.
+//
+// It is a separate answer from the survey rather than a reading of one because
+// it is not a rearrangement of what the survey carries: it needs each file's
+// own modified time, a calendar, and a simulation of the tree afterwards to say
+// which folders it would leave empty. `offset` is the viewer's distance from
+// UTC in minutes, east positive, so that a file the browser shows as the last
+// evening of December is not filed under January. See vault.DateSort.
+func (s *Server) handleFolderDateSort(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	dir := q.Get("path")
+	if dir == "" {
+		dir = "/"
+	}
+
+	opts := vault.DateSortOptions{
+		Grain: vault.DateGrain(q.Get("grain")),
+		Deep:  q.Get("deep") == "1",
+	}
+	if raw := q.Get("offset"); raw != "" {
+		minutes, err := strconv.Atoi(raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "offset from UTC must be a whole number of minutes", "BAD_REQUEST")
+			return
+		}
+		opts.Offset = minutes
+	}
+
+	v, _ := s.Vault()
+	plan, err := v.DateSort(requestScope(r), dir, opts)
+	if err != nil {
+		vaultErrorResponse(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, plan)
+}
+
 // handleFolderStats answers what one folder is holding: how much is under it,
 // in how many files and folders, what those files weigh once split, and which
 // accounts their parts went to.
