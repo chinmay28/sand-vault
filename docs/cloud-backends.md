@@ -124,8 +124,9 @@ Files On-Demand, Dropbox Smart Sync — handing the vault a folder where a part
 written in March is a stub in June under a name nobody stored. See "How iCloud
 Drive handles eviction" below for the shape of the fix.
 
-Still open: **Filen** (which also has an API worth a tier-3 look), **Degoo**,
-and whatever else ships a client but no usable API. Check the service does not
+Still open: **Degoo**, and whatever else ships a client but no usable API.
+**Filen** and **Internxt** were on this list and are now tier-3 backends of
+their own, below, which is the better route: no desktop app on the machine. Check the service does not
 speak WebDAV first — Infomaniak kDrive and Seafile both do, which makes them
 tier-0 presets rather than rows here, and a preset needs no desktop app on the
 machine at all.
@@ -172,6 +173,28 @@ When adding one, the parts that are easy to get wrong are already solved
 elsewhere: copy `box.go` for a provider that rotates refresh tokens, and
 `gdrive.go` for one where the scope must stay narrow enough that SAND can only
 ever see what it created.
+
+**Done: Filen and Internxt Drive** — the two end-to-end encrypted services
+with real free tiers, and the first backends here that have to speak a
+client-side crypto protocol rather than an HTTP API with a token on it.
+Neither publishes an SDK SAND could use (Filen's is Go but pulls in rclone;
+Internxt's adapter needs a BIP-39 library), so `filen.go` and `internxt.go`
+reimplement the client protocol on the standard library, and their tests hold
+every primitive to known answers generated with the official SDKs — key
+derivation, metadata sealing, chunk encryption, name hashing — so a mismatch
+with the real client is a failing test rather than a support ticket.
+
+The shape they share: the password is used once, to sign in and unlock the
+account's keys; what the vault stores is a `session` option carrying the API
+token and the derived keys, so a headless machine keeps working without the
+password and without the deliberately slow derivation on every start. A
+two-factor code is a one-time field, cleared once spent. Overwrites differ:
+Filen keeps one file per hashed name in a folder, so registering the new
+upload replaces the old; Internxt refuses a duplicate name, so the old record
+is renamed aside, the new one written, and the old one erased — or renamed
+back if the write fails. Filen's version 1 sign-in scheme (accounts from its
+first years) is not implemented; changing the account's password in Filen
+moves it to the current scheme.
 
 ---
 

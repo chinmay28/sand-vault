@@ -178,7 +178,7 @@ class TestVaultLifecycle:
         kinds = {s["kind"] for s in specs}
         assert {"local", "s3", "webdav", "gdrive", "dropbox",
                 "onedrive", "box", "icloud", "proton", "mega", "jottacloud",
-                "synccom", "tresorit", "icedrive", "drime"} <= kinds
+                "synccom", "tresorit", "icedrive", "drime", "filen", "internxt"} <= kinds
         for spec in specs:
             assert spec["label"] and spec["description"]
             assert isinstance(spec["fields"], list)
@@ -206,7 +206,7 @@ class TestVaultLifecycle:
 
         assert by_kind["local"].get("oauth") is None
         for kind in ("proton", "icloud", "mega", "jottacloud", "synccom",
-                     "tresorit", "icedrive", "drime"):
+                     "tresorit", "icedrive", "drime", "filen", "internxt"):
             assert by_kind[kind].get("oauth") is None, kind
 
         # The token endpoints and app credentials stay on the server.
@@ -936,7 +936,8 @@ class TestCLI:
         result = cli(sand_bin, vault_dir, "remote", "kinds")
         for kind in ("local", "s3", "webdav", "gdrive", "dropbox",
                      "onedrive", "box", "icloud", "proton", "mega",
-                     "jottacloud", "synccom", "tresorit", "icedrive", "drime"):
+                     "jottacloud", "synccom", "tresorit", "icedrive", "drime",
+                     "filen", "internxt"):
             assert kind in result.stdout
 
 
