@@ -181,6 +181,8 @@ Reads are a race, so a slow or offline account costs you nothing — it just los
 | `s3` | Amazon S3, Cloudflare R2, Backblaze B2, Wasabi, MinIO | Bucket, keys, endpoint for non-AWS |
 | `webdav` | Nextcloud, ownCloud, pCloud, Koofr, Fastmail, anything behind `rclone serve webdav` | URL, username, app password |
 | `drime` | Drime, through its API | An access token from the Drime web app |
+| `filen` | Filen, through its end-to-end encrypted API | Email and password, unlocked on this machine |
+| `internxt` | Internxt Drive, through its end-to-end encrypted API | Email and password, unlocked on this machine |
 | `sftp` | Any machine you have an SSH login on — a VPS, a NAS, rsync.net, a Hetzner Storage Box | Host, username, **a key SAND generates** or your own |
 | `icloud` | iCloud Drive, through the folder macOS or iCloud for Windows syncs | A path |
 | `protoncli` | Proton Drive, through Proton's own client — no desktop app needed | **Sign in** |
@@ -312,6 +314,17 @@ for adding one.
 > accept every part and upload none of them. On a headless box, several of
 > these have an rclone backend that `rclone serve webdav` will put behind a URL
 > you can connect as `webdav` instead.
+
+> **Filen and Internxt Drive** are end-to-end encrypted, and SAND speaks their
+> APIs directly rather than through a synced folder: it signs in with the
+> account's email and password, derives the account's keys on this machine —
+> PBKDF2 or Argon2 for Filen, a recovery phrase unlocked from the password for
+> Internxt — and encrypts every part under a per-file key the way their own
+> clients do, before the part ever leaves. The password is used once; what is
+> kept in the vault is the signed-in session and the derived keys, so an
+> account keeps working headless, without a desktop app, and without the slow
+> derivation on every start. An account with two-factor authentication needs
+> its current code for that first sign-in only.
 
 > **Proton Drive has a second backend**, `protoncli`, that talks to Proton
 > rather than to a folder. It drives `proton-drive`, the command-line client

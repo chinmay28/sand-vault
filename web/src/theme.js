@@ -180,6 +180,8 @@ export const KIND_ICONS = {
   onedrive: '⬡',
   box: '▣',
   drime: '◍',
+  filen: '⬢',
+  internxt: '◭',
   icloud: '◇',
   proton: '◉',
   mega: '⊙',

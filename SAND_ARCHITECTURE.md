@@ -40,7 +40,7 @@ product.
 | Interface | Archive / Restore forms | A file browser with folders and previews |
 | State | None — every run standalone | An encrypted index of what is stored where |
 | Retrieval | Find the right zips, extract, restore | Click the file |
-| Providers | — | Google Drive, OneDrive, Dropbox, Box, Drime, S3-compatible, WebDAV, iCloud Drive, Proton Drive, MEGA, Jottacloud, Sync.com, Tresorit, Icedrive, local disk |
+| Providers | — | Google Drive, OneDrive, Dropbox, Box, Drime, Filen, Internxt Drive, S3-compatible, WebDAV, iCloud Drive, Proton Drive, MEGA, Jottacloud, Sync.com, Tresorit, Icedrive, local disk |
 | Failure handling | Manual | Reads route around an account that is down |
 
 ---
@@ -2090,6 +2090,8 @@ credentials change as they are used.
 | `dropbox` | Dropbox | API v2, OAuth refresh grant |
 | `box` | Box | API 2.0, OAuth with rotating refresh tokens |
 | `drime` | Drime | REST API v1 with a pasted access token, S3-style multipart uploads past 5 MiB |
+| `filen` | Filen | End-to-end encrypted: PBKDF2/Argon2 key derivation, AES-GCM metadata and 1 MiB chunks, all on the stdlib |
+| `internxt` | Internxt Drive | End-to-end encrypted: BIP-39 seed from the recovery phrase, per-file AES-CTR keys, RIPEMD-160 shard hashes |
 | `icloud` | iCloud Drive, via the folder macOS or iCloud for Windows syncs | Filesystem, plus `brctl` for an evicted part |
 | `proton`, `mega`, `jottacloud`, `synccom`, `tresorit`, `icedrive` | Proton Drive, MEGA, Jottacloud, Sync.com, Tresorit, Icedrive — each via the folder its desktop app syncs | Filesystem, atomic writes |
 
