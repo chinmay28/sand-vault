@@ -527,6 +527,22 @@ export const api = {
   survey: (path, vault = '') =>
     request(`/api/folders/survey?path=${encodeURIComponent(path)}${vaultParam(vault)}`),
 
+  /* Where everything under a folder would go if it were filed by the date it
+     was last modified: /2026, or /2026/January. Read-only like the survey, and
+     run the same way — the browser makes the folders it names and moves the
+     files with createFolder and moveFile above, one at a time.
+
+     It is the server's answer rather than a reading of the survey because it is
+     not a rearrangement of one: it needs each file's own modified time, a
+     calendar, and what the tree looks like afterwards to say which folders the
+     sort would leave empty. `offset` is this browser's distance from UTC in
+     minutes, east positive, so a file this page shows as the last evening of
+     December is not filed under January. */
+  datePlan: (path, { grain = 'month', deep = false, offset = -new Date().getTimezoneOffset(), vault = '' } = {}) =>
+    request(`/api/folders/date-sort?path=${encodeURIComponent(path)}`
+      + `&grain=${encodeURIComponent(grain)}${deep ? '&deep=1' : ''}`
+      + `&offset=${offset}${vaultParam(vault)}`),
+
   /* What a folder is holding, in the few figures its menu can show: the size
      of everything at or below it, how many files and folders that is, what the
      parts of those files weigh across the accounts, and which accounts they

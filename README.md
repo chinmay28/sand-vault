@@ -2160,8 +2160,9 @@ pipe the password on stdin.
   one thing in SAND that talks to anyone but your own accounts — see
   [Film details](#film-details)
 - **Organize and automate a folder** — `🗂` beside `🎬` in the toolbar: one
-  menu for everything done to the folder rather than to a row in it. Five tidy
-  the tree as it stands — flatten everything below into this folder, remove the
+  menu for everything done to the folder rather than to a row in it. Six tidy
+  the tree as it stands — flatten everything below into this folder, file
+  everything into `2026/January` by the date it was last changed, remove the
   folders holding nothing, erase every file of a kind, select every file of a
   kind and hand it to the selection bar, or find the copies of things — and each
   counts what it would do before it does any of it. See
@@ -2393,11 +2394,11 @@ those folders, paid where they are listed instead.
 ## Organizing a folder
 
 `🗂` in the toolbar, beside `🎬`, acts on the folder you are standing in and
-everything under it. Five of the seven entries are jobs of the kind nobody does
+everything under it. Six of the eight entries are jobs of the kind nobody does
 one row at a time — which is why they never get done — and the other two are the
 standing instructions in [A folder that looks after
 itself](#a-folder-that-looks-after-itself) and [Keeping copies of git
-repositories](#keeping-copies-of-git-repositories). The five:
+repositories](#keeping-copies-of-git-repositories). The six:
 
 - **Flatten into this folder** — every file below comes up to here, and the
   folders they came from are dropped. Two files called `IMG_0001.jpg` is the
@@ -2409,6 +2410,36 @@ repositories](#keeping-copies-of-git-repositories). The five:
   file as `where it is now → what it will be called` — and it redraws under the
   naming tick, with the names the flatten had to change lit, so what the
   collision rule did is legible without reading two columns line by line.
+- **File into folders by date** — the other direction from a flatten, and the
+  answer to the folder a flatten leaves behind. A folder that has been collected
+  into rather than curated — a camera roll, a scanner's output, ten years of
+  statements — has one shape and it is flat, and ten thousand rows is not a
+  folder anybody navigates. This gives it the one division that always applies
+  and needs nothing said about the files: when each of them was last written.
+
+  ```
+  dir/                            dir/2025/July/
+    IMG_0001.jpg                    IMG_0001.jpg
+    IMG_0002.jpg          →       dir/2026/January/
+    scan-0043.pdf                   IMG_0002.jpg
+    … 9,997 more                    scan-0043.pdf
+  ```
+
+  `2026/January` or, on the other button, `2026` alone. The dates are each
+  file's own — the one it had where it came from, which is what the MODIFIED
+  column shows — read in *your* clock rather than UTC, so a file you see as the
+  last evening of December is not filed under January. **This folder** files
+  what is loose in it and leaves the folders you made alone; **Everything under
+  it** takes the lot, and then offers to remove what the moves emptied.
+
+  It is safe to press twice, which is the property that matters most here: a
+  file already in the folder its date names is *settled* rather than moved, so a
+  second press has nothing to do — and a run that stopped on the four hundredth
+  of ten thousand is finished by pressing it again. Files stored with no
+  modified date at all are counted and left exactly where they are, never swept
+  into a folder named for a date nobody claimed. Names are planned before
+  anything moves, the way a flatten's are: nothing lands on a file already in
+  the destination or on another file arriving there.
 - **Remove empty folders** — every folder under here holding no file *at any
   depth*, so a folder whose only contents are three more empty folders goes
   too. Deepest first, each removed on its own and never recursively: a folder
@@ -2426,23 +2457,24 @@ repositories](#keeping-copies-of-git-repositories). The five:
 - **Find duplicates** — the copies of things, which never show in a listing
   because they are never side by side. See below.
 
-Each of the five counts what it would do before there is a button to do it
+Each of the six counts what it would do before there is a button to do it
 with, because none of them acts on something you picked row by row — the count
 is the whole of what stands between a button and a tree.
 
 Nothing here touches a cloud account except deleting. A file records the folder
 it is in, and its parts are named after the file rather than after the folder,
 so flattening four hundred films is a rewrite of the encrypted index and as
-fast as a rename; removing an empty folder is the same. Deleting is the
-exception and always was.
+fast as a rename; filing ten thousand by date and removing an empty folder are
+the same. Deleting is the exception and always was.
 
-The first four read the folder once — `GET /api/folders/survey` walks the index
-and contacts nothing — and then run over the endpoints that already existed, one
+Each reads the folder once — `GET /api/folders/survey` for four of them and
+`GET /api/folders/date-sort` for the date one, both of which walk the index and
+contact nothing — and then runs over the endpoints that already existed, one
 item at a time, from the browser. So a run that stalls on the fortieth of two
 hundred has moved thirty-nine things and says exactly which one refused; what
 did not move is still where it was, and organizing again picks up precisely
-what is left. There is no flatten endpoint to half-succeed with no way to
-report which half.
+what is left. There is no flatten or sort endpoint to half-succeed with no way
+to report which half.
 
 ### What a folder is holding
 

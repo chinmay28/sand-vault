@@ -2039,7 +2039,14 @@ func (v *Vault) Move(ctx context.Context, id, newDir, newName string) (*Entry, e
 
 	e.Dir = dir
 	e.Name = name
-	e.ModifiedAt = time.Now().UTC()
+	// ModifiedAt is left alone, the way converting, rekeying and relocating a
+	// file leave it alone: a file does not become new by being called something
+	// else or by sitting somewhere else. Stamping it here made the browser's
+	// MODIFIED column, the WebDAV mount, a folder zip and the time written back
+	// onto an exported file all report the moment somebody tidied up — and it
+	// would make filing a folder by date destroy the dates it had just read
+	// (see DateSort), so that sorting the same folder twice put everything
+	// under today.
 
 	err = v.persistLocked()
 	v.mu.Unlock()
