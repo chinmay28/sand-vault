@@ -463,6 +463,18 @@ export const api = {
      rather than after where it sits, so they never move. */
   moveFile: (id, dir, name) =>
     request(`/api/files/${encodeURIComponent(id)}/move`, { method: 'POST', body: { dir, name } }),
+  /* A batch of moves in one request and one index write — what a plan of
+     thousands needs, where moveFile that many times over re-seals the whole
+     index for each one and carries each thumbnail between its two folders'
+     packs on its own, which is quadratic in the size of the folder.
+
+     `moves` is `{ id, dir, name }` a row, the same three fields moveFile
+     takes, and an empty `dir` or `name` leaves that half alone. They are
+     applied in the order given, so a batch means exactly what the same rows
+     would have meant one at a time. The answer says how many moved, which IDs
+     named nothing, and one line per row that could not be applied — so a
+     caller running a plan in pieces always knows which of its rows landed. */
+  moveFiles: (moves) => request('/api/files/move', { method: 'POST', body: { moves } }),
 
   /* Move a file, or a folder and everything under it, onto other clouds.
      Only the parts that are not already on one of the chosen accounts are
@@ -489,6 +501,13 @@ export const api = {
 
   createFolder: (path, vault = '') =>
     request('/api/folders', { method: 'POST', body: { path, vault } }),
+  /* Several folders in one request and one index write, for the same reason
+     moveFiles exists: filing a decade of photographs into months makes a
+     hundred and twenty folders before it moves anything. Missing parents are
+     created along the way, a folder already there is not an error, and either
+     every one of them is there afterwards or none is. */
+  createFolders: (paths, vault = '') =>
+    request('/api/folders', { method: 'POST', body: { paths, vault } }),
   deleteFolder: (path, recursive, vault = '') =>
     request(`/api/folders?path=${encodeURIComponent(path)}${recursive ? '&recursive=1' : ''}${vaultParam(vault)}`,
       { method: 'DELETE' }),
@@ -519,18 +538,18 @@ export const api = {
      below it with what that folder is holding.
 
      This is what the organizer plans from. It reads and nothing else — the
-     tidying itself runs over moveFile, deleteFile and deleteFolder above, one
-     item at a time from here, so a run that stalls halfway has moved exactly
-     what its progress said it had and the rest is untouched. No account is
-     contacted: the index is already open on the server, and this is a walk of
-     it. */
+     tidying itself runs over moveFiles, deleteFile and deleteFolder above, a
+     few hundred moves to a request, so a run that stalls halfway has moved
+     exactly what its progress said it had and the rest is untouched. No
+     account is contacted: the index is already open on the server, and this is
+     a walk of it. */
   survey: (path, vault = '') =>
     request(`/api/folders/survey?path=${encodeURIComponent(path)}${vaultParam(vault)}`),
 
   /* Where everything under a folder would go if it were filed by the date it
      was last modified: /2026, or /2026/January. Read-only like the survey, and
      run the same way — the browser makes the folders it names and moves the
-     files with createFolder and moveFile above, one at a time.
+     files with createFolders and moveFiles above, in batches.
 
      It is the server's answer rather than a reading of the survey because it is
      not a rearrangement of one: it needs each file's own modified time, a
