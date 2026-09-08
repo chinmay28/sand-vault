@@ -186,6 +186,11 @@ func (v *Vault) ExportToSource(ctx context.Context, scope Scope, id string, req 
 				at.Stage, at.Done = stage, done
 				req.OnProgress(at)
 			}
+			// Named before it is decided, not only before it is sent. Asking
+			// the machine whether it already has a file is a round trip, and a
+			// re-export of a folder that is already there is nothing but those
+			// — a run that reported nothing at all until this was said.
+			report(StageChecking, 0)
 		}
 
 		result, sent := v.exportOne(ctx, client, source.Root, f, req, report)

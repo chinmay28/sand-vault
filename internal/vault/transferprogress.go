@@ -41,6 +41,28 @@ const (
 	// StageSending is a file leaving the vault for a machine: gathered from
 	// the clouds, decrypted and written out as it arrives. See ExportToSource.
 	StageSending TransferStage = "sending"
+
+	// StageChecking is a file being looked at rather than moved: deciding
+	// whether the vault already holds it, and putting its recorded
+	// modification time back when that is the only thing wrong with it.
+	//
+	// No bytes move on this leg, so on one file it is over before it can be
+	// drawn. It is named because of the run where it is the *whole* transfer:
+	// re-importing a folder that is already here is thousands of these and
+	// nothing else — one stat per file over SFTP, and an index write per run
+	// of times put right — and without a stage of its own that run reported
+	// nothing at all from beginning to end. See StagePlanning for the same
+	// argument about the walk that comes before it.
+	StageChecking TransferStage = "checking"
+
+	// StagePlanning is before any file: the selection being walked to find out
+	// what is in it.
+	//
+	// It is the one report that names no file, because there is no file yet —
+	// what it carries is Files, the count found so far, which is the only
+	// honest thing to say while a folder of ten thousand is being listed a
+	// directory at a time over a link with a round trip in it.
+	StagePlanning TransferStage = "planning"
 )
 
 // TransferProgress is one file of a transfer, mid-flight.
@@ -50,6 +72,8 @@ const (
 type TransferProgress struct {
 	// File is the file being worked on, 1-based, out of Files. Files is what
 	// the plan holds, so it is the whole selection rather than what is left.
+	// While the selection is still being walked (StagePlanning) there is no
+	// file yet: File is zero and Files is how many the walk has found so far.
 	File  int `json:"file"`
 	Files int `json:"files"`
 

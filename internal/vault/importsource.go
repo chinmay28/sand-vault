@@ -147,6 +147,8 @@ type importFile struct {
 // it was imported, has its recorded time corrected to the source's if the two
 // disagree — no bytes move, and it is counted as retimed rather than skipped.
 // A file whose times already agree is skipped in silence, as it always was.
+// The corrections are gathered and written in runs rather than one at a time,
+// because the index is sealed and written whole; see importRetimes.
 //
 // The granularity is worth being blunt about, because it is what the dialog has
 // to say out loud: **a file resumes, a transfer does not.** Interrupting an
@@ -182,7 +184,18 @@ func (v *Vault) ImportFromSource(ctx context.Context, scope Scope, id string, re
 		return ImportSummary{}, err
 	}
 
-	files, err := planImport(client, source.Root, req.Paths, dest)
+	// The walk, said out loud as it goes. It is one round trip per folder and
+	// it happens before any file has a name, so on a big selection it is a long
+	// silence right where somebody is watching hardest — a count of what has
+	// been found so far is the only thing there is to say, and it is enough to
+	// tell a walk in progress from a hang.
+	var found func(int)
+	if req.OnProgress != nil {
+		found = func(n int) {
+			req.OnProgress(TransferProgress{Stage: StagePlanning, Files: n})
+		}
+	}
+	files, err := planImport(client, source.Root, req.Paths, dest, found)
 	if err != nil {
 		return ImportSummary{}, err
 	}
@@ -190,7 +203,19 @@ func (v *Vault) ImportFromSource(ctx context.Context, scope Scope, id string, re
 	var (
 		summary ImportSummary
 		lines   transferLines[ImportResult]
+		retimes = importRetimes{v: v, scope: scope}
 	)
+
+	// A batch of times that could not be written is not a batch of files that
+	// were retimed: Retime put the entries back as they were, so what was
+	// counted as retimed has to become a failure with a line saying why.
+	settle := func(failed []ImportResult) {
+		for _, result := range failed {
+			summary.Retimed--
+			summary.Failed++
+			lines.add(result)
+		}
+	}
 
 	// Every folder the files hang off, made once each and before anything is
 	// fetched. A folder that will not be made fails every file under it on its
@@ -223,6 +248,12 @@ func (v *Vault) ImportFromSource(ctx context.Context, scope Scope, id string, re
 				at.Stage, at.Done = stage, done
 				req.OnProgress(at)
 			}
+			// Named before it is decided, not only before it is fetched. Asking
+			// whether one file is already here is quick; asking it twenty
+			// thousand times over an SFTP link is not, and until this was said
+			// a re-import — where that is the entire job — reported nothing
+			// from beginning to end and was indistinguishable from a hang.
+			report(StageChecking, 0)
 		}
 
 		result := v.importOne(ctx, scope, client, source, f, req, report)
@@ -231,6 +262,8 @@ func (v *Vault) ImportFromSource(ctx context.Context, scope Scope, id string, re
 			summary.Imported++
 		case result.Retimed:
 			summary.Retimed++
+			retimes.add(FileTime{Path: result.Dest, Mod: f.mod}, result)
+			settle(retimes.flushIfFull())
 		case result.Skipped:
 			summary.Skipped++
 		default:
@@ -247,6 +280,12 @@ func (v *Vault) ImportFromSource(ctx context.Context, scope Scope, id string, re
 			break
 		}
 	}
+
+	// Whatever the last run of times has not landed yet, landing now: a
+	// cancelled import flushes what it gathered before it stopped, for the same
+	// reason it keeps the files that arrived.
+	settle(retimes.flush())
+
 	summary.Results, summary.Omitted = lines.lines, lines.omitted
 	return summary, nil
 }
@@ -264,13 +303,9 @@ func (v *Vault) importOne(ctx context.Context, scope Scope, client *sandsftp.Cli
 			return result
 		case retimeFile:
 			// Already here, byte for byte; only the time it is filed under is
-			// wrong. Correcting it is an index write and nothing else — see
-			// Retime — so it costs none of the transfer the file would.
-			dest := path.Join(f.dir, f.name)
-			if _, err := v.Retime(scope, []FileTime{{Path: dest, Mod: f.mod}}); err != nil {
-				result.Error = err.Error()
-				return result
-			}
+			// wrong. Saying so is all that happens here — the correction itself
+			// is an index write, and the writes are gathered by the caller
+			// rather than made one per file. See importRetimes.
 			result.Retimed, result.Reason = true, why
 			return result
 		}
@@ -410,11 +445,30 @@ func (v *Vault) ensureFolder(scope Scope, dir string, made map[string]bool) erro
 // sftp.MaxEntries because a page has no use for more; a plan cut the same way
 // would leave the files past the cut out of the import with nothing to say
 // they were, so the walk asks for the whole directory — see sftp.ReadDirAll.
-func planImport(client *sandsftp.Client, root string, paths []string, dest string) ([]importFile, error) {
+//
+// found, when set, is told how many files the walk has reached, every
+// planEvery of them and once at the end. It is the only thing a caller can be
+// told during a walk — there is no file being worked on yet — and on a folder
+// of ten thousand it is the difference between a dialog that is thinking and a
+// dialog that has died.
+func planImport(client *sandsftp.Client, root string, paths []string, dest string,
+	found func(int)) ([]importFile, error) {
+
 	var (
 		files []importFile
 		seen  = map[string]bool{}
+		said  int
 	)
+
+	// Said every planEvery files rather than per file, and against what was
+	// last said rather than against the count itself, so a folder full of paths
+	// already reached does not report the same number twice.
+	say := func() {
+		if found != nil && len(files)-said >= planEvery {
+			said = len(files)
+			found(said)
+		}
+	}
 
 	var walk func(rel, destDir string, depth int) error
 	walk = func(rel, destDir string, depth int) error {
@@ -446,6 +500,7 @@ func planImport(client *sandsftp.Client, root string, paths []string, dest strin
 				size:   entry.Size,
 				mod:    entry.ModTime,
 			})
+			say()
 		}
 		return nil
 	}
@@ -481,10 +536,16 @@ func planImport(client *sandsftp.Client, root string, paths []string, dest strin
 			size:   info.Size(),
 			mod:    info.ModTime(),
 		})
+		say()
 	}
 
 	if len(files) == 0 {
 		return nil, fmt.Errorf("nothing to import: the selection holds no files")
+	}
+	// The whole count, whatever the throttle above was holding, so the last
+	// thing said about the walk is what the walk actually found.
+	if found != nil && len(files) != said {
+		found(len(files))
 	}
 	return files, nil
 }
@@ -498,4 +559,91 @@ func addImport(files *[]importFile, seen map[string]bool, f importFile) {
 	}
 	seen[f.remote] = true
 	*files = append(*files, f)
+}
+
+// planEvery is how many files the walk finds before it says so again.
+//
+// The walk is a few words per file and no I/O of its own between directories,
+// so it can find thousands a second on a fast source; a report per file would
+// be a lock and a wake-up per file to move a number nobody reads that closely.
+// A couple of hundred keeps the count visibly moving on a slow walk without
+// making a fast one pay for it.
+const planEvery = 250
+
+// retimeBatchSize is how many times are put back in one index write.
+//
+// A time correction changes nothing but a field on an entry, and the index is
+// sealed and written whole — so the cost of correcting one time and of
+// correcting five hundred is very nearly the same write. Done one file at a
+// time, a re-import of a folder of twenty thousand photographs meant twenty
+// thousand whole-index writes and was, absurdly, far slower than the import
+// that fetched them.
+//
+// Not unbounded, because a batch in hand has not landed: the bigger it is, the
+// more time corrections a kill in the middle throws away. Five hundred is two
+// orders of magnitude off the per-file cost and still a fraction of a second's
+// work to lose.
+const retimeBatchSize = 500
+
+// importRetimes gathers the files an import found already here, and filed under
+// the wrong time, and puts their times back a batch at a time.
+//
+// It is a buffer in front of Retime and nothing else: the files it holds are in
+// the vault, whole, and were in it before this import started. What is pending
+// is the correction of a field on each of them.
+//
+// Losing a pending batch is therefore not losing anything a re-run does not put
+// right — the same bargain the rest of an import makes about being interrupted.
+// A batch that cannot be *written*, though, is a different matter: Retime puts
+// the entries back as they were, so those files were not retimed, and flush
+// hands them back so the summary can say so rather than counting a correction
+// that is not there.
+type importRetimes struct {
+	v     *Vault
+	scope Scope
+
+	want []FileTime
+
+	// held is the result line for each of want, in the same order, kept so a
+	// write that fails can name the files it failed for.
+	held []ImportResult
+}
+
+// add remembers one file whose recorded time should be the source's.
+func (b *importRetimes) add(at FileTime, result ImportResult) {
+	b.want = append(b.want, at)
+	b.held = append(b.held, result)
+}
+
+// flushIfFull writes the batch once it is worth a write, and does nothing
+// before that. It answers as flush does.
+func (b *importRetimes) flushIfFull() []ImportResult {
+	if len(b.want) < retimeBatchSize {
+		return nil
+	}
+	return b.flush()
+}
+
+// flush puts the held times back, and answers with the files whose times did
+// not land — none, unless the index could not be written, in which case it is
+// all of them, each with the error on it. The batch is empty either way: a
+// write that failed will not go better for being tried again with the next
+// five hundred behind it.
+func (b *importRetimes) flush() []ImportResult {
+	if len(b.want) == 0 {
+		return nil
+	}
+	want, held := b.want, b.held
+	b.want, b.held = nil, nil
+
+	if _, err := b.v.Retime(b.scope, want); err != nil {
+		failed := make([]ImportResult, 0, len(held))
+		for _, result := range held {
+			result.Retimed, result.Reason = false, ""
+			result.Error = err.Error()
+			failed = append(failed, result)
+		}
+		return failed
+	}
+	return nil
 }

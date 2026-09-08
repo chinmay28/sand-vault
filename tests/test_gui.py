@@ -4411,3 +4411,61 @@ class TestMovingFilesWithAMachine:
         row("outbound-photo.png").get_by_role("checkbox").click()
         expect(picker.get_by_text("Picked: /outbound-pictures/outbound-photo.png")).to_be_visible()
         app.keyboard.press("Escape")
+
+    def test_a_transfer_that_moves_no_bytes_still_says_where_it_is(self, app):
+        """The run this was written for: a re-import of a folder already in
+        the vault, where every file is checked and some have their date put
+        back, and not one byte moves. The dialog used to sit on "Looking over
+        what was picked…" for the whole of it, which is what a hang looks
+        like. It now names the file, counts it out of the selection, and says
+        what it is doing instead of drawing bytes that are not moving."""
+        run = {
+            "id": "checking-run", "kind": "import", "source": "stub",
+            "dest": "/photos", "started_at": "2026-09-08T09:26:00Z",
+            "detached": True,
+            "at": {
+                "file": 3412, "files": 20000,
+                "path": "media/photos/hike.jpg", "dest": "/photos/hike.jpg",
+                "name": "hike.jpg", "stage": "checking",
+                "done": 0, "size": 4096,
+                "completed": 0, "skipped": 8, "retimed": 3403, "failed": 0,
+            },
+        }
+        # Before that, the walk: no file has a name yet, and how many have been
+        # found is the only thing there is to say.
+        walking = dict(run, at={"file": 0, "files": 12000, "stage": "planning",
+                                "path": "", "dest": "", "name": "", "done": 0, "size": 0,
+                                "completed": 0, "skipped": 0, "retimed": 0, "failed": 0})
+
+        self.stub_machine(app)
+        app.route("**/api/remote/stub/import",
+                  lambda route: route.fulfill(json={"imports": [walking]}))
+
+        app.get_by_role("button", name="⇅ Machine").click()
+        dialog = app.get_by_role("dialog", name="A machine you have a login on")
+        dialog.wait_for(timeout=20000)
+        dialog.get_by_role("button", name="Browse").click()
+
+        machine = app.get_by_role("dialog", name="stub-box")
+        machine.wait_for(timeout=20000)
+        expect(machine.get_by_text("Looking over what was picked", exact=False)).to_be_visible(timeout=20000)
+        expect(machine.get_by_text("12,000 files so far")).to_be_visible()
+
+        # Then the files themselves, one at a time. The dialog polls once a
+        # second while something is running, so the next answer is the next
+        # thing it draws.
+        app.route("**/api/remote/stub/import",
+                  lambda route: route.fulfill(json={"imports": [run]}))
+
+        # Which file, where it has got to in the selection, and what it is
+        # doing there — none of which needs a byte to have moved.
+        expect(machine.get_by_text("hike.jpg", exact=False)).to_be_visible(timeout=20000)
+        expect(machine.get_by_text("3,412 of 20,000")).to_be_visible()
+        expect(machine.get_by_text("putting times back", exact=False)).to_be_visible()
+        # The tally beneath is what the summary would say if it stopped here.
+        expect(machine.get_by_text("3,403 retimed", exact=False)).to_be_visible()
+        # And no bar drawn out of bytes nothing is moving.
+        expect(machine.get_by_text("0 B / 4 KB")).to_have_count(0)
+
+        app.keyboard.press("Escape")
+        expect(machine).to_have_count(0)
