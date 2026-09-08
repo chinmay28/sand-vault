@@ -406,9 +406,20 @@ func TestExportReportsProgress(t *testing.T) {
 	if len(seen) == 0 {
 		t.Fatal("nothing was reported")
 	}
-	// a.txt is already there, so it is passed over in silence; b.txt is the
-	// second of two, with one skipped before it.
+	// a.txt is already on the machine, so it is looked at and nothing more —
+	// but it is still named, because asking the machine what it already has is
+	// a round trip per file and a re-export is nothing else.
+	first := seen[0]
+	if first.Name != "a.txt" || first.File != 1 || first.Stage != StageChecking || first.Done != 0 {
+		t.Errorf("the first report was %+v, want a.txt being looked at", first)
+	}
+
+	// b.txt is the second of two, with one skipped before it, and it is the
+	// only one anything is sent for.
 	for _, at := range seen {
+		if at.Stage == StageChecking {
+			continue
+		}
 		if at.Name != "b.txt" || at.File != 2 || at.Files != 2 || at.Stage != StageSending {
 			t.Errorf("reported %+v", at)
 		}

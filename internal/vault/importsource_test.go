@@ -382,7 +382,7 @@ func TestPlanImportReadsPastTheListingCap(t *testing.T) {
 		t.Fatalf("a folder of %d files was not cut for the browser, so this test proves nothing", files)
 	}
 
-	plan, err := planImport(client, source.Root, []string{"crowded"}, "/")
+	plan, err := planImport(client, source.Root, []string{"crowded"}, "/", nil)
 	if err != nil {
 		t.Fatalf("planImport: %v", err)
 	}
@@ -391,6 +391,53 @@ func TestPlanImportReadsPastTheListingCap(t *testing.T) {
 	}
 	if plan[0].remote != "crowded/f00000" || plan[files-1].remote != fmt.Sprintf("crowded/f%05d", files-1) {
 		t.Errorf("plan runs from %q to %q", plan[0].remote, plan[files-1].remote)
+	}
+}
+
+// The walk says how far it has got, which is the only thing there is to say
+// before any file has a name — and on a folder of ten thousand, listed a
+// directory at a time over a link with a round trip in it, the difference
+// between a dialog that is thinking and one that has died.
+func TestPlanImportReportsWhatItHasFound(t *testing.T) {
+	v, id, root := importFixture(t)
+	const files = 2*planEvery + 5
+	for i := 0; i < files; i++ {
+		seed(t, filepath.Join(root, "crowded", fmt.Sprintf("f%05d", i)), "x")
+	}
+
+	client, source, err := v.connectSource(context.Background(), id)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer client.Close()
+
+	var found []int
+	plan, err := planImport(client, source.Root, []string{"crowded"}, "/",
+		func(n int) { found = append(found, n) })
+	if err != nil {
+		t.Fatalf("planImport: %v", err)
+	}
+	if len(plan) != files {
+		t.Fatalf("planned %d files, want %d", len(plan), files)
+	}
+
+	// Every so many files rather than every file: the walk can find thousands
+	// a second, and a report each would be a wake-up per file to move a number
+	// nobody reads that closely.
+	if len(found) > files/planEvery+1 {
+		t.Errorf("a walk of %d files reported %d times: %v", files, len(found), found)
+	}
+	if len(found) < 2 {
+		t.Fatalf("a walk of %d files reported %v, want it saying so as it went", files, found)
+	}
+	for i := 1; i < len(found); i++ {
+		if found[i] <= found[i-1] {
+			t.Errorf("the count did not climb: %v", found)
+		}
+	}
+	// The last word is the whole count, whatever the throttle was holding.
+	if found[len(found)-1] != files {
+		t.Errorf("the walk finished on %d, want the %d it found", found[len(found)-1], files)
 	}
 }
 
@@ -464,7 +511,7 @@ func TestImportReportsPerFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	files, err := planImport(client, source.Root, []string{"good.txt", "vanishing.txt"}, "/")
+	files, err := planImport(client, source.Root, []string{"good.txt", "vanishing.txt"}, "/", nil)
 	client.Close()
 	if err != nil {
 		t.Fatalf("plan: %v", err)
@@ -548,14 +595,22 @@ func TestImportReportsProgress(t *testing.T) {
 		t.Fatal("an import with a progress callback reported nothing")
 	}
 
-	// A file is announced before a byte of it moves, so what is being worked
-	// on shows up at once rather than once enough of it has arrived.
+	// The walk speaks first, before any file has a name: how many files the
+	// selection holds is all there is to say, and saying nothing at all is
+	// what made a long walk look like a hang.
 	first := seen[0]
-	if first.Stage != StageFetching || first.Done != 0 {
-		t.Errorf("first report was %s at %d bytes, want fetching at 0", first.Stage, first.Done)
+	if first.Stage != StagePlanning || first.Files != 2 || first.Name != "" {
+		t.Errorf("first report was %+v, want the walk having found 2 files", first)
 	}
-	if first.Name != "a.txt" || first.File != 1 || first.Files != 2 {
-		t.Errorf("first report was %+v, want a.txt as 1 of 2", first)
+
+	// Then a file, announced before a byte of it moves, so what is being
+	// worked on shows up at once rather than once enough of it has arrived.
+	second := seen[1]
+	if second.Stage != StageChecking || second.Done != 0 {
+		t.Errorf("second report was %s at %d bytes, want checking at 0", second.Stage, second.Done)
+	}
+	if second.Name != "a.txt" || second.File != 1 || second.Files != 2 {
+		t.Errorf("second report was %+v, want a.txt as 1 of 2", second)
 	}
 
 	// Both halves of the trip are reported, and named apart: coming down from
@@ -564,6 +619,9 @@ func TestImportReportsProgress(t *testing.T) {
 	stages := map[TransferStage]bool{}
 	for _, at := range seen {
 		stages[at.Stage] = true
+		if at.Stage == StagePlanning {
+			continue // no file yet, so no size to report
+		}
 		if at.Done > at.Size {
 			t.Errorf("%s reported %d of %d bytes", at.Name, at.Done, at.Size)
 		}
@@ -578,25 +636,28 @@ func TestImportReportsProgress(t *testing.T) {
 	// The second file knows the first one landed, which is what makes the
 	// counts readable mid-flight: they are what the summary would say if the
 	// import stopped here.
-	var second *TransferProgress
+	var next *TransferProgress
 	for i := range seen {
 		if seen[i].Name == "b.txt" {
-			second = &seen[i]
+			next = &seen[i]
 			break
 		}
 	}
-	if second == nil {
+	if next == nil {
 		t.Fatal("the second file was never reported")
 	}
-	if second.File != 2 || second.Completed != 1 {
-		t.Errorf("b.txt was reported as file %d with %d imported, want 2 and 1", second.File, second.Completed)
+	if next.File != 2 || next.Completed != 1 {
+		t.Errorf("b.txt was reported as file %d with %d imported, want 2 and 1", next.File, next.Completed)
 	}
 }
 
-// A file already in the vault is passed over in silence: it is over before
-// there is anything to watch, and a bar that flashed up per skipped file would
-// be noise on the run where everything is already here.
-func TestImportReportsNothingForASkippedFile(t *testing.T) {
+// A file already in the vault moves no bytes, and used to be passed over in
+// silence with it. On one file that was right; on the run it actually happens
+// on — a whole folder re-imported, where every file is already here — it meant
+// a transfer that reported nothing whatever from beginning to end and could
+// not be told apart from a hang. So a file is named as it is looked at, moving
+// or not.
+func TestImportReportsTheFilesItOnlyLooksAt(t *testing.T) {
 	v, id, root := importFixture(t)
 	seed(t, filepath.Join(root, "a.txt"), "aaa")
 
@@ -614,8 +675,78 @@ func TestImportReportsNothingForASkippedFile(t *testing.T) {
 	if again.Skipped != 1 {
 		t.Fatalf("the second run fetched the file again: %+v", again.Results)
 	}
-	if len(seen) != 0 {
-		t.Errorf("a skipped file reported %d times: %+v", len(seen), seen)
+
+	// Named, and named as what it is: looked at rather than moved. Nothing
+	// claims to be fetching or scattering, because nothing is.
+	var checked *TransferProgress
+	for i := range seen {
+		switch seen[i].Stage {
+		case StageChecking:
+			checked = &seen[i]
+		case StageFetching, StageScattering:
+			t.Errorf("a file already here reported %s", seen[i].Stage)
+		}
+	}
+	if checked == nil {
+		t.Fatal("a run where everything was already here reported no file at all")
+	}
+	if checked.Name != "a.txt" || checked.File != 1 || checked.Files != 1 {
+		t.Errorf("the skipped file was reported as %+v, want a.txt as 1 of 1", *checked)
+	}
+	if checked.Done != 0 {
+		t.Errorf("a file nothing was fetched for reported %d bytes moved", checked.Done)
+	}
+}
+
+// The counts climb as the files are looked at, so a run that is only putting
+// times back says how far it has got — which is the run this was all for.
+func TestImportProgressCountsFilesItRetimes(t *testing.T) {
+	v, id, root := importFixture(t)
+	taken := time.Date(2019, 7, 14, 10, 22, 0, 0, time.UTC)
+	names := []string{"one.jpg", "two.jpg", "three.jpg"}
+	for _, name := range names {
+		file := filepath.Join(root, name)
+		seed(t, file, "a photograph")
+		touch(t, file, taken)
+	}
+
+	req := ImportRequest{Paths: names, Dest: "/"}
+	if _, err := v.ImportFromSource(context.Background(), MainScope, id, req); err != nil {
+		t.Fatalf("first import: %v", err)
+	}
+	// Stamped the way every import used to stamp them: with the day they
+	// landed, which is what a re-import is asked to put right.
+	for _, name := range names {
+		entry := v.manifest.ByPath("/" + name)
+		entry.ModifiedAt = entry.CreatedAt
+	}
+
+	var last TransferProgress
+	req.OnProgress = func(at TransferProgress) { last = at }
+	again, err := v.ImportFromSource(context.Background(), MainScope, id, req)
+	if err != nil {
+		t.Fatalf("second import: %v", err)
+	}
+	if again.Retimed != len(names) || again.Imported != 0 {
+		t.Fatalf("re-running gave %+v, want every file retimed and nothing fetched", again)
+	}
+
+	// The last file was reported knowing the two before it were done, which is
+	// what makes the tally readable while it runs.
+	if last.File != len(names) || last.Files != len(names) {
+		t.Errorf("the last report was file %d of %d, want %d of %d",
+			last.File, last.Files, len(names), len(names))
+	}
+	if last.Retimed != len(names)-1 {
+		t.Errorf("the last report said %d retimed so far, want %d", last.Retimed, len(names)-1)
+	}
+
+	// And every correction landed, though they were written in one go at the
+	// end rather than one file at a time. See importRetimes.
+	for _, name := range names {
+		if entry := v.manifest.ByPath("/" + name); !SameModTime(entry.ModifiedAt, taken) {
+			t.Errorf("%s says %s, want the source's %s", name, entry.ModifiedAt, taken)
+		}
 	}
 }
 

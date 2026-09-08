@@ -241,7 +241,18 @@ is the question the guard was always asking.
 Retiming is `Vault.Retime`: an index write under the vault lock, persisted once,
 touching nothing on any account. It is counted separately in `ImportSummary`
 (`Retimed`) because it is the one kind of "already there" that changed
-something. The browser upload reaches the same behaviour through
+something.
+
+An import gathers its corrections rather than making them one at a time
+(`importRetimes`, `retimeBatchSize`). The index is sealed and written *whole*,
+so correcting one time and correcting five hundred cost very nearly the same
+write — and per file, a re-import of a folder of twenty thousand photographs
+was twenty thousand whole-index writes and slower than the import that fetched
+them. A batch in hand has not landed, which is the same bargain the rest of an
+import makes about being interrupted: the files are in the vault either way,
+and a re-run puts the times right. A batch that cannot be *written* is handed
+back file by file, because `Retime` restores the entries it changed and the
+summary must not count a correction that is not in the index. The browser upload reaches the same behaviour through
 `POST /api/files/precheck` (which names them) and `POST /api/files/retime`
 (which corrects them) — the precheck stays a question so that it answers the
 same way however many times it is asked.
@@ -500,7 +511,18 @@ DELETE /api/remote/{id}/import/{run}  stop one, or dismiss a finished one's resu
 
 Each entry in `imports[]` carries `at` — the file being worked on, its stage
 and how much of it has moved — and `rate`, that stage's speed in bytes per
-second. The speed is measured over the progress reports themselves rather than
+second.
+
+Two of those stages move no bytes at all, and both exist because of the run
+where they are the *whole* transfer. `planning` is the walk, before any file
+has a name: it carries only `files`, the count found so far, reported every
+`planEvery` of them. `checking` is a file being looked at rather than moved —
+is it here already, and is it filed under the time it has on the machine —
+which on a re-import is every file in the selection. Until they were reported,
+a run that fetched nothing said nothing whatever from beginning to end, and a
+folder of twenty thousand files being checked and retimed looked exactly like a
+hang. The dialog draws `checking` off the file count rather than off bytes, and
+shows no speed for it. The speed is measured over the progress reports themselves rather than
 over successive polls: the server sees every few megabytes go past, a dialog
 sees one snapshot a second, and only the first has the resolution to divide by.
 It is a moving average (`rateWeight`) over samples at least `rateSample` apart,

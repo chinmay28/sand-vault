@@ -983,8 +983,17 @@ function TransferProgress({ run, onStop }) {
   const at = run?.at
   const exporting = run?.kind === 'export'
   const size = at?.size || 0
-  const fraction = size > 0 ? Math.min(1, (at.done || 0) / size) : 0
   const scattering = at?.stage === 'scattering'
+
+  /* A file being looked at rather than moved: is it here already, and is the
+     time it is filed under the time it has on the machine. No bytes move on
+     this leg, so the bar cannot be drawn out of them — it is drawn out of the
+     file count, which is the thing that is actually advancing. */
+  const checking = at?.stage === 'checking'
+  const files = at?.files || 0
+  const fraction = checking
+    ? (files > 0 ? Math.min(1, (at.file || 0) / files) : 0)
+    : size > 0 ? Math.min(1, (at.done || 0) / size) : 0
 
   /* How fast, and how much longer. Both come from the server's own reading of
      the stage it is on rather than from the difference between two polls — it
@@ -993,23 +1002,31 @@ function TransferProgress({ run, onStop }) {
      polling. It reports nothing while a stage is starting and nothing once a
      transfer has stalled, and both of those are drawn as nothing rather than
      as zero. */
-  const rate = run?.rate || 0
+  const rate = checking ? 0 : run?.rate || 0
   const left = rate > 0 && size > 0 ? (size - (at?.done || 0)) / rate : 0
 
   /* Between the request going out and the first file being picked up, the
      server is walking the selection — one round trip per folder, and on a
      folder of ten thousand files that is a real wait. Until a file is named
      there is nothing to count, so the bar says what is happening instead of
-     drawing 0 B of 0 B. */
+     drawing 0 B of 0 B. What the walk can say is how many files it has found
+     so far, and it does: a number climbing beside "looking over what was
+     picked" is what tells a long walk apart from a hang. */
   const started = !!at?.name
   const heading = started ? at.name : 'Looking over what was picked…'
-  const counted = started && at.files > 1 ? `${at.file} of ${at.files}` : ''
+  const counted = started
+    ? (files > 1 ? `${(at.file || 0).toLocaleString()} of ${files.toLocaleString()}` : '')
+    : (files > 0 ? `${files.toLocaleString()} files so far` : '')
 
-  const stageText = exporting
-    ? 'gathering from the clouds and sending to the machine…'
-    : scattering
-      ? 'splitting, encrypting and scattering…'
-      : 'coming down from the machine…'
+  const stageText = checking
+    ? exporting
+      ? 'checking what the machine already has…'
+      : 'checking what is already in the vault, and putting times back…'
+    : exporting
+      ? 'gathering from the clouds and sending to the machine…'
+      : scattering
+        ? 'splitting, encrypting and scattering…'
+        : 'coming down from the machine…'
 
   return (
     <div style={{
@@ -1037,9 +1054,11 @@ function TransferProgress({ run, onStop }) {
           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {stageText}
           </span>
-          <span style={{ flexShrink: 0 }}>
-            {formatBytes(at.done || 0)} / {formatBytes(size)}
-          </span>
+          {!checking && (
+            <span style={{ flexShrink: 0 }}>
+              {formatBytes(at.done || 0)} / {formatBytes(size)}
+            </span>
+          )}
         </div>
       )}
 
@@ -1063,10 +1082,10 @@ function TransferProgress({ run, onStop }) {
           <span>
             {(at.completed > 0 || at.skipped > 0 || at.retimed > 0 || at.failed > 0) && (
               <>
-                {at.completed} {exporting ? 'sent' : 'in'}
-                {at.skipped ? `, ${at.skipped} already there` : ''}
-                {at.retimed ? `, ${at.retimed} retimed` : ''}
-                {at.failed ? `, ${at.failed} failed` : ''}
+                {(at.completed || 0).toLocaleString()} {exporting ? 'sent' : 'in'}
+                {at.skipped ? `, ${at.skipped.toLocaleString()} already there` : ''}
+                {at.retimed ? `, ${at.retimed.toLocaleString()} retimed` : ''}
+                {at.failed ? `, ${at.failed.toLocaleString()} failed` : ''}
               </>
             )}
           </span>
