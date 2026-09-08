@@ -880,6 +880,46 @@ type moveRequest struct {
 	Name string `json:"name"`
 }
 
+type filesMoveRequest struct {
+	Moves []vault.MoveOrder `json:"moves"`
+}
+
+// handleFilesMove moves a batch of files in one index write — what the
+// organizer's plans need, where POST /api/files/{id}/move ten thousand times
+// over re-seals the index for each one and carries each thumbnail between its
+// two folders' packs on its own. See vault.MoveMany.
+//
+// An order that cannot be carried out is reported rather than failing the
+// batch, so a caller running a plan in pieces always knows which of its rows
+// landed: the answer names how many moved, which IDs named nothing, and one
+// line per refusal.
+func (s *Server) handleFilesMove(w http.ResponseWriter, r *http.Request) {
+	var req filesMoveRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
+		return
+	}
+	if len(req.Moves) == 0 {
+		writeError(w, http.StatusBadRequest, "no moves given", "BAD_REQUEST")
+		return
+	}
+
+	ctx, cancel := contextWithTimeout(r, 30*time.Minute)
+	defer cancel()
+
+	v, _ := s.Vault()
+	report, err := v.MoveMany(ctx, req.Moves)
+	if err != nil {
+		vaultErrorResponse(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"moved":   report.Moved,
+		"missing": report.Missing,
+		"refused": report.Refused,
+	})
+}
+
 func (s *Server) handleFileMove(w http.ResponseWriter, r *http.Request) {
 	var req moveRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -1347,6 +1387,12 @@ func isRiskyInline(contentType string) bool {
 type folderRequest struct {
 	Path string `json:"path"`
 
+	// Paths asks for several folders at once, in one index write. A plan that
+	// files a decade of photographs into months makes a hundred and twenty
+	// folders before it moves anything, and one request each is a hundred and
+	// twenty re-sealings of the whole index. Given, Path is ignored.
+	Paths []string `json:"paths,omitempty"`
+
 	// Vault names which of the vaults inside the file the folder belongs to.
 	// Empty is the main vault.
 	Vault string `json:"vault,omitempty"`
@@ -1377,7 +1423,24 @@ func (s *Server) handleFolderCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	v, _ := s.Vault()
-	if err := v.Mkdir(vault.Scope(req.Vault), req.Path); err != nil {
+	scope := vault.Scope(req.Vault)
+
+	// Either every folder named is there afterwards or none of them is, which
+	// is what makes a plan's first pass safe to run again after a failure.
+	if len(req.Paths) > 0 {
+		if err := v.Mkdirs(scope, req.Paths); err != nil {
+			vaultErrorResponse(w, err)
+			return
+		}
+		made := make([]string, 0, len(req.Paths))
+		for _, path := range req.Paths {
+			made = append(made, vault.CleanDir(path))
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"paths": made})
+		return
+	}
+
+	if err := v.Mkdir(scope, req.Path); err != nil {
 		vaultErrorResponse(w, err)
 		return
 	}

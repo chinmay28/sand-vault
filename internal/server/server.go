@@ -438,10 +438,12 @@ func (s *Server) Handler() (http.Handler, error) {
 		// A batch of files in one index write, and where it has got to while
 		// it runs — the folder delete's pair, for a selection rather than a
 		// folder.
-		"POST /api/files/delete":     s.handleFilesDelete,
-		"GET /api/files/erasing":     s.handleFilesErasing,
-		"DELETE /api/files/erasing":  s.handleFilesErasingStop,
-		"POST /api/files/{id}/move":  s.handleFileMove,
+		"POST /api/files/delete":    s.handleFilesDelete,
+		"GET /api/files/erasing":    s.handleFilesErasing,
+		"DELETE /api/files/erasing": s.handleFilesErasingStop,
+		"POST /api/files/{id}/move": s.handleFileMove,
+		// And a batch of them in one index write, for a plan of thousands.
+		"POST /api/files/move":       s.handleFilesMove,
 		"GET /api/files/{id}/health": s.handleFileHealth,
 		// Converting a pre-chunking file into the chunked format, which is what
 		// the read path's refusal asks for. See handlers_convert.go.

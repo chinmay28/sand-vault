@@ -21,10 +21,11 @@ import (
 // Like the rest of the organizer this reads and nothing else (see organize.go).
 // It answers where every file would go and what each would be called when it
 // got there, and the browser then runs that plan over the endpoints that
-// already existed — create a folder, move a file, remove a folder — one item at
-// a time, so a run that stalls halfway has moved exactly what it says it moved.
-// There is no "sort by date" endpoint to half-succeed with no way to say which
-// half.
+// already existed — make the folders, move the files, remove what the moves
+// emptied — in batches of a few hundred rows, each of which reports what it
+// applied (see MoveMany), so a run that stalls halfway has moved exactly what
+// it says it moved. There is no "sort by date" endpoint to half-succeed with no
+// way to say which half.
 //
 // It is planned here rather than in the browser, which is where flattening is
 // planned, because the answer is not a rearrangement of the survey: it needs

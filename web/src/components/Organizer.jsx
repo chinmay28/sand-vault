@@ -3,7 +3,7 @@ import { COLORS, FONT, formatBytes } from '../theme'
 import { api } from '../api'
 import { useIsMobile } from '../hooks'
 import { ActionSheet, Banner, Button, IconButton, Modal, Spinner } from './ui'
-import { BulkDelete, Progress, useRun } from './BulkActions'
+import { BulkDelete, Meter, useRun } from './BulkActions'
 import { DuplicatesTool } from './Duplicates'
 import { AutomationSettings, describeCadence } from './FolderAutomation'
 import { FolderRepos } from './FolderRepos'
@@ -578,11 +578,12 @@ function Moves({ rows, note }) {
 
    The run is three passes in one, in the only order they work in: make the
    folders, move the files into them, then remove whatever the moves emptied.
-   Every one of those is an endpoint that already existed, taken one item at a
-   time, so a run that stops halfway has done exactly what it says. Stopping
-   halfway is also survivable in a way a flatten's is not: filing by date is
-   idempotent, because a file already in the folder its date names is settled
-   rather than moved — so pressing it again finishes what was left. */
+   Every one of those is an endpoint that already existed, taken a few hundred
+   rows to a request and reporting what it applied, so a run that stops halfway
+   has done exactly what it says. Stopping halfway is also survivable in a way a
+   flatten's is not: filing by date is idempotent, because a file already in the
+   folder its date names is settled rather than moved — so pressing it again
+   finishes what was left. */
 function ByDate({ path, vault, onClose, onDone }) {
   const [grain, setGrain] = useState('month')
   const [deep, setDeep] = useState(false)
@@ -1119,8 +1120,73 @@ function asItem(file) {
 
 /* --- The run --------------------------------------------------------- */
 
-/* Making folders, moving files and removing folders, one at a time, with
-   somewhere to say how far it has got and what refused.
+/* How many moves go in one request.
+
+   The whole reason a plan is sent in batches at all: a move is a rewrite of
+   the index, and a file changing folder also carries its thumbnail between two
+   folders' packs, which is two more. One request per file made filing a camera
+   roll of ten thousand into months quadratic in the size of the folder — the
+   index re-sealed ten thousand times, and a pack of pictures uploaded twenty
+   thousand — where the whole job is a folder field on ten thousand records.
+
+   A few hundred to a request is the balance. Large enough that the index is
+   written once for hundreds rather than once each; small enough that the bar
+   moves often, that a stall costs at most this many rows, and that what a run
+   says it has done it really has — every batch that has come back is committed,
+   whatever happens to the next one. */
+const MOVES_PER_REQUEST = 200
+
+/* The plan in the pieces it is sent in.
+
+   Consecutive rows of the same kind travel together, which is what makes this
+   worth doing: the folders a date sort makes are one request, its moves are a
+   request per few hundred, and the order between them is untouched — a plan's
+   folders still exist before anything is moved into them. Removing a folder
+   stays one at a time, because each is refused on its own if it turns out to
+   still hold something and there are never many of them. */
+function stepsOf(items, base) {
+  const steps = []
+  for (const item of items) {
+    const last = steps[steps.length - 1]
+    if (item.kind === 'mkdir') {
+      if (last?.kind === 'mkdirs') {
+        last.paths.push(item.path)
+        last.span++
+        continue
+      }
+      steps.push({ kind: 'mkdirs', paths: [item.path], span: 1, label: item.name })
+      continue
+    }
+    if (item.kind === 'file') {
+      if (last?.kind === 'moves' && last.span < MOVES_PER_REQUEST) {
+        last.moves.push({ id: item.id, dir: item.dir || base, name: item.to })
+        last.names[item.id] = item.name
+        last.span++
+        continue
+      }
+      steps.push({
+        kind: 'moves',
+        moves: [{ id: item.id, dir: item.dir || base, name: item.to }],
+        names: { [item.id]: item.name },
+        span: 1,
+        label: item.name,
+      })
+      continue
+    }
+    steps.push({ kind: 'folder', path: item.path, span: 1, label: item.name })
+  }
+  // What a failure of the whole step is reported against — one line for the
+  // batch, because one request either landed or it did not.
+  for (const step of steps) {
+    step.name = step.kind === 'moves' && step.span > 1 ? `${step.span} files`
+      : step.kind === 'mkdirs' && step.span > 1 ? `${step.span} folders`
+        : step.label
+  }
+  return steps
+}
+
+/* Making folders, moving files and removing folders, with somewhere to say how
+   far it has got and what refused.
 
    One run for all three kinds because each of these tools is more than one of
    them and the order is the whole of why they work: a flatten's folders can only
@@ -1131,16 +1197,35 @@ function asItem(file) {
    A file's destination is its own — `item.dir`, falling back to the folder being
    organized, which is where everything a flatten moves is going anyway. */
 function Run({ title, subtitle, items, verb, done, vault, base, onClose, onDone }) {
-  const run = useRun(items, async (item) => {
-    if (item.kind === 'mkdir') {
-      await api.createFolder(item.path, vault)
+  const steps = useMemo(() => stepsOf(items, base), [items, base])
+
+  /* What actually landed, counted as the answers come back rather than
+     inferred from how many steps failed: a batch is hundreds of rows and a
+     step that throws is hundreds of files that did not move, while a batch
+     that comes back having refused one row is one. Kept in a ref because
+     nothing on screen depends on it until the run is over. */
+  const outcome = useRef({ landed: 0, refused: [] })
+
+  const run = useRun(steps, async (step) => {
+    if (step.kind === 'mkdirs') {
+      // All of them or none, so the count is the whole step either way.
+      await api.createFolders(step.paths, vault)
+      outcome.current.landed += step.span
       return null
     }
-    if (item.kind === 'folder') {
-      const resp = await api.deleteFolder(item.path, false, vault)
+    if (step.kind === 'folder') {
+      const resp = await api.deleteFolder(step.path, false, vault)
+      outcome.current.landed += 1
       return resp?.warnings
     }
-    await api.moveFile(item.id, item.dir || base, item.to)
+    const resp = await api.moveFiles(step.moves)
+    outcome.current.landed += resp?.moved || 0
+    // A row the vault would not apply names itself, so it is reported as it
+    // came rather than under the batch it happened to travel in.
+    outcome.current.refused.push(
+      ...(resp?.refused || []),
+      ...(resp?.missing || []).map((id) => `${step.names[id] || id}: no longer in the vault`),
+    )
     return null
   }, onDone)
 
@@ -1154,7 +1239,9 @@ function Run({ title, subtitle, items, verb, done, vault, base, onClose, onDone 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const batch = run.items
+  // Where the bar stands: the rows the steps before this one covered, so it
+  // counts files and folders rather than requests.
+  const reached = steps.slice(0, Math.max(0, run.at)).reduce((sum, step) => sum + step.span, 0)
 
   return (
     <Modal
@@ -1165,19 +1252,30 @@ function Run({ title, subtitle, items, verb, done, vault, base, onClose, onDone 
     >
       {run.done ? (
         <>
-          <Outcome done={run.done} total={batch.length} verb={done} />
+          <Outcome
+            done={run.done}
+            total={items.length}
+            landed={outcome.current.landed}
+            refused={outcome.current.refused}
+            verb={done}
+          />
           <Actions>
             <Button variant="primary" onClick={onClose}>Done</Button>
           </Actions>
         </>
       ) : (
         <>
-          <Progress items={batch} at={Math.max(0, run.at)} verb={verb} />
+          <Meter
+            count={Math.min(items.length, reached + 1)}
+            total={items.length}
+            verb={verb}
+            label={steps[Math.max(0, run.at)]?.label}
+          />
           <p style={{
             margin: 0, fontFamily: FONT.sans, fontSize: '11.5px',
             color: COLORS.textMuted, lineHeight: 1.6,
           }}>
-            Each one is a rewrite of the index and nothing more — no account is
+            Each batch is a rewrite of the index and nothing more — no account is
             contacted, and nothing you close this on is left half done.
           </p>
         </>
@@ -1189,21 +1287,26 @@ function Run({ title, subtitle, items, verb, done, vault, base, onClose, onDone 
 /* What a finished run came to. The same shape the bulk actions report, kept
    here rather than shared because a partial flatten is worth a different
    sentence: what did not move is still where it was, and running it again picks
-   up exactly that. */
-function Outcome({ done, total, verb }) {
-  const failed = done.failures.length
+   up exactly that.
+
+   The number that landed is counted rather than worked out from the failures,
+   because a batch is many rows: one request that never answered is hundreds of
+   files still where they were, and one row the vault refused inside a batch
+   that otherwise landed is one. */
+function Outcome({ done, total, landed, refused, verb }) {
+  const lines = [...done.failures, ...refused]
 
   return (
     <>
-      <Banner tone={failed ? 'warn' : 'success'}>
-        {failed
-          ? `${total - failed} of ${total} ${verb}. The rest are untouched — organizing again picks up exactly what is left.`
+      <Banner tone={landed < total ? 'warn' : 'success'}>
+        {landed < total
+          ? `${landed} of ${total} ${verb}. The rest are untouched — organizing again picks up exactly what is left.`
           : `${total} ${verb}.`}
       </Banner>
-      {(done.failures.length > 0 || done.warnings.length > 0) && (
+      {(lines.length > 0 || done.warnings.length > 0) && (
         <div style={{ maxHeight: '180px', overflowY: 'auto', marginBottom: '4px' }}>
-          {done.failures.length > 0 && (
-            <Banner tone="error">{done.failures.map((f, i) => <div key={i}>{f}</div>)}</Banner>
+          {lines.length > 0 && (
+            <Banner tone="error">{lines.map((f, i) => <div key={i}>{f}</div>)}</Banner>
           )}
           {done.warnings.length > 0 && (
             <Banner tone="warn">{done.warnings.map((w, i) => <div key={i}>{w}</div>)}</Banner>
