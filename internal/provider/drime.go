@@ -147,17 +147,25 @@ func drimeDownloadURL(reported string) (string, error) {
 // do sends a request with the account's token and answers the response,
 // having read the body when the status says the request failed.
 func (p *drimeProvider) do(ctx context.Context, op string, req *http.Request) (*http.Response, error) {
+	resp, _, err := p.doRetried(ctx, op, req)
+	return resp, err
+}
+
+// doRetried is do, also reporting whether the request had to be sent more
+// than once — which an upload needs to know, since a try that failed on the
+// way back may still have landed.
+func (p *drimeProvider) doRetried(ctx context.Context, op string, req *http.Request) (*http.Response, bool, error) {
 	req.Header.Set("Authorization", "Bearer "+p.token)
 	req.Header.Set("Accept", "application/json")
-	resp, err := httpClient.Do(req)
+	resp, retried, err := doWithRetry(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", op, err)
+		return nil, retried, fmt.Errorf("%s: %w", op, err)
 	}
 	if !isSuccess(resp.StatusCode) {
 		defer drainAndClose(resp)
-		return nil, &drimeError{status: resp.StatusCode, err: httpError(op, resp)}
+		return nil, retried, &drimeError{status: resp.StatusCode, err: httpError(op, resp)}
 	}
-	return resp, nil
+	return resp, retried, nil
 }
 
 // drimeError carries the status code of a failed request alongside the
@@ -183,21 +191,28 @@ func drimeStatus(err error) int {
 // postJSON sends a JSON body and decodes a JSON answer into out, when out is
 // not nil.
 func (p *drimeProvider) postJSON(ctx context.Context, op, rawURL string, payload, out any) error {
+	_, err := p.postJSONRetried(ctx, op, rawURL, payload, out)
+	return err
+}
+
+// postJSONRetried is postJSON, also reporting whether the request was sent
+// more than once.
+func (p *drimeProvider) postJSONRetried(ctx context.Context, op, rawURL string, payload, out any) (bool, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return err
+		return false, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rawURL, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return false, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := p.do(ctx, op, req)
+	resp, retried, err := p.doRetried(ctx, op, req)
 	if err != nil {
-		return err
+		return retried, err
 	}
 	defer drainAndClose(resp)
-	return decodeDrime(op, resp, out)
+	return retried, decodeDrime(op, resp, out)
 }
 
 // getJSON fetches a resource into out.
@@ -367,10 +382,11 @@ func (p *drimeProvider) Put(ctx context.Context, key string, data []byte) error 
 	}
 
 	var uploaded drimeItem
+	var retried bool
 	if len(data) <= drimeSimpleUploadLimit {
-		uploaded, err = p.uploadSimple(ctx, folderID, key, data)
+		uploaded, retried, err = p.uploadSimple(ctx, folderID, key, data)
 	} else {
-		uploaded, err = p.uploadMultipart(ctx, folderID, key, data)
+		uploaded, retried, err = p.uploadMultipart(ctx, folderID, key, data)
 	}
 	if err != nil {
 		return err
@@ -385,12 +401,51 @@ func (p *drimeProvider) Put(ctx context.Context, key string, data []byte) error 
 			return fmt.Errorf("drime upload: replacing the old copy: %w", err)
 		}
 	}
+	if retried {
+		// A try that came back as a 5xx may still have made a file before
+		// the answer was lost, and Drime has no overwrite to fold it into
+		// the one that succeeded. A listing says whether it did.
+		if err := p.dedupe(ctx, key, uploaded.ID.String()); err != nil {
+			return fmt.Errorf("drime upload: clearing a duplicate left by a retry: %w", err)
+		}
+	}
+	return nil
+}
+
+// dedupe erases every file under key other than the one to keep, then puts
+// the kept one back in the cache, since the listing that found the others
+// may have cached one of them instead.
+func (p *drimeProvider) dedupe(ctx context.Context, key, keep string) error {
+	folderID, err := p.folder(ctx)
+	if err != nil {
+		return err
+	}
+	items, err := p.listFolder(ctx, folderID)
+	if err != nil {
+		return err
+	}
+	var kept drimeEntry
+	for _, item := range items {
+		if item.Type == "folder" || item.Name != key {
+			continue
+		}
+		if item.ID.String() == keep {
+			kept = drimeEntry{id: keep, size: item.FileSize, url: item.URL}
+			continue
+		}
+		if err := p.deleteEntry(ctx, item.ID.String()); err != nil {
+			return err
+		}
+	}
+	if kept.id != "" {
+		p.remember(key, kept)
+	}
 	return nil
 }
 
 // uploadSimple posts a shard as one multipart form, which is how Drime takes
 // anything up to a few megabytes.
-func (p *drimeProvider) uploadSimple(ctx context.Context, folderID, key string, data []byte) (drimeItem, error) {
+func (p *drimeProvider) uploadSimple(ctx context.Context, folderID, key string, data []byte) (drimeItem, bool, error) {
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
 	fields := map[string]string{"relativePath": key}
@@ -402,30 +457,30 @@ func (p *drimeProvider) uploadSimple(ctx context.Context, folderID, key string, 
 	}
 	for name, value := range fields {
 		if err := mw.WriteField(name, value); err != nil {
-			return drimeItem{}, err
+			return drimeItem{}, false, err
 		}
 	}
 	part, err := mw.CreateFormFile("file", key)
 	if err != nil {
-		return drimeItem{}, err
+		return drimeItem{}, false, err
 	}
 	if _, err := part.Write(data); err != nil {
-		return drimeItem{}, err
+		return drimeItem{}, false, err
 	}
 	if err := mw.Close(); err != nil {
-		return drimeItem{}, err
+		return drimeItem{}, false, err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, drimeAPI+"/uploads", bytes.NewReader(body.Bytes()))
 	if err != nil {
-		return drimeItem{}, err
+		return drimeItem{}, false, err
 	}
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	req.ContentLength = int64(body.Len())
 
-	resp, err := p.do(ctx, "drime upload", req)
+	resp, retried, err := p.doRetried(ctx, "drime upload", req)
 	if err != nil {
-		return drimeItem{}, err
+		return drimeItem{}, retried, err
 	}
 	defer drainAndClose(resp)
 
@@ -433,16 +488,16 @@ func (p *drimeProvider) uploadSimple(ctx context.Context, folderID, key string, 
 		FileEntry drimeItem `json:"fileEntry"`
 	}
 	if err := decodeDrime("drime upload", resp, &created); err != nil {
-		return drimeItem{}, err
+		return drimeItem{}, retried, err
 	}
-	return created.FileEntry, nil
+	return created.FileEntry, retried, nil
 }
 
 // uploadMultipart sends a shard in parts: Drime opens an upload on its own
 // object store, signs a URL for each part, and turns the completed upload
 // into a file entry. A failure part-way aborts the upload so the pieces are
 // not left behind, billed and invisible.
-func (p *drimeProvider) uploadMultipart(ctx context.Context, folderID, key string, data []byte) (drimeItem, error) {
+func (p *drimeProvider) uploadMultipart(ctx context.Context, folderID, key string, data []byte) (drimeItem, bool, error) {
 	extension := strings.TrimPrefix(path.Ext(key), ".")
 	if extension == "" {
 		extension = "bin"
@@ -465,25 +520,25 @@ func (p *drimeProvider) uploadMultipart(ctx context.Context, folderID, key strin
 		create["workspaceId"] = p.workspaceID
 	}
 	if err := p.postJSON(ctx, "drime upload", drimeAPI+"/s3/multipart/create", create, &opened); err != nil {
-		return drimeItem{}, err
+		return drimeItem{}, false, err
 	}
 	if opened.UploadID == "" || opened.Key == "" {
-		return drimeItem{}, fmt.Errorf("drime upload: the multipart upload was not opened")
+		return drimeItem{}, false, fmt.Errorf("drime upload: the multipart upload was not opened")
 	}
 
-	entry, err := p.sendParts(ctx, opened.UploadID, opened.Key, parentID, key, extension, data)
+	entry, retried, err := p.sendParts(ctx, opened.UploadID, opened.Key, parentID, key, extension, data)
 	if err != nil {
 		// Best effort: the upload has already failed, and an abort that
 		// fails too has nothing to add to the error the caller gets.
 		_ = p.postJSON(ctx, "drime abort upload", drimeAPI+"/s3/multipart/abort",
 			map[string]any{"uploadId": opened.UploadID, "key": opened.Key}, nil)
-		return drimeItem{}, err
+		return drimeItem{}, retried, err
 	}
-	return entry, nil
+	return entry, retried, nil
 }
 
 func (p *drimeProvider) sendParts(ctx context.Context, uploadID, uploadKey string, parentID json.Number,
-	key, extension string, data []byte) (drimeItem, error) {
+	key, extension string, data []byte) (drimeItem, bool, error) {
 	count := (len(data) + drimeChunkSize - 1) / drimeChunkSize
 	numbers := make([]int, count)
 	for i := range numbers {
@@ -499,7 +554,7 @@ func (p *drimeProvider) sendParts(ctx context.Context, uploadID, uploadKey strin
 	err := p.postJSON(ctx, "drime upload", drimeAPI+"/s3/multipart/batch-sign-part-urls",
 		map[string]any{"uploadId": uploadID, "key": uploadKey, "partNumbers": numbers}, &signed)
 	if err != nil {
-		return drimeItem{}, err
+		return drimeItem{}, false, err
 	}
 	urls := make(map[int]string, len(signed.URLs))
 	for _, u := range signed.URLs {
@@ -514,13 +569,13 @@ func (p *drimeProvider) sendParts(ctx context.Context, uploadID, uploadKey strin
 	for number := 1; number <= count; number++ {
 		partURL, ok := urls[number]
 		if !ok {
-			return drimeItem{}, fmt.Errorf("drime upload: no signed URL for part %d of %d", number, count)
+			return drimeItem{}, false, fmt.Errorf("drime upload: no signed URL for part %d of %d", number, count)
 		}
 		start := (number - 1) * drimeChunkSize
 		end := min(start+drimeChunkSize, len(data))
 		etag, err := p.putPart(ctx, partURL, data[start:end])
 		if err != nil {
-			return drimeItem{}, fmt.Errorf("drime upload: part %d of %d: %w", number, count, err)
+			return drimeItem{}, false, fmt.Errorf("drime upload: part %d of %d: %w", number, count, err)
 		}
 		parts = append(parts, completedPart{ETag: etag, PartNumber: number})
 	}
@@ -528,7 +583,7 @@ func (p *drimeProvider) sendParts(ctx context.Context, uploadID, uploadKey strin
 	err = p.postJSON(ctx, "drime upload", drimeAPI+"/s3/multipart/complete",
 		map[string]any{"uploadId": uploadID, "key": uploadKey, "parts": parts}, nil)
 	if err != nil {
-		return drimeItem{}, err
+		return drimeItem{}, false, err
 	}
 
 	// The upload is on the object store; this is what makes it a file in the
@@ -548,10 +603,11 @@ func (p *drimeProvider) sendParts(ctx context.Context, uploadID, uploadKey strin
 	var created struct {
 		FileEntry drimeItem `json:"fileEntry"`
 	}
-	if err := p.postJSON(ctx, "drime upload", drimeAPI+"/s3/entries", entry, &created); err != nil {
-		return drimeItem{}, err
+	retried, err := p.postJSONRetried(ctx, "drime upload", drimeAPI+"/s3/entries", entry, &created)
+	if err != nil {
+		return drimeItem{}, retried, err
 	}
-	return created.FileEntry, nil
+	return created.FileEntry, retried, nil
 }
 
 // putPart sends one part to the URL Drime signed for it. The URL carries its
@@ -565,7 +621,8 @@ func (p *drimeProvider) putPart(ctx context.Context, partURL string, chunk []byt
 	req.Header.Set("Content-Type", "application/octet-stream")
 	req.ContentLength = int64(len(chunk))
 
-	resp, err := httpClient.Do(req)
+	// A part is addressed by number, so sending it twice is harmless.
+	resp, _, err := doWithRetry(ctx, req)
 	if err != nil {
 		return "", err
 	}

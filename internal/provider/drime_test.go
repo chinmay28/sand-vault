@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // drimeStub is enough of Drime's API to drive the backend: a root holding
@@ -34,6 +35,13 @@ type drimeStub struct {
 
 	hardDeletes int
 	trashed     int
+
+	// failures is how many times a path answers with nginx's 500 page before
+	// working; ghost makes the one-request upload store the file and then
+	// answer with the 500 anyway, as a proxy that lost the reply would.
+	failures map[string]int
+	ghost    bool
+	requests map[string]int
 }
 
 type drimeStubFile struct {
@@ -44,12 +52,31 @@ type drimeStubFile struct {
 
 func newDrimeStub(t *testing.T) *drimeStub {
 	return &drimeStub{
-		t:       t,
-		nextID:  100,
-		folders: map[string]string{},
-		files:   map[string]drimeStubFile{},
-		uploads: map[string]map[int][]byte{},
+		t:        t,
+		nextID:   100,
+		folders:  map[string]string{},
+		files:    map[string]drimeStubFile{},
+		uploads:  map[string]map[int][]byte{},
+		failures: map[string]int{},
+		requests: map[string]int{},
 	}
+}
+
+const nginx500 = "<html>\r\n<head><title>500 Internal Server Error</title></head>\r\n<body>\r\n" +
+	"<center><h1>500 Internal Server Error</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>"
+
+// stumble answers with the proxy's 500 page while the path has failures
+// left, and reports whether it did.
+func (d *drimeStub) stumble(w http.ResponseWriter, path string) bool {
+	d.requests[path]++
+	if d.failures[path] <= 0 {
+		return false
+	}
+	d.failures[path]--
+	w.Header().Set("Content-Type", "text/html")
+	w.WriteHeader(http.StatusInternalServerError)
+	w.Write([]byte(nginx500))
+	return true
 }
 
 func (d *drimeStub) mint() string {
@@ -71,6 +98,15 @@ func (d *drimeStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Header.Get("Authorization") != "Bearer test-token" {
 		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	if r.URL.Path == "/api/v1/uploads" && d.ghost && d.failures[r.URL.Path] > 0 {
+		// The file lands, the answer does not.
+		d.serveUpload(httptest.NewRecorder(), r)
+		d.stumble(w, r.URL.Path)
+		return
+	}
+	if d.stumble(w, r.URL.Path) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -333,6 +369,10 @@ func newTestDrime(t *testing.T) (*drimeProvider, *drimeStub) {
 	server := httptest.NewServer(stub)
 	t.Cleanup(server.Close)
 
+	restoreDelay := retryDelay
+	retryDelay = time.Millisecond
+	t.Cleanup(func() { retryDelay = restoreDelay })
+
 	restore := drimeAPI
 	drimeAPI = server.URL + "/api/v1"
 	t.Cleanup(func() { drimeAPI = restore })
@@ -562,6 +602,71 @@ func TestDrimeWorkspaceRidesOnEveryRequest(t *testing.T) {
 	}
 	if len(seen) < 3 {
 		t.Errorf("only %d endpoints were exercised: %v", len(seen), seen)
+	}
+}
+
+// A proxy in front of Drime answering 500 for one request is a moment's
+// hiccup, not a failed file: the request is sent again, and the error a
+// file-level failure reports is the status line rather than a page of HTML.
+func TestDrimeRetriesATransientServerError(t *testing.T) {
+	p, stub := newTestDrime(t)
+	ctx := context.Background()
+	stub.failures["/api/v1/uploads"] = 2
+	if err := p.Put(ctx, "abc-c0000000-p1.sand", []byte("x")); err != nil {
+		t.Fatalf("Put across two 500s: %v", err)
+	}
+	if stub.requests["/api/v1/uploads"] != 3 {
+		t.Errorf("uploads was asked %d times, want 3", stub.requests["/api/v1/uploads"])
+	}
+	if len(stub.files) != 1 {
+		t.Errorf("%d files after a retried upload, want 1", len(stub.files))
+	}
+
+	// The multipart flow's steps retry the same way.
+	stub.failures["/api/v1/s3/multipart/complete"] = 1
+	stub.failures["/api/v1/s3/entries"] = 1
+	big := make([]byte, drimeSimpleUploadLimit+1)
+	if err := p.Put(ctx, "big-c0000000-p1.sand", big); err != nil {
+		t.Fatalf("multipart Put across 500s: %v", err)
+	}
+	if got, err := p.Get(ctx, "big-c0000000-p1.sand"); err != nil || !bytes.Equal(got, big) {
+		t.Errorf("Get after a retried multipart upload: %d bytes, %v", len(got), err)
+	}
+}
+
+func TestDrimeGivesUpAfterRepeatedServerErrorsAndSaysSoPlainly(t *testing.T) {
+	p, stub := newTestDrime(t)
+	stub.failures["/api/v1/uploads"] = 100
+	err := p.Put(context.Background(), "abc-c0000000-p1.sand", []byte("x"))
+	if err == nil {
+		t.Fatal("Put succeeded against a proxy that never recovers")
+	}
+	if strings.Contains(err.Error(), "<html>") || strings.Contains(err.Error(), "<center>") {
+		t.Errorf("the error carries HTML: %v", err)
+	}
+	if !strings.Contains(err.Error(), "500 Internal Server Error") {
+		t.Errorf("the error does not say what happened: %v", err)
+	}
+	if stub.requests["/api/v1/uploads"] != retryAttempts {
+		t.Errorf("uploads was asked %d times, want %d", stub.requests["/api/v1/uploads"], retryAttempts)
+	}
+}
+
+// A 500 can arrive after the upload actually landed, and Drime keeps both
+// copies under one name. The retry that follows must not leave two.
+func TestDrimeRetriedUploadLeavesOneFile(t *testing.T) {
+	p, stub := newTestDrime(t)
+	ctx := context.Background()
+	stub.ghost = true
+	stub.failures["/api/v1/uploads"] = 1
+	if err := p.Put(ctx, "abc-c0000000-p1.sand", []byte("x")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if len(stub.files) != 1 {
+		t.Errorf("%d files under one name after a ghosted upload, want 1", len(stub.files))
+	}
+	if got, err := p.Get(ctx, "abc-c0000000-p1.sand"); err != nil || string(got) != "x" {
+		t.Errorf("Get = %q, %v", got, err)
 	}
 }
 
