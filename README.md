@@ -43,6 +43,20 @@ It installs Node 22 and Go if needed (both build-time only), creates a dedicated
 `sand` system user, compiles the web client and the static server binary, and
 runs it under systemd on `http://<host>:8123`, reachable from your network.
 
+To **uninstall**, run the same command with `--uninstall`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/chinmay28/sand-vault/main/scripts/quickstart.sh | sudo bash -s -- --uninstall
+```
+
+It stops and removes the `sand` service, its unit and drop-ins (including the
+Local folder grants), the `/usr/local/bin/proton-drive` link and everything
+under `/opt/sand`. It **keeps your vault**: `/var/lib/sand` (the vault, its
+backups and Proton's client state) and the `sand` user stay, as do any folders
+a Local folder account wrote to, and it prints the command that deletes them.
+Pass the same `SAND_PREFIX` / `SAND_DATA_DIR` / `SAND_USER` you installed with.
+Running it again, or on a machine without SAND, does nothing and succeeds.
+
 **Or skip the build entirely** and install the prebuilt binary from the latest
 [release](https://github.com/chinmay28/sand-vault/releases) — no Node, no Go, no
 source tree, seconds instead of minutes on a Raspberry Pi:

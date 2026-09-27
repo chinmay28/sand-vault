@@ -10,6 +10,10 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/chinmay28/sand-vault/main/scripts/quickstart.sh | sudo bash
 #
+# and the same command with a flag takes it off again, keeping the vault:
+#
+#   curl -fsSL https://raw.githubusercontent.com/chinmay28/sand-vault/main/scripts/quickstart.sh | sudo bash -s -- --uninstall
+#
 # Two ways to get the binary — SAND_INSTALL picks one:
 #
 #   source   (default) clone the repo and build it here. Needs Node and Go at
@@ -139,7 +143,19 @@ step() { printf '\n%s%s%s\n' "$C_DIM" "$*" "$C_OFF"; }
 if [ "$(id -u)" -ne 0 ]; then
   die "Run as root: curl -fsSL .../quickstart.sh | sudo bash   (or: sudo ./scripts/quickstart.sh)"
 fi
-command -v systemctl >/dev/null 2>&1 || die "systemd is required (no systemctl found)."
+
+# Read before anything else happens, so that an uninstall never installs a
+# toolchain, clones a repository or downloads a binary on its way out.
+case "${1:-}" in
+  --uninstall) UNINSTALL=1 ;;
+  "")          UNINSTALL=0 ;;
+  *)           die "Unknown option: $1 (only --uninstall is supported)" ;;
+esac
+# An uninstall on a box with no systemd has no service to stop, but still has
+# files to remove, so only an install insists on it.
+if [ "$UNINSTALL" = 0 ]; then
+  command -v systemctl >/dev/null 2>&1 || die "systemd is required (no systemctl found)."
+fi
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -250,6 +266,92 @@ PROTON_STATE_DIR="$DATA_DIR/proton"
 GO_MIN_MINOR=25
 GO_INSTALL_VERSION="1.25.0"
 NODE_MIN_MAJOR=18
+
+# ---------------------------------------------------------------------------
+# Uninstall
+# ---------------------------------------------------------------------------
+#
+# Undoes what the steps below put on the machine, from the same resolved paths,
+# so an install made with SAND_PREFIX or SAND_DATA_DIR set is removed by an
+# uninstall run with the same variables. Every step tolerates its target being
+# gone already, which is what lets it run twice, or on a box that never had SAND.
+#
+# What stays, deliberately:
+#
+#   * $DATA_DIR — the vault, its backups and Proton's client state. The vault
+#     is the only map of which account holds which part of which file; deleting
+#     it strands everything on the clouds. That is a decision for a person at a
+#     prompt, not for an uninstaller, so the command is printed instead.
+#   * The service user, which still owns $DATA_DIR.
+#   * Any folder a Local folder account writes to. Those are the user's own
+#     files; the grant that let the service write there goes with the drop-in.
+#   * A checkout that `sudo ./scripts/quickstart.sh` built in place. It is the
+#     user's working copy, not a tree this script cloned.
+#   * Node, Go (/usr/local/go, /etc/profile.d/go.sh), git, curl, unzip. They
+#     were installed only if missing, and something else may use them now.
+if [ "$UNINSTALL" = 1 ]; then
+  log "Uninstalling SAND Vault"
+  # An empty or root prefix would turn the removals below into /bin and /src.
+  case "$PREFIX" in
+    "" | /) die "SAND_PREFIX='$PREFIX' is not a directory this script would have installed into." ;;
+  esac
+
+  # The binary the unit ran, read before the unit goes: when it is not under
+  # $PREFIX it was built inside somebody's checkout, which is theirs to keep.
+  prior_bin="${PRIOR_EXEC%% *}"
+
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl disable --now "${SERVICE_NAME}.service" >/dev/null 2>&1 || true
+  fi
+  rm -f "$UNIT_PATH"
+  # The drop-in directory holds the Local folder grants (SAND_LOCAL_PATHS,
+  # scripts/allow-local-path.sh) and anything `systemctl edit sand` wrote. All
+  # of it configures a unit that no longer exists.
+  rm -rf "${UNIT_PATH}.d"
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload
+    systemctl reset-failed "${SERVICE_NAME}.service" >/dev/null 2>&1 || true
+  fi
+  ok "service stopped and removed"
+
+  # Only while it is still our link. A proton-drive somebody installed there
+  # themselves is not this script's to take away.
+  if [ -L "$PROTON_LINK" ] && [ "$(readlink "$PROTON_LINK")" = "$PROTON_BIN" ]; then
+    rm -f "$PROTON_LINK"
+    ok "removed $PROTON_LINK"
+  fi
+
+  # Named piece by piece rather than `rm -rf $PREFIX`: a data directory placed
+  # under the prefix by SAND_DATA_DIR would otherwise go with it, and that is
+  # the one thing this must never take.
+  if [ -d "$PREFIX" ]; then
+    rm -rf "${PREFIX:?}/src" "${PREFIX:?}/bin" "${PREFIX:?}/bun" "${PREFIX:?}/proton-sdk" \
+           "$BUILD_HOME" "$BUN_LOG" "$PROTON_FETCH_LOG" "$PROTON_BUILD_LOG" \
+           "$PROTON_STAMP"
+    if rmdir "$PREFIX" 2>/dev/null; then
+      ok "removed $PREFIX"
+    else
+      warn "kept $PREFIX — it still holds files this installer did not put there."
+    fi
+  fi
+
+  if [ -n "$prior_bin" ] && [ "${prior_bin#"$PREFIX"/}" = "$prior_bin" ]; then
+    warn "the service ran $prior_bin, built in a checkout — left as it is."
+  fi
+
+  echo
+  if [ -d "$DATA_DIR" ]; then
+    log "Removed. Your vault is still at $VAULT_PATH, with backups in $BACKUP_DIR."
+    log "It is the only record of where your files' parts are. To delete it and the service user:"
+    log "  sudo rm -rf $DATA_DIR && sudo userdel $SVC_USER"
+  else
+    log "Removed. There was no data directory at $DATA_DIR."
+    if id -u "$SVC_USER" >/dev/null 2>&1; then
+      log "To delete the service user as well: sudo userdel $SVC_USER"
+    fi
+  fi
+  exit 0
+fi
 
 # Executed from inside a checkout (sudo ./scripts/quickstart.sh), build that
 # checkout in place; piped from curl, deploy $SAND_REF like any other install.
