@@ -2902,7 +2902,8 @@ PLAYWRIGHT_CHROMIUM_EXECUTABLE=/path/to/chrome make test-e2e
 ### Linux — systemd
 
 Use [`scripts/quickstart.sh`](#quick-start-on-linux-ubuntu--raspberry-pi): it
-fetches or builds, installs, upgrades in place, and rolls back a bad upgrade.
+fetches or builds, installs, upgrades in place, and rolls back a bad upgrade;
+with `--uninstall` it removes the service again and keeps the vault.
 
 If you already have a binary and only want it running,
 `scripts/deploy-linux.sh` is the small path:
@@ -3054,7 +3055,7 @@ sand/
 ├── internal/version/            # YEAR/MONTH; PATCH stamped at link time
 ├── tests/                       # pytest e2e: CLI, API, vault flow, browser
 ├── scripts/
-│   ├── quickstart.sh            # one-command systemd install / upgrade / rollback
+│   ├── quickstart.sh            # one-command systemd install / upgrade / rollback / uninstall
 │   ├── version.mjs              # the one place the version is assembled
 │   ├── make-icons.mjs           # redraws the home-screen PNGs from icon.svg
 │   ├── build-release.sh         # cross-compile all platforms
