@@ -10,6 +10,16 @@ Each section below is the body of the corresponding GitHub release. A heading
 must name the tag exactly — a tag whose commit builds a different version is a
 tag that shouldn't be published.
 
+## Unreleased
+
+### The quick start uninstalls with the same one-liner
+
+`curl -fsSL …/quickstart.sh | sudo bash -s -- --uninstall` stops and removes
+the service, its unit and drop-ins, the `proton-drive` link and the install
+under `/opt/sand`, and keeps the vault, its backups and the service user —
+printing the command that deletes them. It installs and downloads nothing on
+the way out, and running it twice is harmless. Any other argument is refused.
+
 ## v2026.8.143
 
 ### Erasing abandoned parts counts itself down instead of hanging
