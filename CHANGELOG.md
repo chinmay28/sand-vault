@@ -1442,7 +1442,7 @@ come from the binary and the vault.
 ### Films look like films
 
 A folder of films is a folder whose file names say nothing.
-`The.Thing.1982.REMASTERED.1080p.BluRay.x265-RARBG.mkv` is a fine thing to
+`Some.Film.1982.REMASTERED.1080p.BluRay.x265-GROUP.mkv` is a fine thing to
 store and a terrible thing to read, and until now a folder of forty of them was
 a column of `🎬` and forty strings to squint at. A folder can now be told its
 videos are films, and then they get what Plex and Jellyfin would give them: the
@@ -1503,9 +1503,9 @@ from nowhere but your own server, even in a folder with this on.
 Names are read the way every media server reads them: cut at the year if there
 is one, cut at the first `1080p`/`BluRay`/`x265` if there is not, and fall back
 to the folder's name when the file's says nothing, so
-`Blade Runner (1982)/title00.mkv` is matched from its folder. Where two films
-share a name, the year in the file name decides which — `The Thing (1982)` is
-not the 2011 one. It still guesses wrong sometimes, so the details view always
+`Some Film (1982)/title00.mkv` is matched from its folder. Where two films
+share a name, the year in the file name decides which — `Some Film (1982)` is
+not its 2011 remake. It still guesses wrong sometimes, so the details view always
 says what it searched for, **Fix the match** picks the right film out of a
 list, and a film chosen by hand survives every later sweep.
 

@@ -3,10 +3,14 @@
 **A file browser over storage you don't fully trust.**
 
 Connect the cloud accounts you already have. SAND Vault compresses every file
-you add, splits it into three parts, encrypts them, and puts each part on a
-**different** account. Any two parts rebuild the original; any one on its own
-is noise. Open a file in the browser and SAND fetches the parts back,
+you add, erasure-codes it into **n** parts, encrypts them, and puts each part on
+a **different** account. Any **m** of the n parts rebuild the original; fewer
+than m are noise. Open a file in the browser and SAND fetches the parts back,
 reassembles them in memory, and shows you the file.
+
+You choose m and n — from the default **2-of-3** (any two of three accounts)
+up to codes as wide as 20-of-30 or as durable as 3-of-6 — per upload, as the
+vault's default, or when moving files onto other clouds. See [Choosing m of n](#choosing-m-of-n).
 
 No single provider ever holds your data — only a fragment that means nothing
 without a fragment held by someone else, plus a key that never leaves your
@@ -148,16 +152,21 @@ itself — see [Connecting an Account by Signing In](#connecting-an-account-by-s
 
 ## How It Works
 
+Every file is cut with an **m-of-n** erasure code: n shards, any m of which
+rebuild it. The default is 2-of-3; see [Choosing m of n](#choosing-m-of-n) for
+the rest.
+
 ### Storing
 
 ```
-file → zstd compress → split in half (p1, p2) → p3 = p1 XOR p2
-     → encrypt each part with AES-256-GCM (Argon2id-derived key)
-     → PUT each part to a different account, in parallel
+file → zstd compress → cut into m data shards (p1 … pm)
+     → compute n − m parity shards (Reed–Solomon over GF(2^8), Cauchy matrix)
+     → encrypt each shard with AES-256-GCM (Argon2id-derived key)
+     → PUT each shard to a different account, in parallel
 ```
 
-An upload commits once **at least two** parts have landed — the minimum that can
-still be rebuilt. If fewer than two succeed, the ones that did land are deleted
+An upload commits once **at least m** parts have landed — the minimum that can
+still be rebuilt. If fewer than m succeed, the ones that did land are deleted
 rather than left as orphans.
 
 Each account also receives `manifest.sand`, an encrypted copy of the index, so
@@ -185,20 +194,29 @@ safe to do as often as you like.
 ### Retrieving
 
 ```
-request all three parts at once → the first two to arrive win, the rest cancelled
-     → decrypt → XOR-reconstruct → decompress → verify SHA-256 → your file
+request all n parts at once → the first m to arrive win, the rest cancelled
+     → decrypt → erasure-decode → decompress → verify SHA-256 → your file
 ```
 
 Reads are a race, so a slow or offline account costs you nothing — it just loses.
 
 ### Reconstruction
 
-| p1 | p2 | p3 | Method |
-|:--:|:--:|:--:|:---|
-| ✓ | ✓ | — | concat(p1, p2) |
-| ✓ | — | ✓ | p2 = p1 ⊕ p3, then concat |
-| — | ✓ | ✓ | p1 = p2 ⊕ p3, then concat |
-| at most one | | | unrecoverable |
+The code is *systematic*: the first m shards are the compressed file itself, cut
+into consecutive slices, and only the remaining n − m are computed. Every square
+submatrix of a Cauchy matrix is invertible, so **any** m shards can be solved
+back to the data.
+
+| Shards that arrived | Method |
+|:---|:---|
+| all m data shards (p1 … pm) | concatenate — no field arithmetic at all |
+| any other m of the n | invert the m×m submatrix, recover the missing data shards, concatenate |
+| fewer than m | unrecoverable |
+
+For the default 2-of-3 that is the familiar table — p1 and p2 concatenate, and
+either of them with p3 rebuilds the other. Files written before the erasure
+format (versions 1–3) are 2-of-3 with p3 = p1 ⊕ p2, and still read exactly as
+they always did.
 
 ---
 
@@ -718,19 +736,20 @@ same name, same colour, same parts, same rows in the index.
 
 ## Placement Policy
 
-Where parts go is a security decision: any two parts plus the key rebuild the
-file, so two parts on one account means that account could rebuild it.
+Where parts go is a security decision: any m parts plus the key rebuild the
+file, so m parts on one account means that account could rebuild it.
 
 **`strict`** (default) — one part per account, never two on the same one.
 
-- 3+ accounts → every shard placed separately. Full redundancy, and no single
-  provider can reconstruct anything. Six or nine accounts cut the file finer
-  instead of wider — still one shard per account, see below.
-- 2 accounts → parts 1 and 2 only. Recoverable and confidential, but no spare.
+- n or more accounts → every shard placed separately. Full redundancy, and no
+  single provider can reconstruct anything — at any m and n, one shard per
+  account, see below.
+- 2 accounts → parts 1 and 2 of the default 2-of-3 only. Recoverable and
+  confidential, but no spare.
 - 1 account → refused.
 
-**`redundant`** — always store all three, doubling up when there are fewer than
-three accounts. Survives an account going dark, but the doubled-up account holds
+**`redundant`** — always store every shard, doubling up when there are fewer
+accounts than shards. Survives an account going dark, but the doubled-up account holds
 enough to rebuild.
 
 ```bash
@@ -740,9 +759,9 @@ enough to rebuild.
 
 ### Which clouds a file goes to
 
-Policy says how many parts may share an account. With more than three accounts
-connected, something also has to say *which* three a file uses — three parts
-cannot go to five places.
+Policy says how many parts may share an account. With more accounts connected
+than a file has shards, something also has to say *which* ones a file uses —
+three parts cannot go to five places.
 
 Every upload can choose for itself, and the browser asks before a single byte
 leaves the machine: the dialog opens on the clouds the file is about to be
@@ -751,7 +770,7 @@ scattered over, and any of them can be swapped for another account.
 Each row says how much of the vault that cloud is already holding *and* how much
 more will fit on it, so the choice is made against something. Before the upload
 goes, the dialog checks the share of the file each chosen cloud is about to
-receive — about a kth of it, for a file cut k-of-n — against the room that cloud
+receive — about an mth of it, for a file cut m-of-n — against the room that cloud
 has, and says which of them it will not fit on. See [How much more fits
 here](#how-much-more-fits-here).
 
@@ -772,45 +791,67 @@ two parts and says that the file has no spare, instead of quietly putting the
 third somewhere you did not choose. Disconnecting an account drops it from the
 default.
 
-### A wider spread, when you have the clouds for it
+### Choosing m of n
 
-How many clouds you choose settles the erasure code the file is cut with. One
-rule: clouds go in groups of three, and two thirds of the shards rebuild the
-file.
+A file is cut with an **m-of-n** code: n shards, one per cloud, and any m of them
+rebuild it. Any m from 2 up to n, and any n up to 255, is a code SAND writes —
+2-of-3, 3-of-5, 4-of-7, 6-of-10, 20-of-30. Choosing the two numbers moves three
+things at once, and they do not move together:
 
-| Clouds | Scheme | Storage | Clouds that can go dark | Clouds needed to rebuild |
-|---|---|---|---|---|
-| 3 | `2-of-3` | 1.5× | 1 | 2 |
-| 6 | `4-of-6` | 1.5× | 2 | 4 |
-| 9 | `6-of-9` | 1.5× | 3 | 6 |
-| 12 | `8-of-12` | 1.5× | 4 | 8 |
-| 3m | `2m-of-3m` | 1.5× | m | 2m |
+| Scheme | Storage (n/m) | Clouds that can go dark (n − m) | Clouds that must collude (m) |
+|---|---|---|---|
+| `2-of-3` | 1.50× | 1 | 2 |
+| `3-of-5` | 1.67× | 2 | 3 |
+| `2-of-5` | 2.50× | 3 | 2 |
+| `4-of-6` | 1.50× | 2 | 4 |
+| `6-of-9` | 1.50× | 3 | 6 |
+| `6-of-10` | 1.67× | 4 | 6 |
+| `20-of-30` | 1.50× | 10 | 20 |
 
-The table stops where patience does, not where the code does — every multiple of
-three works, up to 255 clouds. Each group you add buys one more cloud that can
-fail and two more that would have to collude, and costs nothing in storage:
-every scheme in the family stores 1.5×, so **widening costs accounts, not
-bytes**.
+The last column is the one worth dwelling on: it is how many accounts an
+attacker must hold *together* before the shards they have are enough to
+reassemble a file. Lowering m to buy durability spends exactly that. 2-of-5
+survives three losses where 2-of-3 survives one, but two accounts still rebuild
+the file and each of them now holds half of it — it buys durability with storage
+and with secrecy, not with storage alone.
+
+**m is never less than 2.** One shard to rebuild from would be a whole copy of
+the file on every account — replication, not splitting — and the promise that
+one account reveals nothing is not a setting.
+
+**n is how many clouds you pick.** Every cloud holds exactly one shard at every
+width, so the promise that a single compromised provider yields noise is as true
+across thirty as across three — and gets stronger, since one shard of twenty is
+a twentieth of the file rather than a half.
+
+**m is a second choice, with a sensible default.** When you pick clouds and say
+nothing else, the count names a code from the **2m-of-3m** family — three clouds
+is 2-of-3, six is 4-of-6, nine is 6-of-9 — which holds storage at 1.5× while both
+durability and collusion resistance grow with the width. Any other count, or any
+other threshold, is spelled out with `--scheme` on the command line, or with the
+**Rebuild from _m_ of _n_ clouds** picker in the browser's upload dialog, which
+shows what each choice stores, survives and needs to collude beside it.
 
 ```bash
 ./sand vault defaults box s3 drive dropbox onedrive proton   # 4-of-6 from now on
+./sand vault defaults box s3 drive dropbox onedrive --scheme 3-of-5
 ./sand put taxes.pdf --accounts box,s3,drive,dropbox,onedrive,proton
+./sand put taxes.pdf --accounts box,s3,drive,dropbox,onedrive --scheme 2-of-5
 ```
 
-Every cloud holds exactly one shard at every width, so the promise that a single
-compromised provider yields noise is as true across thirty as across three — and
-gets stronger, since one shard of twenty is a twentieth of the file rather than
-a half.
+Three clouds at 2-of-3 is still what an upload takes when nobody says otherwise,
+whatever is connected. Widening is a decision about how many providers you want
+in play, and a vault does not drift into it by having accounts available. A
+scheme with more shards than clouds chosen stores what fits and says the file is
+short a spare; more clouds than shards is refused, rather than leaving a cloud
+you picked holding nothing.
 
-Three is still what an upload takes when nobody says otherwise. Counts that are
-not whole groups — 4, 5, 7, 8 — are refused rather than rounded, because there
-is no code that uses them without leaving a cloud with no shard to hold.
-
-**Changing an existing file's width rebuilds it.** A 2-of-3 file's shards are
+**Changing an existing file's code rebuilds it.** A 2-of-3 file's shards are
 halves and a 4-of-6 file's are quarters, so nothing carries across:
 
 ```bash
 ./sand relocate /taxes --accounts box,s3,drive,dropbox,onedrive,proton --dry-run
+./sand relocate /taxes --accounts box,s3,drive,dropbox,onedrive --scheme 3-of-5
 ```
 
 Moving a file between clouds *at the same width* is still the cheap case — only
@@ -906,7 +947,7 @@ and the policy goes with it.
 A 4-of-6 file whose sixth cloud died goes back out as 4-of-6 over six clouds that
 answer. Same storage cost, same number of losses survived, same number of
 accounts an attacker would have to hold together — see
-[The scheme](#a-wider-spread-when-you-have-the-clouds-for-it) for why those three
+[The scheme](#choosing-m-of-n) for why those three
 numbers are the whole of what a code is.
 
 Only when there are not enough clouds answering to cut a file as it is cut now is
@@ -1086,7 +1127,7 @@ Deleting it is a thing you turn on (`--prune`), never a thing that happens.
 ## Sandy, the vault's archivist
 
 **✦ Sandy**, in the header, opens a chat. Type a question in plain words —
-*what Batman movies are missing from my collection?*, *where are my water
+*which films in a series am I missing?*, *where are my water
 bills?* — and Sandy answers it from the index.
 
 Sandy is an archivist by temperament: quiet, exact, a little dry, and
@@ -1607,8 +1648,8 @@ app says so:
 ```
 
 That fires on the *first* cloud you reconnect, which is never enough on its own:
-a file is rebuilt from two of its three parts, and one account holds one of
-them. So the dialog does not open on a password box it cannot use yet — it asks
+a file is rebuilt from m of its n parts — two of three by default — and one
+account holds one of them. So the dialog does not open on a password box it cannot use yet — it asks
 for the next cloud, and connects it for you:
 
 > A file was split into 3 parts across 3 clouds and is rebuilt from any 2 of
@@ -1626,8 +1667,9 @@ password of the vault you are recovering into.
 
 ### What did not come back
 
-A file is rebuilt from any two of its three parts. One cloud you have not
-reconnected yet costs you nothing; two costs you the file. So the report ends on
+A file is rebuilt from any m of its n parts. Up to n − m clouds you have not
+reconnected yet cost you nothing; one more than that costs you the file — for
+the default 2-of-3, one missing cloud is free and two are not. So the report ends on
 the shortfall rather than the total, in files **and** in bytes — those diverge,
 and the bytes are usually the answer to "how bad is this":
 
@@ -1742,7 +1784,7 @@ Which two you have does not matter, only that they are two different parts;
 passing all three is fine as well. `--preserve-tree` puts the file back under
 the folders it lived in inside `--output-dir`, instead of dropping it there
 flat. A file stored under [a wider
-scheme](#a-wider-spread-when-you-have-the-clouds-for-it) needs its own *k* parts
+scheme](#choosing-m-of-n) needs its own *m* parts
 rather than two — the count is read off the parts themselves, so being short
 says so with the number it wanted.
 
@@ -1751,7 +1793,7 @@ wrote the manifest. `--password` is refused alongside `--manifest`, so it cannot
 be mistaken for the per-archive password standalone mode uses; set
 `SAND_PASSWORD` or pipe it on stdin to run unattended.
 
-**A large file is many chunks, and every chunk needs its own two parts.** Files
+**A large file is many chunks, and every chunk needs its own m parts.** Files
 go up in chunks — 16 MB by default — each split and sealed on its own, so an
 account holds `<archive-id>-c0000000-p1.sand`, `<archive-id>-c0000001-p1.sand`
 and onward rather than a single part file. The manifest lists chunk zero's key
@@ -1783,9 +1825,9 @@ A copy of this file sits in every account, and every copy is one password away
 from the data key. If an account is compromised **and** your password is
 guessed, the attacker gets your file tree, the placement map, and — because each
 part is separately encrypted under that key — whatever plaintext that account's
-own parts hold, which for a large file is roughly half of it. Rebuilding a whole
-file still requires breaking into a second account, so the two-of-three split
-remains a genuine second factor.
+own parts hold, which for a large file is roughly 1/m of it — half at 2-of-3.
+Rebuilding a whole file still requires breaking into m − 1 more accounts, so the
+m-of-n split remains a genuine second factor.
 
 One configuration removes that factor: the `redundant` policy with fewer than
 three accounts, where a single account can already hold enough parts to rebuild
@@ -1813,7 +1855,9 @@ sand vault status                             What's stored, where, how much
 sand vault passwd [--no-migrate]              Change password, re-encrypt everything
 sand vault migrate                            Finish a deferred or interrupted re-encryption
 sand vault policy [strict|redundant]          Show or set placement policy
-sand vault defaults [account]... [--clear]    Show or set the clouds uploads go to
+sand vault defaults [account]... [--scheme m-of-n] [--clear]
+                                              Show or set the clouds uploads go to,
+                                              and the code they are cut with
 sand vault backup [--disable|--enable]        Write the encrypted index to every account
 sand vault recover [--from ACCOUNT]           Rebuild a lost vault from an account's copy
 sand vault recover --resume                   Finish one, once the rest of the clouds are back
@@ -1928,13 +1972,13 @@ have always had.
 ```
 sand ls [path] [-l]                24 B  Aug 12 09:14  p1:acct-a p2:acct-b p3:acct-c
 sand find <query> [--path /dir] [--type file|folder] [--limit N] [-l]
-sand put <path>... [--path /dir] [--overwrite] [--accounts a,b,c]
+sand put <path>... [--path /dir] [--overwrite] [--accounts a,b,c] [--scheme m-of-n]
                                    Files, or a whole folder — it lands under
                                    --path keeping its shape, empty folders too
 sand get <path-or-id> [-o out]     Rebuild and decrypt
 sand mkdir <path>
 sand mv <path> <new-path>          A file or a folder; index only, parts never move
-sand relocate <path> --accounts a,b,c [--dry-run]
+sand relocate <path> --accounts a,b,c [--scheme m-of-n] [--dry-run]
                                    Move a file or folder onto other clouds
 sand rm <path> [-r]                Erases every part from every account
 sand check [path] [--all]          Verify parts are still there; non-zero if not
@@ -1969,7 +2013,7 @@ See [A folder that looks after itself](#a-folder-that-looks-after-itself).
 ### Repositories
 
 ```
-sand git track <url> [--into /code] [--accounts a,b,c] [--scheme k-of-n]
+sand git track <url> [--into /code] [--accounts a,b,c] [--scheme m-of-n]
 sand git list [folder]                     What is kept, and when it was last fetched
 sand git refresh <path> | <folder> --all   Ask the upstream, and fetch if it has moved
 sand git untrack <path>                    Stop following it; the bundle stays
@@ -2281,7 +2325,7 @@ its home screen gets the password prompt like any other browser would.
 ## Film details
 
 A folder of films is a folder whose file names say nothing.
-`The.Thing.1982.REMASTERED.1080p.BluRay.x265-RARBG.mkv` is a perfectly good
+`Some.Film.1982.REMASTERED.1080p.BluRay.x265-GROUP.mkv` is a perfectly good
 thing to store and a terrible thing to read. Plex and Jellyfin solve that by
 looking each file up and showing you the poster, and SAND can now do the same —
 for the folders you say so.
@@ -2342,7 +2386,7 @@ clouds.
 It will, sometimes. Names are read the way every media server reads them: cut at
 the year if there is one, cut at the first `1080p`/`BluRay`/`x265` if there is
 not, and fall back to the folder's name when the file's says nothing —
-`Blade Runner (1982)/title00.mkv` is matched from the folder. Where two films
+`Some Film (1982)/title00.mkv` is matched from the folder. Where two films
 share a name, the year in the file name decides.
 
 Open the file's details and **Fix the match**: search by title, and pick the
@@ -2781,14 +2825,14 @@ mount — not built yet.
 | Threat | Mitigation |
 |---|---|
 | One cloud account compromised | Attacker holds one encrypted part and a manifest they cannot open — useless. One part per file is guaranteed by `strict` placement. |
-| One account compromised **and** your password guessed | The manifest opens: the tree, the placement map, and about half of each large file that account holds a part of. A whole file still needs a second account. |
-| Two accounts compromised | Still needs the key — the vault file, or a manifest backup *and* your password |
+| One account compromised **and** your password guessed | The manifest opens: the tree, the placement map, and the 1/m slice of each file that account holds a part of — about half at 2-of-3. A whole file still needs m accounts. |
+| m accounts compromised | Still needs the key — the vault file, or a manifest backup *and* your password |
 | Vault file stolen | Every section AES-256-GCM sealed under an Argon2id key — yields neither credentials nor filenames |
-| Provider tampers with a part | GCM tag fails; the other two rebuild the file |
+| Provider tampers with a part | GCM tag fails; any m of the others rebuild the file |
 | Part swapping between files | Cleartext header bound as GCM associated data |
 | A provider reading your filenames | Names, hashes and sizes are sealed inside each part, not in its header |
 | Silent bit rot | Whole-file SHA-256 verified on every rebuild |
-| An account disappears | Any two parts suffice; `sand check --all` finds damage early |
+| Accounts disappear | Any m parts suffice, so up to n − m can go; `sand check --all` finds damage early |
 | Another site in your browser | `SameSite=Strict` + `Origin` checks |
 | Stored HTML/SVG executing in the app | Forced to `attachment`, `nosniff`, restrictive CSP |
 | Plaintext cached by a proxy | `Cache-Control: private, no-store` |
@@ -2817,7 +2861,7 @@ copy of the vault file.
   --disable` erases every copy — and puts you back to losing everything if you
   lose the vault file. Note what it carries once you turn film details on: the
   backup *is* the index, so the titles are in it. They add nothing an attacker
-  who could already read `The.Thing.1982…mkv` from the same blob did not have.
+  who could already read `Some.Film.1982…mkv` from the same blob did not have.
 - **The film database knowing what you asked it.** Storing the answer in the
   vault is not the same as the question never having been asked. TMDB sees a
   title and your address, once per film, for the folders you turned on. That is
