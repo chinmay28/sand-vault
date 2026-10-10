@@ -20,6 +20,17 @@ under `/opt/sand`, and keeps the vault, its backups and the service user —
 printing the command that deletes them. It installs and downloads nothing on
 the way out, and running it twice is harmless. Any other argument is refused.
 
+### Stream in VLC opens VLC on Android whatever the film is called
+
+The handoff to VLC on Android named VLC and the address but no type, which
+left VLC matching the filename against its list of extensions. Android's
+patterns cannot see past a few dots, so `Some.Film.2019.1080p.mkv` — or
+anything ending `.Mkv` — was turned away, and the dialog said VLC did not
+answer. The handoff now carries the file's type (or `video/*` when the vault
+does not know it), which VLC accepts for any name. Seen from the HomeApps
+Android launcher, where the vault runs as an app; Chrome on Android had the
+same problem.
+
 ## v2026.8.143
 
 ### Erasing abandoned parts counts itself down instead of hanging

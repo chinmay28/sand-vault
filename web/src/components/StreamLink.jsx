@@ -35,7 +35,7 @@ export default function StreamLink({ file, autoplay, zIndex, onClose }) {
 
   // Held steady across renders, so the effect below is not woken by a fresh
   // object describing the same device.
-  const handoff = useMemo(() => (link ? vlcHandoff(link.address) : null), [link])
+  const handoff = useMemo(() => (link ? vlcHandoff(link.address, link.mime) : null), [link])
 
   const play = useCallback(async () => {
     if (!link) return
