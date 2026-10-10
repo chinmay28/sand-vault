@@ -47,13 +47,14 @@ export function isStandalone() {
    Android has no such thing, but an intent: URL names the target package
    outright and carries the scheme in a field of its own. A bare vlc:// address
    does not: VLC strips its own scheme and assumes http for whatever is left, so
-   an https server handed over that way would be fetched in the clear.
+   an https server handed over that way would be fetched in the clear. The
+   intent carries a type too — see androidIntent for why it cannot do without.
 
    A desktop has neither, and this is the one case where guessing is avoidable
    altogether. VLC registers itself for playlist files on every desktop it
    installs on, so the handoff there is a two-line .m3u naming the address:
    saved, then opened like any other download. */
-export function vlcHandoff(url) {
+export function vlcHandoff(url, mime) {
   if (isIOS()) {
     return {
       kind: 'deeplink',
@@ -62,15 +63,33 @@ export function vlcHandoff(url) {
   }
 
   if (/Android/.test(navigator.userAgent || '')) {
-    const parsed = new URL(url)
-    return {
-      kind: 'deeplink',
-      href: `intent://${url.slice(parsed.protocol.length + 2)}` +
-        `#Intent;scheme=${parsed.protocol.slice(0, -1)};package=org.videolan.vlc;end`,
-    }
+    return { kind: 'deeplink', href: androidIntent(url, mime) }
   }
 
   return { kind: 'playlist' }
+}
+
+/* The intent: URL that opens VLC on Android.
+
+   VLC takes an http(s) address only through one of two intent filters: one
+   matching the MIME type, and one matching the path against patterns like
+   `.*\\..*\\.mkv`. Without a type the second is all there is, and Android's
+   path globs do not backtrack — a film named Some.Film.2019.1080p.mkv has too
+   many dots for any of them, and an .Mkv matches neither case listed. The
+   intent is refused, and nothing but the page staying visible says so.
+
+   A type matches whatever the name looks like. The file's own is used when it
+   is one VLC claims; anything else (octet-stream, or nothing, for a file whose
+   extension the server did not know) becomes video/*, which VLC also claims —
+   the type only routes the intent, and VLC works out what it is playing from
+   the bytes. */
+export function androidIntent(url, mime) {
+  const parsed = new URL(url)
+  const scheme = parsed.protocol.slice(0, -1)
+  const own = String(mime || '').split(';')[0].trim().toLowerCase()
+  const type = /^(video|audio)\/[\w.+-]+$/.test(own) ? own : 'video/*'
+  return `intent://${url.slice(parsed.protocol.length + 2)}` +
+    `#Intent;scheme=${scheme};type=${type};package=org.videolan.vlc;end`
 }
 
 /* A playlist holding the one address, which is what a desktop opens VLC with.
