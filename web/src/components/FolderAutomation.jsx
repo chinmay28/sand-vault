@@ -363,7 +363,7 @@ function PolicyForm({ policy, stored, busy, onChange }) {
             disabled={busy}
             onClick={() => set({ prune: !policy.prune })}
             label="Delete a repository whose upstream has gone"
-            hint="Off by default, and worth leaving off. A repository that has been taken down is the one you are most glad to have kept — and an outage, a rename and a revoked token all look exactly like a deletion from here."
+            hint="Off by default, and worth leaving off. A repository that has been taken down is the one you are most glad to have kept — and an outage, a rename and a revoked token all look exactly like a deletion from here. One whose upstream answers but holds nothing is never deleted."
           />
         </div>
       )}
@@ -563,7 +563,9 @@ function RunFigures({ run }) {
         <Figure label="up to date" value={g.current} tone={g.current ? COLORS.success : undefined} />
         <Figure label="updated" value={g.updated} tone={g.updated ? COLORS.accent : undefined} />
         {!!g.commits && <Figure label="new commits" value={g.commits} />}
+        {!!g.kept && <Figure label="refs kept" value={g.kept} />}
         {!!g.gone && <Figure label="upstream gone" value={g.gone} tone={COLORS.warn} />}
+        {!!g.empty && <Figure label="upstream emptied" value={g.empty} tone={COLORS.warn} />}
         {!!g.failed && <Figure label="failed" value={g.failed} tone={COLORS.error} />}
         {!!g.deferred && <Figure label="left for later" value={g.deferred} />}
         {!!g.pruned && <Figure label="deleted" value={g.pruned} tone={COLORS.error} />}

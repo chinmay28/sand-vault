@@ -1115,7 +1115,7 @@ repository URL is treated as hostile input, because git's `ext::` transport runs
 its argument as a command; only `https://`, `http://`, `ssh://` and
 `git@host:path` are accepted, and a local path is refused outright.
 
-### A repository that disappears is kept, not deleted
+### What disappears upstream is kept, not deleted
 
 If an upstream stops answering — taken down, renamed, made private, or just a
 bad afternoon for somebody's DNS — the stored copy stays exactly where it is and
@@ -1123,6 +1123,35 @@ the run says the upstream has gone. All four look identical from here and only
 one of them is a reason to throw away what may be the last copy in the world.
 
 Deleting it is a thing you turn on (`--prune`), never a thing that happens.
+
+The same rule holds inside the repository: **a refresh never makes the copy
+smaller.** A branch or tag deleted upstream, and the history a force-push
+rewrote, stay in the bundle under `refs/sand/kept/` — a deleted branch as
+`refs/sand/kept/heads/feature@3f9a1c2b7d0e`, say, the branch as it last stood.
+The branches and tags the upstream still has stay exactly what the upstream
+has, so the weekly check is still one cheap question and a plain `git clone` of
+the bundle is still the repository as its upstream shows it. The kept history
+is one fetch away:
+
+```bash
+git clone ./recovered.bundle project
+cd project && git fetch origin 'refs/sand/kept/*:refs/sand/kept/*'
+git log refs/sand/kept/heads/feature@3f9a1c2b7d0e
+```
+
+A branch merged and then deleted is not kept — nothing it reached is lost, and
+keeping every one would make the copy a museum of every branch the project ever
+had. A tag is always kept: that `v1.0` was once this commit is a fact about the
+project, and not one the commit being there restores. `sand git list` says how
+many refs a copy keeps that its upstream no longer has, and a run that kept
+something names it.
+
+And an upstream that answers with *nothing* — wiped, or deleted and made again
+from scratch — is not fetched from at all. Emptying the copy to match would be
+deleting it by another route. The run counts it as emptied, the listing says so,
+and the stored bundle is left as it was, whatever `--prune` says: the upstream
+is still there, and the only thing that has gone from it is what the copy is
+for.
 
 ## Sandy, the vault's archivist
 

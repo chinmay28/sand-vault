@@ -315,7 +315,7 @@ func printAutomation(p vault.FolderAutomation) {
 				p.Git.MaxRepos, plural(p.Git.MaxRepos, "y", "ies"))
 		}
 		if p.Git.Prune {
-			fmt.Println("   a repository whose upstream has gone is deleted")
+			fmt.Println("   a repository whose upstream has gone is deleted (one whose upstream answers with nothing is not)")
 		}
 	}
 	if len(p.History) > 0 {
@@ -356,9 +356,13 @@ func printAutomationRun(run *vault.AutomationRun, prefix string) {
 			fmt.Printf("%s%*s  %d new commit(s), %s stored\n",
 				pad, len(when), "", g.Commits, formatBytes(g.Bytes))
 		}
-		if g.Gone > 0 || g.Failed > 0 || g.Deferred > 0 || g.Pruned > 0 {
-			fmt.Printf("%s%*s  %d upstream gone, %d failed, %d left for later, %d pruned\n",
-				pad, len(when), "", g.Gone, g.Failed, g.Deferred, g.Pruned)
+		if g.Kept > 0 {
+			fmt.Printf("%s%*s  %d ref(s) upstream dropped or rewrote, kept\n",
+				pad, len(when), "", g.Kept)
+		}
+		if g.Gone > 0 || g.Empty > 0 || g.Failed > 0 || g.Deferred > 0 || g.Pruned > 0 {
+			fmt.Printf("%s%*s  %d upstream gone, %d emptied, %d failed, %d left for later, %d pruned\n",
+				pad, len(when), "", g.Gone, g.Empty, g.Failed, g.Deferred, g.Pruned)
 		}
 	default:
 		res := run.Shards

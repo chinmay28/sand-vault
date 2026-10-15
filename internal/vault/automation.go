@@ -513,6 +513,18 @@ type GitResult struct {
 	// GitPolicy.Prune for why the stored copy stays.
 	Gone int `json:"gone,omitempty"`
 
+	// Empty is repositories whose upstream answered and advertised nothing —
+	// wiped, or made again from nothing. The stored copy is left as it was,
+	// whatever the policy says about pruning: the upstream is still there, and
+	// what has gone from it is exactly what the copy is for.
+	Empty int `json:"empty,omitempty"`
+
+	// Kept is refs that upstreams deleted or rewrote this run and that the
+	// stored bundles now hold under refs/sand/kept/ rather than losing. Not a
+	// fault — the copy did its job — but named in Warnings, because a project
+	// losing history is worth a line.
+	Kept int `json:"kept,omitempty"`
+
 	// Pruned is the stored bundles deleted because their upstream is gone and
 	// the policy was told it may. Zero unless GitPolicy.Prune is on.
 	Pruned int `json:"pruned,omitempty"`
@@ -535,7 +547,7 @@ type GitResult struct {
 // clean reports whether the mirror sweep found nothing worth saying. An updated
 // repository is not trouble — it is the job working.
 func (r *GitResult) clean() bool {
-	return r == nil || (r.Failed == 0 && r.Deferred == 0 && r.Gone == 0)
+	return r == nil || (r.Failed == 0 && r.Deferred == 0 && r.Gone == 0 && r.Empty == 0)
 }
 
 // Clean reports whether the sweep found nothing to fix and nothing to say.

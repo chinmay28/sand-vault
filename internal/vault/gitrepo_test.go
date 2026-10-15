@@ -2,6 +2,7 @@ package vault
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -68,6 +69,38 @@ func (r *remoteRepo) Commit(message string) {
 	r.git(work, "add", ".")
 	r.git(work, "commit", "--quiet", "-m", message)
 	r.git(work, "push", "--quiet", "origin", "HEAD")
+	r.publish()
+}
+
+// Branch adds a branch upstream with one commit of its own on it — one that
+// nothing else reaches, so that deleting the branch would lose it.
+func (r *remoteRepo) Branch(name string) {
+	r.t.Helper()
+	root := r.t.TempDir()
+	work := filepath.Join(root, "w")
+	r.git(root, "clone", "--quiet", r.bare, work)
+	r.git(work, "checkout", "--quiet", "-b", name)
+	r.write(work, name+".txt", name+"\n")
+	r.git(work, "add", ".")
+	r.git(work, "commit", "--quiet", "-m", "on "+name)
+	r.git(work, "push", "--quiet", "origin", name)
+	r.publish()
+}
+
+// DeleteRef removes a branch or tag upstream, as `git push --delete` would.
+func (r *remoteRepo) DeleteRef(name string) {
+	r.t.Helper()
+	r.git(r.bare, "update-ref", "-d", name)
+	r.publish()
+}
+
+// Wipe removes every ref upstream: the repository deleted and made again from
+// nothing, or force-pushed into emptiness, as it looks from outside.
+func (r *remoteRepo) Wipe() {
+	r.t.Helper()
+	for _, name := range strings.Fields(r.git(r.bare, "for-each-ref", "--format=%(refname)")) {
+		r.git(r.bare, "update-ref", "-d", name)
+	}
 	r.publish()
 }
 
@@ -581,5 +614,156 @@ func TestRepoNameReadsTheLastSegment(t *testing.T) {
 		if got := RepoName(url); got != want {
 			t.Errorf("RepoName(%q) = %q, want %q", url, got, want)
 		}
+	}
+}
+
+// The copy never gets smaller. A branch deleted upstream is still in the stored
+// bundle afterwards, held under refs/sand/kept/, the listing says so, and the
+// mirror still matches its upstream so the next check is the cheap one.
+func TestRefreshKeepsABranchDeletedUpstream(t *testing.T) {
+	v, _ := newTestVault(t, 3)
+	remote := newRemoteRepo(t)
+	remote.Branch("feature")
+
+	repo, _, err := v.TrackRepo(context.Background(), MainScope, "/", remote.URL, UploadOptions{})
+	if err != nil {
+		t.Fatalf("TrackRepo: %v", err)
+	}
+	if repo.Kept != 0 {
+		t.Fatalf("a fresh copy keeps %d refs, want none", repo.Kept)
+	}
+
+	remote.DeleteRef("refs/heads/feature")
+
+	after, moved, err := v.RefreshRepo(context.Background(), MainScope, repo.ID)
+	if err != nil {
+		t.Fatalf("RefreshRepo: %v", err)
+	}
+	if !moved {
+		t.Fatal("a repository that lost a branch reported as unchanged")
+	}
+	if after.Kept != 1 || after.Refs != repo.Refs-1 {
+		t.Errorf("after the deletion: %d refs and %d kept, want %d and 1", after.Refs, after.Kept, repo.Refs-1)
+	}
+
+	dir := t.TempDir()
+	bundle := filepath.Join(dir, "out.bundle")
+	if err := v.exportFile(context.Background(), after.ID, bundle); err != nil {
+		t.Fatalf("exportFile: %v", err)
+	}
+	heads := remote.git(dir, "bundle", "list-heads", bundle)
+	if !strings.Contains(heads, "refs/sand/kept/heads/feature@") {
+		t.Errorf("the stored bundle does not hold the deleted branch:\n%s", heads)
+	}
+	if strings.Contains(heads, "refs/heads/feature\n") {
+		t.Errorf("the stored bundle still shows the deleted branch as a branch:\n%s", heads)
+	}
+
+	// And the week after, nothing has moved: no fetch, no new bundle.
+	again, moved, err := v.RefreshRepo(context.Background(), MainScope, after.ID)
+	if err != nil {
+		t.Fatalf("RefreshRepo again: %v", err)
+	}
+	if moved || !again.FetchedAt.Equal(after.FetchedAt) {
+		t.Error("a mirror holding kept refs was fetched again although the upstream had not moved")
+	}
+}
+
+// An upstream that answers with nothing is not fetched from, by hand or on a
+// schedule — not even by a policy that prunes. Emptying the copy to match
+// would be deleting it by another route.
+func TestEmptiedUpstreamLeavesTheStoredCopyAlone(t *testing.T) {
+	v, _ := newTestVault(t, 3)
+	remote := newRemoteRepo(t)
+
+	repo, _, err := v.TrackRepo(context.Background(), MainScope, "/", remote.URL, UploadOptions{})
+	if err != nil {
+		t.Fatalf("TrackRepo: %v", err)
+	}
+	remote.Wipe()
+
+	if _, _, err := v.RefreshRepo(context.Background(), MainScope, repo.ID); !errors.Is(err, ErrUpstreamEmpty) {
+		t.Fatalf("RefreshRepo from an emptied upstream = %v, want ErrUpstreamEmpty", err)
+	}
+	after, err := v.TrackedRepo(MainScope, repo.ID)
+	if err != nil {
+		t.Fatalf("the stored repository was lost: %v", err)
+	}
+	if !after.Gone || !after.Empty || after.Reason == "" {
+		t.Errorf("the record does not say the upstream was emptied: %+v", after.GitSource)
+	}
+	if !after.FetchedAt.Equal(repo.FetchedAt) || after.Refs != repo.Refs || after.Digest != repo.Digest {
+		t.Errorf("the stored copy was rewritten: %+v, was %+v", after.GitSource, repo.GitSource)
+	}
+
+	policy := dailyAt("04:00", ActionPull)
+	policy.Task = TaskGit
+	policy.Git = &GitPolicy{Prune: true}
+	if _, err := v.SetAutomation(MainScope, "/", policy); err != nil {
+		t.Fatalf("SetAutomation: %v", err)
+	}
+	run, err := v.RunAutomation(context.Background(), MainScope, "/")
+	if err != nil {
+		t.Fatalf("RunAutomation: %v", err)
+	}
+	if run.Git.Empty != 1 || run.Git.Gone != 0 || run.Git.Pruned != 0 || run.Git.Failed != 0 {
+		t.Fatalf("git result = %+v, want the emptied upstream counted as such and nothing pruned", run.Git)
+	}
+	if run.Clean() {
+		t.Error("a sweep whose upstream was emptied reported as clean")
+	}
+
+	// The file is still there and still a repository with its history.
+	if _, err := v.TrackedRepo(MainScope, repo.ID); err != nil {
+		t.Fatalf("the stored repository was lost: %v", err)
+	}
+	dir := t.TempDir()
+	bundle := filepath.Join(dir, "out.bundle")
+	if err := v.exportFile(context.Background(), repo.ID, bundle); err != nil {
+		t.Fatalf("exportFile: %v", err)
+	}
+	remote.git(dir, "clone", "--quiet", bundle, filepath.Join(dir, "restored"))
+	if log := remote.git(filepath.Join(dir, "restored"), "log", "--oneline"); !strings.Contains(log, "first") {
+		t.Errorf("the stored bundle lost its history: %q", log)
+	}
+}
+
+// The sweep counts what it kept and names it, and keeping is not a fault: the
+// copy did its job.
+func TestGitSweepKeepsWhatUpstreamDropped(t *testing.T) {
+	v, _ := newTestVault(t, 3)
+	remote := newRemoteRepo(t)
+	remote.Branch("feature")
+
+	if _, _, err := v.TrackRepo(context.Background(), MainScope, "/", remote.URL, UploadOptions{}); err != nil {
+		t.Fatalf("TrackRepo: %v", err)
+	}
+	remote.DeleteRef("refs/heads/feature")
+
+	policy := dailyAt("04:00", ActionPull)
+	policy.Task = TaskGit
+	if _, err := v.SetAutomation(MainScope, "/", policy); err != nil {
+		t.Fatalf("SetAutomation: %v", err)
+	}
+	run, err := v.RunAutomation(context.Background(), MainScope, "/")
+	if err != nil {
+		t.Fatalf("RunAutomation: %v", err)
+	}
+	if run.Git.Updated != 1 || run.Git.Kept != 1 {
+		t.Fatalf("git result = %+v, want one updated with one ref kept", run.Git)
+	}
+	if !run.Clean() {
+		t.Errorf("a sweep that kept a branch reported as unclean: %+v", run)
+	}
+	if len(run.Warnings) != 1 || !strings.Contains(run.Warnings[0], "refs/sand/kept/heads/feature@") {
+		t.Errorf("warnings = %q, want the kept ref named", run.Warnings)
+	}
+
+	repos, err := v.TrackedRepos(MainScope, "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repos) != 1 || repos[0].Kept != 1 {
+		t.Errorf("repos = %+v, want one with one kept ref", repos)
 	}
 }

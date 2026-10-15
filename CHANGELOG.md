@@ -12,6 +12,26 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### A stored repository never gets smaller
+
+A refresh used to make the stored bundle a copy of the upstream as it now
+stood, which is the wrong contract for a backup: a branch deleted upstream was
+deleted from the copy, a force-push dropped the history it rewrote, and an
+upstream wiped and started again failed the refresh every week on an empty
+bundle — or, remade with a first commit, replaced the whole history with it.
+Now the fetch keeps what the upstream dropped under `refs/sand/kept/` in the
+same bundle — a deleted branch as `refs/sand/kept/heads/feature@3f9a1c2b7d0e`,
+a deleted or moved tag likewise, the old tip of a rewritten branch — while the
+branches and tags the upstream still has stay exactly what it has, so the
+weekly check is still one cheap question. A branch merged and then deleted is
+let go, since nothing it reached is lost; a tag is kept whatever it reaches.
+An upstream that answers with no refs at all is not fetched from: the stored
+copy is left as it was, the run counts it as *emptied*, and `--prune` does not
+apply to it. `sand git list` and the folder's repositories panel say how many
+refs a copy keeps that its upstream no longer has; a plain `git clone` of the
+bundle is the repository as upstream shows it, with the kept history one
+`git fetch origin 'refs/sand/kept/*:refs/sand/kept/*'` away.
+
 ### The quick start uninstalls with the same one-liner
 
 `curl -fsSL …/quickstart.sh | sudo bash -s -- --uninstall` stops and removes

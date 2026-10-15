@@ -167,7 +167,10 @@ export function FolderRepos({ path, vault = '', onClose, onChanged }) {
         <p style={{ margin: 0 }}>
           A stored repository whose upstream stops answering is kept, not
           deleted. An outage, a rename and a revoked token all look the same from
-          here, and only one of them is a reason to throw away a copy.
+          here, and only one of them is a reason to throw away a copy. Nor does a
+          copy ever get smaller: a branch or tag deleted upstream, and the history
+          a force-push rewrote, stay in the bundle under refs/sand/kept/, and an
+          upstream that has been emptied is left unmatched.
         </p>
       </div>
     </Modal>
@@ -197,13 +200,16 @@ function Repo({ repo, busy, available, onRefresh, onUntrack }) {
         {formatBytes(repo.size)} · {repo.refs} ref{repo.refs === 1 ? '' : 's'}
         {repo.head ? ` · ${repo.head}` : ''}
         {repo.commits ? ` · ${repo.commits} commit${repo.commits === 1 ? '' : 's'}` : ''}
+        {repo.kept ? ` · ${repo.kept} ref${repo.kept === 1 ? '' : 's'} kept that upstream dropped` : ''}
       </div>
 
       {repo.gone && (
         <div style={{
           fontFamily: FONT.sans, fontSize: '11.5px', color: COLORS.warn, marginBottom: '8px',
         }}>
-          The upstream stopped answering. The copy here is untouched.
+          {repo.empty
+            ? 'The upstream answers but now holds nothing. The copy here is as it was.'
+            : 'The upstream stopped answering. The copy here is untouched.'}
         </div>
       )}
 

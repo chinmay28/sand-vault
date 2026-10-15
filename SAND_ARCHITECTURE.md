@@ -1286,6 +1286,33 @@ throw away what may be the last copy of somebody's repository. So a non-answerin
 upstream sets `GitSource.Gone` with the reason, the run counts it, and the bundle
 stays. `GitPolicy.Prune` exists and is off by default.
 
+**Nor is anything an upstream drops.** A plain mirror fetch makes the mirror a
+copy of the upstream as it now stands, which is the wrong contract for a backup:
+a branch deleted upstream would be deleted from the copy, a force-push would drop
+the history it rewrote, and a repository wiped and remade would wipe its own
+copy. `git.Fetch` therefore fetches without pruning and reconciles by hand. A ref
+the upstream no longer advertises is first held under `git.KeptPrefix`
+(`refs/sand/kept/<name>@<hash>`) and only then deleted under its old name —
+before the fetch, because a branch renamed `foo` → `foo/bar` cannot be fetched
+while `foo` is in the way; a ref the fetch moved to a commit that does not
+descend from the old one has its old tip held the same way. Once the fetch is
+in, a held branch whose tip is reachable from a ref the upstream kept (merged,
+then deleted) is let go, a held tag is kept whatever it reaches, and a held ref
+superseded by a later one for the same name is replaced by it. Nothing under
+`refs/sand/` is changed by the fetch itself, whatever the upstream advertises.
+Because a bundle is made of refs, holding one is the whole mechanism by which
+the history it reaches survives into the stored file; because `Refs` and
+`LsRemote` both leave `refs/sand/` out, the digest comparison the schedule turns
+on still asks only whether the upstream has moved. `GitSource.Kept` counts what
+a bundle holds that its upstream does not; `GitResult.Kept` what a run added to
+that, named in its warnings.
+
+An upstream that answers with no refs at all is not fetched from. Making the
+copy match would be emptying it, so `refreshRepo` returns `ErrUpstreamEmpty`,
+marks the record `Gone` and `Empty`, and the sweep counts it as `Empty` rather
+than `Gone` — a count `pruneGone` is never applied to, since the upstream is
+still there and what has gone from it is exactly what the copy is for.
+
 The sweep bounds the fetching and not the asking. Every tracked repository is
 still asked whether it has moved, because that is the cheap half and the half
 that makes the report honest; `MaxRepos` and `SizeLimit` govern only what is

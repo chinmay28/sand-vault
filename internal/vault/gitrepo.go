@@ -57,6 +57,15 @@ import (
 // exactly like a deletion from here. So the stored bundle stays, the run says
 // the upstream is gone, and throwing it away stays a thing somebody does on
 // purpose (GitPolicy.Prune).
+//
+// The same holds one level down. A fetch that made the mirror a copy of the
+// upstream as it now stands would delete a branch the upstream deleted and
+// drop the history a force-push rewrote, which is the backup losing exactly
+// the thing somebody later wants it for. So the fetch (git.Fetch) keeps what
+// the upstream dropped under refs/sand/kept/ in the same bundle, and an
+// upstream that answers with no refs at all — wiped, or made again from
+// nothing — is not fetched from: the stored copy is left as it was and the run
+// says so (ErrUpstreamEmpty). The stored copy only ever grows.
 
 // DefaultBundleLimit is how large a stored bundle an unattended refresh will
 // re-fetch unless the policy says otherwise.
@@ -77,6 +86,21 @@ const bundleSuffix = ".bundle"
 
 // ErrNotTracked is returned for a file that is not a stored repository.
 var ErrNotTracked = errors.New("this file is not a tracked repository")
+
+// ErrUpstreamEmpty is returned by a refresh whose upstream answers but holds
+// nothing. A repository wiped, or deleted and made again from nothing, looks
+// like this, and making the stored copy match would be deleting it by another
+// route — so it is left as it was, and marked.
+var ErrUpstreamEmpty = errors.New(
+	"the upstream answers but advertises no refs at all, so the stored copy was left as it was")
+
+// gitTally is what a refresh adds up for the sweep that asked for it, over and
+// above the repository it hands back: the sweep wants these summed across
+// every repository, and a single refresh does not.
+type gitTally struct {
+	commits int
+	kept    []git.Ref
+}
 
 // GitSource is what makes a stored bundle a mirror rather than a file somebody
 // happened to upload.
@@ -104,6 +128,12 @@ type GitSource struct {
 	// a refresh report that a week brought eleven of them.
 	Commits int `json:"commits,omitempty"`
 
+	// Kept is how many refs the bundle holds that the upstream no longer does
+	// — branches and tags deleted or rewritten upstream, held under
+	// refs/sand/kept/ (see git.KeptPrefix). Not counted in Refs, which is the
+	// upstream as it stands.
+	Kept int `json:"kept,omitempty"`
+
 	// FetchedAt is when the stored bundle was last actually made, and CheckedAt
 	// when the upstream was last asked. They differ by design and the gap is
 	// the good news: checked every Sunday, fetched in March, means a repository
@@ -113,8 +143,11 @@ type GitSource struct {
 
 	// Gone is set when the upstream stopped answering, with the reason, so that
 	// a listing can mark it without the run's history being read. Cleared the
-	// moment it answers again.
+	// moment it answers again. Empty is the one kind of gone that answers: the
+	// upstream is there and advertises no refs at all, and the stored copy is
+	// left alone rather than emptied to match.
 	Gone   bool   `json:"gone,omitempty"`
+	Empty  bool   `json:"empty,omitempty"`
 	Reason string `json:"reason,omitempty"`
 }
 
@@ -213,6 +246,15 @@ func (v *Vault) RefreshRepo(ctx context.Context, scope Scope, id string) (*Track
 	return v.refreshRepo(ctx, scope, repo, nil, nil)
 }
 
+// markGone records that an upstream could not be refreshed from and why,
+// without touching the stored copy.
+func (v *Vault) markGone(scope Scope, repo *TrackedRepo, empty bool, reason string) error {
+	source := repo.GitSource
+	source.CheckedAt = time.Now().UTC()
+	source.Gone, source.Empty, source.Reason = true, empty, reason
+	return v.setGitSource(scope, repo.ID, &source)
+}
+
 // refreshRepo is the work: ask, and fetch only if the answer has changed.
 //
 // It hands back the repository as it now stands rather than only whether it
@@ -224,9 +266,8 @@ func (v *Vault) RefreshRepo(ctx context.Context, scope Scope, id string) (*Track
 // so the sweep — which has to ask before it can decide whether the bounds apply
 // — does not make this ask a second time. Nil means go and ask.
 //
-// counts, when given, has the new-commit tally added to it — the sweep wants it
-// summed across every repository and a single refresh does not.
-func (v *Vault) refreshRepo(ctx context.Context, scope Scope, repo *TrackedRepo, advertised []git.Ref, counts *int) (*TrackedRepo, bool, error) {
+// tally, when given, has what the sweep sums added to it.
+func (v *Vault) refreshRepo(ctx context.Context, scope Scope, repo *TrackedRepo, advertised []git.Ref, tally *gitTally) (*TrackedRepo, bool, error) {
 	remote, err := git.ParseRemote(repo.URL)
 	if err != nil {
 		return nil, false, err
@@ -237,15 +278,19 @@ func (v *Vault) refreshRepo(ctx context.Context, scope Scope, repo *TrackedRepo,
 		if advertised, err = git.LsRemote(ctx, remote); err != nil {
 			// The upstream did not answer. That is worth recording and is never
 			// by itself worth deleting anything over — see the note at the top.
-			source := repo.GitSource
-			source.CheckedAt = time.Now().UTC()
-			source.Gone = true
-			source.Reason = err.Error()
-			if setErr := v.setGitSource(scope, repo.ID, &source); setErr != nil {
+			if setErr := v.markGone(scope, repo, false, err.Error()); setErr != nil {
 				return nil, false, setErr
 			}
 			return nil, false, err
 		}
+	}
+	if len(advertised) == 0 {
+		// It answered with nothing. A fetch from it would be the stored copy
+		// being emptied to match, which is a deletion by another name.
+		if setErr := v.markGone(scope, repo, true, ErrUpstreamEmpty.Error()); setErr != nil {
+			return nil, false, setErr
+		}
+		return nil, false, ErrUpstreamEmpty
 	}
 
 	if git.Digest(advertised) == repo.Digest {
@@ -254,7 +299,7 @@ func (v *Vault) refreshRepo(ctx context.Context, scope Scope, repo *TrackedRepo,
 		// advertisement that got us here.
 		source := repo.GitSource
 		source.CheckedAt = time.Now().UTC()
-		source.Gone, source.Reason = false, ""
+		source.Gone, source.Empty, source.Reason = false, false, ""
 		if err := v.setGitSource(scope, repo.ID, &source); err != nil {
 			return nil, false, err
 		}
@@ -285,7 +330,10 @@ func (v *Vault) refreshRepo(ctx context.Context, scope Scope, repo *TrackedRepo,
 	if err := os.Remove(stored); err != nil && !os.IsNotExist(err) {
 		return nil, false, err
 	}
-	if err := git.Fetch(ctx, mirror); err != nil {
+	// The refs are handed on so the fetch knows what the upstream dropped;
+	// what it dropped is kept, not pruned — see git.Fetch.
+	kept, err := git.Fetch(ctx, mirror, advertised)
+	if err != nil {
 		return nil, false, err
 	}
 
@@ -293,8 +341,11 @@ func (v *Vault) refreshRepo(ctx context.Context, scope Scope, repo *TrackedRepo,
 	if err != nil {
 		return nil, false, err
 	}
-	if after, _ := git.CountCommits(ctx, mirror); after > before && counts != nil {
-		*counts += after - before
+	if tally != nil {
+		if after, _ := git.CountCommits(ctx, mirror); after > before {
+			tally.commits += after - before
+		}
+		tally.kept = append(tally.kept, kept...)
 	}
 
 	// Overwrite rather than store beside: this is the same repository, and a
@@ -329,6 +380,10 @@ func bundleMirror(ctx context.Context, work, mirror string, remote git.Remote) (
 	if err != nil {
 		return nil, "", err
 	}
+	kept, err := git.Kept(ctx, mirror)
+	if err != nil {
+		return nil, "", err
+	}
 	head, _ := git.Head(ctx, mirror)
 	commits, _ := git.CountCommits(ctx, mirror)
 
@@ -344,6 +399,7 @@ func bundleMirror(ctx context.Context, work, mirror string, remote git.Remote) (
 		Refs:      len(refs),
 		Head:      head,
 		Commits:   commits,
+		Kept:      len(kept),
 		FetchedAt: now,
 		CheckedAt: now,
 	}, bundle, nil
@@ -688,15 +744,24 @@ func (v *Vault) sweepOneRepo(
 		res.Gone++
 		run.Warnings = append(run.Warnings, fmt.Sprintf(
 			"%s: %s did not answer — %v", repo.Path, repo.URL, err))
-
-		source := repo.GitSource
-		source.CheckedAt = time.Now().UTC()
-		source.Gone, source.Reason = true, err.Error()
-		if setErr := v.setGitSource(scope, repo.ID, &source); setErr != nil {
+		if setErr := v.markGone(scope, &repo, false, err.Error()); setErr != nil {
 			run.Error = setErr.Error()
 			return
 		}
 		v.pruneGone(ctx, scope, cfg, repo, res, run)
+		return
+	}
+	if len(advertised) == 0 {
+		// It answers, and has nothing. Not pruned even by a policy that
+		// prunes: the upstream is still there, and the only thing that has
+		// gone is its contents — which is the thing the stored copy is for.
+		res.Empty++
+		run.Warnings = append(run.Warnings, fmt.Sprintf(
+			"%s: %s now advertises no refs at all, so the stored copy was left as it was",
+			repo.Path, repo.URL))
+		if setErr := v.markGone(scope, &repo, true, ErrUpstreamEmpty.Error()); setErr != nil {
+			run.Error = setErr.Error()
+		}
 		return
 	}
 
@@ -704,7 +769,7 @@ func (v *Vault) sweepOneRepo(
 		res.Current++
 		source := repo.GitSource
 		source.CheckedAt = time.Now().UTC()
-		source.Gone, source.Reason = false, ""
+		source.Gone, source.Empty, source.Reason = false, false, ""
 		if err := v.setGitSource(scope, repo.ID, &source); err != nil {
 			run.Error = err.Error()
 		}
@@ -734,7 +799,15 @@ func (v *Vault) sweepOneRepo(
 
 	// The refs are handed on rather than asked for again: this function had to
 	// ask before it could tell whether the bounds above applied at all.
-	updated, moved, err := v.refreshRepo(ctx, scope, &repo, advertised, &res.Commits)
+	var tally gitTally
+	updated, moved, err := v.refreshRepo(ctx, scope, &repo, advertised, &tally)
+	res.Commits += tally.commits
+	res.Kept += len(tally.kept)
+	if len(tally.kept) > 0 {
+		run.Warnings = append(run.Warnings, fmt.Sprintf(
+			"%s: the upstream dropped or rewrote %d ref(s); kept in the stored bundle as %s",
+			repo.Path, len(tally.kept), keptNames(tally.kept)))
+	}
 	switch {
 	case err != nil:
 		res.Failed++
@@ -751,6 +824,21 @@ func (v *Vault) sweepOneRepo(
 	}
 }
 
+// keptNames lists kept refs the way a warning can carry them: the first few by
+// name, and a count of the rest.
+func keptNames(kept []git.Ref) string {
+	const shown = 3
+	names := make([]string, 0, shown)
+	for i, r := range kept {
+		if i == shown {
+			names = append(names, fmt.Sprintf("… and %d more", len(kept)-shown))
+			break
+		}
+		names = append(names, r.Name)
+	}
+	return strings.Join(names, ", ")
+}
+
 // pruneGone deletes a stored bundle whose upstream has gone, but only when the
 // policy was explicitly told it may.
 //
@@ -759,6 +847,9 @@ func (v *Vault) sweepOneRepo(
 // token expired, a network that is down, a DNS server having a bad afternoon —
 // and only one of them is a reason to throw away what may be the last copy of
 // somebody's repository.
+//
+// "Gone" means did not answer. An upstream that answers with nothing is not
+// gone, and is never pruned — see sweepOneRepo.
 func (v *Vault) pruneGone(ctx context.Context, scope Scope, cfg GitPolicy, repo TrackedRepo, res *GitResult, run *AutomationRun) {
 	if !cfg.Prune {
 		return

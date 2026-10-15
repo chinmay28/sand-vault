@@ -147,8 +147,9 @@ type Ref struct {
 //
 // A ref that moved, one that appeared and one that was deleted upstream all
 // come out as "not the same", which is right: each of the three is a reason to
-// fetch, and pruning a branch somebody deleted is as much a part of keeping a
-// mirror current as picking up a commit.
+// fetch. What the fetch does about the deleted one is keep it, not prune it —
+// see Fetch — but the mirror still has to stop advertising it under its old
+// name, or the comparison would never come out equal again.
 func Same(a, b []Ref) bool {
 	if len(a) != len(b) {
 		return false
@@ -293,8 +294,18 @@ func ParseRemote(raw string) (Remote, error) {
 // to a branch that is already in the list — keeping it would make every stored
 // repository differ from its own upstream for ever, and turn the cheap weekly
 // check into a full fetch every time.
+//
+// Anything an upstream advertises under refs/sand/ is dropped as well. That
+// namespace is SAND's own in a mirror (see KeptPrefix), Refs leaves it out for
+// the same reason, and the two have to agree on what they are comparing.
 func LsRemote(ctx context.Context, remote Remote) ([]Ref, error) {
-	out, err := run(ctx, "", "ls-remote", "--quiet", "--", remote.url)
+	return lsRemote(ctx, remote.url)
+}
+
+// lsRemote is LsRemote for a URL already known to be one — the one a mirror's
+// origin was set to by Mirror or FromBundle.
+func lsRemote(ctx context.Context, url string) ([]Ref, error) {
+	out, err := run(ctx, "", "ls-remote", "--quiet", "--", url)
 	if err != nil {
 		return nil, err
 	}
@@ -305,7 +316,7 @@ func LsRemote(ctx context.Context, remote Remote) ([]Ref, error) {
 		if !ok || hash == "" || name == "" {
 			continue
 		}
-		if strings.HasSuffix(name, "^{}") || name == "HEAD" {
+		if strings.HasSuffix(name, "^{}") || name == "HEAD" || strings.HasPrefix(name, ownPrefix) {
 			continue
 		}
 		refs = append(refs, Ref{Name: name, Hash: hash})
@@ -332,37 +343,352 @@ func Mirror(ctx context.Context, remote Remote, dir string) error {
 	return err
 }
 
-// Fetch brings a mirror up to date with the remote it was made from.
+// ownPrefix is the namespace a mirror keeps for itself, which no fetch writes
+// to and no comparison with the upstream looks at.
+const ownPrefix = "refs/sand/"
+
+// KeptPrefix is where a mirror holds what its upstream took away.
 //
-// --prune matters here: a branch deleted upstream should be deleted in the
-// mirror too, or the stored copy slowly becomes a museum of every branch the
-// project ever had, and the refs it reports stop matching the refs the remote
-// advertises — which is the comparison the whole schedule turns on.
-func Fetch(ctx context.Context, dir string) error {
+// A ref the upstream deleted or rewrote is held as
+// refs/sand/kept/<name>@<hash>, where <name> is the ref without its refs/ and
+// <hash> the first twelve characters of what it pointed at — so
+// refs/sand/kept/heads/feature@3f9a1c2b7d0e is the branch feature as it stood
+// before somebody removed it, and refs/sand/kept/tags/v1@… a tag that has
+// since been deleted or moved.
+//
+// They are refs rather than a file on the side because a bundle is made of
+// refs: whatever a ref reaches is in the bundle and whatever none does is not,
+// so holding a ref is the whole mechanism by which the history it reaches
+// survives. They are in a namespace of their own so that a plain `git clone`
+// of the bundle is the repository as the upstream has it, with nothing
+// unexpected checked out; the kept history is there for the asking:
+//
+//	git clone repo.bundle project
+//	cd project && git fetch origin 'refs/sand/kept/*:refs/sand/kept/*'
+//	git log refs/sand/kept/heads/feature@3f9a1c2b7d0e
+const KeptPrefix = ownPrefix + "kept/"
+
+// Fetch brings a mirror up to date with its upstream without letting the
+// upstream take anything away from it.
+//
+// A plain mirror fetch makes the mirror a copy of the upstream as it stands,
+// and that is the wrong contract for a backup. A branch deleted upstream would
+// be deleted here; a branch force-pushed would drop the commits it used to
+// reach; a repository wiped and started again would wipe its own copy — in
+// every case the stored bundle loses exactly the thing somebody later wants it
+// for. So this fetch keeps the mirror matching the upstream ref for ref, which
+// is what keeps the cheap comparison the schedule turns on cheap, and moves
+// what the upstream dropped or rewrote under KeptPrefix instead of discarding
+// it:
+//
+//   - A ref the upstream no longer advertises is moved there before the fetch
+//     — before rather than after, because a branch renamed from foo to foo/bar
+//     cannot be fetched while a ref named foo is in the way — and is only then
+//     deleted under its old name.
+//   - A ref the fetch moved to a commit that does not descend from the old one
+//     (a force-push, a rewritten history) has its old tip kept there.
+//   - Nothing under refs/sand/ is changed by the fetch itself, whatever the
+//     upstream advertises.
+//   - HEAD follows a renamed default branch, so that a clone of the bundle
+//     still checks something out.
+//
+// Not everything moved there stays. A branch whose last commit is still
+// reachable from a ref the upstream kept — the usual case, a feature branch
+// merged and then deleted — is let go once the fetch is in, since nothing it
+// reaches would be lost; keeping every one of those would turn the copy into
+// a museum of every branch the project ever had. A tag is kept whatever it
+// reaches, because a tag is a name that matters on its own: that v1.0 was once
+// this commit is a fact about the repository, and not one the commit being
+// there restores. And a kept ref superseded by a later one for the same name —
+// one whose tip is an ancestor of the new one — is replaced by it, so a branch
+// that is deleted, remade and deleted again holds one entry and not a trail.
+//
+// advertised is what the upstream has already been heard to say, so a caller
+// that asked once need not ask twice; nil means ask now. What was newly kept
+// is returned under its new names. On an error part way the mirror may have
+// been left mid-move; a caller that wants it whole again makes it from the
+// bundle afresh, which is what the vault does anyway.
+func Fetch(ctx context.Context, dir string, advertised []Ref) ([]Ref, error) {
 	if err := checkRepo(dir); err != nil {
-		return err
+		return nil, err
 	}
-	_, err := run(ctx, dir, "fetch", "--prune", "--quiet", "origin")
-	return err
+	if advertised == nil {
+		url, err := run(ctx, dir, "remote", "get-url", "origin")
+		if err != nil {
+			return nil, err
+		}
+		if advertised, err = lsRemote(ctx, strings.TrimSpace(url)); err != nil {
+			return nil, err
+		}
+	}
+	upstream := make(map[string]bool, len(advertised))
+	for _, r := range advertised {
+		upstream[r.Name] = true
+	}
+
+	before, err := Refs(ctx, dir)
+	if err != nil {
+		return nil, err
+	}
+
+	// A ref the upstream has dropped, and where it is held now. held is ""
+	// for one that still has to be decided after the fetch, and created says
+	// whether the holding ref was made for it or was already there.
+	type dropped struct {
+		ref     Ref
+		held    string
+		created bool
+	}
+	var pending []dropped
+
+	// Out of the way first, kept before deleted, so that there is no moment at
+	// which the mirror reaches less than it did.
+	for _, r := range before {
+		if upstream[r.Name] {
+			continue
+		}
+		held, created, err := keep(ctx, dir, r)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := run(ctx, dir, "update-ref", "-d", r.Name, r.Hash); err != nil {
+			return nil, err
+		}
+		pending = append(pending, dropped{ref: r, held: held, created: created})
+	}
+
+	// What is SAND's own must come out of the fetch as it went in.
+	own, err := refsUnder(ctx, dir, ownPrefix)
+	if err != nil {
+		return nil, err
+	}
+	// Forced, as a mirror's own refspec is: a branch rewritten upstream is
+	// taken, and its old tip is dealt with below.
+	if _, err := run(ctx, dir, "fetch", "--quiet", "origin", "+refs/*:refs/*"); err != nil {
+		return nil, err
+	}
+	if err := restoreOwn(ctx, dir, own); err != nil {
+		return nil, err
+	}
+
+	after, err := Refs(ctx, dir)
+	if err != nil {
+		return nil, err
+	}
+	now := make(map[string]string, len(after))
+	for _, r := range after {
+		now[r.Name] = r.Hash
+	}
+	if err := followHead(ctx, dir, now); err != nil {
+		return nil, err
+	}
+	for _, r := range before {
+		if !upstream[r.Name] {
+			continue
+		}
+		if hash, ok := now[r.Name]; !ok || hash != r.Hash {
+			pending = append(pending, dropped{ref: r})
+		}
+	}
+
+	// With the fetch in, it is known what still reaches what, and the decision
+	// can be made once and for the right reason.
+	var kept []Ref
+	for _, d := range pending {
+		wanted := strings.HasPrefix(d.ref.Name, "refs/tags/")
+		if !wanted {
+			wanted = !reachable(ctx, dir, d.ref.Hash)
+		}
+		switch {
+		case wanted && d.held == "":
+			held, created, err := keep(ctx, dir, d.ref)
+			if err != nil {
+				return nil, err
+			}
+			if created {
+				kept = append(kept, Ref{Name: held, Hash: d.ref.Hash})
+			}
+		case wanted:
+			if d.created {
+				kept = append(kept, Ref{Name: d.held, Hash: d.ref.Hash})
+			}
+		case d.created:
+			// Moved aside before the fetch, and the fetch brought a ref that
+			// reaches everything it did.
+			if _, err := run(ctx, dir, "update-ref", "-d", d.held, d.ref.Hash); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return kept, nil
 }
 
-// Refs lists what a mirror is holding, in the same shape LsRemote returns, so
-// that what is stored and what is upstream can be compared directly.
+// followHead moves a mirror's HEAD when the branch it named has gone — master
+// renamed to main, usually. A fetch does not touch HEAD, and a bundle whose
+// HEAD names a branch it does not hold clones with nothing checked out. The
+// upstream is asked where its own HEAD points, which is the one extra round
+// trip and only on a rename, and followed when the answer is a branch the
+// mirror now has. Not being able to follow is not a failed fetch.
+func followHead(ctx context.Context, dir string, have map[string]string) error {
+	target, err := run(ctx, dir, "symbolic-ref", "--quiet", "HEAD")
+	if err != nil {
+		return nil
+	}
+	if _, ok := have[strings.TrimSpace(target)]; ok {
+		return nil
+	}
+	out, err := run(ctx, dir, "ls-remote", "--symref", "origin", "HEAD")
+	if err != nil {
+		return nil
+	}
+	for _, line := range strings.Split(out, "\n") {
+		rest, ok := strings.CutPrefix(line, "ref: ")
+		if !ok {
+			continue
+		}
+		ref, _, _ := strings.Cut(rest, "\t")
+		if _, ok := have[ref]; ok {
+			_, err := run(ctx, dir, "symbolic-ref", "HEAD", ref)
+			return err
+		}
+	}
+	return nil
+}
+
+// keep holds a ref the upstream dropped or rewrote under KeptPrefix and says
+// where. created is false when a kept ref for the same name already reaches
+// this hash, in which case nothing is written; a kept ref for the same name
+// that this hash reaches is superseded and replaced.
+func keep(ctx context.Context, dir string, r Ref) (held string, created bool, err error) {
+	family := KeptPrefix + strings.TrimPrefix(r.Name, "refs/") + "@"
+	held = family + shortHash(r.Hash)
+
+	// Both questions are asked of git rather than answered from a list because
+	// they are about ancestry, not names. Either failing is not fatal: a ref
+	// pointing at something that is not a commit — a tag on a tree — cannot be
+	// placed in a history, and the safe answer is to keep it.
+	if covering, err := forEachRef(ctx, dir, KeptPrefix, "--contains", r.Hash); err == nil {
+		for _, name := range covering {
+			if strings.HasPrefix(name, family) {
+				return name, false, nil
+			}
+		}
+	}
+	if superseded, err := forEachRef(ctx, dir, KeptPrefix, "--merged", r.Hash); err == nil {
+		for _, name := range superseded {
+			if strings.HasPrefix(name, family) && name != held {
+				if _, err := run(ctx, dir, "update-ref", "-d", name); err != nil {
+					return "", false, err
+				}
+			}
+		}
+	}
+	if _, err := run(ctx, dir, "update-ref", held, r.Hash); err != nil {
+		return "", false, err
+	}
+	return held, true, nil
+}
+
+// reachable reports whether a commit is reachable from some ref the upstream
+// still has — one outside SAND's own namespace. A hash git cannot place in a
+// history counts as unreachable, which errs towards keeping.
+func reachable(ctx context.Context, dir, hash string) bool {
+	names, err := forEachRef(ctx, dir, "refs/", "--contains", hash)
+	if err != nil {
+		return false
+	}
+	for _, name := range names {
+		if !strings.HasPrefix(name, ownPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// restoreOwn puts refs/sand/ back the way it was before a fetch: anything the
+// fetch changed is changed back, anything it added is removed.
+func restoreOwn(ctx context.Context, dir string, own []Ref) error {
+	now, err := refsUnder(ctx, dir, ownPrefix)
+	if err != nil {
+		return err
+	}
+	was := make(map[string]string, len(own))
+	for _, r := range own {
+		was[r.Name] = r.Hash
+	}
+	seen := make(map[string]bool, len(now))
+	for _, r := range now {
+		seen[r.Name] = true
+		switch hash, ok := was[r.Name]; {
+		case !ok:
+			if _, err := run(ctx, dir, "update-ref", "-d", r.Name); err != nil {
+				return err
+			}
+		case hash != r.Hash:
+			if _, err := run(ctx, dir, "update-ref", r.Name, hash); err != nil {
+				return err
+			}
+		}
+	}
+	for _, r := range own {
+		if !seen[r.Name] {
+			if _, err := run(ctx, dir, "update-ref", r.Name, r.Hash); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// shortHash is enough of a hash to name a kept ref by: long enough that two
+// tips of the same branch will not share it, short enough to read.
+func shortHash(hash string) string {
+	if len(hash) > 12 {
+		return hash[:12]
+	}
+	return hash
+}
+
+// Refs lists what a mirror is holding of its upstream, in the same shape
+// LsRemote returns, so that what is stored and what is upstream can be
+// compared directly. What the mirror keeps for itself under refs/sand/ is
+// left out — see Kept for that.
 func Refs(ctx context.Context, dir string) ([]Ref, error) {
 	if err := checkRepo(dir); err != nil {
 		return nil, err
 	}
-	out, err := run(ctx, dir, "show-ref")
+	all, err := refsUnder(ctx, dir, "refs/")
 	if err != nil {
-		// A repository with no refs at all — a freshly mirrored empty one —
-		// makes show-ref exit non-zero with nothing to say. That is an answer,
-		// not a failure.
-		if strings.TrimSpace(out) == "" {
-			return nil, nil
-		}
 		return nil, err
 	}
+	refs := all[:0]
+	for _, r := range all {
+		if !strings.HasPrefix(r.Name, ownPrefix) {
+			refs = append(refs, r)
+		}
+	}
+	if len(refs) == 0 {
+		return nil, nil
+	}
+	return refs, nil
+}
 
+// Kept lists what a mirror holds that its upstream no longer does, under the
+// names KeptPrefix describes.
+func Kept(ctx context.Context, dir string) ([]Ref, error) {
+	if err := checkRepo(dir); err != nil {
+		return nil, err
+	}
+	return refsUnder(ctx, dir, KeptPrefix)
+}
+
+// refsUnder lists the refs below a prefix. A repository with none — a freshly
+// mirrored empty one — is an answer, not a failure.
+func refsUnder(ctx context.Context, dir, prefix string) ([]Ref, error) {
+	out, err := run(ctx, dir, "for-each-ref", "--format=%(objectname) %(refname)", prefix)
+	if err != nil {
+		return nil, err
+	}
 	var refs []Ref
 	for _, line := range strings.Split(out, "\n") {
 		hash, name, ok := strings.Cut(strings.TrimSpace(line), " ")
@@ -372,6 +698,22 @@ func Refs(ctx context.Context, dir string) ([]Ref, error) {
 		refs = append(refs, Ref{Name: name, Hash: hash})
 	}
 	return refs, nil
+}
+
+// forEachRef names the refs below a prefix that satisfy one of for-each-ref's
+// ancestry filters, --contains or --merged, for a hash.
+func forEachRef(ctx context.Context, dir, prefix, filter, hash string) ([]string, error) {
+	out, err := run(ctx, dir, "for-each-ref", "--format=%(refname)", filter, hash, prefix)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, line := range strings.Split(out, "\n") {
+		if name := strings.TrimSpace(line); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names, nil
 }
 
 // Head is the branch a mirror's HEAD points at, "" when it points at nothing —

@@ -261,9 +261,9 @@ func logAutomationRun(run *vault.AutomationRun) {
 			run.Git.Current, run.Git.Updated)
 	case run.Git != nil:
 		log.Printf("automation %s: %d checked, %d up to date, %d updated, "+
-			"%d upstream gone, %d failed, %d left for later%s",
+			"%d upstream gone, %d emptied, %d failed, %d left for later%s",
 			where, run.Git.Checked, run.Git.Current, run.Git.Updated,
-			run.Git.Gone, run.Git.Failed, run.Git.Deferred, offlineSuffix(run.Offline))
+			run.Git.Gone, run.Git.Empty, run.Git.Failed, run.Git.Deferred, offlineSuffix(run.Offline))
 	case run.Clean():
 		log.Printf("automation %s: %d file(s) checked, every part where it should be",
 			where, shardCount(run))

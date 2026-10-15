@@ -187,8 +187,12 @@ repository that has not changed costs almost nothing and says so.
 					fmt.Printf("%-40s %v\n", repo.Path, err)
 				case moved:
 					updated++
-					fmt.Printf("%-40s updated — %d refs, %d commits, %s\n",
-						after.Path, after.Refs, after.Commits, formatBytes(after.Size))
+					kept := ""
+					if after.Kept > 0 {
+						kept = fmt.Sprintf(", %d kept that upstream dropped", after.Kept)
+					}
+					fmt.Printf("%-40s updated — %d refs, %d commits%s, %s\n",
+						after.Path, after.Refs, after.Commits, kept, formatBytes(after.Size))
 				default:
 					fmt.Printf("%-40s already up to date\n", repo.Path)
 				}
@@ -275,6 +279,9 @@ func printRepo(repo vault.TrackedRepo) {
 	if repo.Commits > 0 {
 		detail += fmt.Sprintf(", %d commits", repo.Commits)
 	}
+	if repo.Kept > 0 {
+		detail += fmt.Sprintf(", %d ref%s kept that upstream dropped", repo.Kept, plural(repo.Kept, "", "s"))
+	}
 	fmt.Printf("   %s\n", detail)
 
 	fmt.Printf("   fetched %s", repo.FetchedAt.Local().Format("2 Jan 2006 15:04"))
@@ -283,7 +290,10 @@ func printRepo(repo vault.TrackedRepo) {
 	}
 	fmt.Println()
 
-	if repo.Gone {
+	switch {
+	case repo.Empty:
+		fmt.Printf("   upstream has been emptied — the copy here is as it was: %s\n", strings.TrimSpace(repo.Reason))
+	case repo.Gone:
 		fmt.Printf("   upstream has stopped answering: %s\n", strings.TrimSpace(repo.Reason))
 	}
 	fmt.Println()
