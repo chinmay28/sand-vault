@@ -278,6 +278,12 @@ func (s *Server) Handler() (http.Handler, error) {
 		"POST /api/vault/lock":     s.handleVaultLock,
 		"POST /api/vault/password": s.handleVaultPassword,
 		"POST /api/vault/migrate":  s.handleVaultMigrate,
+		// Where the re-encryption behind a password change has got to, and
+		// the plan it is following — so much a day, these folders first. The
+		// migrate above is "finish now"; this is the slower way, and the one
+		// the server runs on its own. See handlers_rekey.go.
+		"GET /api/vault/rekey":     s.handleRekeyStatus,
+		"PUT /api/vault/rekey":     s.handleRekeyPlan,
 		"POST /api/vault/policy":   s.handleVaultPolicy,
 		"POST /api/vault/defaults": s.handleVaultDefaults,
 		"POST /api/vault/backup":   s.handleVaultBackup,
@@ -702,6 +708,10 @@ func (s *Server) Start() error {
 	// The old versions on the buckets that asked to have them erased on a
 	// schedule, once a day, and nothing while locked — see pruneLoop.
 	go s.pruneLoop()
+	// And the files a password change left on the previous key, moved one at
+	// a time at the pace the change asked for, and nothing while locked — see
+	// rekeyLoop.
+	go s.rekeyLoop()
 
 	addr := net.JoinHostPort(s.Bind, fmt.Sprint(s.Port))
 	v, _ := s.Vault()
@@ -898,6 +908,13 @@ func vaultErrorResponse(w http.ResponseWriter, err error) {
 		// 409 rather than 429: nothing is rate limiting this, there is simply
 		// one sweep at a time and one is already going.
 		writeError(w, http.StatusConflict, err.Error(), "AUTOMATION_BUSY")
+	case errors.Is(err, vault.ErrRekeyPending):
+		// 409: the request is well-formed and the vault is open; it is the
+		// vault's state — files still on the previous key — that has to
+		// change first. The message carries the counts.
+		writeError(w, http.StatusConflict, err.Error(), "REKEY_PENDING")
+	case errors.Is(err, vault.ErrMigrationBusy):
+		writeError(w, http.StatusConflict, err.Error(), "MIGRATION_BUSY")
 	case errors.Is(err, vault.ErrNeedsConversion):
 		// 409 rather than 400: nothing about the request is wrong, the file is
 		// simply in a state that has to change before it can be answered for.

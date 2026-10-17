@@ -36,6 +36,10 @@ def app(page, server, vault_password, clouds):
     first-run (create) and returning (unlock) screens.
     """
     page.goto(server)
+    # Let the app decide which screen it is before this does: asked too early,
+    # neither is on the page yet and the wrong branch waits for a button that
+    # will never come.
+    page.get_by_text("Create your vault").or_(page.get_by_text("▶ Unlock")).first.wait_for(timeout=30000)
 
     if page.get_by_text("Create your vault").count() > 0:
         boxes = page.locator('input[autocomplete="new-password"]')
@@ -2424,13 +2428,18 @@ class TestChangePassword:
 
     def _change(self, app, current, new, migrate=True):
         open_vault_setting(app, "Password")
-        app.wait_for_selector("text=Re-encrypt my files now", timeout=15000)
+        app.wait_for_selector("text=Re-encrypt the files", timeout=15000)
 
         app.get_by_label("Current password").fill(current)
         app.get_by_label("New password", exact=True).fill(new)
         app.get_by_label("Confirm new password").fill(new)
-        if not migrate:
-            app.get_by_role("checkbox").uncheck()
+        # The dialog asks how fast: all at once, or so much a day. A test
+        # vault is small enough that "all at once" is already chosen; the
+        # paced choice leaves the files on the previous key for the plan.
+        if migrate:
+            app.get_by_role("radio", name="All at once").click()
+        else:
+            app.get_by_role("radio", name="Gently, so much a day").click()
 
         app.get_by_role("button", name="Change password").click()
         # Re-encrypting is a download and an upload per file, so give it room.
@@ -2457,8 +2466,8 @@ class TestChangePassword:
             app.wait_for_selector("text=re-encrypted under the new key", timeout=15000)
             self._dismiss(app)
 
-            # Nothing is left behind on the old key.
-            assert app.get_by_text("previous password").count() == 0
+            # Nothing is left behind on the previous key.
+            assert app.get_by_text("on the previous key").count() == 0
 
             # And the file still opens, which it only can if the parts were
             # rewritten under the new key and the index followed them.
@@ -2472,7 +2481,7 @@ class TestChangePassword:
 
     def test_a_wrong_current_password_is_reported(self, app, vault_password):
         open_vault_setting(app, "Password")
-        app.wait_for_selector("text=Re-encrypt my files now", timeout=15000)
+        app.wait_for_selector("text=Re-encrypt the files", timeout=15000)
 
         app.get_by_label("Current password").fill("not-the-password")
         app.get_by_label("New password", exact=True).fill("does-not-matter")
@@ -2485,7 +2494,7 @@ class TestChangePassword:
 
     def test_mismatched_new_passwords_never_reach_the_server(self, app, vault_password):
         open_vault_setting(app, "Password")
-        app.wait_for_selector("text=Re-encrypt my files now", timeout=15000)
+        app.wait_for_selector("text=Re-encrypt the files", timeout=15000)
 
         app.get_by_label("Current password").fill(vault_password)
         app.get_by_label("New password", exact=True).fill("one-thing")
@@ -2498,17 +2507,30 @@ class TestChangePassword:
         app.get_by_role("button", name="Cancel").click()
         close_vault_settings(app)
 
-    def test_deferring_the_migration_offers_to_finish_it(self, app, vault_password):
+    def test_a_paced_change_is_finished_from_the_card(self, app, vault_password):
         changed = False
         try:
             self._change(app, vault_password, "deferred-for-now", migrate=False)
             changed = True
             self._dismiss(app)
 
-            # The accounts panel is where an unfinished re-key is picked up.
-            app.wait_for_selector("text=previous password", timeout=15000)
-            app.get_by_role("button", name="Finish re-encrypting").click()
-            app.wait_for_selector("text=previous password", state="detached", timeout=120000)
+            # The accounts panel carries the plan as a card, and a second
+            # password change is refused while the card is there.
+            app.wait_for_selector("text=Re-encrypting", timeout=15000)
+            open_vault_setting(app, "Password")
+            app.wait_for_selector("text=A previous change is still taking effect", timeout=15000)
+            app.keyboard.press("Escape")
+            app.wait_for_selector("text=A previous change is still taking effect", state="detached", timeout=15000)
+            close_vault_settings(app)
+
+            # Finish now, from the card's panel.
+            app.get_by_role("button", name="Details ›").click()
+            app.get_by_role("button", name=re.compile(r"^Finish now")).click()
+            app.get_by_role("dialog", name="Finish re-encrypting now?").get_by_role(
+                "button", name="Finish now").click()
+            app.wait_for_selector("text=Every file is on the current key", timeout=120000)
+            app.get_by_role("button", name="Done").click()
+            app.wait_for_selector("text=on the previous key", state="detached", timeout=15000)
         finally:
             if changed:
                 self._change(app, "deferred-for-now", vault_password)

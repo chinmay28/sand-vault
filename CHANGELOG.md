@@ -12,6 +12,28 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### A password change can re-encrypt slowly, and only one is in flight at a time
+
+Changing the password rotates the key every file is stored under, and on a
+large vault moving them all at once is a day of saturated upload on every
+cloud. The password dialog now asks how fast: all at once, or **so much a day**
+— a budget in gigabytes, a list of folders to do first, and whether the rest
+follows. The password changes immediately either way; the files then move in
+the background while the vault is open, smallest first, metered so that the
+average is exactly the budget and the burst is one file. The accounts panel
+carries the plan as a card with pause and finish-now, a **Previous key** entry
+at the top of the vault opens the progress panel, and a file still on the
+previous key wears a quiet `prev key` marker beside its parts. On the command
+line it is `sand vault passwd --per-day 10G --folder /Taxes`, `sand vault
+rekey` to watch or steer it, and `sand vault migrate` to finish now as before.
+
+While any file is still on the previous key, a second password change is
+refused — in the browser, at the lock screen, over HTTP (`409 REKEY_PENDING`)
+and from the CLI — until the first has fully taken effect. The old password
+opens nothing from the moment a change commits; what the refusal protects is
+the one state the app can show honestly: the current key and the previous one,
+never three. See `docs/paced-rekey.md`.
+
 ### The quick start uninstalls with the same one-liner
 
 `curl -fsSL …/quickstart.sh | sudo bash -s -- --uninstall` stops and removes

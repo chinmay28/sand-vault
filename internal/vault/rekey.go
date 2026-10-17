@@ -71,6 +71,33 @@ type ProgressFunc func(path string, done, total int)
 // unlocked under the new password when this returns, whether or not it was
 // unlocked before.
 func (v *Vault) ChangePassword(ctx context.Context, oldPassword, newPassword string, migrate bool) (*MigrationReport, error) {
+	if migrate {
+		return v.changePassword(ctx, oldPassword, newPassword, nil, true)
+	}
+	return v.changePassword(ctx, oldPassword, newPassword, nil, false)
+}
+
+// ChangePasswordWithPlan is ChangePassword with the re-encryption left to a
+// plan rather than run to completion here: so many bytes a day, these folders
+// first, as RekeySettings describes. The password changes now; the files move
+// on the plan while the vault is open under the server (RekeyStep), and
+// MigrateFiles finishes them at any time. A nil plan leaves them for
+// MigrateFiles alone, which is what ChangePassword with migrate false does.
+func (v *Vault) ChangePasswordWithPlan(ctx context.Context, oldPassword, newPassword string, plan *RekeySettings) (*MigrationReport, error) {
+	return v.changePassword(ctx, oldPassword, newPassword, plan, false)
+}
+
+func (v *Vault) changePassword(ctx context.Context, oldPassword, newPassword string, plan *RekeySettings, migrate bool) (*MigrationReport, error) {
+	// One change at a time. Files still on the key the last change retired
+	// would make this the third generation in the vault, and the status, the
+	// file list and the person reading them can account for two: the current
+	// key and the previous one. Asked here, while the vault may be open and
+	// before the thumbnails are erased; asked again in rotate from the file,
+	// which is the answer that counts when the vault is locked.
+	if files, bytes := v.retiredPendingInScope(MainScope); files > 0 {
+		return nil, &RekeyPendingError{Files: files, Bytes: bytes}
+	}
+
 	// Thumbnails are sealed under the key being retired. They are derived from
 	// files that are still stored, so they are erased here rather than
 	// migrated: making one again costs a resize, and re-encrypting one costs
@@ -82,7 +109,7 @@ func (v *Vault) ChangePassword(ctx context.Context, oldPassword, newPassword str
 	// pictures to no purpose.
 	v.dropAllThumbs(ctx, MainScope)
 
-	if err := v.rotate(oldPassword, newPassword); err != nil {
+	if err := v.rotate(oldPassword, newPassword, plan); err != nil {
 		return nil, err
 	}
 	if !migrate {
@@ -92,9 +119,19 @@ func (v *Vault) ChangePassword(ctx context.Context, oldPassword, newPassword str
 	return v.MigrateFiles(ctx, nil)
 }
 
+// retiredPendingInScope is retiredPendingLocked for a caller that holds
+// nothing, answering zero for a locked vault — which is not "nothing pending"
+// but "cannot tell", and every caller asks again once it can.
+func (v *Vault) retiredPendingInScope(scope Scope) (int, int64) {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	return v.retiredPendingLocked(scope)
+}
+
 // rotate mints a fresh data key, keeps whatever older keys the stored files
-// still need, and rewrites the vault file under the new password.
-func (v *Vault) rotate(oldPassword, newPassword string) error {
+// still need, and rewrites the vault file under the new password. plan, when
+// given, is how the files are to follow; nil leaves them for MigrateFiles.
+func (v *Vault) rotate(oldPassword, newPassword string, plan *RekeySettings) error {
 	if strings.TrimSpace(newPassword) == "" {
 		return fmt.Errorf("new password must not be empty")
 	}
@@ -113,6 +150,41 @@ func (v *Vault) rotate(oldPassword, newPassword string) error {
 	if err != nil {
 		return err
 	}
+	// The authoritative form of the check changePassword made: the index as
+	// the file holds it, whether or not this process had it open. Files on a
+	// key this vault retired, not files borrowed from a sub vault's key by an
+	// assignment — those are not a change half done.
+	if files, bytes := retiredPendingIn(current.manifest, current.dataKeyID, current.retired); files > 0 {
+		current.zero()
+		return &RekeyPendingError{Files: files, Bytes: bytes}
+	}
+	// Every file is about to be on the previous key, so the plan — if there
+	// is one — starts over the whole index. Checked against the index before
+	// anything is written: a plan naming a folder that is not there is a
+	// refusal, not a change with a broken plan behind it.
+	var fresh *RekeyPlan
+	if plan != nil {
+		settings, err := normalizeRekeySettings(*plan, current.manifest)
+		if err != nil {
+			current.zero()
+			return err
+		}
+		fresh = &RekeyPlan{
+			RekeySettings: settings,
+			StartedAt:     time.Now().UTC(),
+			Files:         len(current.manifest.Entries),
+		}
+		for _, e := range current.manifest.Entries {
+			fresh.Bytes += e.Size
+		}
+		if fresh.Files == 0 {
+			fresh = nil
+		}
+	}
+	current.manifest.Rekey = fresh
+	v.rekeyMu.Lock()
+	v.rekey = rekeyMemory{}
+	v.rekeyMu.Unlock()
 
 	// newStore generates the fresh data key: a password change gets the same
 	// brand-new random key that creating a vault does.
@@ -378,6 +450,14 @@ func (v *Vault) MigrateFilesTo(ctx context.Context, accounts []string, progress 
 // defers re-encryption exactly as the main vault does — after its own password
 // change, and after files are assigned into it — so it needs the same pass.
 func (v *Vault) MigrateFilesIn(ctx context.Context, scope Scope, accounts []string, progress ProgressFunc) (*MigrationReport, error) {
+	// One pass at a time, shared with the paced step: two of them picking the
+	// same file would gather and scatter it twice and leave one set of fresh
+	// parts pointed at by nothing.
+	if !v.migrateMu.TryLock() {
+		return nil, ErrMigrationBusy
+	}
+	defer v.migrateMu.Unlock()
+
 	v.mu.RLock()
 	m, err := v.manifestForLocked(scope)
 	if err != nil {

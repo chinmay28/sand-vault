@@ -196,6 +196,14 @@ type Manifest struct {
 	// learn and no more. See SubVaultMeta.
 	SubVaults []*SubVaultMeta `json:"sub_vaults,omitempty"`
 
+	// Rekey is the plan the outstanding re-encryption is following, if a
+	// password change left one: so much a day, these folders first. Only ever
+	// on the main vault's manifest, and only while something is still on the
+	// previous key — it is dropped in the write that moves the last file. In
+	// the index rather than beside the policy because the folders it names
+	// are index. See rekeyplan.go.
+	Rekey *RekeyPlan `json:"rekey,omitempty"`
+
 	// AccountRemap is left behind by a recovery for the sub vaults it could not
 	// open, mapping the account IDs of the vault that was lost onto the ones
 	// reconnected here.

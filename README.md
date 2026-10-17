@@ -1273,6 +1273,31 @@ and it costs bandwidth. It is safe to interrupt:
 for later. Until the migration runs, the old password plus an old copy of the
 vault file still opens the parts that have not moved.
 
+**On a large vault, move them slowly instead.** Everything at once is a day of
+saturated upload on every account, and the accounts with a daily transfer cap
+lock you out. `--per-day` spreads it out:
+
+```bash
+./sand vault passwd --per-day 10G --folder /Taxes --folder /Photos/2024
+```
+
+The password changes now. Files then move at ten gigabytes a day, the named
+folders first and the rest after, smallest file first, while the vault is open
+under `sand serve` (or in the foreground with `./sand vault rekey --run`). The
+browser offers the same choice in the password dialog, with a budget and a list
+of folders to do first, and shows the plan as a card in the accounts panel and a
+**Previous key** entry at the top of the vault. A file still on the previous key
+wears a small `prev key` marker beside its parts; it is readable as ever, and it
+is what the plan is counting down. `./sand vault rekey` shows and adjusts the
+pace, pauses it, or widens it; `./sand vault migrate` finishes the lot at any
+time.
+
+**One change at a time.** While any file is still on the previous key, a second
+password change is refused — in the browser, at the lock screen and from the
+CLI — until they have all moved. Two keys, the current one and the previous
+one, is what the file list can mark and a person can keep straight; a third is
+not. See [`docs/paced-rekey.md`](./docs/paced-rekey.md).
+
 ---
 
 ## Sub vaults
@@ -1852,8 +1877,12 @@ everything.
 ```
 sand vault init [--policy strict|redundant]   Create the vault
 sand vault status                             What's stored, where, how much
-sand vault passwd [--no-migrate]              Change password, re-encrypt everything
+sand vault passwd [--no-migrate] [--per-day 10G] [--folder /x]...
+                                              Change password, re-encrypt everything —
+                                              now, or so much a day, these folders first
 sand vault migrate                            Finish a deferred or interrupted re-encryption
+sand vault rekey [--per-day 10G] [--folder /x]... [--all] [--pause|--resume] [--run]
+                                              Show or steer a paced re-encryption
 sand vault policy [strict|redundant]          Show or set placement policy
 sand vault defaults [account]... [--scheme m-of-n] [--clear]
                                               Show or set the clouds uploads go to,

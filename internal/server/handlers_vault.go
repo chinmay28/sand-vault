@@ -186,6 +186,13 @@ type passwordRequest struct {
 	// call returns. A pointer so that omitting it means yes: leaving files on
 	// the old key has to be asked for, not fallen into.
 	Migrate *bool `json:"migrate"`
+
+	// Plan, when given, is how the files are to follow instead — so many
+	// bytes a day, these folders first — and the server moves them on it
+	// while the vault is open. Giving one is asking not to migrate now,
+	// whatever Migrate says: a plan and a finish-now are two answers to the
+	// same question, and the plan is the one that had to be spelled out.
+	Plan *vault.RekeySettings `json:"plan,omitempty"`
 }
 
 // handleVaultPassword changes the password and, unless asked not to,
@@ -204,7 +211,13 @@ func (s *Server) handleVaultPassword(w http.ResponseWriter, r *http.Request) {
 	migrate := req.Migrate == nil || *req.Migrate
 
 	v, _ := s.Vault()
-	report, err := v.ChangePassword(r.Context(), req.OldPassword, req.NewPassword, migrate)
+	var report *vault.MigrationReport
+	var err error
+	if req.Plan != nil {
+		report, err = v.ChangePasswordWithPlan(r.Context(), req.OldPassword, req.NewPassword, req.Plan)
+	} else {
+		report, err = v.ChangePassword(r.Context(), req.OldPassword, req.NewPassword, migrate)
+	}
 	if err != nil {
 		vaultErrorResponse(w, err)
 		return

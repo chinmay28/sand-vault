@@ -77,6 +77,10 @@ type SubVaultInfo struct {
 	// Pending counts files still on an older key of this sub vault's own,
 	// waiting for a re-encryption to finish. Only meaningful while unlocked.
 	Pending int `json:"pending_migration,omitempty"`
+
+	// KeyID names the generation this sub vault seals new files under, for
+	// the same reason Stats.KeyID does, and is only told while it is open.
+	KeyID string `json:"key_id,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -373,6 +377,7 @@ func (v *Vault) SubVaults() ([]SubVaultInfo, error) {
 		}
 		if sub, ok := v.subs[meta.ID]; ok {
 			info.Unlocked = true
+			info.KeyID = sub.dataKeyID
 			info.Files = len(sub.manifest.Entries)
 			for _, e := range sub.manifest.Entries {
 				for _, sh := range e.Shards {
@@ -947,6 +952,15 @@ func (v *Vault) ChangeSubVaultPassword(ctx context.Context, id, oldPassword, new
 		return nil, fmt.Errorf("new password must not be empty")
 	}
 
+	// One change at a time: a sub vault with files still on the key its last
+	// change retired has two generations in it already, and a third is what
+	// nobody can keep straight. Asked before the thumbnails go, so a refusal
+	// costs nothing; asked again below from the record, which is the answer
+	// that counts.
+	if files, bytes := v.retiredPendingInScope(Scope(id)); files > 0 {
+		return nil, &RekeyPendingError{Files: files, Bytes: bytes}
+	}
+
 	// The thumbnails go first, while the key that seals them is still this sub
 	// vault's own. They are derived from files that are still stored, so making
 	// them again costs a resize where re-encrypting them costs a gather and a
@@ -967,6 +981,11 @@ func (v *Vault) ChangeSubVaultPassword(ctx context.Context, id, oldPassword, new
 	if err != nil {
 		v.mu.Unlock()
 		return nil, err
+	}
+	if files, bytes := retiredPendingIn(current.manifest, current.dataKeyID, current.retired); files > 0 {
+		current.zero()
+		v.mu.Unlock()
+		return nil, &RekeyPendingError{Files: files, Bytes: bytes}
 	}
 
 	_, next, err := newSubVaultRecord(id, newPassword)
