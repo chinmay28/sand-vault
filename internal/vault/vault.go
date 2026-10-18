@@ -173,6 +173,19 @@ type Vault struct {
 	pruneMu   sync.Mutex
 	pruneSeen map[string]PruneRecord
 	prunedAt  time.Time
+
+	// migrateMu is the one slot a re-encryption pass runs in: the paced step
+	// the server takes on a tick and the finish-now pass somebody asks for
+	// must not gather and scatter the same file at once. Taken with TryLock,
+	// never waited on, and never while holding mu. See rekeyplan.go.
+	migrateMu sync.Mutex
+
+	// rekey is what this process remembers about the paced re-encryption
+	// that is not worth the vault file: the files it is leaving alone for a
+	// while, why, and the one it is moving now. A leaf lock, taken while
+	// holding mu and never the other way round.
+	rekeyMu sync.Mutex
+	rekey   rekeyMemory
 }
 
 // Open returns a handle to the vault at path. The vault starts locked; if no
@@ -707,6 +720,8 @@ func (v *Vault) persistLocked() error {
 	// Every index change is a chance for the last file on a retired key to
 	// have moved off it, and a key nothing needs must not linger in the file.
 	v.pruneRetiredKeysLocked()
+	// And the plan that was moving files off it has nothing left to plan.
+	v.pruneRekeyPlanLocked()
 
 	// Re-seal every open sub vault's section, each under its own key, and
 	// refresh what the main vault is allowed to know about it. A locked sub
@@ -1686,6 +1701,14 @@ type Listing struct {
 	// a request of their own. Zero for the folders that hold none, which is
 	// almost all of them. See gitrepo.go.
 	Repos int `json:"repos,omitempty"`
+
+	// PreviousKey counts, per subfolder path, the files under it still sealed
+	// under a key other than this vault's current one — waiting for the
+	// re-encryption behind a password change to reach them. Only folders
+	// with any are listed, so a vault with nothing pending carries nothing.
+	// A file row answers the same question for itself from its own key_id
+	// against Stats.KeyID; this is the folder's answer.
+	PreviousKey map[string]int `json:"previous_key,omitempty"`
 }
 
 // List returns the contents of a folder in one of the vaults inside the file.
@@ -1709,6 +1732,10 @@ func (v *Vault) List(scope Scope, dir string) (*Listing, error) {
 	}
 
 	folders, files := m.Children(dir)
+	active, err := v.dataKeyIDForLocked(scope)
+	if err != nil {
+		return nil, err
+	}
 	// Always hand back arrays rather than nil, so JSON consumers never have to
 	// distinguish "empty folder" from "null".
 	if folders == nil {
@@ -1745,7 +1772,30 @@ func (v *Vault) List(scope Scope, dir string) (*Listing, error) {
 		Automation:  v.automationForLocked(scope, m, dir),
 		FolderArt:   v.folderArtForLocked(m, paths),
 		Repos:       countReposUnder(m, dir),
+		PreviousKey: previousKeyUnder(m, active, dir, folders),
 	}, nil
+}
+
+// previousKeyUnder counts the files on a key other than active under each of
+// dir's subfolders, in one walk of the index. nil when there are none.
+func previousKeyUnder(m *Manifest, active, dir string, folders []string) map[string]int {
+	var out map[string]int
+	for _, e := range m.Entries {
+		if e.KeyID == active || !underDir(e.Dir, dir) || e.Dir == dir {
+			continue
+		}
+		// The subfolder of dir the file is under: the next path segment.
+		rest := strings.TrimPrefix(e.Dir, strings.TrimSuffix(dir, "/")+"/")
+		if i := strings.Index(rest, "/"); i >= 0 {
+			rest = rest[:i]
+		}
+		sub := JoinPath(dir, rest)
+		if out == nil {
+			out = map[string]int{}
+		}
+		out[sub]++
+	}
+	return out
 }
 
 // Entry returns a single file's metadata by ID.
@@ -2096,6 +2146,12 @@ type Stats struct {
 	// recovery rather than from this vault, so the password of the vault that
 	// died still opens their parts. Reclaim is what clears it.
 	InheritedKey bool `json:"inherited_key"`
+
+	// KeyID names the data key generation new uploads are sealed under, so a
+	// file list can tell a file on the current key from one still on the
+	// previous one: an entry whose key_id differs is waiting to be
+	// re-encrypted. A random label, not a secret.
+	KeyID string `json:"key_id"`
 }
 
 // Stats returns aggregate counters for the main vault.
@@ -2120,6 +2176,7 @@ func (v *Vault) Stats() (Stats, error) {
 		Policy:          v.store.Policy,
 		DefaultAccounts: append([]string{}, v.store.DefaultAccounts...),
 		DefaultScheme:   v.store.DefaultScheme,
+		KeyID:           v.dataKeyID,
 	}
 	for _, f := range v.manifest.Folders {
 		folders[f] = true

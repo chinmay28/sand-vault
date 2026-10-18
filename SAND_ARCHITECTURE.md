@@ -185,6 +185,25 @@ everything the vault holds. `--no-migrate` changes the password now and leaves
 the files for later, at the price of the old password still being enough to read
 the parts that have not moved.
 
+**And it does not have to be paid in one day.** A change can carry a *plan*:
+so many bytes a day, these folders first, the rest after. The files then move
+one at a time, smallest first, on a token-bucket meter with an hour's burst,
+while the vault is open under the server — a 40 GB film on 10 GB a day is four
+quiet days, and the average is exactly the budget. The plan lives in the
+manifest beside the folders it names and is dropped, with the previous key, in
+the write that moves the last file. While it runs the file list marks each file
+still on the previous key, a folder row counts them, and a *Previous key* entry
+at the top of the vault opens the progress panel. It is drawn in the sub
+vaults' chrome and is not one: the previous key is wrapped under the *new*
+password, so one password opens everything and nothing asks for the old one.
+
+**One change at a time.** A password change — the main vault's or a sub
+vault's — is refused with `ErrRekeyPending` while any file of that vault is on
+an older key, checked from the index as the file holds it so it holds at the
+lock screen too. Two generations is what the list can mark and a person can
+hold; a third is not. Finish now, or wait. See
+[`docs/paced-rekey.md`](./docs/paced-rekey.md).
+
 ### 3.4 Locking
 
 Unlocking derives the vault key, decrypts every section, and holds the keys in

@@ -10,6 +10,8 @@ import { useEraseProgress } from '../hooks'
 import { ActionSheet, Banner, Button, ConfirmDialog, IconButton, Modal } from './ui'
 import StreamLink from './StreamLink'
 import ConvertFile from './ConvertFile'
+import { PreviousKeyPill } from './Rekey'
+import { onPreviousKey } from '../keys'
 import { RelocateClouds, fileScheme, schemeName, storedParts } from './CloudSelect'
 import MoveToFolder from './MoveToFolder'
 import FolderArtPicker from './FolderArt'
@@ -514,6 +516,11 @@ function PartBadges({ file }) {
           {dead ? '✗' : '!'}
         </span>
       )}
+      {/* Still sealed under the key the previous password protected, waiting
+          for the re-encryption to reach it. Beside the parts because it is a
+          fact about how the parts are sealed, and quiet because it is not a
+          fault. See Rekey.jsx. */}
+      {onPreviousKey(file) && <PreviousKeyPill />}
     </>
   )
 }
@@ -567,6 +574,7 @@ function PartDots({ file }) {
       ) : (
         <span style={{ fontSize: '10px', color: COLORS.textMuted }}>{schemeName(scheme)}</span>
       )}
+      {onPreviousKey(file) && <PreviousKeyPill tiny />}
     </>
   )
 }
@@ -1127,7 +1135,7 @@ function useFolderActions({
 export function FolderRow({
   name, path, location, art, mobile, providers, columns, selecting, selected,
   onSelect, onNavigate, onRefresh, onError,
-  vault = '', subVaults = [],
+  vault = '', subVaults = [], previousKey = 0,
 }) {
   const a = useFolderActions({ name, path, art, providers, vault, subVaults, onNavigate, onRefresh, onError })
 
@@ -1206,8 +1214,21 @@ export function FolderRow({
   return (
     <Row check={check} columns={columns} selected={selected}>
       {nameButton}
-      {/* The three empty middle cells only exist to fill the grid. */}
-      <span /><span /><span />
+      {/* The middle cells only exist to fill the grid — except the parts
+          column, which carries how many files under this folder are still on
+          the previous key, the folder's answer to the marker a file row wears. */}
+      <span /><span />
+      <span style={{ display: 'flex', alignItems: 'center', minWidth: 0 }}>
+        {previousKey > 0 && (
+          <span
+            title={`${previousKey} file${previousKey === 1 ? '' : 's'} in this folder ${previousKey === 1 ? 'is' : 'are'} still sealed under the key your previous password protected`}
+            style={{
+              fontFamily: FONT.mono, fontSize: '9px', color: COLORS.textDim, whiteSpace: 'nowrap',
+              border: `1px dashed ${COLORS.borderBright}`, borderRadius: '999px', padding: '1px 6px',
+            }}
+          >{previousKey} on prev key</span>
+        )}
+      </span>
       {actions}
       {a.dialogs}
     </Row>

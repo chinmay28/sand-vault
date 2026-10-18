@@ -19,6 +19,7 @@ import MoveToFolder from './MoveToFolder'
 import { FilmButton, FilmLookupSettings } from './FilmDetails'
 import { OrganizerButton, OrganizerMenu, OrganizerTool } from './Organizer'
 import { MachineTransfer } from './MachineTransfer'
+import { RekeyStripEntry } from './Rekey'
 
 /* How long to sit on a keystroke before asking the server. Long enough that
    typing a word is one query rather than six, short enough to feel live. */
@@ -31,7 +32,7 @@ const TILE_MIN_PX = { mobile: 108, desktop: 132 }
 
 export default function FileBrowser({
   nav, listing, loading, error, providers, defaultAccounts, defaultScheme, mobile,
-  subVaults = [], shownSubVaults = [], onOpenSubVault,
+  subVaults = [], shownSubVaults = [], onOpenSubVault, pendingRekey = 0,
   onRefresh, onPreview, onInspect, onFilm, onError,
 }) {
   const [dragging, setDragging] = useState(false)
@@ -576,6 +577,7 @@ export default function FileBrowser({
   }
 
   const listProps = {
+    previousKey: listing?.previous_key,
     entries,
     thumbs,
     movies,
@@ -838,11 +840,12 @@ export default function FileBrowser({
             folders — a bulk delete must not be able to sweep one up, and a row
             that behaved like a folder would suggest it could be opened by
             being clicked. */}
-        {!searchTerm && vault === '' && path === '/' && shownSubVaults.length > 0 && (
+        {!searchTerm && vault === '' && path === '/' && (shownSubVaults.length > 0 || pendingRekey > 0) && (
           <SubVaultStrip
             subVaults={shownSubVaults}
             mobile={mobile}
             onOpen={onOpenSubVault}
+            pendingRekey={pendingRekey}
           />
         )}
 
@@ -1142,7 +1145,7 @@ function EntryTable({
   entries, thumbs, movies, films, mobile, providers, selecting, selected,
   onToggle, onSelectAll, onSelectNone,
   onNavigate, onPreview, onInspect, onFilm, onRefresh, onError,
-  vault, subVaults,
+  vault, subVaults, previousKey,
 }) {
   const all = entries.length > 0 && entries.every((entry) => selected.has(entry.key))
   /* One template for the whole table, headings included: a film folder's rows
@@ -1208,6 +1211,7 @@ function EntryTable({
           path={entry.path}
           location={entry.location}
           art={entry.art}
+          previousKey={previousKey?.[entry.path] || 0}
           mobile={mobile}
           providers={providers}
           columns={columns}
@@ -1363,7 +1367,7 @@ function NewFolderModal({ path, vault, onClose, onCreated }) {
    password, rather than have it be invisible until you remember to go looking
    in settings. Which ones get here at all is settled before this — a sub vault
    left unticked in the panel is not passed in. */
-function SubVaultStrip({ subVaults, mobile, onOpen }) {
+function SubVaultStrip({ subVaults, mobile, onOpen, pendingRekey = 0 }) {
   return (
     <div style={{ marginBottom: '14px' }}>
       <div style={{
@@ -1374,9 +1378,14 @@ function SubVaultStrip({ subVaults, mobile, onOpen }) {
         textTransform: 'uppercase',
         color: COLORS.textMuted,
         margin: '0 0 7px 2px',
-      }}>Sub vaults</div>
+      }}>{subVaults.length > 0 ? 'Sub vaults' : 'Keys'}</div>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+        {/* The files still on the key the previous password protected, drawn
+            in the sub vaults' chrome because it is the same kind of thing to
+            the eye — part of the vault, not a folder — and nothing like one
+            underneath: it asks for no password and opens the progress panel. */}
+        <RekeyStripEntry pending={pendingRekey} mobile={mobile} />
         {subVaults.map((sub) => (
           <button
             key={sub.id}

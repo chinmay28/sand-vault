@@ -15,6 +15,7 @@ import Assistant from './components/Assistant'
 import { Brand, DevMark } from './components/Brand'
 import { Banner, Button } from './components/ui'
 import { UnlockSubVault } from './components/SubVaults'
+import { setCurrentKey } from './keys'
 
 /* Where the sub vault view preference lives in this browser: the blanket
    answer, and the sub vaults that have been decided one at a time. Neither is
@@ -93,6 +94,14 @@ export default function App() {
   const mobile = useIsMobile()
   const unlocked = !!status?.unlocked
   const subVaults = status?.sub_vaults || []
+
+  /* Which key the vault on screen seals new files under, so a row can tell a
+     file still on the previous key from one that has moved. Per vault: a sub
+     vault has generations of its own. See keys.js. */
+  useEffect(() => {
+    const sub = nav.vault ? subVaults.find((s) => s.id === nav.vault) : null
+    setCurrentKey(nav.vault ? sub?.key_id : status?.stats?.key_id)
+  }, [nav.vault, subVaults, status?.stats?.key_id])
 
   /* An individual choice if one has been made, the blanket setting otherwise.
      A sub vault made after the fact has no entry here, so it follows whatever
@@ -555,6 +564,7 @@ export default function App() {
             subVaults={subVaults}
             shownSubVaults={shownSubVaults}
             onOpenSubVault={openSubVault}
+            pendingRekey={status.stats?.pending_migration || 0}
             onRefresh={refreshAll}
             onPreview={(file, hasThumb, film, gallery) => setPreview({ file, hasThumb, film, gallery })}
             onInspect={setInspecting}

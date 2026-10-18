@@ -56,12 +56,19 @@ export const api = {
      under, so unless the migration is deferred this call only comes back once
      every file has been rebuilt onto the new key — minutes, on a full vault.
      Deferring leaves the files readable and finishable with migrate(). */
-  changePassword: (oldPassword, newPassword, { migrate = true } = {}) =>
+  changePassword: (oldPassword, newPassword, { migrate = true, plan = null } = {}) =>
     request('/api/vault/password', {
       method: 'POST',
-      body: { old_password: oldPassword, new_password: newPassword, migrate },
+      body: { old_password: oldPassword, new_password: newPassword, migrate, ...(plan ? { plan } : {}) },
     }),
   migrate: () => request('/api/vault/migrate', { method: 'POST' }),
+  /* Where the re-encryption behind a password change has got to — how much is
+     still on the previous key, folder by folder — and the plan it follows: so
+     many bytes a day, these folders first, paused or not. The whole settings
+     object goes each time; a plan is one thing, not a bag of patches. The
+     server moves the files on its own clock while the vault is open. */
+  rekeyStatus: () => request('/api/vault/rekey'),
+  setRekeyPlan: (settings) => request('/api/vault/rekey', { method: 'PUT', body: settings }),
 
   /* Disaster recovery. Every connected account carries an encrypted copy of
      the index, so a machine that lost its vault can find one sitting on the

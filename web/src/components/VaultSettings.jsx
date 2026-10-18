@@ -130,7 +130,7 @@ export default function VaultSettings({
           /* Nothing to report unless a change was left half-finished, which is
              the one thing about a password this list can actually tell you. */
           status={stats?.pending_migration > 0
-            ? `${stats.pending_migration} on the old key`
+            ? `${stats.pending_migration} on the previous key`
             : null}
           tone={COLORS.warn}
           onClick={() => setOpen('password')}

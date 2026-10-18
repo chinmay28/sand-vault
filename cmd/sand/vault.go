@@ -60,7 +60,7 @@ func vaultCmd() *cobra.Command {
 		Use:   "vault",
 		Short: "Create and manage the vault",
 	}
-	cmd.AddCommand(vaultInitCmd(), vaultStatusCmd(), vaultPasswdCmd(), vaultMigrateCmd(), vaultConvertCmd(),
+	cmd.AddCommand(vaultInitCmd(), vaultStatusCmd(), vaultPasswdCmd(), vaultMigrateCmd(), vaultRekeyCmd(), vaultConvertCmd(),
 		vaultPolicyCmd(), vaultDefaultsCmd(), vaultBackupCmd(), vaultRecoverCmd(),
 		vaultReclaimCmd(), vaultSweepCmd(), vaultReattachCmd(), vaultPruneCmd(), vaultKitCmd())
 	return cmd
@@ -130,8 +130,19 @@ func vaultStatusCmd() *cobra.Command {
 				fmt.Printf("Degraded:         %d file(s) are missing shards their scheme calls for\n", stats.Degraded)
 			}
 			if stats.Pending > 0 {
-				fmt.Printf("Awaiting re-key:  %d file(s) are still under the previous key — run 'sand vault migrate'\n",
-					stats.Pending)
+				line := fmt.Sprintf("Awaiting re-key:  %d file(s) are still under the previous key", stats.Pending)
+				// Whether that is a plan taking its time or a job nobody has
+				// finished is the difference between "fine" and "do something".
+				if rekey, err := v.RekeyStatus(); err == nil && rekey.Plan != nil && rekey.Plan.Active() {
+					line += fmt.Sprintf(" — re-encrypting at %s a day", formatBytes(rekey.Plan.BytesPerDay))
+					if rekey.ETASeconds > 0 {
+						line += fmt.Sprintf(", about %s left", humanDuration(time.Duration(rekey.ETASeconds)*time.Second))
+					}
+					line += " ('sand vault rekey')"
+				} else {
+					line += " — run 'sand vault migrate', or pace it with 'sand vault rekey --per-day'"
+				}
+				fmt.Println(line)
 			}
 			// A recovery adopts the key of the vault it rebuilt, so until these
 			// files are re-encrypted the password that opened that vault still
@@ -156,7 +167,10 @@ func vaultStatusCmd() *cobra.Command {
 }
 
 func vaultPasswdCmd() *cobra.Command {
-	var noMigrate bool
+	var (
+		noMigrate bool
+		pace      rekeyFlags
+	)
 
 	cmd := &cobra.Command{
 		Use:   "passwd",
@@ -173,7 +187,15 @@ So a fresh key is generated and every file is rebuilt onto it: each one is
 gathered from its parts, re-encrypted, scattered again, and the parts the old
 key opened are erased. That is a download and an upload per file, and it can
 take a while. Nothing is unreadable while it runs, and it can be interrupted:
-'sand vault migrate' picks up wherever it stopped.`,
+'sand vault migrate' picks up wherever it stopped.
+
+On a large vault, moving everything at once is a day of saturated upload on every
+account. --per-day spreads it out instead — 'sand vault passwd --per-day 10G
+--folder /Taxes' changes the password now and moves ten gigabytes a day, the tax
+folder first, while the vault is open under 'sand serve' (or 'sand vault rekey
+--run'). Files still on the previous key stay readable, are marked as such, and
+are what 'sand vault rekey' counts down. A second password change is refused
+until they have all moved.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			v, err := vault.Open(vaultPath(cmd))
 			if err != nil {
@@ -192,10 +214,19 @@ take a while. Nothing is unreadable while it runs, and it can be interrupted:
 				return err
 			}
 
+			var plan *vault.RekeySettings
+			if pace.set() {
+				settings, err := pace.settings(vault.RekeySettings{})
+				if err != nil {
+					return err
+				}
+				plan = &settings
+			}
+
 			// The password change and the re-encryption are run as two steps
 			// so this can report on the second one as it goes.
-			if _, err := v.ChangePassword(cmd.Context(), old, next, false); err != nil {
-				return err
+			if _, err := v.ChangePasswordWithPlan(cmd.Context(), old, next, plan); err != nil {
+				return rekeyRefusal(err)
 			}
 			defer closeVault(v)
 			// The copies of the index on the accounts are sealed under the old
@@ -203,6 +234,19 @@ take a while. Nothing is unreadable while it runs, and it can be interrupted:
 			// them has to land before this process goes away.
 			defer v.AwaitBackupSync()
 			fmt.Println("Password changed.")
+
+			if plan != nil {
+				status, err := v.RekeyStatus()
+				if err != nil {
+					return err
+				}
+				printRekeyStatus(status)
+				if !status.Done() {
+					fmt.Println("The files move while the vault is open under 'sand serve', or here with")
+					fmt.Println("'sand vault rekey --run'. 'sand vault migrate' moves everything now.")
+				}
+				return nil
+			}
 
 			if noMigrate {
 				if pending := v.PendingMigration(); pending > 0 {
@@ -218,6 +262,7 @@ take a while. Nothing is unreadable while it runs, and it can be interrupted:
 
 	cmd.Flags().BoolVar(&noMigrate, "no-migrate", false,
 		"change the password now and leave the files on the old key for 'sand vault migrate'")
+	pace.bind(cmd)
 	return cmd
 }
 

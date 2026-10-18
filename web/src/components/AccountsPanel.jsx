@@ -10,6 +10,7 @@ import EditAccount from './EditAccount'
 import { DisconnectIcon, EditIcon, StatsIcon, TestIcon } from './Icons'
 import MissingParts from './MissingParts'
 import ReadStats from './ReadStats'
+import { RekeyCard } from './Rekey'
 import ReclaimVault from './ReclaimVault'
 import VaultSettings from './VaultSettings'
 import { DevMark } from './Brand'
@@ -396,13 +397,11 @@ export default function AccountsPanel({
           </div>
         )}
 
-        {stats?.pending_migration > 0 && (
-          <PendingMigration
-            count={stats.pending_migration}
-            onDone={onChanged}
-            onError={setError}
-          />
-        )}
+        {/* Files still on the key the previous password protected, and the
+            plan moving them off it. A card rather than a banner: after a paced
+            password change this is weeks of ordinary progress, not a problem,
+            and it reads as one. See Rekey.jsx. */}
+        <RekeyCard stats={stats} onChanged={onChanged} />
 
         {/* A recovery adopts the key of the vault it rebuilt, so until these
             files are re-encrypted the old password still opens their parts.
@@ -535,45 +534,6 @@ export default function AccountsPanel({
       />
       {panel}
     </>
-  )
-}
-
-/* A password change rotates the key the parts on the accounts are encrypted
-   under, and each file has to be gathered and scattered again to move onto it.
-   Anything left behind is still readable — and still readable with the old
-   password, which is the whole reason to finish. */
-function PendingMigration({ count, onDone, onError }) {
-  const [running, setRunning] = useState(false)
-
-  const finish = async () => {
-    setRunning(true)
-    onError(null)
-    try {
-      const report = await api.migrate()
-      if (report.warnings?.length) onError(report.warnings.join('\n'))
-      onDone()
-    } catch (err) {
-      onError(err.message)
-    } finally {
-      setRunning(false)
-    }
-  }
-
-  return (
-    <Banner tone="warn">
-      {count} file{count === 1 ? ' is' : 's are'} still encrypted under your previous
-      password&apos;s key.
-      <Button
-        size="sm"
-        variant="ghost"
-        onClick={finish}
-        disabled={running}
-        style={{ marginTop: '8px' }}
-      >
-        {running ? <Spinner size={10} /> : null}
-        {running ? 'Re-encrypting…' : 'Finish re-encrypting'}
-      </Button>
-    </Banner>
   )
 }
 
