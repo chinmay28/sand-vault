@@ -679,11 +679,13 @@ build_src() {
   as_svc sh -c "cd '$SRC_DIR/web' && rm -rf node_modules && npm ci --no-audit --no-fund"
   as_svc sh -c "cd '$SRC_DIR/web' && npm run build"
 
-  # Stamp the version: the patch number is the commit count, which only exists
-  # here at build time. `make build-go` does the same thing.
+  # Stamp the version: the patch number is the commit count and the line is the
+  # commit's month, which only exist here at build time. `make build-go` does
+  # the same thing.
   patch="$(as_svc node "$SRC_DIR/scripts/version.mjs" --patch 2>/dev/null || echo 0)"
+  date="$(as_svc node "$SRC_DIR/scripts/version.mjs" --date 2>/dev/null || echo "")"
   as_svc go -C "$SRC_DIR" build -trimpath \
-      -ldflags "-s -w -X github.com/chinmay28/sand-vault/internal/version.Patch=${patch}" \
+      -ldflags "-s -w -X github.com/chinmay28/sand-vault/internal/version.Patch=${patch} -X github.com/chinmay28/sand-vault/internal/version.Date=${date}" \
       -o "$STAGED_BIN" ./cmd/sand
 }
 

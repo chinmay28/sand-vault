@@ -6,41 +6,53 @@
  * repository's commit count, so `v2026.8.311` is the 311th commit on the 2026.8
  * line. The month is not zero-padded; that keeps the string valid semver.
  *
- *   - YEAR/MONTH are source constants, read out of internal/version/version.go
- *     so there is exactly one declaration of them in the tree. Bump them there
- *     when a release line opens; they are not taken from the build clock, which
- *     would move the version without a commit.
+ *   - YEAR/MONTH are the month of the commit being built — its committer date,
+ *     in the committer's own timezone. Nobody bumps them: the line moves the
+ *     moment a commit lands in a new month, and a rebuild of an old commit is
+ *     still named what it shipped as, because a commit's date does not change.
+ *     Not the build clock, which would move the version without a commit.
  *   - PATCH comes from `git rev-list --count HEAD`, which only exists at build
- *     time: the Go binary gets it stamped in via -ldflags, the web bundle gets
- *     it inlined by Vite. Both call this file, so they can never disagree.
+ *     time: the Go binary gets both stamped in via -ldflags, the web bundle gets
+ *     the string inlined by Vite. Both call this file, so they can never
+ *     disagree.
  *
  * Usage:
- *   node scripts/version.mjs            # print e.g. v2026.8.311
+ *   node scripts/version.mjs            # print e.g. v2026.10.311
  *   node scripts/version.mjs --patch    # print just the commit count (311)
+ *   node scripts/version.mjs --date     # print the commit's month (2026-10), for version.Date
  *   import { appVersion } from './scripts/version.mjs'
  */
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const GO_VERSION_FILE = resolve(repoRoot, 'internal/version/version.go');
 
-/** Read `Year`/`Month` out of the Go source that declares them. */
+/**
+ * The month of HEAD's commit as "YYYY-MM" — the value version.Date is stamped
+ * with — or, with no commit to ask (a tarball, no git), the month of the build
+ * clock, which is what the Go package falls back to as well, so an unstamped
+ * build and a stamped one of the same tree agree.
+ *
+ * The committer date rather than the author's: a change authored in September
+ * and landed in October is an October release. In the committer's own timezone
+ * rather than UTC, so the month is the one on the commit as git shows it.
+ */
+export function commitMonth() {
+  const iso = git(['log', '-1', '--format=%cI']);
+  const m = iso && /^(\d{4})-(\d{2})/.exec(iso);
+  if (m) {
+    return `${m[1]}-${m[2]}`;
+  }
+  const t = new Date();
+  return `${t.getUTCFullYear()}-${String(t.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+/** Year and month as numbers, the way the version string wants them. */
 function yearMonth() {
-  const src = readFileSync(GO_VERSION_FILE, 'utf8');
-  const read = (name) => {
-    const m = new RegExp(`^\\s*${name}\\s*=\\s*(\\d+)\\s*$`, 'm').exec(src);
-    if (!m) {
-      throw new Error(`could not find ${name} in ${GO_VERSION_FILE}`);
-    }
-    return Number(m[1]);
-  };
-  const year = read('Year');
-  const month = read('Month');
+  const [year, month] = commitMonth().split('-').map(Number);
   if (!(month >= 1 && month <= 12)) {
-    throw new Error(`Month = ${month} in ${GO_VERSION_FILE}; want a calendar month (1-12)`);
+    throw new Error(`commit month ${commitMonth()} is not a calendar month`);
   }
   return { year, month };
 }
@@ -90,8 +102,8 @@ export function commitCount() {
  * The full version string, `v`-prefixed to match how the project tags releases
  * (v2026.8.0). Must stay byte-identical to version.String() in the Go package.
  *
- * Note `--patch` / commitCount() stays bare: that one feeds `-ldflags -X` as
- * the value of `version.Patch`, which is the number alone.
+ * Note `--patch` / commitCount() and `--date` / commitMonth() stay bare: those
+ * feed `-ldflags -X` as the values of `version.Patch` and `version.Date`.
  */
 export function appVersion() {
   const { year, month } = yearMonth();
@@ -100,6 +112,10 @@ export function appVersion() {
 
 // Invoked directly (by the build scripts), print rather than export.
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  process.stdout.write(process.argv.includes('--patch') ? commitCount() : appVersion());
+  process.stdout.write(
+    process.argv.includes('--patch') ? commitCount()
+      : process.argv.includes('--date') ? commitMonth()
+        : appVersion(),
+  );
   process.stdout.write('\n');
 }

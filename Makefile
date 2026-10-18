@@ -24,15 +24,17 @@ else
 BUILD_OUT := sand
 endif
 
-# The patch number is the repo's commit count, which only exists at build time —
-# stamp it in (see internal/version and scripts/version.mjs). A bare `go build`
-# leaves it at 0, which reads as "unstamped development build".
+# The patch number is the repo's commit count and the release line is the
+# commit's month, both of which only exist at build time — stamp them in (see
+# internal/version and scripts/version.mjs). A bare `go build` leaves the patch
+# at 0, which reads as "unstamped development build".
 VERSION_PKG := github.com/chinmay28/sand-vault/internal/version
 PATCH := $(shell node scripts/version.mjs --patch 2>/dev/null || echo 0)
+DATE := $(shell node scripts/version.mjs --date 2>/dev/null || echo "")
 
 build-go:
 	CGO_ENABLED=0 go build -trimpath \
-		-ldflags="-s -w -X $(VERSION_PKG).Patch=$(PATCH)" \
+		-ldflags="-s -w -X $(VERSION_PKG).Patch=$(PATCH) -X $(VERSION_PKG).Date=$(DATE)" \
 		-o $(BUILD_OUT) ./cmd/sand
 
 # Print the version this tree would build as
