@@ -12,6 +12,29 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### The quick start no longer hangs, or fails, on Proton's client
+
+Two things were wrong with the Proton step of `scripts/quickstart.sh`, and
+together they read as an installer that had hung at `installing dependencies
+in client/js…`. First, Proton's build script refuses any Bun but the exact
+release its `package.json` names (1.4.2 today), while the installer took
+whatever was latest or whatever was already there; the SDK is now fetched
+first and asked, and a Bun of the wrong version is replaced. Second, nothing
+in the step had a time limit or said anything while it ran, so a registry that
+would not answer, or a compile on a small board, looked the same as a hang and
+held the rest of the install behind it. Every fetch, install and the compile
+are now bounded — `PROTON_BUILD_TIMEOUT` minutes for the compile, default 45 —
+with a line every half minute saying what Bun last printed, and a step that
+runs out of time is skipped with its log tail and the two other routes
+(`PROTON_CLI_URL`, a synced folder) rather than stopping the install.
+
+And the step runs **last**, after the service is installed, started and found
+healthy. The service looks the client up on PATH each time it runs, so one that
+lands afterwards is found the moment it is wanted, and a build that fails or
+is given up on costs the Proton backend and nothing else. `git` is told never
+to prompt and `apt-get` never to ask, since nothing fed to `bash` through a
+pipe can answer.
+
 ### The version follows the calendar on its own
 
 `vYEAR.MONTH.PATCH` took its year and month from two constants that somebody
