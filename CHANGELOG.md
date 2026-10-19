@@ -12,6 +12,17 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### The version follows the calendar on its own
+
+`vYEAR.MONTH.PATCH` took its year and month from two constants that somebody
+had to bump when a month turned, and nobody did: October's builds were still
+calling themselves `v2026.9`. The month now comes from the commit being built,
+the way the patch number already came from the commit count — stamped at link
+time, read by the web client from the same script — so the line moves the
+moment a commit lands in a new month, and a rebuild of an old commit is still
+named what it shipped as. A bare `go build`, which stamps nothing, names the
+month it was built in under patch 0, as unstamped builds always were.
+
 ### A password change can re-encrypt slowly, and only one is in flight at a time
 
 Changing the password rotates the key every file is stored under, and on a

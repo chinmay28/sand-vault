@@ -20,8 +20,9 @@ set -euo pipefail
 # and the release filenames can never disagree. Pass a version to override.
 VERSION="${1:-$(node "$(dirname "$0")/version.mjs")}"
 PATCH="$(node "$(dirname "$0")/version.mjs" --patch)"
+DATE="$(node "$(dirname "$0")/version.mjs" --date)"
 DIST="dist"
-LDFLAGS="-s -w -X github.com/chinmay28/sand-vault/internal/version.Patch=${PATCH}"
+LDFLAGS="-s -w -X github.com/chinmay28/sand-vault/internal/version.Patch=${PATCH} -X github.com/chinmay28/sand-vault/internal/version.Date=${DATE}"
 
 if [[ "${PATCH}" == "0" ]]; then
     echo "warn: patch number is 0 — this is an unstamped build, not a release." >&2

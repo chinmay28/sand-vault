@@ -39,6 +39,7 @@ jobs:
         run: |
           VERSION="$(node scripts/version.mjs)"
           PATCH="$(node scripts/version.mjs --patch)"
+          DATE="$(node scripts/version.mjs --date)"
           if [ "${PATCH}" = "0" ]; then
             echo "patch is 0 — unstamped build, refusing to release" >&2
             exit 1
@@ -49,6 +50,7 @@ jobs:
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "patch=${PATCH}" >> "$GITHUB_OUTPUT"
+          echo "date=${DATE}" >> "$GITHUB_OUTPUT"
 
       # The changelog heading is the release gate: a branch push whose version
       # has no section is an ordinary commit, not a release, and is skipped —
@@ -83,7 +85,7 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           mkdir -p dist
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath \
-            -ldflags="-s -w -X github.com/chinmay28/sand-vault/internal/version.Patch=${{ steps.version.outputs.patch }}" \
+            -ldflags="-s -w -X github.com/chinmay28/sand-vault/internal/version.Patch=${{ steps.version.outputs.patch }} -X github.com/chinmay28/sand-vault/internal/version.Date=${{ steps.version.outputs.date }}" \
             -o "dist/sand-${VERSION}-linux-arm64" ./cmd/sand
           (cd dist && sha256sum sand-* > SHA256SUMS)
 
