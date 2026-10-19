@@ -35,6 +35,15 @@ is given up on costs the Proton backend and nothing else. `git` is told never
 to prompt and `apt-get` never to ask, since nothing fed to `bash` through a
 pipe can answer.
 
+### The quick start survives the ssh session that started it going away
+
+An installer run over ssh died with the session — a SIGHUP, or a SIGPIPE on
+its next line of output — wherever it happened to be, and the unlucky place is
+between stopping the service and starting the new one. It now ignores both,
+every progress line tolerates a terminal that has gone, and everything it
+prints is also appended to `$SAND_PREFIX/quickstart.log`, which is where to
+look for how a run ended when the terminal that started it is no longer there.
+
 ### The version follows the calendar on its own
 
 `vYEAR.MONTH.PATCH` took its year and month from two constants that somebody
