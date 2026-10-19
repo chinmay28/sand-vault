@@ -109,6 +109,10 @@
 #                    https://proton.me/download/drive/cli/index.html
 #   PROTON_SDK_REF   branch/tag/commit of github.com/ProtonDriveApps/sdk to build
 #                    (default: main)
+#   PROTON_BUILD_TIMEOUT  minutes the compile may take before it is given up on
+#                    (default: 45). The client is built LAST, after the service is
+#                    up and healthy, so a slow or stuck build costs the Proton
+#                    backend and nothing else; re-running picks it up again.
 #
 # A NOTE ON HOST.  This defaults to 0.0.0.0, so the service is reachable from
 # the rest of your network as soon as it is installed. Understand what you are
@@ -418,7 +422,10 @@ as_svc() {
   # sudoers overrides --preserve-env=PATH and would hide a freshly installed Go;
   # the proxy and CA variables matter because without them npm and go cannot
   # reach the network at all on a host behind a corporate proxy.
-  local -a passthru=("HOME=$BUILD_HOME" "PATH=$PATH")
+  # GIT_TERMINAL_PROMPT=0 because nothing here can answer a prompt: a repo that
+  # has moved or gone private makes git ask for a username, and an installer
+  # fed to bash through a pipe would sit on that question forever.
+  local -a passthru=("HOME=$BUILD_HOME" "PATH=$PATH" "GIT_TERMINAL_PROMPT=0")
   local v val
   for v in HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy \
            GOPROXY GOPRIVATE; do
@@ -438,11 +445,18 @@ as_svc() {
     fi
   fi
 
+  # AS_SVC_TIMEOUT, when set, bounds the command in seconds: timeout(1) runs
+  # inside the sudo so the whole process group — bun and everything it spawns —
+  # is stopped together, and the caller sees 124. See run_watched.
+  local -a limit=()
+  if [ -n "${AS_SVC_TIMEOUT-}" ] && command -v timeout >/dev/null 2>&1; then
+    limit=(timeout -k 15 "$AS_SVC_TIMEOUT")
+  fi
   if id -u "$SVC_USER" >/dev/null 2>&1; then
     # Build needs devDependencies → make sure NODE_ENV isn't 'production'.
-    sudo -u "$SVC_USER" --preserve-env=PATH env -u NODE_ENV "${passthru[@]}" "$@"
+    sudo -u "$SVC_USER" --preserve-env=PATH env -u NODE_ENV "${passthru[@]}" "${limit[@]}" "$@"
   else
-    env -u NODE_ENV "${passthru[@]}" "$@"
+    env -u NODE_ENV "${passthru[@]}" "${limit[@]}" "$@"
   fi
 }
 
@@ -456,8 +470,8 @@ ensure_pkg() {
   command -v "$1" >/dev/null 2>&1 && return 0
   [ "$APT" -eq 1 ] || die "'$1' missing and no apt-get to install it. Install it and re-run."
   log "installing $1…"
-  apt-get update -y >/dev/null
-  apt-get install -y "$1" >/dev/null
+  DEBIAN_FRONTEND=noninteractive apt-get update -y >/dev/null
+  DEBIAN_FRONTEND=noninteractive apt-get install -y "$1" >/dev/null
 }
 
 ensure_pkg curl
@@ -700,321 +714,9 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Proton Drive client
-# ---------------------------------------------------------------------------
-#
-# Proton publishes no API a third party may use, and no Go SDK. What it does
-# publish is the client its own apps are built on, so SAND drives that instead
-# of reimplementing Proton's cryptography — which is just as well, since that
-# cryptography changes at the end of 2026 and every client implementing only
-# the old model stops working. Building Proton's binary puts that migration on
-# Proton.
-#
-# This is not a build-time dependency like Node and Go. The client is what the
-# running service executes to reach Proton, so it stays.
-#
-# Everything here is skippable and nothing here is fatal: a host that cannot
-# build it gets a warning and an install that works in every other respect. A
-# Proton account can still be connected as a synced folder.
-step "[5/8] Proton Drive client"
-
-# bun_supported reports whether this machine has a bun to build with. bun ships
-# 64-bit builds only, so a 32-bit Raspberry Pi cannot build the client — which
-# is a thing to say plainly rather than a build to watch fail.
-#
-# dpkg is asked first because `uname -m` answers for the KERNEL, and a Pi
-# running a 64-bit kernel over a 32-bit userland — the stock Raspberry Pi OS
-# armhf image does exactly this — reports aarch64 while every binary on it is
-# 32-bit. Trusting that downloads a bun that cannot run.
-bun_arch() { dpkg --print-architecture 2>/dev/null || uname -m; }
-bun_supported() {
-  case "$(bun_arch)" in
-    x86_64 | amd64 | aarch64 | arm64) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-# install_bun fetches the runtime Proton's client is built with. It goes under
-# $PREFIX rather than into the service user's home so that an upgrade can find
-# it again, and so nothing ends up in /root when this is run under sudo.
-install_bun() {
-  # Present is not the same as working: a bun left behind by an install that
-  # fetched the wrong architecture is a file that exists and cannot run, and
-  # the whole point of checking here is to not discover that twenty minutes
-  # into a build.
-  if [ -x "$BUN_DIR/bin/bun" ] && version="$("$BUN_DIR/bin/bun" --version 2>/dev/null)"; then
-    ok "bun $version"
-    return 0
-  fi
-  log "installing bun (builds Proton's client)…"
-  install -d -o "$SVC_USER" -g "$SVC_USER" -m 755 "$BUN_DIR"
-
-  # npm first, where there is one. It is faster than fetching and unpacking a
-  # zip, it reports an unsupported platform as an error instead of installing
-  # something that cannot run, and — the reason it is first rather than the
-  # fallback — a source-mode install has already used the npm registry to build
-  # the web client, so it is a route this machine is known to reach. bun.sh is
-  # one more host that may not be.
-  #
-  # Release mode installs no Node, so npm may not be here at all; that is what
-  # the second route is for.
-  if command -v npm >/dev/null 2>&1 && install_bun_via_npm; then
-    :
-  else
-    command -v npm >/dev/null 2>&1 && warn "npm could not install bun; trying bun.sh."
-    install_bun_via_bunsh || return 1
-  fi
-
-  if [ ! -x "$BUN_DIR/bin/bun" ]; then
-    warn "the bun install finished but left no binary at $BUN_DIR/bin/bun."
-    warn "Last lines of $BUN_LOG:"
-    tail -n 6 "$BUN_LOG" 2>/dev/null | sed 's/^/       /' >&2
-    return 1
-  fi
-  # Captured with `|| status=$?` rather than tested with `if !`, because inside
-  # the branch of a negated test $? is the negation's own status — 0 — and the
-  # message would report every failure as a success. It also keeps set -e off
-  # the assignment.
-  status=0
-  version="$("$BUN_DIR/bin/bun" --version 2>&1)" || status=$?
-  if [ "$status" -ne 0 ]; then
-    # A binary of the wrong architecture is killed by the kernel and may say
-    # nothing at all, so there has to be something to print when it does not.
-    [ -n "$version" ] || version="it exited $status without saying anything"
-    warn "bun installed but will not run on this machine:"
-    warn "  $version"
-    warn "That usually means a 64-bit kernel over a 32-bit userland, which bun"
-    warn "has no build for. Set PROTON_CLI_URL to a prebuilt proton-drive"
-    warn "binary, or connect Proton as a synced folder."
-    return 1
-  fi
-  ok "bun $version"
-}
-
-# install_bun_via_npm takes bun from the registry, which publishes it as a
-# per-platform binary package. Everything downstream looks for $BUN_DIR/bin/bun,
-# so the two routes are made to agree with a symlink rather than by teaching the
-# rest of the script about npm's layout.
-install_bun_via_npm() {
-  # npm refuses a --prefix with no package.json in it (ENOENT, and it names the
-  # missing file rather than the problem). A private stub makes the directory a
-  # place npm will install into, and keeps the install out of any package.json
-  # further up the tree.
-  [ -f "$BUN_DIR/package.json" ] || printf '{"name":"sand-bun","private":true}\n' > "$BUN_DIR/package.json"
-  chown "$SVC_USER":"$SVC_USER" "$BUN_DIR/package.json" 2>/dev/null || true
-
-  # cd into the directory rather than pointing --prefix at it. This script runs
-  # from wherever it was invoked, and npm resolves a project from the working
-  # directory: started inside somebody else's Node project, --prefix is not
-  # enough to stop npm deciding that project is "up to date" and installing
-  # nothing here — exiting 0 while leaving no bun behind.
-  as_svc sh -c "cd '$BUN_DIR' && exec npm install --no-audit --no-fund bun" > "$BUN_LOG" 2>&1 || return 1
-  [ -x "$BUN_DIR/node_modules/.bin/bun" ] || return 1
-  install -d -o "$SVC_USER" -g "$SVC_USER" -m 755 "$BUN_DIR/bin"
-  ln -sf "$BUN_DIR/node_modules/.bin/bun" "$BUN_DIR/bin/bun"
-}
-
-# install_bun_via_bunsh is bun's own installer, for the hosts with no npm.
-install_bun_via_bunsh() {
-  ensure_pkg unzip
-
-  # Deliberately NOT `curl … | bash`, which is how bun documents this and is
-  # wrong for an unattended installer: a pipeline exits with the status of its
-  # LAST command, so a curl that fails hands bash an empty script and bash
-  # exits 0. The download failure vanishes and the only symptom is a missing
-  # binary further on, which is a much worse thing to debug from. Fetch first,
-  # check that, then run it.
-  #
-  # It lands in $BUN_DIR because the service user has to be able to read it,
-  # and mktemp would give it a file owned by root and mode 600.
-  installer="$BUN_DIR/install.sh"
-  if ! curl -fsSL https://bun.sh/install -o "$installer"; then
-    rm -f "$installer"
-    warn "could not fetch bun's installer from https://bun.sh/install."
-    warn "Proton's client needs a bun. Check the network from this machine, or"
-    warn "set PROTON_CLI_URL to a prebuilt proton-drive binary and re-run."
-    return 1
-  fi
-  chown "$SVC_USER":"$SVC_USER" "$installer" 2>/dev/null || true
-  chmod 0755 "$installer"
-
-  # The output is kept rather than discarded. When this fails it is the only
-  # thing that says why, and "it did not work" is not a bug report anybody can
-  # act on — least of all somebody reading it over ssh on a Pi.
-  if ! as_svc env BUN_INSTALL="$BUN_DIR" bash "$installer" > "$BUN_LOG" 2>&1; then
-    warn "bun's installer failed. Last lines of $BUN_LOG:"
-    tail -n 6 "$BUN_LOG" 2>/dev/null | sed 's/^/       /' >&2
-    return 1
-  fi
-}
-
-# fetch_proton_sdk clones or updates the checkout the client is built from, and
-# prints the commit it left it at, so the caller can tell a rebuild from a
-# no-op.
-fetch_proton_sdk() {
-  # Output goes to a log rather than /dev/null for the same reason it does
-  # everywhere else in this step: when a clone fails, git's own sentence is the
-  # only thing that says whether it was the network, the ref or the disk.
-  if [ -d "$PROTON_SDK_DIR/.git" ]; then
-    as_svc git -C "$PROTON_SDK_DIR" fetch --depth 1 origin "$PROTON_SDK_REF" > "$PROTON_FETCH_LOG" 2>&1 || return 1
-    as_svc git -C "$PROTON_SDK_DIR" checkout -q FETCH_HEAD >> "$PROTON_FETCH_LOG" 2>&1 || return 1
-  else
-    rm -rf "$PROTON_SDK_DIR"
-    install -d -o "$SVC_USER" -g "$SVC_USER" -m 755 "$PROTON_SDK_DIR"
-    as_svc git clone --depth 1 --branch "$PROTON_SDK_REF" "$PROTON_SDK_REPO" "$PROTON_SDK_DIR" > "$PROTON_FETCH_LOG" 2>&1 \
-      || as_svc git clone --depth 1 "$PROTON_SDK_REPO" "$PROTON_SDK_DIR" >> "$PROTON_FETCH_LOG" 2>&1 || return 1
-  fi
-  as_svc git -C "$PROTON_SDK_DIR" rev-parse HEAD 2>/dev/null
-}
-
-# build_proton_cli compiles the client. CLI_APP_VERSION_NAME is not decoration:
-# Proton requires every third-party client to identify itself honestly in the
-# x-pm-appversion header, in this shape, and forbids passing as a first-party
-# app. It is baked in at build time, which is the whole reason this is built
-# here rather than repackaged.
-# PROTON_SDK_PACKAGES is every package that has to have its dependencies
-# installed, in dependency order.
-#
-# There are three rather than one because the SDK is a monorepo with no
-# workspace root — no package.json at the top of it — so `bun install` in cli/
-# links ../client/js and ../incubating/account/js as file: dependencies and
-# never installs THEIRS. The build then dies resolving ttag, @xmldom/xmldom and
-# exifreader out of packages that were linked but never populated, which is
-# exactly what "Proton's client would not build" was hiding.
-PROTON_SDK_PACKAGES="client/js incubating/account/js cli"
-
-build_proton_cli() {
-  for package in $PROTON_SDK_PACKAGES; do
-    log "installing dependencies in $package…"
-
-    # --frozen-lockfile first, because a build of somebody else's tree should
-    # use the versions they pinned. It is not worth failing the install over,
-    # though: this tracks a moving ref, and a lockfile that needs migrating to
-    # the bun just installed is a bad reason to have no Proton backend. So a
-    # second pass without it, saying so.
-    if proton_bun "$package" install --frozen-lockfile > "$PROTON_BUILD_LOG" 2>&1; then
-      continue
-    fi
-    warn "the pinned install failed in $package; retrying without --frozen-lockfile."
-    if ! proton_bun "$package" install > "$PROTON_BUILD_LOG" 2>&1; then
-      warn "bun could not install dependencies in $package. Last lines of $PROTON_BUILD_LOG:"
-      proton_log_tail "$PROTON_BUILD_LOG"
-      return 1
-    fi
-  done
-
-  if ! proton_bun cli run build > "$PROTON_BUILD_LOG" 2>&1; then
-    warn "the Proton client would not compile. Last lines of $PROTON_BUILD_LOG:"
-    proton_log_tail "$PROTON_BUILD_LOG"
-    proton_note_memory
-    return 1
-  fi
-}
-
-# proton_bun runs one bun command in one package of the SDK, with the
-# environment the build needs. CLI_APP_VERSION_NAME is not decoration: Proton
-# requires a third-party client to identify itself honestly in x-pm-appversion,
-# and it is baked in at build time — the built binary reports
-# external-drive-sand@<version>.
-proton_bun() {
-  package="$1"
-  shift
-  as_svc env \
-      BUN_INSTALL="$BUN_DIR" \
-      PATH="$BUN_DIR/bin:$PATH" \
-      CLI_APP_VERSION_NAME="external-drive-sand" \
-      sh -c "cd '$PROTON_SDK_DIR/$package' && exec bun $*"
-}
-
-proton_log_tail() {
-  tail -n 12 "$1" 2>/dev/null | sed 's/^/       /' >&2
-}
-
-# proton_note_memory adds the sentence the log usually will not. A compile
-# killed for memory says little or nothing — the kernel takes the process out
-# and bun never gets to complain — and on a 2 GB Pi that is the first thing to
-# suspect rather than the last.
-proton_note_memory() {
-  total_kb="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
-  [ "${total_kb:-0}" -gt 0 ] 2>/dev/null || return 0
-  [ "$total_kb" -lt 3000000 ] || return 0
-  warn "This machine has $((total_kb / 1024)) MB of RAM. Compiling the client needs"
-  warn "more than a small board usually has, and a build killed for memory often"
-  warn "says nothing at all. PROTON_CLI_URL takes a prebuilt binary instead:"
-  warn "  https://proton.me/download/drive/cli/index.html"
-}
-
-install_proton_cli() {
-  install -d -o "$SVC_USER" -g "$SVC_USER" -m 755 "$PREFIX/bin"
-
-  # A prebuilt binary, when one has been named. This is the fast path and the
-  # only practical one on a small board.
-  if [ -n "$PROTON_CLI_URL" ]; then
-    log "downloading Proton's client…"
-    tmp="$(mktemp)"
-    if ! curl -fsSL "$PROTON_CLI_URL" -o "$tmp"; then
-      rm -f "$tmp"
-      warn "could not download $PROTON_CLI_URL — Proton accounts will need the synced folder."
-      return 1
-    fi
-    install -m 755 -o "$SVC_USER" -g "$SVC_USER" "$tmp" "$PROTON_BIN"
-    rm -f "$tmp"
-    return 0
-  fi
-
-  if ! bun_supported; then
-    warn "bun has no build for $(bun_arch), so Proton's client cannot be built here."
-    warn "Connect Proton as a synced folder, or set PROTON_CLI_URL to a prebuilt binary."
-    return 1
-  fi
-
-  install_bun || return 1
-
-  log "fetching Proton's Drive SDK…"
-  if ! rev="$(fetch_proton_sdk)"; then
-    warn "could not fetch $PROTON_SDK_REPO. Last lines of $PROTON_FETCH_LOG:"
-    proton_log_tail "$PROTON_FETCH_LOG"
-    return 1
-  fi
-
-  # Rebuilding takes minutes and produces the same binary from the same commit,
-  # so an upgrade that has not moved the SDK skips it.
-  if [ -x "$PROTON_BIN" ] && [ "$(cat "$PROTON_STAMP" 2>/dev/null)" = "$rev" ]; then
-    ok "Proton client already built from $(printf '%.7s' "$rev")"
-    return 0
-  fi
-
-  log "building Proton's client (this takes a while)…"
-  if ! build_proton_cli; then
-    # build_proton_cli has already said what failed and why. This is the part
-    # somebody needs next: the install is fine, and Proton has another route.
-    warn "The rest of the install is unaffected. Connect Proton as a synced"
-    warn "folder, or set PROTON_CLI_URL to a prebuilt binary and re-run."
-    return 1
-  fi
-  [ -f "$PROTON_SDK_DIR/cli/release/proton-drive" ] || {
-    warn "the Proton build finished but produced no binary."
-    return 1
-  }
-  install -m 755 -o "$SVC_USER" -g "$SVC_USER" "$PROTON_SDK_DIR/cli/release/proton-drive" "$PROTON_BIN"
-  printf '%s' "$rev" > "$PROTON_STAMP"
-}
-
-PROTON_READY=0
-if [ "$INSTALL_PROTON" = never ]; then
-  ok "skipping Proton's client (INSTALL_PROTON=never)"
-elif install_proton_cli; then
-  # On PATH under its own name, so the service finds it without being told and
-  # `sand remote proton login` works from an ordinary shell.
-  ln -sf "$PROTON_BIN" "$PROTON_LINK"
-  PROTON_READY=1
-  ok "proton-drive installed → $PROTON_BIN"
-fi
-
-# ---------------------------------------------------------------------------
 # 5. Data dir + pre-upgrade vault snapshot
 # ---------------------------------------------------------------------------
-step "[6/8] Data directory + backup"
+step "[5/8] Data directory + backup"
 install -d -o "$SVC_USER" -g "$SVC_USER" -m 750 "$DATA_DIR" "$BACKUP_DIR"
 # 700 rather than 750: a Proton account's session passes through here on its
 # way to the client, and for those few moments it is the key material that
@@ -1048,7 +750,7 @@ fi
 # ---------------------------------------------------------------------------
 # 6. systemd unit + (re)start
 # ---------------------------------------------------------------------------
-step "[7/8] systemd service"
+step "[6/8] systemd service"
 
 # The service is quiesced by now on an upgrade, so this is where the staged
 # binary replaces the running one (keeping the old one for rollback).
@@ -1170,7 +872,7 @@ ok "service enabled and started"
 # ---------------------------------------------------------------------------
 # 7. Health check (with rollback on a failed upgrade)
 # ---------------------------------------------------------------------------
-step "[8/8] Health check"
+step "[7/8] Health check"
 health_url="http://127.0.0.1:$PORT/api/health"
 check_health() {
   for _ in $(seq 1 30); do
@@ -1222,6 +924,411 @@ else
     die "Upgrade AND rollback both failed health checks. Your vault snapshot is safe at $SNAP. Inspect: journalctl -u ${SERVICE_NAME} -n 80"
   fi
   die "Service is not healthy. Inspect logs: journalctl -u ${SERVICE_NAME} -n 80 --no-pager"
+fi
+
+# ---------------------------------------------------------------------------
+# 8. Proton Drive client
+# ---------------------------------------------------------------------------
+#
+# Proton publishes no API a third party may use, and no Go SDK. What it does
+# publish is the client its own apps are built on, so SAND drives that instead
+# of reimplementing Proton's cryptography — which is just as well, since that
+# cryptography changes at the end of 2026 and every client implementing only
+# the old model stops working. Building Proton's binary puts that migration on
+# Proton.
+#
+# This is not a build-time dependency like Node and Go. The client is what the
+# running service executes to reach Proton, so it stays.
+#
+# Everything here is skippable and nothing here is fatal: a host that cannot
+# build it gets a warning and an install that works in every other respect. A
+# Proton account can still be connected as a synced folder.
+#
+# It comes LAST, after the service is installed, started and found healthy,
+# because it is the slowest and least certain step and the service does not
+# depend on it: the client is looked up on PATH each time it is run, so one
+# that lands after the service is up is found the moment it is wanted. The
+# other order held the whole install — and the service it was upgrading — behind
+# a compile that, on a small board, could take an hour or not finish at all.
+step "[8/8] Proton Drive client"
+
+# bun_supported reports whether this machine has a bun to build with. bun ships
+# 64-bit builds only, so a 32-bit Raspberry Pi cannot build the client — which
+# is a thing to say plainly rather than a build to watch fail.
+#
+# dpkg is asked first because `uname -m` answers for the KERNEL, and a Pi
+# running a 64-bit kernel over a 32-bit userland — the stock Raspberry Pi OS
+# armhf image does exactly this — reports aarch64 while every binary on it is
+# 32-bit. Trusting that downloads a bun that cannot run.
+bun_arch() { dpkg --print-architecture 2>/dev/null || uname -m; }
+bun_supported() {
+  case "$(bun_arch)" in
+    x86_64 | amd64 | aarch64 | arm64) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# install_bun fetches the runtime Proton's client is built with. It goes under
+# $PREFIX rather than into the service user's home so that an upgrade can find
+# it again, and so nothing ends up in /root when this is run under sudo.
+# install_bun fetches bun — the version asked for, when one is, because Proton's
+# build script refuses any bun but the one its package.json names (cli/
+# package.json, "engines"), and bun moves faster than the SDK pins it: the day
+# the registry's latest went past the pin, every fresh install started failing
+# with "Bun 1.4.2 is required, but 1.4.3 is running". So the SDK is fetched
+# first and asked, and a bun already here is replaced if it is the wrong one.
+install_bun() {
+  want="${1-}"
+  # Present is not the same as working: a bun left behind by an install that
+  # fetched the wrong architecture is a file that exists and cannot run, and
+  # the whole point of checking here is to not discover that twenty minutes
+  # into a build.
+  if [ -x "$BUN_DIR/bin/bun" ] && version="$("$BUN_DIR/bin/bun" --version 2>/dev/null)"; then
+    if [ -z "$want" ] || [ "$version" = "$want" ]; then
+      ok "bun $version"
+      return 0
+    fi
+    log "bun $version is here but Proton's client builds with $want; replacing it."
+  fi
+  log "installing bun${want:+ $want} (builds Proton's client)…"
+  install -d -o "$SVC_USER" -g "$SVC_USER" -m 755 "$BUN_DIR"
+
+  # npm first, where there is one. It is faster than fetching and unpacking a
+  # zip, it reports an unsupported platform as an error instead of installing
+  # something that cannot run, and — the reason it is first rather than the
+  # fallback — a source-mode install has already used the npm registry to build
+  # the web client, so it is a route this machine is known to reach. bun.sh is
+  # one more host that may not be.
+  #
+  # Release mode installs no Node, so npm may not be here at all; that is what
+  # the second route is for.
+  if command -v npm >/dev/null 2>&1 && install_bun_via_npm "$want"; then
+    :
+  else
+    command -v npm >/dev/null 2>&1 && warn "npm could not install bun; trying bun.sh."
+    install_bun_via_bunsh "$want" || return 1
+  fi
+
+  if [ ! -x "$BUN_DIR/bin/bun" ]; then
+    warn "the bun install finished but left no binary at $BUN_DIR/bin/bun."
+    warn "Last lines of $BUN_LOG:"
+    tail -n 6 "$BUN_LOG" 2>/dev/null | sed 's/^/       /' >&2
+    return 1
+  fi
+  # Captured with `|| status=$?` rather than tested with `if !`, because inside
+  # the branch of a negated test $? is the negation's own status — 0 — and the
+  # message would report every failure as a success. It also keeps set -e off
+  # the assignment.
+  status=0
+  version="$("$BUN_DIR/bin/bun" --version 2>&1)" || status=$?
+  if [ "$status" -ne 0 ]; then
+    # A binary of the wrong architecture is killed by the kernel and may say
+    # nothing at all, so there has to be something to print when it does not.
+    [ -n "$version" ] || version="it exited $status without saying anything"
+    warn "bun installed but will not run on this machine:"
+    warn "  $version"
+    warn "That usually means a 64-bit kernel over a 32-bit userland, which bun"
+    warn "has no build for. Set PROTON_CLI_URL to a prebuilt proton-drive"
+    warn "binary, or connect Proton as a synced folder."
+    return 1
+  fi
+  ok "bun $version"
+}
+
+# install_bun_via_npm takes bun from the registry, which publishes it as a
+# per-platform binary package. Everything downstream looks for $BUN_DIR/bin/bun,
+# so the two routes are made to agree with a symlink rather than by teaching the
+# rest of the script about npm's layout.
+install_bun_via_npm() {
+  want="${1-}"
+  # npm refuses a --prefix with no package.json in it (ENOENT, and it names the
+  # missing file rather than the problem). A private stub makes the directory a
+  # place npm will install into, and keeps the install out of any package.json
+  # further up the tree.
+  [ -f "$BUN_DIR/package.json" ] || printf '{"name":"sand-bun","private":true}\n' > "$BUN_DIR/package.json"
+  chown "$SVC_USER":"$SVC_USER" "$BUN_DIR/package.json" 2>/dev/null || true
+
+  # cd into the directory rather than pointing --prefix at it. This script runs
+  # from wherever it was invoked, and npm resolves a project from the working
+  # directory: started inside somebody else's Node project, --prefix is not
+  # enough to stop npm deciding that project is "up to date" and installing
+  # nothing here — exiting 0 while leaving no bun behind.
+  #
+  # Bounded: a registry that does not answer makes npm retry for a long time,
+  # and this step has a long way to go after it.
+  AS_SVC_TIMEOUT=600 as_svc sh -c "cd '$BUN_DIR' && exec npm install --no-audit --no-fund 'bun${want:+@$want}'" > "$BUN_LOG" 2>&1 </dev/null || return 1
+  [ -x "$BUN_DIR/node_modules/.bin/bun" ] || return 1
+  install -d -o "$SVC_USER" -g "$SVC_USER" -m 755 "$BUN_DIR/bin"
+  ln -sf "$BUN_DIR/node_modules/.bin/bun" "$BUN_DIR/bin/bun"
+}
+
+# install_bun_via_bunsh is bun's own installer, for the hosts with no npm.
+install_bun_via_bunsh() {
+  want="${1-}"
+  ensure_pkg unzip
+
+  # Deliberately NOT `curl … | bash`, which is how bun documents this and is
+  # wrong for an unattended installer: a pipeline exits with the status of its
+  # LAST command, so a curl that fails hands bash an empty script and bash
+  # exits 0. The download failure vanishes and the only symptom is a missing
+  # binary further on, which is a much worse thing to debug from. Fetch first,
+  # check that, then run it.
+  #
+  # It lands in $BUN_DIR because the service user has to be able to read it,
+  # and mktemp would give it a file owned by root and mode 600.
+  installer="$BUN_DIR/install.sh"
+  if ! curl -fsSL --connect-timeout 20 --max-time 300 https://bun.sh/install -o "$installer"; then
+    rm -f "$installer"
+    warn "could not fetch bun's installer from https://bun.sh/install."
+    warn "Proton's client needs a bun. Check the network from this machine, or"
+    warn "set PROTON_CLI_URL to a prebuilt proton-drive binary and re-run."
+    return 1
+  fi
+  chown "$SVC_USER":"$SVC_USER" "$installer" 2>/dev/null || true
+  chmod 0755 "$installer"
+
+  # The output is kept rather than discarded. When this fails it is the only
+  # thing that says why, and "it did not work" is not a bug report anybody can
+  # act on — least of all somebody reading it over ssh on a Pi.
+  # The installer takes a release to fetch as its argument, "bun-v1.4.2"; with
+  # none it takes the latest, which is only right when nothing asked otherwise.
+  if ! AS_SVC_TIMEOUT=600 as_svc env BUN_INSTALL="$BUN_DIR" bash "$installer" ${want:+"bun-v$want"} > "$BUN_LOG" 2>&1 </dev/null; then
+    warn "bun's installer failed. Last lines of $BUN_LOG:"
+    tail -n 6 "$BUN_LOG" 2>/dev/null | sed 's/^/       /' >&2
+    return 1
+  fi
+}
+
+# fetch_proton_sdk clones or updates the checkout the client is built from, and
+# prints the commit it left it at, so the caller can tell a rebuild from a
+# no-op.
+fetch_proton_sdk() {
+  # Output goes to a log rather than /dev/null for the same reason it does
+  # everywhere else in this step: when a clone fails, git's own sentence is the
+  # only thing that says whether it was the network, the ref or the disk.
+  if [ -d "$PROTON_SDK_DIR/.git" ]; then
+    AS_SVC_TIMEOUT=600 as_svc git -C "$PROTON_SDK_DIR" fetch --depth 1 origin "$PROTON_SDK_REF" > "$PROTON_FETCH_LOG" 2>&1 </dev/null || return 1
+    as_svc git -C "$PROTON_SDK_DIR" checkout -q FETCH_HEAD >> "$PROTON_FETCH_LOG" 2>&1 </dev/null || return 1
+  else
+    rm -rf "$PROTON_SDK_DIR"
+    install -d -o "$SVC_USER" -g "$SVC_USER" -m 755 "$PROTON_SDK_DIR"
+    AS_SVC_TIMEOUT=600 as_svc git clone --depth 1 --branch "$PROTON_SDK_REF" "$PROTON_SDK_REPO" "$PROTON_SDK_DIR" > "$PROTON_FETCH_LOG" 2>&1 </dev/null \
+      || AS_SVC_TIMEOUT=600 as_svc git clone --depth 1 "$PROTON_SDK_REPO" "$PROTON_SDK_DIR" >> "$PROTON_FETCH_LOG" 2>&1 </dev/null || return 1
+  fi
+  as_svc git -C "$PROTON_SDK_DIR" rev-parse HEAD 2>/dev/null
+}
+
+# proton_bun_wanted reads the bun release Proton's client builds with out of
+# cli/package.json ("engines": {"bun": "1.4.2"}). Only an exact x.y.z is
+# returned: a range would be honoured by the build script's own check, and
+# bun's installer can only fetch an exact release anyway. Empty means no pin,
+# and the latest will do.
+proton_bun_wanted() {
+  sed -n 's/^[[:space:]]*"bun":[[:space:]]*"\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)".*/\1/p' \
+    "$PROTON_SDK_DIR/cli/package.json" 2>/dev/null | head -n 1
+}
+
+# build_proton_cli compiles the client. CLI_APP_VERSION_NAME is not decoration:
+# Proton requires every third-party client to identify itself honestly in the
+# x-pm-appversion header, in this shape, and forbids passing as a first-party
+# app. It is baked in at build time, which is the whole reason this is built
+# here rather than repackaged.
+# PROTON_SDK_PACKAGES is every package that has to have its dependencies
+# installed, in dependency order.
+#
+# There are three rather than one because the SDK is a monorepo with no
+# workspace root — no package.json at the top of it — so `bun install` in cli/
+# links ../client/js and ../incubating/account/js as file: dependencies and
+# never installs THEIRS. The build then dies resolving ttag, @xmldom/xmldom and
+# exifreader out of packages that were linked but never populated, which is
+# exactly what "Proton's client would not build" was hiding.
+PROTON_SDK_PACKAGES="client/js incubating/account/js cli"
+
+# How long the compile may take, in minutes. Forty-five is generous for a
+# laptop and about right for a Raspberry Pi 4 with the memory to finish at
+# all; past it the build is far more likely swapping than working.
+PROTON_BUILD_TIMEOUT="${PROTON_BUILD_TIMEOUT:-45}"
+
+# How long one dependency install may take. Bun is quick when the registry
+# answers, and no amount of waiting helps when it does not.
+PROTON_INSTALL_TIMEOUT=900
+
+# run_watched runs one slow command with its output in a log, a line every
+# half minute saying it is still going and what it last printed, and a limit on
+# how long it may take. Nothing here used to say anything between "building
+# Proton's client (this takes a while)…" and the end, and nothing stopped a
+# command that never ended, so a slow Pi and a stalled download looked the same
+# — and both looked like the installer had hung. The command's status comes
+# back; 124 means it was stopped at the limit.
+#
+#   run_watched "label" seconds logfile command args…
+run_watched() {
+  label="$1"
+  limit_s="$2"
+  logfile="$3"
+  shift 3
+
+  AS_SVC_TIMEOUT="$limit_s" "$@" > "$logfile" 2>&1 </dev/null &
+  pid=$!
+  started="$(date +%s)"
+  spoken=0
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep 5
+    elapsed=$(( $(date +%s) - started ))
+    if [ $((elapsed / 30)) -gt "$spoken" ]; then
+      spoken=$((elapsed / 30))
+      last="$(tail -n 1 "$logfile" 2>/dev/null | tr -d '\r' | cut -c1-72)"
+      log "  still ${label}… $((elapsed / 60))m$((elapsed % 60))s${last:+  ·  $last}"
+    fi
+  done
+  wait "$pid"
+}
+
+build_proton_cli() {
+  for package in $PROTON_SDK_PACKAGES; do
+    log "installing dependencies in $package…"
+
+    # --frozen-lockfile first, because a build of somebody else's tree should
+    # use the versions they pinned. It is not worth failing the install over,
+    # though: this tracks a moving ref, and a lockfile that needs migrating to
+    # the bun just installed is a bad reason to have no Proton backend. So a
+    # second pass without it, saying so.
+    if run_watched "installing $package" "$PROTON_INSTALL_TIMEOUT" "$PROTON_BUILD_LOG" \
+         proton_bun "$package" install --frozen-lockfile; then
+      continue
+    fi
+    warn "the pinned install failed in $package; retrying without --frozen-lockfile."
+    status=0
+    run_watched "installing $package" "$PROTON_INSTALL_TIMEOUT" "$PROTON_BUILD_LOG" \
+      proton_bun "$package" install || status=$?
+    if [ "$status" -ne 0 ]; then
+      if [ "$status" -eq 124 ]; then
+        warn "installing dependencies in $package took longer than $((PROTON_INSTALL_TIMEOUT / 60)) minutes and was stopped."
+        warn "The registry is slow or unreachable from this machine. Last lines of $PROTON_BUILD_LOG:"
+      else
+        warn "bun could not install dependencies in $package. Last lines of $PROTON_BUILD_LOG:"
+      fi
+      proton_log_tail "$PROTON_BUILD_LOG"
+      return 1
+    fi
+  done
+
+  status=0
+  run_watched "building Proton's client" "$((PROTON_BUILD_TIMEOUT * 60))" "$PROTON_BUILD_LOG" \
+    proton_bun cli run build || status=$?
+  if [ "$status" -ne 0 ]; then
+    if [ "$status" -eq 124 ]; then
+      warn "the Proton client did not finish compiling in $PROTON_BUILD_TIMEOUT minutes and was stopped."
+      warn "Raise PROTON_BUILD_TIMEOUT if this machine is simply slow. Last lines of $PROTON_BUILD_LOG:"
+    else
+      warn "the Proton client would not compile. Last lines of $PROTON_BUILD_LOG:"
+    fi
+    proton_log_tail "$PROTON_BUILD_LOG"
+    proton_note_memory
+    return 1
+  fi
+}
+
+# proton_bun runs one bun command in one package of the SDK, with the
+# environment the build needs. CLI_APP_VERSION_NAME is not decoration: Proton
+# requires a third-party client to identify itself honestly in x-pm-appversion,
+# and it is baked in at build time — the built binary reports
+# external-drive-sand@<version>.
+proton_bun() {
+  package="$1"
+  shift
+  as_svc env \
+      BUN_INSTALL="$BUN_DIR" \
+      PATH="$BUN_DIR/bin:$PATH" \
+      CLI_APP_VERSION_NAME="external-drive-sand" \
+      sh -c "cd '$PROTON_SDK_DIR/$package' && exec bun $*"
+}
+
+proton_log_tail() {
+  tail -n 12 "$1" 2>/dev/null | sed 's/^/       /' >&2
+}
+
+# proton_note_memory adds the sentence the log usually will not. A compile
+# killed for memory says little or nothing — the kernel takes the process out
+# and bun never gets to complain — and on a 2 GB Pi that is the first thing to
+# suspect rather than the last.
+proton_note_memory() {
+  total_kb="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+  [ "${total_kb:-0}" -gt 0 ] 2>/dev/null || return 0
+  [ "$total_kb" -lt 3000000 ] || return 0
+  warn "This machine has $((total_kb / 1024)) MB of RAM. Compiling the client needs"
+  warn "more than a small board usually has, and a build killed for memory often"
+  warn "says nothing at all. PROTON_CLI_URL takes a prebuilt binary instead:"
+  warn "  https://proton.me/download/drive/cli/index.html"
+}
+
+install_proton_cli() {
+  install -d -o "$SVC_USER" -g "$SVC_USER" -m 755 "$PREFIX/bin"
+
+  # A prebuilt binary, when one has been named. This is the fast path and the
+  # only practical one on a small board.
+  if [ -n "$PROTON_CLI_URL" ]; then
+    log "downloading Proton's client…"
+    tmp="$(mktemp)"
+    if ! curl -fsSL --connect-timeout 20 --max-time 900 "$PROTON_CLI_URL" -o "$tmp"; then
+      rm -f "$tmp"
+      warn "could not download $PROTON_CLI_URL — Proton accounts will need the synced folder."
+      return 1
+    fi
+    install -m 755 -o "$SVC_USER" -g "$SVC_USER" "$tmp" "$PROTON_BIN"
+    rm -f "$tmp"
+    return 0
+  fi
+
+  if ! bun_supported; then
+    warn "bun has no build for $(bun_arch), so Proton's client cannot be built here."
+    warn "Connect Proton as a synced folder, or set PROTON_CLI_URL to a prebuilt binary."
+    return 1
+  fi
+
+  log "fetching Proton's Drive SDK…"
+  if ! rev="$(fetch_proton_sdk)"; then
+    warn "could not fetch $PROTON_SDK_REPO. Last lines of $PROTON_FETCH_LOG:"
+    proton_log_tail "$PROTON_FETCH_LOG"
+    return 1
+  fi
+
+  # Rebuilding takes minutes and produces the same binary from the same commit,
+  # so an upgrade that has not moved the SDK skips it — before fetching a bun,
+  # which it would not need either.
+  if [ -x "$PROTON_BIN" ] && [ "$(cat "$PROTON_STAMP" 2>/dev/null)" = "$rev" ]; then
+    ok "Proton client already built from $(printf '%.7s' "$rev")"
+    return 0
+  fi
+
+  # The SDK first, the bun second: the SDK says which bun it builds with.
+  install_bun "$(proton_bun_wanted)" || return 1
+
+  log "building Proton's client (this takes a while)…"
+  if ! build_proton_cli; then
+    # build_proton_cli has already said what failed and why. This is the part
+    # somebody needs next: the install is fine, and Proton has another route.
+    warn "The rest of the install is unaffected. Connect Proton as a synced"
+    warn "folder, or set PROTON_CLI_URL to a prebuilt binary and re-run."
+    return 1
+  fi
+  [ -f "$PROTON_SDK_DIR/cli/release/proton-drive" ] || {
+    warn "the Proton build finished but produced no binary."
+    return 1
+  }
+  install -m 755 -o "$SVC_USER" -g "$SVC_USER" "$PROTON_SDK_DIR/cli/release/proton-drive" "$PROTON_BIN"
+  printf '%s' "$rev" > "$PROTON_STAMP"
+}
+
+PROTON_READY=0
+if [ "$INSTALL_PROTON" = never ]; then
+  ok "skipping Proton's client (INSTALL_PROTON=never)"
+elif install_proton_cli; then
+  # On PATH under its own name, so the service finds it without being told and
+  # `sand remote proton login` works from an ordinary shell.
+  ln -sf "$PROTON_BIN" "$PROTON_LINK"
+  PROTON_READY=1
+  ok "proton-drive installed → $PROTON_BIN"
 fi
 
 # ---------------------------------------------------------------------------
