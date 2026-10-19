@@ -114,6 +114,10 @@
 #                    up and healthy, so a slow or stuck build costs the Proton
 #                    backend and nothing else; re-running picks it up again.
 #
+# Everything this prints is also appended to $SAND_PREFIX/quickstart.log, and a
+# terminal that goes away mid-run (an ssh session dropped, a runner that timed
+# out) does not stop the install: look there for how it ended.
+#
 # A NOTE ON HOST.  This defaults to 0.0.0.0, so the service is reachable from
 # the rest of your network as soon as it is installed. Understand what you are
 # exposing: this server is the one component that ever holds plaintext — it
@@ -126,6 +130,17 @@
 
 set -euo pipefail
 
+# A dropped terminal must not kill a half-done install. This is usually run
+# over ssh, to a Pi, and the session can go away for a dozen reasons that have
+# nothing to do with the box — a laptop lid, a runner's timeout, wifi. The
+# shell would then get a SIGHUP, or a SIGPIPE on its next line of output, and
+# die wherever it happened to be: between stopping the service and starting the
+# new one, if it was unlucky, leaving the box with no service at all. So both
+# are ignored, every line printed here tolerates a dead stdout, and everything
+# is also written to $QUICKSTART_LOG (set below, once the prefix is known),
+# which is where to look when the session that started this is gone.
+trap '' HUP PIPE
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -135,11 +150,13 @@ if [ -t 1 ]; then
 else
   C_BLUE=''; C_GREEN=''; C_YELLOW=''; C_RED=''; C_DIM=''; C_OFF=''
 fi
-log()  { printf '%s==>%s %s\n' "$C_BLUE" "$C_OFF" "$*"; }
-ok()   { printf '%s ok %s %s\n' "$C_GREEN" "$C_OFF" "$*"; }
-warn() { printf '%swarn%s %s\n' "$C_YELLOW" "$C_OFF" "$*" >&2; }
-die()  { printf '%serr %s %s\n' "$C_RED" "$C_OFF" "$*" >&2; exit 1; }
-step() { printf '\n%s%s%s\n' "$C_DIM" "$*" "$C_OFF"; }
+# `|| :` on every print: with the terminal gone a write fails, and under set -e
+# a failed printf would end the install on a progress line.
+log()  { printf '%s==>%s %s\n' "$C_BLUE" "$C_OFF" "$*" 2>/dev/null || :; }
+ok()   { printf '%s ok %s %s\n' "$C_GREEN" "$C_OFF" "$*" 2>/dev/null || :; }
+warn() { printf '%swarn%s %s\n' "$C_YELLOW" "$C_OFF" "$*" >&2 2>/dev/null || :; }
+die()  { printf '%serr %s %s\n' "$C_RED" "$C_OFF" "$*" >&2 2>/dev/null || :; exit 1; }
+step() { printf '\n%s%s%s\n' "$C_DIM" "$*" "$C_OFF" 2>/dev/null || :; }
 
 # ---------------------------------------------------------------------------
 # Must be root (system-wide service + dedicated user)
@@ -177,6 +194,20 @@ PREFIX="${SAND_PREFIX:-/opt/sand}"
 DATA_DIR="${SAND_DATA_DIR:-/var/lib/sand}"
 SERVICE_NAME="sand"
 UNIT_PATH="/etc/systemd/system/${SERVICE_NAME}.service"
+
+# Everything from here on is also written to this file, appended, so that an
+# install whose terminal went away still has a record — and so "what did it
+# say?" has an answer after the fact. tee is told to shrug off a closed pipe on
+# the terminal side (--output-error=warn-nopipe) and carry on to the file; an
+# older tee without that option is left out rather than risked, since a tee
+# that dies would take the install's stdout with it.
+QUICKSTART_LOG="$PREFIX/quickstart.log"
+if [ "$UNINSTALL" = 0 ] && install -d -m 755 "$PREFIX" 2>/dev/null \
+   && tee --output-error=warn-nopipe </dev/null >/dev/null 2>&1; then
+  exec > >(tee -a --output-error=warn-nopipe "$QUICKSTART_LOG") 2>&1
+  printf '\n--- quickstart %s ---\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$QUICKSTART_LOG" 2>/dev/null || :
+  log "a copy of everything below is kept in $QUICKSTART_LOG"
+fi
 
 # How the service is already running, if it is. The unit is rewritten from
 # scratch on every run, so without reading it back an upgrade would silently
