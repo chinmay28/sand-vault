@@ -282,11 +282,12 @@ func (s *Server) Handler() (http.Handler, error) {
 		// the plan it is following — so much a day, these folders first. The
 		// migrate above is "finish now"; this is the slower way, and the one
 		// the server runs on its own. See handlers_rekey.go.
-		"GET /api/vault/rekey":     s.handleRekeyStatus,
-		"PUT /api/vault/rekey":     s.handleRekeyPlan,
-		"POST /api/vault/policy":   s.handleVaultPolicy,
-		"POST /api/vault/defaults": s.handleVaultDefaults,
-		"POST /api/vault/backup":   s.handleVaultBackup,
+		"GET /api/vault/rekey":       s.handleRekeyStatus,
+		"PUT /api/vault/rekey":       s.handleRekeyPlan,
+		"POST /api/vault/rekey/skip": s.handleRekeySkip,
+		"POST /api/vault/policy":     s.handleVaultPolicy,
+		"POST /api/vault/defaults":   s.handleVaultDefaults,
+		"POST /api/vault/backup":     s.handleVaultBackup,
 
 		// Disaster recovery: what the accounts are still holding after the
 		// machine that held the vault is gone, and rebuilding the index from

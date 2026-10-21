@@ -88,6 +88,8 @@ func vaultRekeyCmd() *cobra.Command {
 		resume bool
 		all    bool
 		run    bool
+		skip   string
+		unskip string
 	)
 
 	cmd := &cobra.Command{
@@ -117,6 +119,41 @@ reach zero.`,
 			status, err := v.RekeyStatus()
 			if err != nil {
 				return err
+			}
+
+			// Leaving a file for last. "." is the one being moved right now,
+			// which only 'sand serve' or another 'rekey --run' can be moving
+			// from here, so from this process it usually names a path.
+			if skip != "" {
+				id := ""
+				if skip != "." {
+					e, err := v.EntryByPath(vault.MainScope, skip)
+					if err != nil {
+						return err
+					}
+					id = e.ID
+				}
+				path, err := v.DeferRekeyFile(id)
+				if err != nil {
+					return err
+				}
+				fmt.Printf("%s is left for last.\n", path)
+			}
+			if unskip != "" {
+				e, err := v.EntryByPath(vault.MainScope, unskip)
+				if err != nil {
+					return err
+				}
+				path, err := v.UndeferRekeyFile(e.ID)
+				if err != nil {
+					return err
+				}
+				fmt.Printf("%s is back in its turn.\n", path)
+			}
+			if skip != "" || unskip != "" {
+				if status, err = v.RekeyStatus(); err != nil {
+					return err
+				}
 			}
 
 			if flags.set() || pause || resume || all {
@@ -159,6 +196,10 @@ reach zero.`,
 	cmd.Flags().BoolVar(&all, "all", false, "forget the --folder order and take everything in turn")
 	cmd.Flags().BoolVar(&run, "run", false,
 		"run the plan in the foreground until everything has moved or Ctrl-C")
+	cmd.Flags().StringVar(&skip, "skip", "",
+		"leave this file (a vault path) for last, after everything else; '.' is the file being moved now")
+	cmd.Flags().StringVar(&unskip, "unskip", "",
+		"put a skipped file (a vault path) back in its turn")
 	return cmd
 }
 
@@ -176,6 +217,9 @@ func runPacedRekey(ctx context.Context, v *vault.Vault) error {
 			if step.Warning != "" {
 				fmt.Fprintf(os.Stderr, "warning: %s\n", step.Warning)
 			}
+			continue
+		case step.Skipped:
+			fmt.Printf("  skipped %s, left for last\n", step.Path)
 			continue
 		case step.Warning != "":
 			fmt.Fprintf(os.Stderr, "warning: %s\n", step.Warning)
@@ -265,7 +309,18 @@ func printRekeyStatus(s *vault.RekeyStatus) {
 		fmt.Println("State:            idle — the plan has done everything it was allowed to")
 	}
 	if s.Running {
-		fmt.Printf("Moving now:       %s\n", s.Current)
+		line := fmt.Sprintf("Moving now:       %s", s.Current)
+		if s.CurrentSize > 0 {
+			line += fmt.Sprintf(" · %s of %s", formatBytes(s.CurrentDone), formatBytes(s.CurrentSize))
+		}
+		fmt.Println(line)
+	}
+	if len(s.Deferred) > 0 {
+		var parts []string
+		for _, f := range s.Deferred {
+			parts = append(parts, fmt.Sprintf("%s (%s)", f.Path, formatBytes(f.Bytes)))
+		}
+		fmt.Printf("Left for last:    %s\n", strings.Join(parts, ", "))
 	}
 	for _, w := range s.Warnings {
 		fmt.Fprintf(os.Stderr, "warning: %s\n", w)

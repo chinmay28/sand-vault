@@ -41,6 +41,10 @@ import (
 // quickly (MigrateFiles) or on its plan.
 var ErrRekeyPending = errors.New("a previous password change is still re-encrypting")
 
+// ErrSkipped is what a move ends with when the file was deferred while it was
+// moving: not a failure, and the file is on the previous key as it was.
+var ErrSkipped = errors.New("skipped by request")
+
 // ErrMigrationBusy is returned when a re-encryption pass is asked for while one
 // is already running — the paced step and the finish-now pass share one slot,
 // so two of them never gather and scatter the same file.
@@ -108,6 +112,28 @@ type RekeyPlan struct {
 	// resumes the pace rather than starting a fresh hour of budget.
 	Level   int64     `json:"level,omitempty"`
 	LevelAt time.Time `json:"level_at,omitzero"`
+
+	// Deferred names the files somebody asked to have left for last — a film
+	// that keeps failing on an account that is down, a file that is in the
+	// way — by entry ID. They are moved after everything else, by the paced
+	// step and by a finish-now pass alike, and a file being moved when it is
+	// deferred is stopped where it is and left on the previous key. In the
+	// plan rather than in memory because "come back to it later" has to
+	// survive a restart.
+	Deferred []string `json:"deferred,omitempty"`
+}
+
+// isDeferred reports whether the plan leaves a file for last.
+func (p *RekeyPlan) isDeferred(id string) bool {
+	if p == nil {
+		return false
+	}
+	for _, d := range p.Deferred {
+		if d == id {
+			return true
+		}
+	}
+	return false
 }
 
 // Active reports whether the plan wants files moved on its own.
@@ -165,10 +191,17 @@ type RekeyStatus struct {
 	// first in their order, then every top-level folder with files left.
 	Folders []RekeyFolder `json:"folders"`
 
-	// Running says a file is being moved right now, and Current which. Both
-	// are in memory and belong to this process.
-	Running bool   `json:"running"`
-	Current string `json:"current,omitempty"`
+	// Running says a file is being moved right now, and Current which; Done
+	// and Size are how far through it the scatter has got, in bytes of the
+	// original. All in memory and this process's own.
+	Running     bool   `json:"running"`
+	Current     string `json:"current,omitempty"`
+	CurrentID   string `json:"current_id,omitempty"`
+	CurrentDone int64  `json:"current_done,omitempty"`
+	CurrentSize int64  `json:"current_size,omitempty"`
+
+	// Deferred lists the pending files that have been left for last.
+	Deferred []RekeyFile `json:"deferred,omitempty"`
 
 	// Warnings are the files the plan could not move lately, with why. They
 	// are retried after a while; this is so the reason is visible meanwhile.
@@ -177,6 +210,13 @@ type RekeyStatus struct {
 
 // Done reports whether every file is on the current key.
 func (s *RekeyStatus) Done() bool { return s != nil && s.Pending == 0 }
+
+// RekeyFile names one file in a status.
+type RekeyFile struct {
+	ID    string `json:"id"`
+	Path  string `json:"path"`
+	Bytes int64  `json:"bytes"`
+}
 
 // rekeyRetryAfter is how long a file that would not move is left alone before
 // the plan tries it again. Long enough that a cloud that is down for the
@@ -193,7 +233,14 @@ const maxRekeyWarnings = 10
 type rekeyMemory struct {
 	skip     map[string]time.Time
 	warnings []string
-	current  string
+
+	// The file being moved right now, by whichever pass is moving it, how
+	// far through it is, and the cancel that stops it. See moveTracked.
+	current   string
+	currentID string
+	done      int64
+	size      int64
+	cancel    context.CancelFunc
 }
 
 // pendingLocked counts the files in a scope that are on a key other than the
@@ -408,12 +455,153 @@ func (v *Vault) RekeyStatus() (*RekeyStatus, error) {
 
 	status.Folders = v.rekeyFoldersLocked()
 
+	if plan := v.manifest.Rekey; plan != nil {
+		for _, id := range plan.Deferred {
+			e := v.manifest.ByID(id)
+			if e == nil || e.KeyID == v.dataKeyID {
+				continue
+			}
+			status.Deferred = append(status.Deferred, RekeyFile{ID: e.ID, Path: e.Path(), Bytes: e.Size})
+		}
+	}
+
 	v.rekeyMu.Lock()
 	status.Current = v.rekey.current
+	status.CurrentID = v.rekey.currentID
+	status.CurrentDone, status.CurrentSize = v.rekey.done, v.rekey.size
 	status.Running = v.rekey.current != ""
 	status.Warnings = append([]string(nil), v.rekey.warnings...)
 	v.rekeyMu.Unlock()
 	return status, nil
+}
+
+// moveTracked moves one file with the move on record — which file, how far
+// along, and a cancel that stops it — so the status can say and the skip
+// control can act. It is the one way both the paced step and a finish-now
+// pass move a file.
+//
+// The cancel is the file's own: pulling it ends this move and nothing else,
+// and the caller tells a skip (context.Canceled with the pass's own context
+// still live) from a shutdown.
+func (v *Vault) moveTracked(ctx context.Context, scope Scope, id string, accounts []string) (path string, size int64, warnings []string, err error) {
+	fileCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	v.mu.RLock()
+	if m, err := v.manifestForLocked(scope); err == nil {
+		if e := m.ByID(id); e != nil {
+			path = e.Path()
+		}
+	}
+	v.mu.RUnlock()
+
+	v.rekeyMu.Lock()
+	v.rekey.current, v.rekey.currentID, v.rekey.cancel = path, id, cancel
+	v.rekey.done, v.rekey.size = 0, 0
+	v.rekeyMu.Unlock()
+	defer func() {
+		v.rekeyMu.Lock()
+		v.rekey.current, v.rekey.currentID, v.rekey.cancel = "", "", nil
+		v.rekey.done, v.rekey.size = 0, 0
+		v.rekeyMu.Unlock()
+	}()
+
+	// No scheme: re-encrypting keeps each file cut the way it already is,
+	// whatever that is.
+	path, size, warnings, err = v.migrateFile(fileCtx, scope, id, accounts, archive.Scheme{}, func(done, size int64) {
+		v.rekeyMu.Lock()
+		v.rekey.done, v.rekey.size = done, size
+		v.rekeyMu.Unlock()
+	})
+	// A failure after the file's own cancel was pulled, with the caller's
+	// context still live, is the skip and not a fault — whatever shape the
+	// scatter's own report of it took on the way up.
+	if err != nil && fileCtx.Err() != nil && ctx.Err() == nil {
+		err = fmt.Errorf("%w: %s", ErrSkipped, path)
+	}
+	return path, size, warnings, err
+}
+
+// DeferRekeyFile leaves one of the main vault's pending files for last — the
+// one being moved right now when id is empty — and, if it is the one being
+// moved, stops that move where it is. The file stays on the previous key,
+// readable as ever, and is taken up again after everything else; Undefer puts
+// it back in its turn. Returns the file's path.
+//
+// A plan is started if there is none to hold the choice, with no budget: the
+// files then wait for a pace or for a finish-now, with this one at the back.
+func (v *Vault) DeferRekeyFile(id string) (string, error) {
+	v.rekeyMu.Lock()
+	if id == "" {
+		id = v.rekey.currentID
+	}
+	v.rekeyMu.Unlock()
+	if id == "" {
+		return "", fmt.Errorf("nothing is being re-encrypted right now, so there is nothing to skip")
+	}
+
+	v.mu.Lock()
+	if v.dataKey == nil {
+		v.mu.Unlock()
+		return "", ErrLocked
+	}
+	e := v.manifest.ByID(id)
+	if e == nil {
+		v.mu.Unlock()
+		return "", fmt.Errorf("no such file: %s", id)
+	}
+	path := e.Path()
+	if e.KeyID == v.dataKeyID {
+		v.mu.Unlock()
+		return path, fmt.Errorf("%s is already on the current key", path)
+	}
+	plan := v.manifest.Rekey
+	if plan == nil {
+		plan = newRekeyPlan(RekeySettings{}, v.manifest, v.dataKeyID, time.Now().UTC())
+		v.manifest.Rekey = plan
+	}
+	if !plan.isDeferred(id) {
+		plan.Deferred = append(plan.Deferred, id)
+	}
+	err := v.persistLocked()
+	v.mu.Unlock()
+	if err != nil {
+		return path, err
+	}
+
+	// Stopped after it is written down, so a move that ends with a cancel
+	// finds the file already deferred when it looks for the next one.
+	v.rekeyMu.Lock()
+	if v.rekey.currentID == id && v.rekey.cancel != nil {
+		v.rekey.cancel()
+	}
+	v.rekeyMu.Unlock()
+	return path, nil
+}
+
+// UndeferRekeyFile puts a deferred file back in its turn.
+func (v *Vault) UndeferRekeyFile(id string) (string, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.dataKey == nil {
+		return "", ErrLocked
+	}
+	path := id
+	if e := v.manifest.ByID(id); e != nil {
+		path = e.Path()
+	}
+	plan := v.manifest.Rekey
+	if plan == nil || !plan.isDeferred(id) {
+		return path, nil
+	}
+	kept := plan.Deferred[:0]
+	for _, d := range plan.Deferred {
+		if d != id {
+			kept = append(kept, d)
+		}
+	}
+	plan.Deferred = kept
+	return path, v.persistLocked()
 }
 
 // pendingUnder counts the pending files in and below one folder.
@@ -512,10 +700,15 @@ func (v *Vault) nextRekeyLocked(now time.Time) (entry *Entry, idle bool) {
 
 	// pick is the smallest pending file under dir that is not being left
 	// alone, and whether there was any pending file under dir at all — the
-	// difference between "nothing to do" and "nothing to do yet".
-	pick := func(dir string) (best *Entry, any bool) {
+	// difference between "nothing to do" and "nothing to do yet". Files left
+	// for last are passed over until deferred is set, which the caller does
+	// once everything else is done.
+	pick := func(dir string, deferred bool) (best *Entry, any bool) {
 		for _, e := range v.manifest.Entries {
 			if e.KeyID == v.dataKeyID || !underDir(e.Dir, dir) {
+				continue
+			}
+			if plan.isDeferred(e.ID) != deferred {
 				continue
 			}
 			any = true
@@ -530,18 +723,24 @@ func (v *Vault) nextRekeyLocked(now time.Time) (entry *Entry, idle bool) {
 	}
 
 	waiting := false
-	for _, f := range plan.Folders {
-		e, any := pick(f)
+	for _, deferred := range []bool{false, true} {
+		for _, f := range plan.Folders {
+			e, any := pick(f, deferred)
+			if e != nil {
+				return e, false
+			}
+			waiting = waiting || any
+		}
+		if plan.OnlyFolders {
+			continue
+		}
+		e, any := pick("/", deferred)
 		if e != nil {
 			return e, false
 		}
 		waiting = waiting || any
 	}
-	if plan.OnlyFolders {
-		return nil, !waiting
-	}
-	e, any := pick("/")
-	return e, !any
+	return nil, !waiting
 }
 
 // RekeyStep is what one paced step came to.
@@ -559,6 +758,10 @@ type RekeyStep struct {
 	// Idle says nothing the plan allows is left — no plan, paused, done, or
 	// stopped at its folders.
 	Idle bool
+
+	// Skipped says the file being moved was deferred by request and the move
+	// stopped; Path names it. Not a failure, and not charged.
+	Skipped bool
 
 	// Warning is why a file that was tried did not move.
 	Warning string
@@ -610,18 +813,9 @@ func (v *Vault) RekeyStep(ctx context.Context, now time.Time) (RekeyStep, error)
 	id, path, size := entry.ID, entry.Path(), entry.Size
 	v.mu.Unlock()
 
-	v.rekeyMu.Lock()
-	v.rekey.current = path
-	v.rekeyMu.Unlock()
-	defer func() {
-		v.rekeyMu.Lock()
-		v.rekey.current = ""
-		v.rekeyMu.Unlock()
-	}()
-
-	// No scheme and no accounts: the file is re-sealed as it is cut and where
-	// it is, which is all a password change asked for.
-	moved, _, warnings, err := v.migrateFile(ctx, MainScope, id, nil, archive.Scheme{})
+	// No accounts: the file is re-sealed where it is, which is all a password
+	// change asked for.
+	moved, _, warnings, err := v.moveTracked(ctx, MainScope, id, nil)
 	if err == nil && moved != "" {
 		return RekeyStep{Moved: true, Path: path, Bytes: size, Warning: strings.Join(warnings, "; ")}, nil
 	}
@@ -647,6 +841,15 @@ func (v *Vault) RekeyStep(ctx context.Context, now time.Time) (RekeyStep, error)
 	}
 	if errors.Is(err, ErrLocked) {
 		return RekeyStep{}, err
+	}
+	if errors.Is(err, ErrSkipped) {
+		// Deferred by request mid-move. Not a failure, so not a warning and
+		// not left alone for an hour: it is at the back of the queue now.
+		return RekeyStep{Path: path, Skipped: true}, nil
+	}
+	if ctx.Err() != nil {
+		// The caller's own context went: a shutdown, not a fault of the file.
+		return RekeyStep{}, ctx.Err()
 	}
 	warning := err.Error()
 	v.rekeyMu.Lock()

@@ -200,6 +200,43 @@ prints the counts and the two commands that clear them.
 
 ---
 
+## 4.1 A move never holds the file
+
+The first version of the step moved a file the way `MigrateFiles` always had:
+`Fetch` the whole thing into one slice, scatter it from there. On a film the
+size of the machine's memory that is the kernel killing the service mid-move,
+under the unit's `MemoryMax`, and a plan that never gets past that file.
+
+`rescatter` streams instead. A chunked file is read back through a sequential
+`ChunkedReader`, which holds the chunk it is in and nothing else, feeding
+`scatterStream` the way a spooled upload does; what is resident at any moment
+is that chunk plus the upload window, the same hundred-odd megabytes an upload
+costs, whatever the file weighs. A file still in the pre-chunking format has
+no seams to read through, so it is rebuilt onto disk first, as a conversion is
+(`rebuildLegacyToDisk`), and streamed from there.
+
+Integrity holds the same way it did. Every chunk the reader hands over was
+authenticated by its own seal; the bytes that go out are hashed as they pass
+and checked against the hash on record before the index moves, and a mismatch
+erases the new parts and leaves the file exactly as it was. The index switches
+to the new parts in one write, after every one has landed, and the old parts
+are erased only after that write — so a move cut off at any point, by a crash,
+an upgrade or a kill, leaves the file readable on the key it was on, and the
+plan takes up the next file when the vault is unlocked again. New parts a
+cut-off move had already written are orphans the stray-parts scan finds.
+
+## 4.2 Leaving a file for last
+
+A file can be deferred: the one being moved right now, or any pending one.
+`DeferRekeyFile` writes it into the plan's `deferred` list — in the plan, so
+the choice survives a restart — and, if it is the file being moved, pulls that
+move's cancel. The move stops where it is; the new parts it had written are
+erased; the file stays on the previous key, readable; nothing is charged to
+the meter. Deferred files are moved after everything else, by the paced step
+and by a finish-now pass alike, and `UndeferRekeyFile` puts one back in its
+turn. Every move goes through `moveTracked`, which is what the status reads
+for the file in flight, how far through it is, and the cancel the skip pulls.
+
 ## 5. Surfaces
 
 ### HTTP
@@ -210,6 +247,7 @@ prints the counts and the two commands that clear them.
 | `GET /api/vault/rekey` | `RekeyStatus`: pending files and bytes, totals the plan began over, the plan, when the password changed, next-file and ETA seconds, idle, the per-folder breakdown (queued folders first in their order, then every top-level folder with files left), what is moving now, and the recent failures. |
 | `PUT /api/vault/rekey` | Sets the plan from a whole `RekeySettings`. Starts one if none exists; refused when nothing is on the previous key. |
 | `POST /api/vault/migrate` | Unchanged: finish now. `409 MIGRATION_BUSY` while a step holds the slot. |
+| `POST /api/vault/rekey/skip` | `{id, undo}`: leave a file for last (the one being moved when `id` is empty, stopping that move), or put it back in its turn. Answers with the status. |
 | `GET /api/vault` | `stats.key_id` names the current generation; `sub_vaults[].key_id` likewise while open. |
 | `GET /api/files` | `previous_key` maps each subfolder to how many files under it are still on the previous key. Each file already carries `key_id`. |
 
@@ -220,6 +258,8 @@ sand vault passwd --per-day 10G --folder /Taxes --folder /Photos/2024 [--only-fo
 sand vault rekey                      # where it stands
 sand vault rekey --per-day 25G --all  # faster, forget the folder order
 sand vault rekey --pause | --resume
+sand vault rekey --skip /Films/Heat.1995.mkv   # leave it for last; '.' is the file moving now
+sand vault rekey --unskip /Films/Heat.1995.mkv
 sand vault rekey --run                # the plan, in the foreground, until done
 sand vault status                     # names the pace and the time left
 sand vault migrate                    # finish now, as before

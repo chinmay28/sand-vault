@@ -134,3 +134,46 @@ func TestAPlanNeedsSomethingOnThePreviousKey(t *testing.T) {
 		t.Errorf("rekey = %d %v, want nothing pending", w.Code, rekey)
 	}
 }
+
+func TestAFileCanBeLeftForLastOverHTTP(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("pw", 3)
+	small := c.upload("small.txt", "/", []byte("tiny"))
+	c.upload("large.txt", "/", []byte(strings.Repeat("l", 4000)))
+
+	if w, _ := c.json(http.MethodPost, "/api/vault/password", map[string]any{
+		"old_password": "pw", "new_password": "later",
+		"plan": map[string]any{"bytes_per_day": 1 << 40},
+	}); w.Code != http.StatusOK {
+		t.Fatalf("change password: %d %s", w.Code, w.Body.String())
+	}
+
+	// Nothing is moving, so skipping "the current file" has nothing to skip.
+	if w, _ := c.json(http.MethodPost, "/api/vault/rekey/skip", map[string]any{}); w.Code != http.StatusBadRequest {
+		t.Errorf("skip with nothing moving: %d, want 400", w.Code)
+	}
+
+	w, status := c.json(http.MethodPost, "/api/vault/rekey/skip", map[string]any{"id": small["id"]})
+	if w.Code != http.StatusOK {
+		t.Fatalf("skip: %d %s", w.Code, w.Body.String())
+	}
+	deferred := status["deferred"].([]any)
+	if len(deferred) != 1 || deferred[0].(map[string]any)["path"] != "/small.txt" {
+		t.Fatalf("deferred = %v, want small.txt", deferred)
+	}
+
+	// Smallest first would have taken small.txt; deferred, it goes last.
+	v, _ := c.server.Vault()
+	step, err := c.server.rekeyStep(v, time.Now())
+	if err != nil || !step.Moved || step.Path != "/large.txt" {
+		t.Fatalf("first step = %+v, %v; want large.txt moved first", step, err)
+	}
+
+	w, status = c.json(http.MethodPost, "/api/vault/rekey/skip", map[string]any{"id": small["id"], "undo": true})
+	if w.Code != http.StatusOK || status["deferred"] != nil {
+		t.Fatalf("undo = %d %v, want nothing deferred", w.Code, status["deferred"])
+	}
+	if step, err := c.server.rekeyStep(v, time.Now()); err != nil || !step.Moved || step.Path != "/small.txt" {
+		t.Fatalf("second step = %+v, %v; want small.txt moved", step, err)
+	}
+}

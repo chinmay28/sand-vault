@@ -2,8 +2,12 @@ package vault
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
+	"io"
 	"strings"
 	"time"
 
@@ -469,12 +473,26 @@ func (v *Vault) MigrateFilesIn(ctx context.Context, scope Scope, accounts []stri
 		v.mu.RUnlock()
 		return nil, err
 	}
-	var pending []string
-	for _, e := range m.Entries {
-		if e.KeyID != active {
-			pending = append(pending, e.ID)
+	// The files somebody asked to have left for last go last, here as in the
+	// paced step: finishing now is still a request to finish, so they are not
+	// left out, only put at the end.
+	deferred := map[string]bool{}
+	if scope.Main() && v.manifest.Rekey != nil {
+		for _, id := range v.manifest.Rekey.Deferred {
+			deferred[id] = true
 		}
 	}
+	var pending, last []string
+	for _, e := range m.Entries {
+		if e.KeyID != active {
+			if deferred[e.ID] {
+				last = append(last, e.ID)
+			} else {
+				pending = append(pending, e.ID)
+			}
+		}
+	}
+	pending = append(pending, last...)
 	v.mu.RUnlock()
 
 	report := &MigrationReport{Pending: len(pending)}
@@ -485,9 +503,7 @@ func (v *Vault) MigrateFilesIn(ctx context.Context, scope Scope, accounts []stri
 			break
 		}
 
-		// No scheme: re-encrypting keeps each file cut the way it already is,
-		// whatever that is.
-		path, size, warnings, err := v.migrateFile(ctx, scope, id, accounts, archive.Scheme{})
+		path, size, warnings, err := v.moveTracked(ctx, scope, id, accounts)
 		report.Warnings = append(report.Warnings, warnings...)
 		switch {
 		case errors.Is(err, ErrLocked):
@@ -497,6 +513,11 @@ func (v *Vault) MigrateFilesIn(ctx context.Context, scope Scope, accounts []stri
 				"the vault was locked before the migration finished")
 			report.Remaining = report.Pending - report.Migrated
 			return report, ErrLocked
+		case errors.Is(err, ErrSkipped):
+			// Skipped by request while it was moving: the file stays as it
+			// was, on the previous key, and the pass goes on to the next.
+			report.Warnings = append(report.Warnings,
+				fmt.Sprintf("%s was skipped while it was being re-encrypted, and is still on the previous key", path))
 		case err != nil:
 			report.Warnings = append(report.Warnings, err.Error())
 		default:
@@ -540,7 +561,15 @@ func (v *Vault) MigrateFilesIn(ctx context.Context, scope Scope, accounts []stri
 //
 // scope is which of the vaults inside the file the entry belongs to, since an
 // assignment can leave one naming a key generation that is not this vault's.
-func (v *Vault) migrateFile(ctx context.Context, scope Scope, id string, accounts []string, scheme archive.Scheme) (path string, size int64, warnings []string, err error) {
+//
+// progress, when given, hears how far through the file the scatter has got,
+// in bytes of the original. It may be nil.
+//
+// The file is never whole in memory. It used to be — the whole thing fetched
+// into one slice and scattered from there — which on a 40 GB film was 40 GB of
+// resident memory under a unit with an 80% memory ceiling, and the kernel's
+// answer to that is to kill the service mid-move. See rescatter.
+func (v *Vault) migrateFile(ctx context.Context, scope Scope, id string, accounts []string, scheme archive.Scheme, progress func(done, size int64)) (path string, size int64, warnings []string, err error) {
 	v.mu.RLock()
 	m, err := v.manifestForLocked(scope)
 	if err != nil {
@@ -553,18 +582,13 @@ func (v *Vault) migrateFile(ctx context.Context, scope Scope, id string, account
 		v.mu.RUnlock()
 		return "", 0, nil, nil
 	}
-	path, name := entry.Path(), entry.Name
+	path = entry.Path()
 	// A copy of the entry as it stands, so the parts it is on now can be erased
 	// after the new ones commit — including, for a file already chunked, every
 	// chunk rather than only the first.
 	stale := *entry
 	stale.Shards = append([]Shard(nil), entry.Shards...)
 	v.mu.RUnlock()
-
-	data, _, err := v.Fetch(ctx, id)
-	if err != nil {
-		return path, 0, nil, fmt.Errorf("%s could not be re-encrypted: %w", path, err)
-	}
 
 	// Re-encrypting is not a move: unless it was asked to be. Left alone, the
 	// file goes back to the accounts it was already on, whether they were
@@ -591,13 +615,13 @@ func (v *Vault) migrateFile(ctx context.Context, scope Scope, id string, account
 
 	// Re-encrypting writes the current format, so a file stored whole before
 	// chunking existed comes back chunked. That is the cheapest moment to do it:
-	// the file has already been gathered and is about to be scattered again, so
-	// changing format costs nothing beyond what the re-encryption was paying.
-	placed, err := v.scatterChunked(ctx, scope, name, data,
-		spread{preferred: current, exact: exact, scheme: scheme}, v.uploadChunkSize())
+	// the file is being read back and scattered again anyway, so changing
+	// format costs nothing beyond what the re-encryption was paying.
+	placed, err := v.rescatter(ctx, scope, &stale,
+		spread{preferred: current, exact: exact, scheme: scheme}, progress)
 	warnings = placed.warnings
 	if err != nil {
-		return path, 0, warnings, fmt.Errorf("re-encoding %s: %w", path, err)
+		return path, 0, warnings, err
 	}
 	fresh := &Entry{
 		ArchiveID:   placed.archiveID,
@@ -654,6 +678,126 @@ func (v *Vault) migrateFile(ctx context.Context, scope Scope, id string, account
 		warnings = append(warnings, fmt.Sprintf("%s: a part under the old key is still there — %s", path, w))
 	}
 	return path, size, warnings, nil
+}
+
+// rescatter reads one stored file back and writes it out again — under the
+// current key, in the current format, to the accounts the spread names — while
+// holding one chunk of it at a time.
+//
+// The source is read the way a player reads it: a sequential ChunkedReader,
+// which keeps the chunk it is in and nothing else, feeding scatterStream the
+// way a spooled upload does. What is resident at any moment is that chunk plus
+// the upload window — a handful of chunks being encoded and pushed — which is
+// the same hundred-odd megabytes an upload costs, whether the file is forty
+// megabytes or forty gigabytes. A file still in the pre-chunking format has no
+// seams to read through, so it is rebuilt onto disk first, as a conversion is
+// (rebuildLegacyToDisk), and streamed from there.
+//
+// Every chunk the reader hands over was authenticated by its own seal, and the
+// whole-file hash goes into the new chunks' headers from the index's record of
+// it. The bytes that went out are hashed as they pass all the same, and if the
+// result is not the hash on record the new parts are erased and the file is
+// left exactly as it was: a re-encryption must never trade a file that read
+// correctly for one that does not.
+func (v *Vault) rescatter(ctx context.Context, scope Scope, stale *Entry, sp spread, progress func(done, size int64)) (placement, error) {
+	path := stale.Path()
+	chunkSize := v.uploadChunkSize()
+
+	if !stale.Chunked() {
+		spool, size, hash, err := v.rebuildLegacyToDisk(ctx, stale)
+		if err != nil {
+			return placement{}, fmt.Errorf("%s could not be re-encrypted: %w", path, err)
+		}
+		defer v.discardSpool(spool)
+		placed, err := v.scatterStream(ctx, scope, stale.Name, spool, size, hash, sp, chunkSize, progress)
+		if err != nil {
+			return placed, fmt.Errorf("re-encoding %s: %w", path, err)
+		}
+		return placed, nil
+	}
+
+	reader, err := v.OpenReader(stale.ID)
+	if err != nil {
+		return placement{}, fmt.Errorf("%s could not be re-encrypted: %w", path, err)
+	}
+	reader.private = true
+	src := &hashingReaderAt{r: ctxReaderAt{ctx: ctx, reader: reader}, h: sha256.New(), ordered: true}
+
+	hash, known, err := recordedHash(stale)
+	if err != nil {
+		return placement{}, fmt.Errorf("%s could not be re-encrypted: %w", path, err)
+	}
+	if !known {
+		// An entry from before the hash was recorded. The new chunks need one
+		// in their headers before the first is sealed, so the file is read
+		// once for it — one chunk at a time, like everything else here — and
+		// then again to move. Rare, and a second download beats a wrong header.
+		if _, err := io.Copy(src.h, io.NewSectionReader(src.r, 0, stale.Size)); err != nil {
+			return placement{}, fmt.Errorf("%s could not be re-encrypted: %w", path, err)
+		}
+		copy(hash[:], src.h.Sum(nil))
+		src.h = sha256.New()
+	}
+
+	placed, err := v.scatterStream(ctx, scope, stale.Name, src, stale.Size, hash, sp, chunkSize, progress)
+	if err != nil {
+		return placed, fmt.Errorf("re-encoding %s: %w", path, err)
+	}
+	if got, ok := src.sum(); ok && got != hash {
+		fresh := &Entry{ArchiveID: placed.archiveID, Shards: placed.shards,
+			ChunkSize: placed.chunkSize, ChunkCount: placed.chunkCount}
+		placed.warnings = append(placed.warnings, v.deleteEntryShards(context.WithoutCancel(ctx), fresh)...)
+		return placed, fmt.Errorf("%s did not read back as the hash on record while being re-encrypted; "+
+			"the new parts were erased and the file left as it was", path)
+	}
+	return placed, nil
+}
+
+// recordedHash is the whole-file hash the index holds for an entry, and
+// whether it holds one at all.
+func recordedHash(e *Entry) (hash [32]byte, known bool, err error) {
+	if e.Hash == "" {
+		return hash, false, nil
+	}
+	raw, err := hex.DecodeString(e.Hash)
+	if err != nil || len(raw) != len(hash) {
+		return hash, false, fmt.Errorf("the index holds a malformed hash for %s", e.Path())
+	}
+	copy(hash[:], raw)
+	return hash, true, nil
+}
+
+// hashingReaderAt digests what passes through it, for as long as the reads
+// arrive in order. scatterStream reads each chunk once, front to back, so they
+// do; a reader that jumps around is noted and the digest is not offered.
+type hashingReaderAt struct {
+	r       io.ReaderAt
+	h       hash.Hash
+	pos     int64
+	ordered bool
+}
+
+func (s *hashingReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	n, err := s.r.ReadAt(p, off)
+	if n > 0 {
+		if s.ordered && off == s.pos {
+			s.h.Write(p[:n])
+			s.pos += int64(n)
+		} else {
+			s.ordered = false
+		}
+	}
+	return n, err
+}
+
+// sum is the digest of everything read, or false when the reads were not in
+// order and it would describe nothing.
+func (s *hashingReaderAt) sum() (out [32]byte, ok bool) {
+	if !s.ordered {
+		return out, false
+	}
+	copy(out[:], s.h.Sum(nil))
+	return out, true
 }
 
 // pruneRetiredKeysLocked drops every data key no entry names any more, wiping

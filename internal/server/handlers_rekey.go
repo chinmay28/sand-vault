@@ -76,6 +76,8 @@ func (s *Server) rekeyLoop() {
 			if step.Warning != "" {
 				log.Printf("re-encryption: %s", step.Warning)
 			}
+		case step.Skipped:
+			log.Printf("re-encryption: %s was skipped by request and left for last", step.Path)
 		case step.Warning != "":
 			log.Printf("re-encryption: %s", step.Warning)
 		}
@@ -119,6 +121,41 @@ func (s *Server) rekeyStep(v *vault.Vault, now time.Time) (vault.RekeyStep, erro
 // the previous key, folder by folder, and how the plan is taking it.
 func (s *Server) handleRekeyStatus(w http.ResponseWriter, r *http.Request) {
 	v, _ := s.Vault()
+	status, err := v.RekeyStatus()
+	if err != nil {
+		vaultErrorResponse(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+// rekeySkipRequest names a file to leave for last — the one being moved right
+// now when ID is empty — or, with Undo, to put back in its turn.
+type rekeySkipRequest struct {
+	ID   string `json:"id"`
+	Undo bool   `json:"undo"`
+}
+
+// handleRekeySkip leaves a file for last, stopping its move if it is the one
+// being moved, and answers with the status as it stands afterwards.
+func (s *Server) handleRekeySkip(w http.ResponseWriter, r *http.Request) {
+	var req rekeySkipRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
+		return
+	}
+
+	v, _ := s.Vault()
+	var err error
+	if req.Undo {
+		_, err = v.UndeferRekeyFile(req.ID)
+	} else {
+		_, err = v.DeferRekeyFile(req.ID)
+	}
+	if err != nil {
+		vaultErrorResponse(w, err)
+		return
+	}
 	status, err := v.RekeyStatus()
 	if err != nil {
 		vaultErrorResponse(w, err)

@@ -12,6 +12,32 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### Re-encrypting a file no longer holds the whole of it in memory
+
+Moving a file onto a new key fetched the whole file into memory and scattered
+it from there, so a film the size of the machine's memory was the kernel
+killing the service mid-move — under the unit's memory ceiling, over and over,
+with the plan never getting past that file. A move now streams: the file is
+read back one chunk at a time, the way a player reads it, and written out
+through the same bounded window an upload uses, so the cost is the chunk
+window whatever the file weighs. A file still in the pre-chunking format is
+rebuilt onto disk first, as a conversion is. Every byte is hashed on the way
+through and checked against the hash on record before the index moves; a
+mismatch erases the new parts and leaves the file exactly as it was. Nothing
+is committed until every new part has landed, and the old parts go only after
+the index points at the new ones, so a move cut off at any point — a crash, an
+upgrade, a kill — leaves the file readable on the key it was on, and the plan
+resumes from the next file when the vault is unlocked again.
+
+A file can be **skipped and left for last**: from the progress panel ("Skip
+for now" beside the file being moved), from `sand vault rekey --skip PATH` (or
+`--skip .` for the one moving), and over `POST /api/vault/rekey/skip`. The
+move stops where it is, the file stays readable on the previous key, and it is
+taken up again after everything else — by the paced plan and by finish-now
+alike. The choice is in the plan, so it survives a restart; `--unskip` and
+"Back in turn" undo it. The panel also shows how far through the current file
+the move is.
+
 ### The quick start no longer hangs, or fails, on Proton's client
 
 Two things were wrong with the Proton step of `scripts/quickstart.sh`, and
