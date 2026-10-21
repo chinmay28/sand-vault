@@ -534,13 +534,46 @@ export default function RekeyProgress({ onClose, onChanged, zIndex = 120 }) {
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontFamily: FONT.mono, fontSize: '11px', color: COLORS.textDim, marginTop: '10px', minWidth: 0 }}>
             <StatePill status={status} />
             {status.running && <Spinner size={11} />}
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {status.running ? status.current
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0 }}>
+              {status.running ? (
+                <>
+                  {status.current}
+                  {status.current_size > 0 && (
+                    <span style={{ color: COLORS.textMuted }}>
+                      {' '}· {formatBytes(status.current_done)} of {formatBytes(status.current_size)}
+                    </span>
+                  )}
+                </>
+              )
                 : status.next_in_seconds > 0 ? `next file in ${humanDuration(status.next_in_seconds)}`
                   : plan?.paused ? 'paused by you'
                     : status.idle && perDay > 0 ? 'the plan has done everything it was allowed to'
                       : perDay > 0 ? 'waiting for the next tick' : 'nothing moves until a pace is set'}
             </span>
+            {/* The file being moved can be left for last: the move stops where
+                it is, the file stays readable on the previous key, and it is
+                taken up again after everything else. For a film on an account
+                that keeps dropping, or a file that is simply in the way. */}
+            {status.running && (
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={saving || finishing}
+                title="Stop moving this file and leave it for last; it stays readable on the previous key"
+                onClick={async () => {
+                  setSaving(true)
+                  setProblem(null)
+                  try {
+                    setStatus(await api.skipRekeyFile(status.current_id || ''))
+                    changed.current = true
+                  } catch (err) {
+                    setProblem(err.message)
+                  } finally {
+                    setSaving(false)
+                  }
+                }}
+              >Skip for now</Button>
+            )}
           </div>
 
           {/* Pace */}
@@ -595,6 +628,44 @@ export default function RekeyProgress({ onClose, onChanged, zIndex = 120 }) {
             <div style={help}>
               Tick a folder to move it next; the numbers are the order. Smallest files go first within a folder.
             </div>
+            {status.deferred?.length > 0 && (
+              <div style={{ marginTop: '12px' }}>
+                <div style={sectionTitle}>Left for last</div>
+                <div style={{ border: `1px solid ${COLORS.border}`, borderRadius: '6px', overflow: 'hidden' }}>
+                  {status.deferred.map((f, i) => (
+                    <div
+                      key={f.id}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 10px',
+                        borderTop: i === 0 ? 'none' : `1px solid ${COLORS.border}`,
+                        fontFamily: FONT.mono, fontSize: '11px',
+                      }}
+                    >
+                      <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.path}</span>
+                      <span style={{ color: COLORS.textMuted, whiteSpace: 'nowrap' }}>{formatBytes(f.bytes)}</span>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={saving || finishing}
+                        title="Put this file back in its turn"
+                        onClick={async () => {
+                          setSaving(true)
+                          try {
+                            setStatus(await api.skipRekeyFile(f.id, true))
+                            changed.current = true
+                          } catch (err) {
+                            setProblem(err.message)
+                          } finally {
+                            setSaving(false)
+                          }
+                        }}
+                      >Back in turn</Button>
+                    </div>
+                  ))}
+                </div>
+                <div style={help}>These move after everything else. A skipped file stays readable on the previous key meanwhile.</div>
+              </div>
+            )}
           </div>
 
           {/* While it runs */}

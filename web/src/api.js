@@ -69,6 +69,11 @@ export const api = {
      server moves the files on its own clock while the vault is open. */
   rekeyStatus: () => request('/api/vault/rekey'),
   setRekeyPlan: (settings) => request('/api/vault/rekey', { method: 'PUT', body: settings }),
+  /* Leaves one file for last — the one being moved right now when no id is
+     given, stopping that move where it is — or, with undo, puts it back in
+     its turn. The file stays on the previous key, readable as ever. */
+  skipRekeyFile: (id = '', undo = false) =>
+    request('/api/vault/rekey/skip', { method: 'POST', body: { id, undo } }),
 
   /* Disaster recovery. Every connected account carries an encrypted copy of
      the index, so a machine that lost its vault can find one sitting on the

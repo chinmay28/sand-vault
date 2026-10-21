@@ -851,7 +851,7 @@ func (v *Vault) relocateEntry(ctx context.Context, plan *FilePlan, accounts []st
 func (v *Vault) recodeEntry(ctx context.Context, plan *FilePlan, accounts []string) (relocateOutcome, error) {
 	var out relocateOutcome
 
-	_, _, warnings, err := v.migrateFile(ctx, plan.vault, plan.ID, accounts, plan.to)
+	_, _, warnings, err := v.migrateFile(ctx, plan.vault, plan.ID, accounts, plan.to, nil)
 	out.warnings = append(out.warnings, warnings...)
 	if err != nil {
 		return out, err

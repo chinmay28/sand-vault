@@ -173,7 +173,7 @@ func TestNamingAccountsToMigrateOntoStillSettlesTheCode(t *testing.T) {
 		t.Fatalf("stored as %s, want %s", got, archive.SchemeWide)
 	}
 
-	if _, _, _, err := v.migrateFile(context.Background(), MainScope, entry.ID, ids[:3], archive.Scheme{}); err != nil {
+	if _, _, _, err := v.migrateFile(context.Background(), MainScope, entry.ID, ids[:3], archive.Scheme{}, nil); err != nil {
 		t.Fatalf("migrating onto three named accounts: %v", err)
 	}
 
