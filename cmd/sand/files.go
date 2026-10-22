@@ -388,7 +388,10 @@ func resolveAccountNames(v *vault.Vault, wanted []string) ([]string, error) {
 }
 
 func getCmd() *cobra.Command {
-	var output string
+	var (
+		output string
+		from   string
+	)
 
 	cmd := &cobra.Command{
 		Use:   "get <path-or-id>",
@@ -416,7 +419,11 @@ func getCmd() *cobra.Command {
 			// Copied chunk by chunk into the file rather than rebuilt in memory
 			// and written out: a 4 GB film should cost a 4 GB file on disk and
 			// not 4 GB of RAM on the way there.
-			body, _, err := v.OpenReadSeeker(context.Background(), entry.ID)
+			source, err := vault.ParseReadSource(from)
+			if err != nil {
+				return err
+			}
+			body, _, err := v.OpenReadSeeker(context.Background(), entry.ID, vault.ReadFrom(source))
 			if err != nil {
 				if errors.Is(err, vault.ErrNeedsConversion) {
 					return fmt.Errorf("%w\n\nConvert it first: sand vault convert %q", err, entry.Path())
@@ -442,6 +449,7 @@ func getCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVarP(&output, "output", "o", "", "output file or directory")
+	cmd.Flags().StringVar(&from, "from", "", "read from the parts (default), the replica, or either")
 	return cmd
 }
 

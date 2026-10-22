@@ -406,6 +406,10 @@ func (v *Vault) Recover(ctx context.Context, snapshot *Snapshot, dryRun bool) (*
 	for _, entry := range snapshot.Manifest.Entries {
 		clone := *entry
 		clone.Shards = make([]Shard, 0, len(entry.Shards))
+		// A replica is derived data: its shards name the accounts of the
+		// vault that was lost, by IDs the reconnected ones do not carry, and
+		// the worker makes a fresh one from the recovered parts.
+		clone.Replica = nil
 
 		reachable := 0
 		var lost lostShards

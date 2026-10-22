@@ -287,6 +287,11 @@ func (s *Server) Handler() (http.Handler, error) {
 		"POST /api/vault/rekey/skip": s.handleRekeySkip,
 		"POST /api/vault/policy":     s.handleVaultPolicy,
 		"POST /api/vault/defaults":   s.handleVaultDefaults,
+		// Second copies: the policy, what replicates, and where the worker
+		// has got to. See handlers_replication.go.
+		"GET /api/vault/replication": s.handleReplicationStatus,
+		"PUT /api/vault/replication": s.handleReplicationSet,
+		"POST /api/replicate":        s.handleReplicateSet,
 		"POST /api/vault/backup":     s.handleVaultBackup,
 
 		// Disaster recovery: what the accounts are still holding after the
@@ -454,12 +459,13 @@ func (s *Server) Handler() (http.Handler, error) {
 		"GET /api/files/{id}/health": s.handleFileHealth,
 		// Converting a pre-chunking file into the chunked format, which is what
 		// the read path's refusal asks for. See handlers_convert.go.
-		"GET /api/conversions":         s.handleConversionsPending,
-		"POST /api/files/{id}/convert": s.handleFileConvert,
-		"GET /api/files/{id}/content":  s.handleFileContent,
-		"POST /api/files/{id}/stream":  s.handleFileStreamLink,
-		"GET /api/files/{id}/thumb":    s.handleFileThumb,
-		"PUT /api/files/{id}/thumb":    s.handleFileThumbSet,
+		"GET /api/conversions":           s.handleConversionsPending,
+		"POST /api/files/{id}/convert":   s.handleFileConvert,
+		"GET /api/files/{id}/content":    s.handleFileContent,
+		"POST /api/files/{id}/stream":    s.handleFileStreamLink,
+		"DELETE /api/files/{id}/replica": s.handleReplicaDrop,
+		"GET /api/files/{id}/thumb":      s.handleFileThumb,
+		"PUT /api/files/{id}/thumb":      s.handleFileThumbSet,
 
 		// The whole folder tree in one answer, which is what choosing a
 		// destination needs — GET /api/files walks one level at a time.
@@ -713,6 +719,9 @@ func (s *Server) Start() error {
 	// a time at the pace the change asked for, and nothing while locked — see
 	// rekeyLoop.
 	go s.rekeyLoop()
+	// And the second copies the replication policy asks for, made one at a
+	// time at its pace, and nothing while locked — see replicationLoop.
+	go s.replicationLoop()
 
 	addr := net.JoinHostPort(s.Bind, fmt.Sprint(s.Port))
 	v, _ := s.Vault()
@@ -760,6 +769,11 @@ func (s *Server) autoLockLoop() {
 			continue
 		}
 		if s.sessions.sweep() > 0 || s.externalActive() || s.transfers.running() > 0 || s.relocations.running() > 0 {
+			continue
+		}
+		// A replica half-made would be erased and started again on the next
+		// unlock, which is the budget spent twice.
+		if v.ReplicationKeepsBusy() {
 			continue
 		}
 		v.Lock()
@@ -916,6 +930,8 @@ func vaultErrorResponse(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, err.Error(), "REKEY_PENDING")
 	case errors.Is(err, vault.ErrMigrationBusy):
 		writeError(w, http.StatusConflict, err.Error(), "MIGRATION_BUSY")
+	case errors.Is(err, vault.ErrNoReplica):
+		writeError(w, http.StatusNotFound, err.Error(), "NO_REPLICA")
 	case errors.Is(err, vault.ErrNeedsConversion):
 		// 409 rather than 400: nothing about the request is wrong, the file is
 		// simply in a state that has to change before it can be answered for.

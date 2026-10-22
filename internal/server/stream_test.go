@@ -235,16 +235,17 @@ func TestStreamLinkRefusesAnUnknownFile(t *testing.T) {
 func TestStreamTicketDeadlineSlidesOnUse(t *testing.T) {
 	store := newStreamStore(time.Minute)
 
-	token, expiry, err := store.issue("file-1")
+	token, expiry, err := store.issue(streamTicket{fileID: "file-1"})
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}
 
 	store.mu.Lock()
-	store.tickets[token] = ticket[string]{subject: "file-1", expiry: time.Now().Add(2 * time.Second)}
+	store.tickets[token] = ticket[streamTicket]{subject: streamTicket{fileID: "file-1"}, expiry: time.Now().Add(2 * time.Second)}
 	store.mu.Unlock()
 
-	id, ok := store.lookup(token)
+	got, ok := store.lookup(token)
+	id := got.fileID
 	if !ok || id != "file-1" {
 		t.Fatalf("lookup = %q, %v; want the file it was minted for", id, ok)
 	}
@@ -260,7 +261,7 @@ func TestStreamTicketDeadlineSlidesOnUse(t *testing.T) {
 	}
 
 	store.mu.Lock()
-	store.tickets[token] = ticket[string]{subject: "file-1", expiry: time.Now().Add(-time.Second)}
+	store.tickets[token] = ticket[streamTicket]{subject: streamTicket{fileID: "file-1"}, expiry: time.Now().Add(-time.Second)}
 	store.mu.Unlock()
 	if _, ok := store.lookup(token); ok {
 		t.Error("an expired ticket still resolved")

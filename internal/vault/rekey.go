@@ -355,6 +355,16 @@ func retainedKeys(u *unsealed, manifest *Manifest, subs []subVaultRecord) (map[s
 
 	retained := map[string][]byte{}
 	for _, e := range manifest.Entries {
+		// A replica on an older key than its file is kept readable the same
+		// way, until the worker re-makes it. A replica whose key is nowhere
+		// is simply dropped: it is derived data and will be made again.
+		if r := e.Replica; r != nil {
+			if key, ok := available[r.KeyID]; ok {
+				retained[r.KeyID] = key
+			} else {
+				e.Replica = nil
+			}
+		}
 		if _, done := retained[e.KeyID]; done {
 			continue
 		}
@@ -814,6 +824,13 @@ func (v *Vault) pruneRetiredKeysLocked() {
 	inUse := make(map[string]bool, len(v.manifest.Entries))
 	for _, e := range v.manifest.Entries {
 		inUse[e.KeyID] = true
+		// A replica is sealed under the key of the day it was made, which
+		// can trail the file's own; it is re-made onto the current key by
+		// the replication worker rather than moved, and until then its key
+		// is one the vault still needs.
+		if e.Replica != nil {
+			inUse[e.Replica.KeyID] = true
+		}
 	}
 	// A thumbnail pack names a generation too, and dropping the key it is
 	// sealed under would leave the pack unreadable — the pictures would go

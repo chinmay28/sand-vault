@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"sync"
 	"time"
+
+	"github.com/chinmay28/sand-vault/internal/vault"
 )
 
 // Stream tickets: a link something outside the browser can open.
@@ -115,14 +117,24 @@ func (s *ticketStore[T]) clear() {
 	s.tickets = map[string]ticket[T]{}
 }
 
-// streamStore holds stream tickets, each standing for one file by ID.
-type streamStore = ticketStore[string]
+// streamTicket is what a stream link stands for: one file, read from one
+// placement. The placement rides in the ticket rather than on the address so
+// that a link made for the replica keeps reading the replica whoever follows
+// it, and nobody can turn a link into a read of the other placement by
+// editing it.
+type streamTicket struct {
+	fileID string
+	source vault.ReadSource
+}
+
+// streamStore holds stream tickets.
+type streamStore = ticketStore[streamTicket]
 
 func newStreamStore(ttl time.Duration) *streamStore {
 	if ttl <= 0 {
 		ttl = DefaultStreamTTL
 	}
-	return newTicketStore[string](ttl)
+	return newTicketStore[streamTicket](ttl)
 }
 
 // streamPath is where a ticket plays from.
@@ -160,14 +172,31 @@ func (s *Server) handleFileStreamLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, expiry, err := s.streams.issue(entry.ID)
+	source, err := readSourceParam(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
+		return
+	}
+	if source == vault.ReadReplica && entry.Replica == nil {
+		vaultErrorResponse(w, vault.ErrNoReplica)
+		return
+	}
+
+	token, expiry, err := s.streams.issue(streamTicket{fileID: entry.ID, source: source})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not mint a stream link", "INTERNAL_ERROR")
 		return
 	}
 
+	// The placement is on the address too, for the person reading it: the
+	// ticket is what decides, and this only says what it decided.
+	address := streamPath(token, entry.Name)
+	if source != vault.ReadParts {
+		address += "?from=" + string(source)
+	}
+
 	writeJSON(w, http.StatusCreated, streamLinkResponse{
-		URL:       streamPath(token, entry.Name),
+		URL:       address,
 		Name:      entry.Name,
 		MIME:      entry.MIME,
 		ExpiresAt: expiry,
@@ -183,11 +212,12 @@ func (s *Server) handleFileStreamLink(w http.ResponseWriter, r *http.Request) {
 // covers, never a shared cache, and nothing that could execute in this origin
 // is served inline.
 func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
-	fileID, ok := s.streams.lookup(r.PathValue("token"))
+	ticket, ok := s.streams.lookup(r.PathValue("token"))
 	if !ok {
 		writeError(w, http.StatusNotFound, "this stream link has expired", "NO_TICKET")
 		return
 	}
+	fileID := ticket.fileID
 
 	v, err := s.Vault()
 	if err != nil {
@@ -202,7 +232,11 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := contextWithTimeout(r, 30*time.Minute)
 	defer cancel()
 
-	reader, entry, err := v.OpenReadSeeker(ctx, fileID)
+	var opts []vault.ReadOption
+	if ticket.source != "" && ticket.source != vault.ReadParts {
+		opts = append(opts, vault.ReadFrom(ticket.source))
+	}
+	reader, entry, err := v.OpenReadSeeker(ctx, fileID, opts...)
 	if err != nil {
 		vaultErrorResponse(w, err)
 		return

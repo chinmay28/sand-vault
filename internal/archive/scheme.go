@@ -229,6 +229,26 @@ func (s Scheme) Check() error {
 	return splitter.ValidateScheme(s.Data, s.Total)
 }
 
+// WholeCopy is the one code that is not a split: a single shard holding the
+// whole sealed file. Check refuses it, and every upload goes through Check,
+// because SAND's promise is that no single account holds a file. A replica is
+// where that promise is set aside on purpose — somebody chose one cloud for a
+// second copy, and was told what that means — and Storable is the check the
+// replica path runs instead.
+var WholeCopy = Scheme{Data: 1, Total: 1}
+
+// IsWholeCopy reports whether the code is the single-shard whole copy.
+func (s Scheme) IsWholeCopy() bool { return s == WholeCopy }
+
+// Storable is Check with the whole copy allowed: what the chunk encoder and
+// decoder accept, as opposed to what a person may choose for an upload.
+func (s Scheme) Storable() error {
+	if s.IsWholeCopy() {
+		return nil
+	}
+	return s.Check()
+}
+
 // LegacyScheme is how a file written before schemes existed is described. Every
 // version 1 to 3 part belongs to one, because two of three was the only code
 // those formats could express.

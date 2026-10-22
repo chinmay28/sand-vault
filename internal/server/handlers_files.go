@@ -1313,6 +1313,16 @@ func (s *Server) handleFileContent(w http.ResponseWriter, r *http.Request) {
 
 	var ticket *readTicket
 	var opts []vault.ReadOption
+	// Which placement: the parts, the replica, or the parts with the replica
+	// standing in. See vault/replica.go.
+	source, err := readSourceParam(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
+		return
+	}
+	if source != vault.ReadParts {
+		opts = append(opts, vault.ReadFrom(source))
+	}
 	if token := r.URL.Query().Get("watch"); validReadToken(token) {
 		ticket = s.readWatches.open(token)
 		opts = append(opts, vault.WatchRead(ticket))

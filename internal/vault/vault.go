@@ -186,6 +186,13 @@ type Vault struct {
 	// holding mu and never the other way round.
 	rekeyMu sync.Mutex
 	rekey   rekeyMemory
+
+	// replicateSlot is the one slot a replica is made in, taken with TryLock
+	// the way migrateMu is; replicate is what the worker remembers between
+	// steps, under replicateMu, a leaf lock like rekeyMu. See replica.go.
+	replicateSlot sync.Mutex
+	replicateMu   sync.Mutex
+	replicate     replicateMemory
 }
 
 // Open returns a handle to the vault at path. The vault starts locked; if no
@@ -838,7 +845,10 @@ func (v *Vault) newLiveProvider(cfg provider.Config) (provider.Provider, error) 
 		return nil, err
 	}
 	if rotator, ok := p.(provider.CredentialRotator); ok {
-		id, name := cfg.ID, cfg.Name
+		// The account's own ID, whichever of its roots this instance was
+		// opened at: a token renewed through the replica root is the
+		// account's token all the same.
+		liveID, id, name := cfg.ID, accountIDOf(cfg.ID), cfg.Name
 		rotator.OnCredentialChange(func(updates map[string]string) {
 			// On a goroutine of our own: the sink runs inline inside whatever
 			// call was talking to the backend, and that call may already be
@@ -846,7 +856,13 @@ func (v *Vault) newLiveProvider(cfg provider.Config) (provider.Provider, error) 
 			go func() {
 				if err := v.updateProviderOptions(id, updates); err != nil {
 					log.Printf("could not store %s's renewed credentials: %v", name, err)
+					return
 				}
+				// The account's other root, if it is open, is holding the
+				// token this one just retired — Box and Microsoft retire a
+				// refresh token on every use — so it is dropped and rebuilt
+				// from the stored credentials on its next call.
+				v.forgetLiveSibling(liveID)
 			}()
 		})
 	}
@@ -912,12 +928,15 @@ func (v *Vault) resetLiveCache() {
 	v.backupMu.Unlock()
 }
 
-// forgetProvider drops one account from the live cache.
+// forgetProvider drops one account from the live cache, at both its roots.
 func (v *Vault) forgetProvider(id string) {
 	v.liveMu.Lock()
 	dropped := v.live[id]
 	delete(v.live, id)
+	replica := v.live[replicaID(id)]
+	delete(v.live, replicaID(id))
 	v.liveMu.Unlock()
+	closeProvider(replica)
 
 	// And what the health check last found out about it, so a disconnected
 	// account stops being counted the moment it goes rather than at the next
@@ -925,6 +944,22 @@ func (v *Vault) forgetProvider(id string) {
 	v.forgetHealth(id)
 	v.forgetPrune(id)
 
+	closeProvider(dropped)
+}
+
+// forgetLiveSibling drops the other root of the account a live ID belongs
+// to: the replica root for a parts instance, the parts root for a replica
+// one.
+func (v *Vault) forgetLiveSibling(liveID string) {
+	account := accountIDOf(liveID)
+	sibling := replicaID(account)
+	if liveID == sibling {
+		sibling = account
+	}
+	v.liveMu.Lock()
+	dropped := v.live[sibling]
+	delete(v.live, sibling)
+	v.liveMu.Unlock()
 	closeProvider(dropped)
 }
 
@@ -1311,6 +1346,26 @@ func (v *Vault) renameShardsLocked(id, name string) {
 					e.Shards[i].ProviderName = name
 				}
 			}
+			// A replica is never changed in place; one with a shard on this
+			// account is replaced by a copy that says the new name.
+			if r := e.Replica; r != nil {
+				renamed := false
+				for _, s := range r.Shards {
+					if s.ProviderID == id {
+						renamed = true
+					}
+				}
+				if renamed {
+					fresh := *r
+					fresh.Shards = append([]Shard(nil), r.Shards...)
+					for i := range fresh.Shards {
+						if fresh.Shards[i].ProviderID == id {
+							fresh.Shards[i].ProviderName = name
+						}
+					}
+					e.Replica = &fresh
+				}
+			}
 		}
 	}
 }
@@ -1436,6 +1491,8 @@ func (v *Vault) RemoveProvider(id string, force bool) error {
 		}
 		v.store.DefaultAccounts = kept
 	}
+	// And the replication policy, for the same reason.
+	v.pruneReplicationLocked(surviving)
 
 	// Drop shard records pointing at the disconnected account so the index
 	// keeps telling the truth about what is actually retrievable. A shut sub
@@ -1451,6 +1508,28 @@ func (v *Vault) RemoveProvider(id string, force bool) error {
 				}
 			}
 			e.Shards = kept
+			// A replica's record follows the same rule, by replacement
+			// rather than in place. One left with too few shards to rebuild
+			// from is no replica at all and is forgotten; the worker makes a
+			// new one if the file still wants one. Its remaining objects stay
+			// in the other accounts' replica folders for a sweep to find.
+			if r := e.Replica; r != nil {
+				keptShards := make([]Shard, 0, len(r.Shards))
+				for _, s := range r.Shards {
+					if surviving[s.ProviderID] {
+						keptShards = append(keptShards, s)
+					}
+				}
+				if len(keptShards) != len(r.Shards) {
+					fresh := *r
+					fresh.Shards = keptShards
+					if fresh.Recoverable() {
+						e.Replica = &fresh
+					} else {
+						e.Replica = nil
+					}
+				}
+			}
 		}
 	}
 
@@ -1709,6 +1788,13 @@ type Listing struct {
 	// A file row answers the same question for itself from its own key_id
 	// against Stats.KeyID; this is the folder's answer.
 	PreviousKey map[string]int `json:"previous_key,omitempty"`
+
+	// Replicate says whether files in this folder get a second copy, and
+	// which folder said so; ReplicatedFolders names the subfolders that do.
+	// Both empty outside the main vault, where nothing replicates. See
+	// replica.go.
+	Replicate         FolderReplicate `json:"replicate"`
+	ReplicatedFolders map[string]bool `json:"replicated_folders,omitempty"`
 }
 
 // List returns the contents of a folder in one of the vaults inside the file.
@@ -1773,7 +1859,23 @@ func (v *Vault) List(scope Scope, dir string) (*Listing, error) {
 		FolderArt:   v.folderArtForLocked(m, paths),
 		Repos:       countReposUnder(m, dir),
 		PreviousKey: previousKeyUnder(m, active, dir, folders),
+		Replicate:   replicateForListing(scope, m, dir),
+		ReplicatedFolders: func() map[string]bool {
+			if scope != MainScope {
+				return nil
+			}
+			return replicatedFoldersUnder(m, paths)
+		}(),
 	}, nil
+}
+
+// replicateForListing is a folder's replication standing for its listing:
+// nothing outside the main vault.
+func replicateForListing(scope Scope, m *Manifest, dir string) FolderReplicate {
+	if scope != MainScope {
+		return FolderReplicate{}
+	}
+	return folderReplicateLocked(m, dir)
 }
 
 // previousKeyUnder counts the files on a key other than active under each of
@@ -2152,6 +2254,10 @@ type Stats struct {
 	// previous one: an entry whose key_id differs is waiting to be
 	// re-encrypted. A random label, not a secret.
 	KeyID string `json:"key_id"`
+
+	// Replication is the standing policy for second copies and how far it
+	// has got, or nil when none is set. See replica.go.
+	Replication *ReplicationSummary `json:"replication,omitempty"`
 }
 
 // Stats returns aggregate counters for the main vault.
@@ -2200,5 +2306,6 @@ func (v *Vault) Stats() (Stats, error) {
 		}
 	}
 	s.Folders = len(folders)
+	s.Replication = v.replicationSummaryLocked()
 	return s, nil
 }

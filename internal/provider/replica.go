@@ -38,32 +38,46 @@ func (r Role) String() string {
 // carry: an account that was never given a replica folder cannot be opened
 // for replicas, and says so rather than quietly opening at the parts folder.
 func Open(cfg Config, role Role) (Provider, error) {
-	if role != Replicas {
-		return New(cfg)
-	}
-	if err := cfg.Validate(); err != nil {
+	at, err := cfg.AtRole(role)
+	if err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(cfg.ReplicaFolder) == "" {
-		return nil, fmt.Errorf("%s has no replica folder", cfg.Name)
+	return New(at)
+}
+
+// AtRole is the config an account is opened with at one of its two roots. At
+// the Parts role it is the config itself. At the Replicas role it is a copy
+// with the backend's folder setting swapped for ReplicaFolder — the ID, name,
+// credentials and everything else unchanged, since it is the same account.
+// It is what Open builds from, and what a caller that keeps its own cache of
+// live providers builds from too.
+func (c Config) AtRole(role Role) (Config, error) {
+	if role != Replicas {
+		return c, nil
 	}
-	key, ok := folderKey(cfg.Kind)
+	if err := c.Validate(); err != nil {
+		return Config{}, err
+	}
+	if strings.TrimSpace(c.ReplicaFolder) == "" {
+		return Config{}, fmt.Errorf("%s has no replica folder", c.Name)
+	}
+	key, ok := folderKey(c.Kind)
 	if !ok {
-		return nil, fmt.Errorf("%s: a %s account has no folder setting to put replicas in", cfg.Name, cfg.Kind)
+		return Config{}, fmt.Errorf("%s: a %s account has no folder setting to put replicas in", c.Name, c.Kind)
 	}
 
-	at := cfg
-	at.Options = make(map[string]string, len(cfg.Options)+1)
-	for k, v := range cfg.Options {
+	at := c
+	at.Options = make(map[string]string, len(c.Options)+1)
+	for k, v := range c.Options {
 		at.Options[k] = v
 	}
-	at.Options[key] = cfg.ReplicaFolder
+	at.Options[key] = c.ReplicaFolder
 	// Google Drive's pasted folder ID outranks its folder name, so a copy of
 	// the options that still carried one would open at the parts folder
 	// whatever the name said. Only Drive has the field; deleting a key no
 	// backend declares is a no-op everywhere else.
 	delete(at.Options, "folder_id")
-	return New(at)
+	return at, nil
 }
 
 // folderKeys are the option keys, across every backend, that name where its

@@ -740,6 +740,10 @@ func (v *Vault) Assign(ctx context.Context, from Scope, target string, to Scope,
 
 	report := &AssignReport{}
 
+	// The replicas of files leaving the main vault, erased once the move is
+	// written. See the loop below.
+	var doomedReplicas []*Replica
+
 	// Which pictures have to follow, worked out before the index moves — after
 	// it, the source no longer says which folder any of them was in.
 	type picture struct {
@@ -805,6 +809,14 @@ func (v *Vault) Assign(ctx context.Context, from Scope, target string, to Scope,
 			live.Name = name
 			report.Renamed++
 		}
+		// A replica is a main-vault placement. A file leaving the main vault
+		// leaves it behind, erased once the move is written; one arriving
+		// has none and inherits its new folder's standing.
+		if live.Replica != nil {
+			doomedReplicas = append(doomedReplicas, live.Replica)
+			live.Replica = nil
+		}
+		live.Replicate = nil
 		dst.add(live)
 		report.Files++
 
@@ -844,6 +856,13 @@ func (v *Vault) Assign(ctx context.Context, from Scope, target string, to Scope,
 		// from disk is the one way to be sure of that.
 		return nil, fmt.Errorf("recording the assignment: %w (nothing was moved on the accounts; "+
 			"lock and unlock the vault to reload the index)", err)
+	}
+
+	// Replicas left behind by files that moved out of the main vault go now
+	// that nothing points at them. A failure to erase one is a warning: the
+	// objects are strays in a replica folder, not a file anybody has lost.
+	for _, r := range doomedReplicas {
+		report.Warnings = append(report.Warnings, v.deleteReplicaShards(context.WithoutCancel(ctx), r)...)
 	}
 
 	// The pictures follow, once the index says where the files live. Failing to
