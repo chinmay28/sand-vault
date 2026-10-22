@@ -683,3 +683,72 @@ func TestMigrationRefusesToCommitAFileShortOfAPart(t *testing.T) {
 		t.Error("the old key outlived the last file on it")
 	}
 }
+
+// Two passes on one file — a finish-now pass that slipped past the slot, a
+// relocation's recode, a conversion — read the same row and each scatter a
+// fresh copy. Whichever commits second used to overwrite the first's placement
+// with its own and leave the first's parts pointed at by nothing. A commit
+// now checks the row is the one it read, and a row rewritten underneath it is
+// left alone, with the second pass's own parts erased instead.
+func TestMigrationLeavesARowRewrittenUnderneathItAlone(t *testing.T) {
+	v, roots := newTestVault(t, 3)
+	ctx := context.Background()
+
+	entry, _, err := v.Upload(ctx, MainScope, "/", "twice.txt", []byte("re-encrypted by two passes at once"), UploadOptions{})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if _, err := v.ChangePassword(ctx, testPassword, "pending", false); err != nil {
+		t.Fatalf("ChangePassword: %v", err)
+	}
+
+	// The outer pass has read the file and is scattering it when the inner
+	// one runs to completion on the same row — the progress callback is the
+	// one moment between the read and the commit a test can stand in.
+	var inner string
+	once := false
+	_, _, warnings, err := v.migrateFile(ctx, MainScope, entry.ID, nil, archive.Scheme{}, func(done, size int64) {
+		if once {
+			return
+		}
+		once = true
+		if _, _, _, err := v.migrateFile(ctx, MainScope, entry.ID, nil, archive.Scheme{}, nil); err != nil {
+			t.Errorf("inner migrateFile: %v", err)
+		}
+		if e, err := v.Entry(entry.ID); err == nil {
+			inner = e.ArchiveID
+		}
+	})
+	if err != nil {
+		t.Fatalf("outer migrateFile: %v", err)
+	}
+	if !once || inner == "" || inner == entry.ArchiveID {
+		t.Fatal("the inner pass did not rewrite the file first")
+	}
+	if !strings.Contains(strings.Join(warnings, "\n"), "rewritten") {
+		t.Errorf("warnings = %v, want the outer pass to say it stood down", warnings)
+	}
+
+	// The inner pass's placement stands, the outer's parts are gone, and the
+	// file reads.
+	now, err := v.Entry(entry.ID)
+	if err != nil {
+		t.Fatalf("Entry: %v", err)
+	}
+	if now.ArchiveID != inner {
+		t.Errorf("archive after both passes = %s, want the inner pass's %s", now.ArchiveID, inner)
+	}
+	if n := objectsUnder(t, roots); n != 3 {
+		t.Errorf("%d objects on the accounts, want the 3 parts of the one placement the index names", n)
+	}
+	data, _, err := v.Fetch(ctx, entry.ID)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if string(data) != "re-encrypted by two passes at once" {
+		t.Errorf("content = %q", data)
+	}
+	if v.PendingMigration() != 0 || retiredCount(v) != 0 {
+		t.Errorf("pending %d, retired keys %d; want the file on the current key and the old one gone", v.PendingMigration(), retiredCount(v))
+	}
+}

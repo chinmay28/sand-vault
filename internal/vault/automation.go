@@ -1389,6 +1389,12 @@ func (v *Vault) repairFiles(ctx context.Context, scope Scope, policy *Automation
 				run.Error = "the vault was locked before the sweep finished"
 				return
 			}
+		case report.Deferred > 0:
+			// A re-encryption has the slot a rebuild runs in — the paced step,
+			// or a finish-now pass — and this file waits for the next sweep
+			// rather than being gathered and scattered twice at once. Not a
+			// failure of the file, so not counted as one.
+			res.Deferred++
 		case report.Relocated == 0:
 			res.Failed++
 		default:

@@ -292,6 +292,12 @@ type RelocationReport struct {
 	// than having their shards carried across.
 	Recoded int `json:"recoded"`
 
+	// Deferred counts the files that had to be rebuilt and were not, because
+	// a re-encryption had the slot a rebuild runs in (recodeEntry). They are
+	// untouched, and running the relocation again picks them up; they are
+	// counted apart from Failed because nothing is wrong with them.
+	Deferred int `json:"deferred,omitempty"`
+
 	// Bytes is how much was actually copied between accounts.
 	Bytes int64 `json:"bytes"`
 
@@ -300,7 +306,7 @@ type RelocationReport struct {
 
 // Done reports whether every file in scope ended up on the chosen accounts.
 func (r *RelocationReport) Done() bool {
-	return r != nil && r.Partial == 0 && r.Failed == 0
+	return r != nil && r.Partial == 0 && r.Failed == 0 && r.Deferred == 0
 }
 
 // PlanRelocation answers what Relocate would do to a file or a folder, without
@@ -527,6 +533,10 @@ func (v *Vault) relocate(ctx context.Context, scope Scope, target string, accoun
 		}
 
 		switch {
+		case errors.Is(err, ErrMigrationBusy):
+			// The file is exactly as it was; see RelocationReport.Deferred.
+			report.Warnings = append(report.Warnings, err.Error())
+			report.Deferred++
 		case err != nil:
 			report.Warnings = append(report.Warnings, err.Error())
 			report.Failed++
@@ -851,8 +861,23 @@ func (v *Vault) relocateEntry(ctx context.Context, plan *FilePlan, accounts []st
 // copy path gives: the index moves to the new shards in one write, the old ones
 // are erased only after it, and an interruption leaves unreferenced objects
 // rather than an unreadable file.
+//
+// It runs in the re-encryption slot (migrateMu), the one the paced step and a
+// finish-now pass share, and for the same reason they share it: a rebuild is
+// migrateFile, and two of those on one file gather and scatter it twice and
+// leave one set of fresh parts pointed at by nothing. The folder automations
+// come through here too (repairFiles), so without the slot a repair sweep
+// and the paced step could meet on the same file. The slot is tried, never
+// waited on — a relocation is not going to sit behind a terabyte's rekey —
+// and a busy slot is ErrMigrationBusy, which a caller reports and comes back
+// from.
 func (v *Vault) recodeEntry(ctx context.Context, plan *FilePlan, accounts []string) (relocateOutcome, error) {
 	var out relocateOutcome
+
+	if !v.migrateMu.TryLock() {
+		return out, fmt.Errorf("%s was not rebuilt: %w — try again once it has finished", plan.Path, ErrMigrationBusy)
+	}
+	defer v.migrateMu.Unlock()
 
 	_, _, warnings, err := v.migrateFile(ctx, plan.vault, plan.ID, accounts, plan.to, nil)
 	out.warnings = append(out.warnings, warnings...)

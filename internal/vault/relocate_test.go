@@ -1327,6 +1327,50 @@ func TestACommitDoesNotApplyAMoveToAPartThatIsAlreadyThere(t *testing.T) {
 	}
 }
 
+// A rebuild is a re-encryption pointed at other accounts, and it runs in the
+// slot the paced step and a finish-now pass share — never alongside them on
+// the same file. A busy slot leaves the file exactly as it was, reported as
+// deferred rather than failed, and the next run picks it up.
+func TestARecodeWaitsForTheReEncryptionSlot(t *testing.T) {
+	v, _ := newTestVault(t, 6)
+	ctx := context.Background()
+	ids := accountIDs(t, v)
+
+	entry, _, err := v.Upload(ctx, MainScope, "/", "widen.txt", []byte("three clouds now, six later\n"), UploadOptions{Accounts: ids[:3]})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+
+	// Stand in for a paced step that is mid-file.
+	v.migrateMu.Lock()
+	report, err := v.Relocate(ctx, MainScope, entry.ID, ids, archive.Scheme{}, nil)
+	v.migrateMu.Unlock()
+	if err != nil {
+		t.Fatalf("Relocate while the slot is busy: %v", err)
+	}
+	if report.Deferred != 1 || report.Failed != 0 || report.Recoded != 0 || report.Done() {
+		t.Fatalf("report while the slot is busy = %+v, want the one file deferred", report)
+	}
+	if joined := strings.Join(report.Warnings, "\n"); !strings.Contains(joined, "re-encryption is already running") {
+		t.Errorf("warnings = %v, want the busy slot named", report.Warnings)
+	}
+	untouched, err := v.Entry(entry.ID)
+	if err != nil {
+		t.Fatalf("Entry: %v", err)
+	}
+	if untouched.ArchiveID != entry.ArchiveID || len(untouched.Shards) != 3 {
+		t.Errorf("the file was touched while the slot was busy: %+v", untouched)
+	}
+
+	again, err := v.Relocate(ctx, MainScope, entry.ID, ids, archive.Scheme{}, nil)
+	if err != nil {
+		t.Fatalf("Relocate once the slot is free: %v", err)
+	}
+	if again.Recoded != 1 || !again.Done() {
+		t.Fatalf("report once the slot is free = %+v, want the file recoded", again)
+	}
+}
+
 // A file deleted or rewritten while its parts were being copied leaves the
 // copies belonging to nothing. The commit used to return nothing to erase and
 // say the copies were discarded; they were not.
