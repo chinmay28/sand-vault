@@ -456,7 +456,7 @@ func TestReplicationIsPacedByTheDailyBudget(t *testing.T) {
 	}
 }
 
-func TestReplicaSurvivesAPasswordChangeAndIsRemadeOntoTheNewKey(t *testing.T) {
+func TestReplicaSurvivesADeferredPasswordChangeAndIsRemadeOntoTheNewKey(t *testing.T) {
 	v, _, _ := replicaVault(t, 3, 1, archive.Scheme{})
 	if err := v.SetReplicate("/", on(true)); err != nil {
 		t.Fatal(err)
@@ -467,9 +467,9 @@ func TestReplicaSurvivesAPasswordChangeAndIsRemadeOntoTheNewKey(t *testing.T) {
 	old := v.manifest.ByID(entry.ID).Replica
 	v.mu.RUnlock()
 
-	// Parts move at once; the replica stays on the retired key, readable,
-	// until the worker re-makes it.
-	if _, err := v.ChangePassword(context.Background(), testPassword, "a new password", true); err != nil {
+	// The files are left for later, and the replica with them: it stays on
+	// the retired key, readable, until the worker re-makes it.
+	if _, err := v.ChangePassword(context.Background(), testPassword, "a new password", false); err != nil {
 		t.Fatal(err)
 	}
 	v.chunks.clear()
@@ -480,17 +480,489 @@ func TestReplicaSurvivesAPasswordChangeAndIsRemadeOntoTheNewKey(t *testing.T) {
 	if status.Stale != 1 {
 		t.Errorf("after a password change the replica is not counted stale: %+v", status)
 	}
+	rekey, _ := v.RekeyStatus()
+	if rekey.StaleReplicas != 1 {
+		t.Errorf("the rekey status counts %d stale replicas, want 1: %+v", rekey.StaleReplicas, rekey)
+	}
 	if made := replicate(t, v); made != 1 {
 		t.Errorf("made %d replicas after the key changed, want 1", made)
 	}
 	v.mu.RLock()
 	fresh := v.manifest.ByID(entry.ID).Replica
-	retired := len(v.retired)
 	v.mu.RUnlock()
 	if fresh == nil || fresh.KeyID == old.KeyID {
 		t.Errorf("replica after the change = %+v, want one on the new key", fresh)
 	}
+	if _, err := v.MigrateFiles(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	v.mu.RLock()
+	retired := len(v.retired)
+	v.mu.RUnlock()
 	if retired != 0 {
 		t.Errorf("%d retired keys still held once nothing names them", retired)
+	}
+	if rekey, _ := v.RekeyStatus(); rekey.StaleReplicas != 0 {
+		t.Errorf("rekey status still counts %d stale replicas", rekey.StaleReplicas)
+	}
+}
+
+func TestAFinishedPasswordChangeErasesTheReplicaLeftOnTheRetiredKey(t *testing.T) {
+	v, _, replicaRoots := replicaVault(t, 3, 1, archive.Scheme{})
+	if err := v.SetReplicate("/", on(true)); err != nil {
+		t.Fatal(err)
+	}
+	entry := uploadSized(t, v, "/", "x.bin", 3000)
+	replicate(t, v)
+
+	// Finishing now is a request to be rid of the previous key. The replica
+	// is a whole-file copy under it, so it goes with the key rather than
+	// keeping it alive until the worker happens to come round.
+	if _, err := v.ChangePassword(context.Background(), testPassword, "a new password", true); err != nil {
+		t.Fatal(err)
+	}
+	v.mu.RLock()
+	r := v.manifest.ByID(entry.ID).Replica
+	retired := len(v.retired)
+	v.mu.RUnlock()
+	if r != nil {
+		t.Errorf("replica after a finished change = %+v, want it erased", r)
+	}
+	if retired != 0 {
+		t.Errorf("%d retired keys still held after a finished password change", retired)
+	}
+	if got := sandObjectsIn(t, replicaRoots[0]); got != 0 {
+		t.Errorf("%d replica objects left in the folder, sealed under the retired key", got)
+	}
+	// And the worker makes it again, on the new key.
+	if made := replicate(t, v); made != 1 {
+		t.Errorf("made %d replicas after the change, want 1", made)
+	}
+}
+
+// pacedPasswordChange rotates the key and moves every file through the paced
+// step rather than the finish-now pass, which is the path that leaves a
+// replica on the retired key with its file gone from it.
+func pacedPasswordChange(t *testing.T, v *Vault, old, next string) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := v.ChangePasswordWithPlan(ctx, old, next, &RekeySettings{BytesPerDay: 1 << 40}); err != nil {
+		t.Fatalf("ChangePasswordWithPlan: %v", err)
+	}
+	for i := 0; i < 50; i++ {
+		step, err := v.RekeyStep(ctx, time.Now())
+		if err != nil {
+			t.Fatalf("RekeyStep: %v", err)
+		}
+		if step.Idle {
+			return
+		}
+	}
+	t.Fatal("the paced re-encryption never went idle")
+}
+
+func TestClearingOrPausingThePolicyErasesReplicasOnARetiredKey(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		settings func(ids []string, roots []string) ReplicationSettings
+	}{
+		{"cleared", func([]string, []string) ReplicationSettings { return ReplicationSettings{} }},
+		{"paused", func(ids, roots []string) ReplicationSettings {
+			return ReplicationSettings{Accounts: []ReplicaAccount{{ID: ids[0], ReplicaFolder: roots[0]}}, Paused: true}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v, _, replicaRoots := replicaVault(t, 3, 1, archive.Scheme{})
+			if err := v.SetReplicate("/", on(true)); err != nil {
+				t.Fatal(err)
+			}
+			kept := uploadSized(t, v, "/", "kept.bin", 2000)
+			stale := uploadSized(t, v, "/", "stale.bin", 3000)
+			replicate(t, v)
+			// The paced plan moves the files; the worker re-makes one replica
+			// onto the new key and never gets to the other — excluded here,
+			// metered or simply not yet reached in life — which stays on the
+			// retired key, and keeps it.
+			pacedPasswordChange(t, v, testPassword, "a new password")
+			if err := v.SetReplicate("/stale.bin", on(false)); err != nil {
+				t.Fatal(err)
+			}
+			if made := replicate(t, v); made != 1 {
+				t.Fatalf("made %d replicas after the change, want kept's alone", made)
+			}
+			v.mu.RLock()
+			retiredBefore := len(v.retired)
+			v.mu.RUnlock()
+			if retiredBefore != 1 {
+				t.Fatalf("%d retired keys held before the policy change, want the one stale's replica names", retiredBefore)
+			}
+
+			if err := v.SetReplication(tc.settings(providerIDs(t, v), replicaRoots)); err != nil {
+				t.Fatalf("SetReplication: %v", err)
+			}
+			v.mu.RLock()
+			keptReplica := v.manifest.ByID(kept.ID).Replica
+			staleReplica := v.manifest.ByID(stale.ID).Replica
+			retired := len(v.retired)
+			v.mu.RUnlock()
+			if keptReplica == nil {
+				t.Error("the replica on the current key was dropped")
+			}
+			if staleReplica != nil {
+				t.Errorf("the replica on the retired key is still recorded: %+v", staleReplica)
+			}
+			if retired != 0 {
+				t.Errorf("%d retired keys still held with the policy %s", retired, tc.name)
+			}
+			if got := sandObjectsIn(t, replicaRoots[0]); keptReplica != nil && got != keptReplica.ChunkCount {
+				t.Errorf("the replica folder holds %d objects, want only the current replica's %d", got, keptReplica.ChunkCount)
+			}
+		})
+	}
+}
+
+func TestAPasswordChangeErasesReplicasStillOnTheKeyBeforeLast(t *testing.T) {
+	v, _, replicaRoots := replicaVault(t, 3, 1, archive.Scheme{})
+	if err := v.SetReplicate("/", on(true)); err != nil {
+		t.Fatal(err)
+	}
+	entry := uploadSized(t, v, "/", "x.bin", 3000)
+	replicate(t, v)
+	// The paced plan moves the file and nothing re-makes the replica, so the
+	// retired key stays in the vault for the replica alone.
+	pacedPasswordChange(t, v, testPassword, "a new password")
+	v.mu.RLock()
+	retired := len(v.retired)
+	v.mu.RUnlock()
+	if retired != 1 {
+		t.Fatalf("%d retired keys held before the next change, want 1", retired)
+	}
+
+	// The next change is not refused for it, and does not carry it as a
+	// third generation: the replica is erased and the key goes.
+	report, err := v.ChangePassword(context.Background(), "a new password", "a third password", true)
+	if err != nil {
+		t.Fatalf("ChangePassword: %v", err)
+	}
+	if len(report.Warnings) > 0 {
+		t.Errorf("the change warned: %v", report.Warnings)
+	}
+	v.mu.RLock()
+	r := v.manifest.ByID(entry.ID).Replica
+	retired = len(v.retired)
+	v.mu.RUnlock()
+	if r != nil {
+		t.Errorf("replica after the second change = %+v, want it erased", r)
+	}
+	if retired != 0 {
+		t.Errorf("%d retired keys held after the second change, want none", retired)
+	}
+	if got := sandObjectsIn(t, replicaRoots[0]); got != 0 {
+		t.Errorf("%d replica objects left on the key before last", got)
+	}
+	if made := replicate(t, v); made != 1 {
+		t.Errorf("made %d replicas afterwards, want 1", made)
+	}
+}
+
+func TestReplicasCountTowardsAnAccountsLoad(t *testing.T) {
+	v, _, _ := replicaVault(t, 3, 1, archive.Scheme{})
+	if err := v.SetReplicate("/", on(true)); err != nil {
+		t.Fatal(err)
+	}
+	entry := uploadSized(t, v, "/", "x.bin", 3000)
+	ids := providerIDs(t, v)
+
+	before, err := v.ProviderStatuses(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	replicate(t, v)
+	after, err := v.ProviderStatuses(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := func(statuses []ProviderStatus, id string) int64 {
+		for _, s := range statuses {
+			if s.ID == id {
+				return s.Stored
+			}
+		}
+		t.Fatalf("no status for %s", id)
+		return 0
+	}
+	v.mu.RLock()
+	r := v.manifest.ByID(entry.ID).Replica
+	v.mu.RUnlock()
+	var replicaBytes int64
+	for _, s := range r.Shards {
+		replicaBytes += s.Size
+	}
+	if replicaBytes == 0 {
+		t.Fatal("the replica weighs nothing")
+	}
+	if got, want := stored(after, ids[0]), stored(before, ids[0])+replicaBytes; got != want {
+		t.Errorf("cloud-a stores %d after replicating, want %d: the replica is not counted", got, want)
+	}
+	for _, id := range ids[1:] {
+		if stored(after, id) != stored(before, id) {
+			t.Errorf("%s's load changed though no replica went to it", id)
+		}
+	}
+}
+
+func TestTheOrphanScanListsTheReplicaFoldersAndSweepsThem(t *testing.T) {
+	ctx := context.Background()
+	v, roots, replicaRoots := replicaVault(t, 3, 3, archive.Scheme{Data: 2, Total: 3})
+	if err := v.SetReplicate("/", on(true)); err != nil {
+		t.Fatal(err)
+	}
+	entry := uploadSized(t, v, "/", "x.bin", 3000)
+	replicate(t, v)
+	ids := providerIDs(t, v)
+
+	// A replica the index names is not an orphan, and the replica rows are
+	// rows of their own.
+	scan := orphanScan(t, v)
+	if scan.Found {
+		t.Fatalf("a current replica is reported as abandoned: %+v", scan.Items)
+	}
+	if len(scan.Accounts) != 6 {
+		t.Fatalf("%d account rows, want one per root: three parts folders and three replica folders", len(scan.Accounts))
+	}
+	rows := map[string]OrphanAccount{}
+	for _, a := range scan.Accounts {
+		rows[a.ProviderID] = a
+	}
+	for _, id := range ids {
+		parts, replicas := rows[id], rows[replicaID(id)]
+		if parts.Replicas || parts.Objects == 0 {
+			t.Errorf("parts row for %s = %+v", id, parts)
+		}
+		if !replicas.Replicas || !strings.HasSuffix(replicas.Name, "(replicas)") || replicas.Objects == 0 {
+			t.Errorf("replica row for %s = %+v, want it flagged, labelled, and counting the replica's objects", id, replicas)
+		}
+	}
+
+	// Forgotten without being erased — what a recovery, a disconnect and a
+	// dropped key all do — and the objects are abandoned in the replica
+	// folders, and nowhere else.
+	v.mu.Lock()
+	doomed := v.manifest.ByID(entry.ID).Replica
+	v.manifest.ByID(entry.ID).Replica = nil
+	if err := v.persistLocked(); err != nil {
+		v.mu.Unlock()
+		t.Fatal(err)
+	}
+	v.mu.Unlock()
+
+	scan = orphanScan(t, v)
+	if !scan.Found || scan.Archives != 3 || len(scan.Blocked) > 0 {
+		t.Fatalf("scan after forgetting the replica = found %v, %d archives, blocked %v; want the replica's three", scan.Found, scan.Archives, scan.Blocked)
+	}
+	for _, item := range scan.Items {
+		if item.ArchiveID != doomed.ArchiveID || !strings.HasSuffix(item.ProviderID, replicaSuffix) || !item.Deletable {
+			t.Errorf("orphan row %+v, want the replica's archive in a replica folder, deletable", item)
+		}
+	}
+	for _, a := range scan.Accounts {
+		if !a.Replicas && a.Orphans > 0 {
+			t.Errorf("the parts row for %s reports %d orphans: a replica object was mistaken for a part", a.Name, a.Orphans)
+		}
+	}
+
+	partsBefore := objectsUnder(t, roots)
+	report, err := v.SweepOrphans(ctx, nil, false, nil)
+	if err != nil {
+		t.Fatalf("SweepOrphans: %v", err)
+	}
+	if report.Archives != 3 || len(report.Warnings) > 0 || len(report.Skipped) > 0 {
+		t.Errorf("sweep = %+v, want the replica's three archives erased cleanly", report)
+	}
+	for _, root := range replicaRoots {
+		if got := sandObjectsIn(t, root); got != 0 {
+			t.Errorf("%s still holds %d objects after the sweep", root, got)
+		}
+	}
+	if got := objectsUnder(t, roots); got != partsBefore {
+		t.Errorf("the sweep touched the parts folders: %d objects, %d before", got, partsBefore)
+	}
+	if got, err := readFrom(t, v, entry.ID, ReadParts); err != nil || len(got) != 3000 {
+		t.Errorf("the file does not read back after the sweep: %v", err)
+	}
+	if scan := orphanScan(t, v); scan.Found {
+		t.Errorf("still %d abandoned archive(s) after the sweep", scan.Archives)
+	}
+}
+
+func TestUpdateProviderKeepsThePartsFolderOutOfTheReplicaFolder(t *testing.T) {
+	v, _, replicaRoots := replicaVault(t, 3, 1, archive.Scheme{})
+	id := providerIDs(t, v)[0]
+
+	for _, tc := range []struct{ name, path, want string }{
+		{"onto the replica folder", replicaRoots[0], "is the parts directory"},
+		{"inside the replica folder", filepath.Join(replicaRoots[0], "parts"), "contains the parts directory"},
+		{"around the replica folder", filepath.Dir(replicaRoots[0]), "is inside the parts directory"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := v.UpdateProvider(context.Background(), id, ProviderEdit{Options: map[string]string{"path": tc.path}})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("moving the parts %s: err = %v, want one containing %q", tc.name, err, tc.want)
+			}
+		})
+	}
+	// Nothing was applied by any refusal.
+	cfgs, _ := v.Providers()
+	if cfgs[0].Options["path"] == replicaRoots[0] {
+		t.Error("a refused edit was stored")
+	}
+	// And a move to a folder of its own is still allowed.
+	elsewhere := filepath.Join(t.TempDir(), "moved")
+	if _, err := v.UpdateProvider(context.Background(), id, ProviderEdit{Options: map[string]string{"path": elsewhere}}); err != nil {
+		t.Fatalf("moving the parts beside the replicas: %v", err)
+	}
+}
+
+func TestDropReplicaKeepsTheObjectsWhenTheIndexCannotBeWritten(t *testing.T) {
+	v, _, replicaRoots := replicaVault(t, 3, 1, archive.Scheme{})
+	if err := v.SetReplicate("/", on(true)); err != nil {
+		t.Fatal(err)
+	}
+	entry := uploadSized(t, v, "/", "x.bin", 3000)
+	replicate(t, v)
+	v.mu.RLock()
+	r := v.manifest.ByID(entry.ID).Replica
+	v.mu.RUnlock()
+
+	// The vault file cannot be replaced: a directory with something in it
+	// sits where it was, which the atomic rename refuses.
+	v.AwaitBackupSync()
+	if err := os.Remove(v.path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(v.path, "in-the-way"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := v.DropReplica(context.Background(), entry.ID); err == nil {
+		t.Fatal("DropReplica succeeded with the index unwritable")
+	}
+	// The index still names the replica, so its objects must still be there.
+	v.mu.RLock()
+	still := v.manifest.ByID(entry.ID).Replica
+	v.mu.RUnlock()
+	if still != r {
+		t.Errorf("replica after the failed drop = %+v, want the one before it", still)
+	}
+	if got := sandObjectsIn(t, replicaRoots[0]); got != r.ChunkCount {
+		t.Errorf("the replica folder holds %d objects after the failed drop, want all %d: the index names a replica that is gone", got, r.ChunkCount)
+	}
+}
+
+func TestAFileWithNoRecordedHashIsReplicatedOnceAndThenCurrent(t *testing.T) {
+	v, _, _ := replicaVault(t, 3, 1, archive.Scheme{})
+	if err := v.SetReplicate("/", on(true)); err != nil {
+		t.Fatal(err)
+	}
+	entry := uploadSized(t, v, "/", "old.bin", 3000)
+
+	// A file stored before hashes were recorded, or one that has been through
+	// a conversion or a re-encryption since, carries none in the index.
+	v.mu.Lock()
+	v.manifest.ByID(entry.ID).Hash = ""
+	if err := v.persistLocked(); err != nil {
+		v.mu.Unlock()
+		t.Fatal(err)
+	}
+	v.mu.Unlock()
+
+	if made := replicate(t, v); made != 1 {
+		t.Fatalf("made %d replicas, want 1", made)
+	}
+	status, _ := v.ReplicationStatus(time.Now())
+	if status.Replicated != 1 || status.Pending != 0 {
+		t.Errorf("after replicating a hashless file, status = %+v; want it counted current", status)
+	}
+	// The worker must not make it again: before the fix every step remade
+	// it, because the replica's hash could never equal a hash of "".
+	if made := replicate(t, v); made != 0 {
+		t.Errorf("a second pass made %d replicas of a file that did not change", made)
+	}
+
+	v.mu.RLock()
+	e := v.manifest.ByID(entry.ID)
+	r := e.Replica
+	v.mu.RUnlock()
+	if r == nil || r.Hash == "" {
+		t.Fatalf("replica = %+v, want one with the hash it was cut from", r)
+	}
+	// The hash verified on the way through is the file's own, and the entry
+	// now carries it like a file stored today does.
+	if e.Hash != entry.Hash || r.Hash != e.Hash {
+		t.Errorf("entry hash %q, replica hash %q, want both the file's %q", e.Hash, r.Hash, entry.Hash)
+	}
+}
+
+func TestADegradedReplicaIsRefusedAndThePreviousOneKept(t *testing.T) {
+	ctx := context.Background()
+	v, _, replicaRoots := replicaVault(t, 3, 3, archive.Scheme{Data: 2, Total: 3})
+	if err := v.SetReplicate("/", on(true)); err != nil {
+		t.Fatal(err)
+	}
+	entry := uploadSized(t, v, "/", "x.bin", 3000)
+	if made := replicate(t, v); made != 1 {
+		t.Fatalf("made %d replicas, want 1", made)
+	}
+	v.mu.RLock()
+	old := v.manifest.ByID(entry.ID).Replica
+	v.mu.RUnlock()
+
+	// cloud-c's replica folder stops taking writes: a file sits where the
+	// directory was, so every Put there fails while the account still
+	// answers. A password change left for later puts the replica on the
+	// retired key, which makes it one to make again.
+	if err := os.RemoveAll(replicaRoots[2]); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(replicaRoots[2], []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.ChangePassword(ctx, testPassword, "a new password", false); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now()
+	step, err := v.ReplicateStep(ctx, now)
+	if err != nil {
+		t.Fatalf("ReplicateStep: %v", err)
+	}
+	if step.Done || step.Warning == "" {
+		t.Fatalf("step with one replication cloud down = %+v; want it refused with a warning, not a 2-of-3 replica on two clouds", step)
+	}
+	v.mu.RLock()
+	r := v.manifest.ByID(entry.ID).Replica
+	v.mu.RUnlock()
+	if r == nil || r.ArchiveID != old.ArchiveID {
+		t.Fatalf("replica after the refused attempt = %+v, want the previous one (%s) kept", r, old.ArchiveID)
+	}
+	for i, root := range replicaRoots[:2] {
+		if got := sandObjectsIn(t, root); got != old.ChunkCount {
+			t.Errorf("replica folder %d holds %d objects, want the previous replica's %d and nothing from the refused attempt", i, got, old.ChunkCount)
+		}
+	}
+	v.chunks.clear()
+	if got, err := readFrom(t, v, entry.ID, ReadReplica); err != nil || len(got) != 3000 {
+		t.Errorf("the kept replica does not read back: %v", err)
+	}
+
+	// The file is left alone for a while rather than tried again on the next
+	// tick, which is what bounds the bandwidth while the cloud is down.
+	status, _ := v.ReplicationStatus(now)
+	if status.LeftAlone != 1 || status.Stale != 1 {
+		t.Errorf("status = %+v, want the file stale and left alone", status)
+	}
+	again, err := v.ReplicateStep(ctx, now)
+	if err != nil || again.Done || again.Warning != "" || again.Wait <= 0 {
+		t.Errorf("the next step = %+v, %v; want a wait, not another attempt", again, err)
 	}
 }

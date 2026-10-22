@@ -1205,6 +1205,14 @@ func (v *Vault) UpdateProvider(ctx context.Context, id string, edit ProviderEdit
 		if !provider.SameOptions(before.Options, merged) {
 			after.Options = merged
 			reconnected = true
+			// The parts folder may have moved, and the replica folder the
+			// account keeps was checked against the one it had: the same
+			// test SetReplication applies, from the other side, so the parts
+			// cannot be edited onto or inside the replicas any more than the
+			// replicas could be put among the parts.
+			if err := after.Validate(); err != nil {
+				return provider.Config{}, err
+			}
 		}
 	}
 

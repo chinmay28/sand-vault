@@ -97,8 +97,8 @@ func spaceFor(usage provider.Usage, quota, stored int64) Space {
 	return Space{Free: left, Used: stored, Total: quota, Source: SpaceQuota, Over: over}
 }
 
-// providerLoad is what the index says one account is holding: how many parts,
-// and what they weigh.
+// providerLoad is what the index says one account is holding: how many
+// shards, parts and replicas alike, and what they weigh.
 type providerLoad struct {
 	Shards int
 	Stored int64
@@ -111,6 +111,12 @@ type providerLoad struct {
 // out would draw an account as emptier than it is, and the amount missing would
 // change with which sub vault happened to be open — an account's load that
 // moves when you type a password is worse than no figure at all.
+//
+// A replica counts too. It sits in the account's replica folder rather than
+// its parts folder, but it is the same account, the same quota and the same
+// disk, and a whole-file copy is the heaviest thing SAND puts anywhere;
+// leaving it out would draw an account with a terabyte of replicas on it as
+// having room for a terabyte more.
 func (v *Vault) loadByProviderLocked() map[string]providerLoad {
 	out := map[string]providerLoad{}
 	add := func(id string, size int64) {
@@ -124,6 +130,11 @@ func (v *Vault) loadByProviderLocked() map[string]providerLoad {
 		for _, e := range m.Entries {
 			for _, s := range e.Shards {
 				add(s.ProviderID, s.Size)
+			}
+			if e.Replica != nil {
+				for _, s := range e.Replica.Shards {
+					add(s.ProviderID, s.Size)
+				}
 			}
 		}
 	}

@@ -164,7 +164,7 @@ copies, as it does a password change's re-encryption.`,
 				if err := v.SetReplication(vault.ReplicationSettings{}); err != nil {
 					return err
 				}
-				fmt.Println("Replication cleared. Replicas already made stay where they are.")
+				fmt.Println("Replication cleared. Replicas on the current key stay where they are; any still sealed under a retired key were erased.")
 				return nil
 			}
 
@@ -228,9 +228,9 @@ copies, as it does a password change's re-encryption.`,
 	cmd.Flags().StringArrayVar(&clouds, "cloud", nil, "a replication cloud and its replica folder, name=folder (repeatable)")
 	cmd.Flags().StringVar(&scheme, "scheme", "", "how a replica is cut: k-of-n as wide as the clouds, or 'whole' for one")
 	cmd.Flags().StringVar(&perDay, "per-day", "", "copy at most this much a day — 10G, 500M; 0 for no limit")
-	cmd.Flags().BoolVar(&pause, "pause", false, "stop making replicas, keeping the policy")
+	cmd.Flags().BoolVar(&pause, "pause", false, "stop making replicas, keeping the policy; replicas still on a retired key are erased")
 	cmd.Flags().BoolVar(&resume, "resume", false, "start again after --pause")
-	cmd.Flags().BoolVar(&clear, "clear", false, "forget the policy; replicas already made stay")
+	cmd.Flags().BoolVar(&clear, "clear", false, "forget the policy; replicas on the current key stay, ones on a retired key are erased")
 	return cmd
 }
 

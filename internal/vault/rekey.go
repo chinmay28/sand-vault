@@ -116,11 +116,28 @@ func (v *Vault) changePassword(ctx context.Context, oldPassword, newPassword str
 	if err := v.rotate(oldPassword, newPassword, plan); err != nil {
 		return nil, err
 	}
+
+	// A replica left on the key the *previous* change retired — every file
+	// has moved, or the change above would have been refused, but a replica
+	// the worker never re-made keeps that key in the vault — would now be a
+	// third generation. It is erased rather than carried: derived data, made
+	// again when the policy wants it. After the rotation rather than before,
+	// because the vault may have been locked until the rotation opened it;
+	// the replicas on the key just retired are left, with their files, for
+	// the worker and the pass below.
+	warnings, err := v.dropStaleReplicas(ctx)
+	if err != nil {
+		return nil, err
+	}
 	if !migrate {
 		outstanding := v.PendingMigration()
-		return &MigrationReport{Pending: outstanding, Remaining: outstanding}, nil
+		return &MigrationReport{Pending: outstanding, Remaining: outstanding, Warnings: warnings}, nil
 	}
-	return v.MigrateFiles(ctx, nil)
+	report, err := v.MigrateFiles(ctx, nil)
+	if report != nil {
+		report.Warnings = append(warnings, report.Warnings...)
+	}
+	return report, err
 }
 
 // retiredPendingInScope is retiredPendingLocked for a caller that holds
@@ -540,6 +557,24 @@ func (v *Vault) MigrateFilesIn(ctx context.Context, scope Scope, accounts []stri
 	}
 
 	report.Remaining = v.PendingMigrationIn(scope)
+
+	// Finishing now is a request to be rid of the previous key, and a
+	// replica still sealed under it is what would keep it: the worker
+	// re-makes replicas only while the policy is active, and a paused or
+	// cleared policy would leave a whole-file copy readable by the old
+	// password for good. The replicas of the files this pass moved are
+	// erased — derived data, made again when wanted — so the key goes in
+	// the same write; a file that would not move keeps its replica, since
+	// that one holds the key anyway. Main vault only: a replica is a
+	// main-vault placement.
+	if scope.Main() {
+		warnings, err := v.dropStaleReplicas(ctx)
+		report.Warnings = append(report.Warnings, warnings...)
+		if err != nil {
+			report.Warnings = append(report.Warnings,
+				fmt.Sprintf("replicas on the previous key could not be dropped: %v", err))
+		}
+	}
 	return report, nil
 }
 
