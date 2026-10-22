@@ -26,9 +26,21 @@ func init() {
 			{Key: "client_secret", Label: "OAuth client secret", Secret: true, Required: true, Advanced: true},
 			{Key: "refresh_token", Label: "Refresh token", Secret: true, Required: true, Advanced: true},
 			{
-				Key:   "folder_id",
-				Label: "Folder ID",
-				Help:  "Optional Drive folder to store shards in. Blank uses the account root.",
+				Key:   "folder",
+				Label: "Folder",
+				Help: "A folder at the top of My Drive. SAND creates it if it is missing; " +
+					"blank means the root.",
+			},
+			// The folder as an ID rather than a name, from before SAND could
+			// make its own. Under the drive.file scope only a folder SAND
+			// itself created is one it can see, so a pasted ID almost never
+			// worked — but an account that has one and did get it working
+			// keeps it, and it outranks the name.
+			{
+				Key:      "folder_id",
+				Label:    "Folder ID",
+				Advanced: true,
+				Help:     "The ID of a folder SAND can already see. Outranks the folder name.",
 			},
 		},
 		OAuth: &OAuthSpec{
@@ -56,22 +68,49 @@ func init() {
 	}, newGDriveProvider)
 }
 
-const (
+// Variables rather than constants so a test can stand a stub in for Drive.
+var (
 	gdriveAPI       = "https://www.googleapis.com/drive/v3"
 	gdriveUploadAPI = "https://www.googleapis.com/upload/drive/v3"
-	googleTokenURL  = "https://oauth2.googleapis.com/token"
 )
+
+const googleTokenURL = "https://oauth2.googleapis.com/token"
+
+const gdriveFolderMIME = "application/vnd.google-apps.folder"
 
 // gdriveProvider stores each shard as a Drive file. Drive has no real paths,
 // so the SAND object key is recorded in the file's appProperties and used as
 // the lookup index.
+//
+// The folder is a boundary, not a decoration. Every query this backend makes
+// is scoped to it — the key lookup, the listing, the upload's parent — so two
+// providers on the same account with different folders never see each other's
+// objects, even under the same keys. That is what lets one Drive account hold
+// more than one role, and it only holds because the scoping is on every path:
+// an unscoped lookup would find the other folder's object and Put, which
+// deletes before it writes, would replace it.
+//
+// The folder is one SAND makes. The account is connected with the drive.file
+// scope, which sees only what the app created, so a folder made in Drive's
+// own UI is one this backend cannot write into — a pasted ID of such a folder
+// is a 404 on the first upload. Naming the folder instead, and creating it
+// here when it is missing, is what makes the field work at all.
 type gdriveProvider struct {
 	oauthBase
+
+	// folderName is the folder to make and use, at the top of My Drive. Empty
+	// means the root — everything the app can see.
+	folderName string
+	// folderID, when set, is a folder somebody pasted the ID of, and is used
+	// as it stands without any lookup.
 	folderID string
 
+	mu sync.Mutex
+	// folder is the resolved folder's ID once a lookup or a create has
+	// found it, cached for the life of the provider.
+	folder string
 	// idCache memoizes key -> Drive file ID so repeated reads of the same
 	// shard skip the lookup query.
-	mu      sync.Mutex
 	idCache map[string]string
 }
 
@@ -88,9 +127,98 @@ func newGDriveProvider(cfg Config) (Provider, error) {
 			},
 			refreshField: "refresh_token",
 		},
-		folderID: strings.TrimSpace(cfg.Option("folder_id")),
-		idCache:  map[string]string{},
+		folderName: strings.Trim(strings.TrimSpace(cfg.Option("folder")), "/"),
+		folderID:   strings.TrimSpace(cfg.Option("folder_id")),
+		idCache:    map[string]string{},
 	}, nil
+}
+
+// resolveFolder returns the ID of the folder every object lives in, or "" for
+// the root. A pasted ID is taken as it is. A named folder is looked up among
+// the folders at the top of My Drive that the app can see, and created there
+// when none is found — once per provider, and then remembered.
+func (p *gdriveProvider) resolveFolder(ctx context.Context) (string, error) {
+	if p.folderID != "" {
+		return p.folderID, nil
+	}
+	if p.folderName == "" {
+		return "", nil
+	}
+
+	p.mu.Lock()
+	cached := p.folder
+	p.mu.Unlock()
+	if cached != "" {
+		return cached, nil
+	}
+
+	found, err := p.query(ctx, fmt.Sprintf(
+		"name='%s' and mimeType='%s' and 'root' in parents and trashed=false",
+		escapeDriveQuery(p.folderName), gdriveFolderMIME))
+	if err != nil {
+		return "", err
+	}
+	id := ""
+	if len(found) > 0 {
+		id = found[0].ID
+	} else {
+		id, err = p.createFolder(ctx)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	p.mu.Lock()
+	p.folder = id
+	p.mu.Unlock()
+	return id, nil
+}
+
+// createFolder makes the named folder at the top of My Drive and returns its
+// ID. Creating a folder is an ordinary files.create with the folder MIME type,
+// which the drive.file scope allows — and the folder, being the app's own, is
+// then one the app can see.
+func (p *gdriveProvider) createFolder(ctx context.Context) (string, error) {
+	body, err := json.Marshal(map[string]any{
+		"name":     p.folderName,
+		"mimeType": gdriveFolderMIME,
+		"parents":  []string{"root"},
+	})
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		gdriveAPI+"/files?fields=id", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+
+	resp, err := p.do(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf("drive create folder: %w", err)
+	}
+	defer drainAndClose(resp)
+	if !isSuccess(resp.StatusCode) {
+		return "", httpError("drive create folder", resp)
+	}
+	raw, err := readAllBody(resp)
+	if err != nil {
+		return "", err
+	}
+	var created gdriveFile
+	if err := json.Unmarshal(raw, &created); err != nil || created.ID == "" {
+		return "", fmt.Errorf("drive create folder: %s was created but its ID was not reported", p.folderName)
+	}
+	return created.ID, nil
+}
+
+// scoped narrows a query to the folder, or leaves it alone at the root.
+func scoped(q, folder string) string {
+	if folder == "" {
+		return q
+	}
+	return fmt.Sprintf("%s and '%s' in parents", q, escapeDriveQuery(folder))
 }
 
 func (p *gdriveProvider) do(ctx context.Context, req *http.Request) (*http.Response, error) {
@@ -116,7 +244,13 @@ func (p *gdriveProvider) fileIDFor(ctx context.Context, key string) (string, err
 		return cached, nil
 	}
 
-	files, err := p.query(ctx, fmt.Sprintf("appProperties has {key='sandKey' and value='%s'} and trashed=false", escapeDriveQuery(key)))
+	folder, err := p.resolveFolder(ctx)
+	if err != nil {
+		return "", err
+	}
+	files, err := p.query(ctx, scoped(fmt.Sprintf(
+		"appProperties has {key='sandKey' and value='%s'} and trashed=false",
+		escapeDriveQuery(key)), folder))
 	if err != nil {
 		return "", err
 	}
@@ -187,12 +321,16 @@ func (p *gdriveProvider) Put(ctx context.Context, key string, data []byte) error
 		return err
 	}
 
+	folder, err := p.resolveFolder(ctx)
+	if err != nil {
+		return err
+	}
 	metadata := map[string]any{
 		"name":          driveSafeName(key),
 		"appProperties": map[string]string{"sandKey": key},
 	}
-	if p.folderID != "" {
-		metadata["parents"] = []string{p.folderID}
+	if folder != "" {
+		metadata["parents"] = []string{folder}
 	}
 	metaJSON, err := json.Marshal(metadata)
 	if err != nil {
@@ -349,11 +487,15 @@ func (p *gdriveProvider) Delete(ctx context.Context, key string) error {
 }
 
 func (p *gdriveProvider) List(ctx context.Context, prefix string) ([]ObjectInfo, error) {
-	files, err := p.query(ctx, "appProperties has {key='sandKey' and value!=''} and trashed=false")
+	folder, err := p.resolveFolder(ctx)
+	if err != nil {
+		return nil, err
+	}
+	files, err := p.query(ctx, scoped("appProperties has {key='sandKey' and value!=''} and trashed=false", folder))
 	if err != nil {
 		// Drive rejects value!='' in some API revisions; fall back to listing
 		// the folder and reading names.
-		files, err = p.query(ctx, p.folderScopeQuery())
+		files, err = p.query(ctx, scoped("trashed=false", folder))
 		if err != nil {
 			return nil, err
 		}
@@ -370,13 +512,6 @@ func (p *gdriveProvider) List(ctx context.Context, prefix string) ([]ObjectInfo,
 		out = append(out, ObjectInfo{Key: key, Size: size})
 	}
 	return out, nil
-}
-
-func (p *gdriveProvider) folderScopeQuery() string {
-	if p.folderID != "" {
-		return fmt.Sprintf("'%s' in parents and trashed=false", escapeDriveQuery(p.folderID))
-	}
-	return "trashed=false"
 }
 
 func (p *gdriveProvider) Ping(ctx context.Context) error {

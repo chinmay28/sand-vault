@@ -12,6 +12,28 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### Google Drive makes its own folder, and keeps to it
+
+A Drive account's folder was a *Folder ID* pasted by hand, and it almost never
+worked. SAND signs in with the `drive.file` scope, which sees only what SAND
+itself created, so a folder made in Drive's own UI was one SAND could not
+write into — the first upload into it was a 404. The field is now a folder
+*name*, at the top of My Drive. SAND looks for a folder it made with that name
+and creates it when there is none, the way the OneDrive and Box backends
+already do. A pasted ID still works for the account that has one, from the
+advanced settings, and outranks the name.
+
+The folder is also a boundary now. The key lookup behind every read and
+delete, and the listing behind every sweep, used to search everything the app
+could see; only the upload named the folder. So two connections to the same
+Drive account with different folders would have found each other's objects,
+and an upload — which clears the old object under a key before writing —
+would have replaced the other folder's object with its own. Every query is
+scoped to the folder, so one Drive account can hold more than one connection's
+objects apart, which is what a replication folder beside the parts folder
+will need. A connection with no folder still works at the root, exactly as
+before.
+
 ### Re-encrypting a file no longer holds the whole of it in memory
 
 Moving a file onto a new key fetched the whole file into memory and scattered
