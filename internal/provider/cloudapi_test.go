@@ -11,6 +11,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -359,15 +360,20 @@ type boxStub struct {
 	folders map[string]string // name -> id
 	names   map[string]string // file id -> name
 	files   map[string][]byte // file id -> content
+
+	// pageSize is how many items a listing answers with before handing out
+	// a next_marker. Small values exercise the paging in the backend.
+	pageSize int
 }
 
 func newBoxStub(t *testing.T) *boxStub {
 	return &boxStub{
-		t:       t,
-		nextID:  100,
-		folders: map[string]string{},
-		names:   map[string]string{},
-		files:   map[string][]byte{},
+		t:        t,
+		nextID:   100,
+		folders:  map[string]string{},
+		names:    map[string]string{},
+		files:    map[string][]byte{},
+		pageSize: 1000,
 	}
 }
 
@@ -416,8 +422,18 @@ func (b *boxStub) mint() string {
 	return fmt.Sprint(b.nextID)
 }
 
+// serveItems pages a folder's items by marker, as Box does. An offset is
+// refused outright: Box rejects any past 10,000, and the point of the stub
+// is to make sure the backend never sends one.
 func (b *boxStub) serveItems(w http.ResponseWriter, r *http.Request) {
 	folderID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/2.0/folders/"), "/items")
+	q := r.URL.Query()
+	if q.Has("offset") || q.Get("usemarker") != "true" {
+		b.t.Errorf("box stub: a listing without usemarker=true: %s", r.URL.RawQuery)
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"code":"bad_request","message":"offset paging is not supported here"}`))
+		return
+	}
 
 	var entries []string
 	if folderID == boxRoot {
@@ -425,13 +441,31 @@ func (b *boxStub) serveItems(w http.ResponseWriter, r *http.Request) {
 			entries = append(entries, fmt.Sprintf(`{"type":"folder","id":%q,"name":%q}`, id, name))
 		}
 	} else {
-		for id, name := range b.names {
+		ids := make([]string, 0, len(b.names))
+		for id := range b.names {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
 			entries = append(entries, fmt.Sprintf(`{"type":"file","id":%q,"name":%q,"size":%d}`,
-				id, name, len(b.files[id])))
+				id, b.names[id], len(b.files[id])))
 		}
 	}
-	w.Write([]byte(fmt.Sprintf(`{"total_count":%d,"entries":[%s]}`,
-		len(entries), strings.Join(entries, ","))))
+
+	from := 0
+	if marker := q.Get("marker"); marker != "" {
+		fmt.Sscanf(marker, "m%d", &from)
+	}
+	end := from + b.pageSize
+	if end > len(entries) {
+		end = len(entries)
+	}
+	next := ""
+	if end < len(entries) {
+		next = fmt.Sprintf("m%d", end)
+	}
+	w.Write([]byte(fmt.Sprintf(`{"total_count":%d,"limit":%d,"next_marker":%q,"entries":[%s]}`,
+		len(entries), b.pageSize, next, strings.Join(entries[from:end], ","))))
 }
 
 func (b *boxStub) serveUpload(w http.ResponseWriter, r *http.Request) {
@@ -567,6 +601,48 @@ func TestBoxRoundTrip(t *testing.T) {
 	}
 	if err := p.Delete(ctx, "abc-p3.sand"); err != nil {
 		t.Errorf("second Delete: %v", err)
+	}
+}
+
+// Box refuses an offset past 10,000, so an account with more than ten
+// thousand parts failed every operation under offset paging — the key lookup
+// behind Get, Stat and Delete is a listing of the folder. Marker paging has
+// no such ceiling, and a listing that takes many pages comes back whole.
+func TestBoxListingWalksEveryPageByMarker(t *testing.T) {
+	stub := newBoxStub(t)
+	stub.pageSize = 7
+	server := httptest.NewServer(stub)
+	defer server.Close()
+
+	restoreAPI, restoreUpload := boxAPI, boxUpload
+	boxAPI, boxUpload = server.URL+"/2.0", server.URL+"/api/2.0"
+	defer func() { boxAPI, boxUpload = restoreAPI, restoreUpload }()
+
+	// Seeded straight into the stub: the folder, and more parts than fit
+	// in one page several times over.
+	stub.folders["sand"] = stub.mint()
+	const parts = 30
+	for i := 0; i < parts; i++ {
+		id := stub.mint()
+		stub.names[id] = fmt.Sprintf("abc-p%02d.sand", i)
+		stub.files[id] = []byte("part")
+	}
+
+	p := newTestBox()
+	ctx := context.Background()
+	listed, err := p.List(ctx, "abc")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(listed) != parts {
+		t.Errorf("List returned %d parts, want %d", len(listed), parts)
+	}
+
+	// The lookup behind Stat is the same listing, so a part on the last
+	// page is found too.
+	info, err := p.Stat(ctx, "abc-p29.sand")
+	if err != nil || info.Size != 4 {
+		t.Errorf("Stat of a part on the last page = %+v, %v", info, err)
 	}
 }
 
