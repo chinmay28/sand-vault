@@ -620,6 +620,44 @@ func TestASweepChecksEachFileOnceAcrossOverlappingPolicies(t *testing.T) {
 	}
 }
 
+// Two tasks are two questions. A shards policy on the inner folder checking a
+// repository's bundle must not stop the git policy on the outer folder asking
+// its upstream whether it has moved — and the other way round.
+func TestOverlappingPoliciesOfDifferentTasksDoNotSkipEachOthersFiles(t *testing.T) {
+	v, _ := newTestVault(t, 3)
+	remote := newRemoteRepo(t)
+	if err := v.Mkdir(MainScope, "/code/x"); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	if _, _, err := v.TrackRepo(context.Background(), MainScope, "/code/x", remote.URL, UploadOptions{}); err != nil {
+		t.Fatalf("TrackRepo: %v", err)
+	}
+
+	if _, err := v.SetAutomation(MainScope, "/code/x", dailyAt("10:00", ActionCheck)); err != nil {
+		t.Fatalf("SetAutomation shards: %v", err)
+	}
+	gitPolicy := dailyAt("10:00", ActionCheck)
+	gitPolicy.Task = TaskGit
+	if _, err := v.SetAutomation(MainScope, "/code", gitPolicy); err != nil {
+		t.Fatalf("SetAutomation git: %v", err)
+	}
+
+	runs, err := v.RunDueAutomations(context.Background(), time.Now().Add(48*time.Hour))
+	if err != nil {
+		t.Fatalf("RunDueAutomations: %v", err)
+	}
+	if len(runs) != 2 {
+		t.Fatalf("ran %d policies, want 2", len(runs))
+	}
+	inner, outer := runs[0], runs[1]
+	if inner.Folder != "/code/x" || inner.Shards == nil || inner.Shards.Checked != 1 {
+		t.Errorf("inner run = %+v, want the bundle's parts checked", inner)
+	}
+	if outer.Folder != "/code" || outer.Git == nil || outer.Git.Checked != 1 || outer.Git.Current != 1 {
+		t.Errorf("outer run = %+v, want the repository asked about despite the inner shards policy", outer)
+	}
+}
+
 func TestASweepSaysSoWhenNoCloudAnswers(t *testing.T) {
 	v, roots := newTestVault(t, 3)
 	if _, err := v.SetAutomation(MainScope, "/", dailyAt("10:00", ActionRebalance)); err != nil {

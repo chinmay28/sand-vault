@@ -986,7 +986,7 @@ func (v *Vault) RunDueAutomations(ctx context.Context, now time.Time) ([]*Automa
 		return nil, nil
 	}
 
-	seen := map[string]bool{}
+	seen := seenSet{}
 	runs := make([]*AutomationRun, 0, len(due))
 	for _, fa := range due {
 		if err := ctx.Err(); err != nil {
@@ -1023,9 +1023,37 @@ func (v *Vault) RunAutomation(ctx context.Context, scope Scope, dir string) (*Au
 	return v.runAutomation(ctx, scope, dir, TriggerManual, nil)
 }
 
-// runAutomation is the sweep. seen, when given, is the set of file IDs an
-// earlier policy in the same tick has already accounted for; it is added to.
-func (v *Vault) runAutomation(ctx context.Context, scope Scope, dir string, trigger AutomationTrigger, seen map[string]bool) (*AutomationRun, error) {
+// seenSet is what one scheduler tick remembers across the policies it runs:
+// which files each task has already dealt with, so that a file under two due
+// policies is handled once by the deepest.
+//
+// Keyed by task as well as by file, because the tasks ask different questions
+// of the same file. A shards policy on /code/x and a git policy on /code, due
+// together, used to share one set keyed by file alone: whichever ran first
+// claimed the repository's bundle, and the other skipped it — the parts never
+// checked, or the upstream never asked about — on every tick they coincided.
+type seenSet map[string]bool
+
+// claim marks id as dealt with by task and reports whether it was free. A nil
+// set claims everything: a manual run has no tick to share with.
+func (s seenSet) claim(task AutomationTask, id string) bool {
+	if s == nil {
+		return true
+	}
+	if task == "" {
+		task = TaskShards
+	}
+	key := string(task) + "\x00" + id
+	if s[key] {
+		return false
+	}
+	s[key] = true
+	return true
+}
+
+// runAutomation is the sweep. seen, when given, is what earlier policies in
+// the same tick have already accounted for; it is added to.
+func (v *Vault) runAutomation(ctx context.Context, scope Scope, dir string, trigger AutomationTrigger, seen seenSet) (*AutomationRun, error) {
 	dir = CleanDir(dir)
 
 	// One sweep at a time, vault-wide. Claimed before anything is read so that
@@ -1136,12 +1164,12 @@ func (v *Vault) sweepShards(
 	online map[string]bool,
 	byID map[string]provider.Config,
 	dark map[string]bool,
-	seen map[string]bool,
+	seen seenSet,
 ) {
 	res := &ShardResult{Files: len(entries)}
 	run.Shards = res
 
-	states := v.checkEntries(ctx, entries, online, byID, seen)
+	states := v.checkEntries(ctx, entries, online, byID, seen, policy.Task)
 	res.Checked = len(states)
 
 	needy := make([]fileState, 0, len(states))
@@ -1271,18 +1299,15 @@ func (v *Vault) probeAccounts(ctx context.Context, configs []provider.Config) (o
 // Everything else is a metadata request per part — per sampled chunk per part
 // for a chunked file, exactly as a single file's health check does, and for the
 // same reason it samples.
-func (v *Vault) checkEntries(ctx context.Context, entries []*Entry, online map[string]bool, byID map[string]provider.Config, seen map[string]bool) []fileState {
+func (v *Vault) checkEntries(ctx context.Context, entries []*Entry, online map[string]bool, byID map[string]provider.Config, seen seenSet, task AutomationTask) []fileState {
 	states := make([]fileState, 0, len(entries))
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	window := make(chan struct{}, automationCheckWindow)
 
 	for _, entry := range entries {
-		if seen != nil {
-			if seen[entry.ID] {
-				continue
-			}
-			seen[entry.ID] = true
+		if !seen.claim(task, entry.ID) {
+			continue
 		}
 		if ctx.Err() != nil {
 			break

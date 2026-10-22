@@ -620,7 +620,7 @@ func (m *Manifest) forgetRepos(ids ...string) {
 // repository and the whole point of the design; fetching is the expensive half,
 // and a policy that says "at most five a night" means five fetches, not five
 // questions.
-func (v *Vault) sweepGit(ctx context.Context, scope Scope, policy *Automation, entries []*Entry, run *AutomationRun, seen map[string]bool) {
+func (v *Vault) sweepGit(ctx context.Context, scope Scope, policy *Automation, entries []*Entry, run *AutomationRun, seen seenSet) {
 	res := &GitResult{}
 	run.Git = res
 
@@ -666,13 +666,11 @@ func (v *Vault) sweepGit(ctx context.Context, scope Scope, policy *Automation, e
 			run.Error = fmt.Sprintf("stopped part way: %v", err)
 			return
 		}
-		// A repository an inner folder's own policy already dealt with this
-		// tick is not asked about twice.
-		if seen != nil {
-			if seen[repo.ID] {
-				continue
-			}
-			seen[repo.ID] = true
+		// A repository an inner folder's own git policy already dealt with
+		// this tick is not asked about twice. Its shards policy, if it has
+		// one, is a different question and does not count.
+		if !seen.claim(TaskGit, repo.ID) {
+			continue
 		}
 		res.Checked++
 
