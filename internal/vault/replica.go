@@ -314,6 +314,25 @@ func (v *Vault) SetReplication(s ReplicationSettings) error {
 		if err := cfg.Validate(); err != nil {
 			return err
 		}
+		// Reached at its replica root the way AddProvider reaches an account
+		// at its parts root. A backend creates its folder on Ping and only
+		// there — a local folder's Put refuses a root that is not there, so
+		// a replica folder nobody has Pinged would take no replica.
+		at, err := replicaConfig(cfg)
+		if err != nil {
+			return err
+		}
+		live, err := v.newLiveProvider(at)
+		if err != nil {
+			return err
+		}
+		pingCtx, cancel := context.WithTimeout(context.Background(), healthPingTimeout)
+		err = live.Ping(pingCtx)
+		cancel()
+		closeProvider(live)
+		if err != nil {
+			return fmt.Errorf("%s's replica folder does not answer: %w", cfg.Name, err)
+		}
 		updated[idx] = cfg
 		ids = append(ids, a.ID)
 	}
@@ -730,6 +749,7 @@ func (v *Vault) replicateFile(ctx context.Context, id string, progress func(done
 		scheme:    scheme,
 		role:      provider.Replicas,
 	}, progress)
+	defer v.releaseDataKey(placed.keyID)
 	if err != nil {
 		return false, placed.warnings, err
 	}
@@ -752,6 +772,11 @@ func (v *Vault) replicateFile(ctx context.Context, id string, progress func(done
 	}
 
 	v.mu.Lock()
+	if err := v.placedKeyHeldLocked(placed.keyID); err != nil {
+		v.mu.Unlock()
+		warnings := v.deleteReplicaShards(context.WithoutCancel(ctx), fresh)
+		return false, append(placed.warnings, warnings...), err
+	}
 	current := v.manifest.ByID(id)
 	if current == nil || current.Hash != stale.Hash {
 		// Deleted or overwritten while the copy was being made. What was

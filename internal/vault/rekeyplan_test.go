@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -405,6 +406,104 @@ func TestOnlyOneReEncryptionPassRunsAtATime(t *testing.T) {
 
 	if step, _ := v.RekeyStep(ctx, time.Now()); !step.Moved {
 		t.Errorf("RekeyStep once the slot is free = %+v, want the file moved", step)
+	}
+}
+
+// A drive unplugged for the afternoon must not cost the plan a download, an
+// upload and an hour's skip per file it holds a part of. Once a health check
+// has said the account is down, the files on it wait for it; the others go
+// on moving, and the status says what is waiting and for whom.
+func TestRekeyStepHoldsFilesOnAnAccountTheHealthCheckFoundDown(t *testing.T) {
+	v, roots := newTestVault(t, 4)
+	ctx := context.Background()
+	ids := accountIDs(t, v)
+
+	// The smaller file is on the account about to go dark; the larger is not.
+	// Smallest first would pick the small one, so the order they move in is
+	// what shows the hold.
+	held, _, err := v.Upload(ctx, MainScope, "/", "held.txt", []byte(strings.Repeat("h", 50)), UploadOptions{Accounts: ids[:3]})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if _, _, err := v.Upload(ctx, MainScope, "/", "free.txt", []byte(strings.Repeat("f", 100)), UploadOptions{Accounts: ids[1:]}); err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if _, err := v.ChangePasswordWithPlan(ctx, testPassword, "patient", &RekeySettings{BytesPerDay: 1 << 40}); err != nil {
+		t.Fatalf("ChangePasswordWithPlan: %v", err)
+	}
+
+	// The first account goes dark, still connected, and the check notices.
+	kept := filepath.Join(t.TempDir(), "away")
+	if err := os.Rename(roots[0], kept); err != nil {
+		t.Fatalf("moving the account's folder away: %v", err)
+	}
+	if err := os.WriteFile(roots[0], []byte("not a folder"), 0o600); err != nil {
+		t.Fatalf("blocking the account's folder: %v", err)
+	}
+	if report, err := v.CheckClouds(ctx); err != nil || report.Unhealthy != 1 {
+		t.Fatalf("CheckClouds = %+v, %v; want one account down", report, err)
+	}
+
+	now := time.Now()
+	step, err := v.RekeyStep(ctx, now)
+	if err != nil || !step.Moved || step.Path != "/free.txt" {
+		t.Fatalf("first step = %+v, %v; want free.txt moved past the held file", step, err)
+	}
+	// The held file is not tried: no warning, no hour-long skip, just a wait
+	// short enough that the check finding the account back is acted on.
+	step, err = v.RekeyStep(ctx, now)
+	if err != nil || step.Moved || step.Idle || step.Warning != "" || step.Wait != MinHealthInterval {
+		t.Fatalf("step with only the held file left = %+v, %v; want a quiet wait of %s", step, err, MinHealthInterval)
+	}
+	v.rekeyMu.Lock()
+	skipped := len(v.rekey.skip)
+	v.rekeyMu.Unlock()
+	if skipped != 0 {
+		t.Errorf("%d file(s) were skipped for an hour; a held file must not be charged a failure", skipped)
+	}
+
+	status, err := v.RekeyStatus()
+	if err != nil {
+		t.Fatalf("RekeyStatus: %v", err)
+	}
+	if status.Held != 1 || len(status.HeldOn) != 1 || status.HeldOn[0] != "cloud-a" {
+		t.Errorf("status holds %d on %v, want 1 on cloud-a", status.Held, status.HeldOn)
+	}
+	if status.Idle || status.Pending != 1 {
+		t.Errorf("status = idle %v, pending %d; want not idle with the held file pending", status.Idle, status.Pending)
+	}
+	if joined := strings.Join(status.Warnings, "\n"); !strings.Contains(joined, "cloud-a") || !strings.Contains(joined, "health check") {
+		t.Errorf("status.Warnings = %v, want the hold explained by name", status.Warnings)
+	}
+	if _, _, err := v.Fetch(ctx, held.ID); err != nil {
+		t.Errorf("the held file does not read: %v", err)
+	}
+
+	// The account back and checked, the held file moves on the next step,
+	// with every part it had.
+	if err := os.Remove(roots[0]); err != nil {
+		t.Fatalf("unblocking: %v", err)
+	}
+	if err := os.Rename(kept, roots[0]); err != nil {
+		t.Fatalf("restoring the account's folder: %v", err)
+	}
+	if report, err := v.CheckClouds(ctx); err != nil || report.Unhealthy != 0 {
+		t.Fatalf("CheckClouds after the restore = %+v, %v; want every account up", report, err)
+	}
+	step, err = v.RekeyStep(ctx, now)
+	if err != nil || !step.Moved || step.Path != "/held.txt" {
+		t.Fatalf("step after the account is back = %+v, %v; want held.txt moved", step, err)
+	}
+	moved, _ := v.Entry(held.ID)
+	if len(moved.Shards) != 3 {
+		t.Errorf("held.txt re-encrypted with %d parts, want 3", len(moved.Shards))
+	}
+	if v.PendingMigration() != 0 {
+		t.Error("files still pending after everything moved")
+	}
+	status, _ = v.RekeyStatus()
+	if status.Held != 0 || len(status.HeldOn) != 0 {
+		t.Errorf("status still holds %d on %v after everything moved", status.Held, status.HeldOn)
 	}
 }
 

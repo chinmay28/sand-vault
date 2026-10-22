@@ -197,7 +197,22 @@ func (v *Vault) rotate(oldPassword, newPassword string, plan *RekeySettings) err
 		current.zero()
 		return err
 	}
+
+	// A fresh store starts with nothing set, so every preference the old one
+	// held has to be named here or it is silently gone the moment the
+	// password changes — which is how the chosen accounts, the default code
+	// and the health-check schedule were once lost. The contract: every
+	// field of storeFile that is a setting the user made comes across; what
+	// stays behind is what the change itself replaces (the KDF, the
+	// verifier, the data key and its id, the retired keys, which are rebuilt
+	// below) and the one note a fresh key answers — InheritedKeyID says new
+	// writes are on a key another vault minted, and after this they are not.
+	// The sealed sections (accounts, index, settings) are re-sealed below.
 	sf.ManifestBackupDisabled = v.store.ManifestBackupDisabled
+	sf.DefaultAccounts = append([]string(nil), v.store.DefaultAccounts...)
+	sf.DefaultScheme = v.store.DefaultScheme
+	sf.HealthCheckMinutes = v.store.HealthCheckMinutes
+	sf.HealthCheckOff = v.store.HealthCheckOff
 
 	// The sub vaults come across untouched, and this line is the whole of what
 	// "a password change does not touch a sub vault" means on disk. Their
@@ -242,8 +257,10 @@ func (v *Vault) rotate(oldPassword, newPassword string, plan *RekeySettings) err
 
 	// The keys the stored files are on have to survive the change, or the
 	// files become unreadable the moment the password is typed. Only the
-	// generations something still points at are kept.
-	retained, err := retainedKeys(current, current.manifest, v.store.SubVaults)
+	// generations something still points at are kept — an entry, a sub
+	// vault's borrowed-key list, or a transfer that has copied the key out
+	// and is still writing parts under it.
+	retained, err := retainedKeys(current, current.manifest, v.store.SubVaults, v.keysInFlightLocked())
 	if err != nil {
 		current.zero()
 		crypto.ZeroBytes(newVaultKey)
@@ -320,6 +337,11 @@ func (v *Vault) rotate(oldPassword, newPassword string, plan *RekeySettings) err
 	} else {
 		v.resealReadHistoryLocked(current.dataKey, dataKey)
 	}
+	// What the old password opened is finished with: the vault key it
+	// derived opens nothing on disk any more, and the data keys the files
+	// still need are the copies in the retired map. Wiped rather than left
+	// for the collector, like every other superseded key in this package.
+	current.zero()
 
 	// The copies on the accounts are sealed under the password, so they still
 	// answer to the old one until they are replaced. Forced, because the guard
@@ -334,10 +356,17 @@ func (v *Vault) rotate(oldPassword, newPassword string, plan *RekeySettings) err
 // It is asked about the main vault's index alone. A sub vault's entries name
 // keys sealed under the sub vault's own password, which this change neither
 // holds nor needs: their record is carried across untouched, keys and all.
-func retainedKeys(u *unsealed, manifest *Manifest, subs []subVaultRecord) (map[string][]byte, error) {
-	available := map[string][]byte{u.dataKeyID: u.dataKey}
+//
+// inFlight names the generations a transfer is sealing parts under right now
+// (holdDataKeyLocked). Nothing in the index names them yet, and the commit
+// that will is minutes away; they are kept as if an entry did.
+//
+// What comes back is copies, so that u can be wiped once the change has
+// landed without taking a retained key with it.
+func retainedKeys(u *unsealed, manifest *Manifest, subs []subVaultRecord, inFlight map[string]bool) (map[string][]byte, error) {
+	available := map[string][]byte{u.dataKeyID: append([]byte(nil), u.dataKey...)}
 	for id, key := range u.retired {
-		available[id] = key
+		available[id] = append([]byte(nil), key...)
 	}
 
 	// A file assigned out of a sub vault keeps that sub vault's generation until
@@ -399,6 +428,20 @@ func retainedKeys(u *unsealed, manifest *Manifest, subs []subVaultRecord) (map[s
 			if key, ok := available[id]; ok {
 				retained[id] = key
 			}
+		}
+	}
+	for id := range inFlight {
+		if _, done := retained[id]; done {
+			continue
+		}
+		if key, ok := available[id]; ok {
+			retained[id] = key
+		}
+	}
+	// The copies nothing wanted go the way of every unneeded key.
+	for id, key := range available {
+		if _, kept := retained[id]; !kept {
+			crypto.ZeroBytes(key)
 		}
 	}
 	return retained, nil
@@ -629,6 +672,8 @@ func (v *Vault) migrateFile(ctx context.Context, scope Scope, id string, account
 	// format costs nothing beyond what the re-encryption was paying.
 	placed, err := v.rescatter(ctx, scope, &stale,
 		spread{preferred: current, exact: exact, scheme: scheme}, progress)
+	// Held until the new parts are in the index or erased — see holdDataKeyLocked.
+	defer v.releaseDataKey(placed.keyID)
 	warnings = placed.warnings
 	if err != nil {
 		return path, 0, warnings, err
@@ -642,8 +687,35 @@ func (v *Vault) migrateFile(ctx context.Context, scope Scope, id string, account
 		TotalShards: placed.scheme.Total,
 	}
 
+	// What a re-encryption refuses to do: trade a file for a shorter one.
+	//
+	// The scatter tolerates a shard that would not land, as an upload has to —
+	// a file stored on two of three accounts is a file stored, and the warning
+	// says so. A re-encryption is not an upload. It erases the old parts the
+	// moment the new ones commit, so a shard lost on the way across is not a
+	// warning but a spare gone for good: a password change while one account
+	// was down came out of this with every file re-encrypted one part short,
+	// and nothing in the index to say they had ever been whole. So the new
+	// placement is held to the old one. Fewer distinct parts than the file had
+	// — or than a deliberate recode onto fewer accounts calls for, which is
+	// the one time narrowing is the point — and the fresh parts are erased,
+	// the file stays on the previous key exactly as it was, and the error
+	// leaves it to the paced step's retry to try again when the account is
+	// back.
+	if got, floor := distinctShards(placed.shards), min(stale.Redundancy(), placed.scheme.Total); got < floor {
+		warnings = append(warnings, v.deleteEntryShards(context.WithoutCancel(ctx), fresh)...)
+		return path, 0, warnings, fmt.Errorf(
+			"%s was not re-encrypted: only %d of its %d parts could be written and it has %d now, "+
+				"so re-encrypting it would have lost a part — the file is left on the previous key, "+
+				"and tried again once every account holding it is reachable: %s",
+			path, got, placed.scheme.Total, stale.Redundancy(), strings.Join(placed.warnings, "; "))
+	}
+
 	v.mu.Lock()
-	if m, err = v.manifestForLocked(scope); err != nil {
+	if m, err = v.manifestForLocked(scope); err == nil {
+		err = v.placedKeyHeldLocked(placed.keyID)
+	}
+	if err != nil {
 		v.mu.Unlock()
 		v.deleteEntryShards(context.WithoutCancel(ctx), fresh)
 		return path, 0, warnings, err
@@ -657,8 +729,23 @@ func (v *Vault) migrateFile(ctx context.Context, scope Scope, id string, account
 			v.deleteEntryShards(context.WithoutCancel(ctx), fresh)...)
 		return path, 0, warnings, nil
 	}
+	if e.ArchiveID != stale.ArchiveID {
+		// Rewritten while it was being re-encrypted — by a conversion, a
+		// recode, or another pass that got to it first. Whatever did so has
+		// already committed its own parts and erased the ones this read from;
+		// writing this placement over it would orphan that pass's parts and
+		// point the index at a copy of a file it no longer holds. The parts
+		// just written are the ones referenced by nothing, so they go.
+		v.mu.Unlock()
+		warnings = append(warnings,
+			v.deleteEntryShards(context.WithoutCancel(ctx), fresh)...)
+		warnings = append(warnings, fmt.Sprintf(
+			"%s was rewritten while it was being re-encrypted, so this pass left it alone", path))
+		return path, 0, warnings, nil
+	}
 
 	previous := *e
+	previous.Shards = append([]Shard(nil), e.Shards...)
 	e.ArchiveID = placed.archiveID
 	e.KeyID = placed.keyID
 	e.Shards = placed.shards
@@ -683,8 +770,11 @@ func (v *Vault) migrateFile(ctx context.Context, scope Scope, id string, account
 	// The old parts are unreferenced now, and they are the ones the old
 	// password could open, so getting rid of them is the point rather than
 	// housekeeping. A failure here is reported, not fatal: the index already
-	// points at the new parts.
-	for _, w := range v.deleteEntryShards(context.WithoutCancel(ctx), &stale) {
+	// points at the new parts. They are erased where the row said they were
+	// at the commit rather than where it said when the read began: a
+	// relocation in between moves parts without touching the archive ID,
+	// and its copies are what the index has just stopped naming.
+	for _, w := range v.deleteEntryShards(context.WithoutCancel(ctx), &previous) {
 		warnings = append(warnings, fmt.Sprintf("%s: a part under the old key is still there — %s", path, w))
 	}
 	return path, size, warnings, nil
@@ -810,15 +900,24 @@ func (s *hashingReaderAt) sum() (out [32]byte, ok bool) {
 	return out, true
 }
 
-// pruneRetiredKeysLocked drops every data key no entry names any more, wiping
-// it from memory and from the vault file. Called from persistLocked, so a key
-// stops being held the moment the last file leaves it — whether that file was
-// migrated or simply deleted.
+// pruneRetiredKeysLocked takes every data key no entry names any more out of
+// the retired map and returns it, so the write that follows goes out without
+// it. Called from persistLocked, so a key stops being held the moment the
+// last file leaves it — whether that file was migrated or simply deleted.
+//
+// What it returns is not zeroed, and the vault file is not touched: that is
+// persistLocked's business, once the write has landed (see keyPrune). A
+// prune that wiped the key before the write and then saw the write fail would
+// leave the caller's rollback pointing an entry at a key that no longer exists
+// anywhere, and the next successful write would make that permanent.
+//
+// A key a transfer is sealing parts under right now counts as in use, even
+// though nothing in the index names it yet — see holdDataKeyLocked.
 //
 // The caller must hold the write lock.
-func (v *Vault) pruneRetiredKeysLocked() {
+func (v *Vault) pruneRetiredKeysLocked() map[string][]byte {
 	if len(v.retired) == 0 {
-		return
+		return nil
 	}
 
 	inUse := make(map[string]bool, len(v.manifest.Entries))
@@ -847,25 +946,55 @@ func (v *Vault) pruneRetiredKeysLocked() {
 	for id := range v.keyIDsNamedOutsideLocked(MainScope) {
 		inUse[id] = true
 	}
+	for id := range v.keysInFlightLocked() {
+		inUse[id] = true
+	}
 
-	dropped := false
+	var dropped map[string][]byte
 	for id, key := range v.retired {
 		if inUse[id] {
 			continue
 		}
-		crypto.ZeroBytes(key)
+		if dropped == nil {
+			dropped = map[string][]byte{}
+		}
+		dropped[id] = key
 		delete(v.retired, id)
-		dropped = true
 	}
-	if !dropped {
-		return
-	}
+	return dropped
+}
 
-	kept := v.store.RetiredKeys[:0]
-	for _, wrapped := range v.store.RetiredKeys {
-		if _, ok := v.retired[wrapped.ID]; ok {
-			kept = append(kept, wrapped)
+// keyPrune is what one persist is about to let go of: the retired generations
+// nothing names any more, the main vault's and each open sub vault's. They are
+// taken out of the live maps before the file is sealed, so the write goes out
+// without them, and they are wiped only once it has landed. If it did not,
+// restore puts every one of them back exactly where it was, so that a caller
+// rolling its own change back finds the key its entry still names.
+type keyPrune struct {
+	main map[string][]byte
+	subs map[*subVault]map[string][]byte
+}
+
+// restore puts the keys back, for a write that failed.
+func (p *keyPrune) restore(v *Vault) {
+	for id, key := range p.main {
+		v.retired[id] = key
+	}
+	for sub, keys := range p.subs {
+		for id, key := range keys {
+			sub.retired[id] = key
 		}
 	}
-	v.store.RetiredKeys = kept
+}
+
+// zero wipes the keys, for a write that landed.
+func (p *keyPrune) zero() {
+	for _, key := range p.main {
+		crypto.ZeroBytes(key)
+	}
+	for _, keys := range p.subs {
+		for _, key := range keys {
+			crypto.ZeroBytes(key)
+		}
+	}
 }

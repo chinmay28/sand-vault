@@ -156,6 +156,18 @@ type Vault struct {
 	keyHold    int
 	lockWanted bool
 
+	// keyUse counts, by generation, the transfers sealing parts under a data
+	// key right now: taken when a scatter snapshots the key, released once
+	// the placement is in the index or has been erased. A generation with a
+	// count is in use even though nothing in the index names it yet, and the
+	// prune and the rotations treat it so. See holdDataKeyLocked.
+	//
+	// Its own leaf lock rather than mu, because the hold is taken under the
+	// read lock — snapshotTarget shares mu with every browse — and a counter
+	// cannot be written under a read lock.
+	keyUseMu sync.Mutex
+	keyUse   map[string]int
+
 	// backupChecked remembers the accounts already known to hold this vault's
 	// own backup, so the guard against clobbering another vault's copy costs
 	// one read per account per unlock rather than one per push.
@@ -657,7 +669,21 @@ func (v *Vault) lockLocked() {
 
 // adoptLocked installs the keys and sections a password just opened. The
 // caller must hold the write lock, and must not zero what it passes in.
+//
+// An unlock on a vault that is already open replaces keys with fresh copies
+// of the same secrets, and the old copies are wiped rather than dropped —
+// including every open sub vault's, which an unlock shuts. Nothing outside
+// this package holds them: every transfer works from a copy of its own.
 func (v *Vault) adoptLocked(u *unsealed) {
+	crypto.ZeroBytes(v.vaultKey)
+	crypto.ZeroBytes(v.dataKey)
+	for _, key := range v.retired {
+		crypto.ZeroBytes(key)
+	}
+	for _, sub := range v.subs {
+		sub.zero()
+	}
+
 	v.vaultKey = u.vaultKey
 	v.dataKey = u.dataKey
 	v.dataKeyID = u.dataKeyID
@@ -674,6 +700,79 @@ func (v *Vault) adoptLocked(u *unsealed) {
 	// Sub vaults are not opened by the main password, so an unlock starts with
 	// every one of them shut.
 	v.subs = map[string]*subVault{}
+}
+
+// holdDataKeyLocked marks one transfer as sealing parts under a generation,
+// from the moment the key is copied out of the vault until releaseDataKey.
+//
+// It closes the gap between a scatter and its commit. A scatter copies the
+// active key out under the lock and then spends minutes at the accounts
+// without it; a password change or a key rotation landing in between keeps
+// only the generations the index names — and this one is named by nothing
+// yet. The commit would then record an entry under a key the vault no longer
+// holds, and the file would be unreadable from the moment it landed. A held
+// generation is kept by rotate, RotateDataKey, ChangeSubVaultPassword and the
+// prune alike, exactly as if an entry named it; the commit is what turns the
+// hold into an entry, and the prune catches up on the write after the release.
+//
+// The caller must hold mu, read or write; the counter has a lock of its own.
+func (v *Vault) holdDataKeyLocked(keyID string) {
+	v.keyUseMu.Lock()
+	defer v.keyUseMu.Unlock()
+	if v.keyUse == nil {
+		v.keyUse = map[string]int{}
+	}
+	v.keyUse[keyID]++
+}
+
+// releaseDataKey ends one hold. It is keyed by generation rather than by a
+// token so that every path out of a scatter — committed, rolled back, or
+// failed before a byte moved — can release what the placement names: a
+// placement that never snapshotted a key names "", and releasing that is
+// nothing. Safe without mu.
+func (v *Vault) releaseDataKey(keyID string) {
+	if keyID == "" {
+		return
+	}
+	v.keyUseMu.Lock()
+	defer v.keyUseMu.Unlock()
+	if v.keyUse[keyID] <= 1 {
+		delete(v.keyUse, keyID)
+		return
+	}
+	v.keyUse[keyID]--
+}
+
+// keysInFlightLocked is the set of generations some transfer is sealing parts
+// under right now. The caller must hold mu.
+func (v *Vault) keysInFlightLocked() map[string]bool {
+	v.keyUseMu.Lock()
+	defer v.keyUseMu.Unlock()
+	if len(v.keyUse) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(v.keyUse))
+	for id := range v.keyUse {
+		out[id] = true
+	}
+	return out
+}
+
+// placedKeyHeldLocked is the check a commit makes before it records parts
+// under the generation a scatter snapshotted: that the vault still holds that
+// key. The hold above is what keeps the ordinary rotations from dropping it,
+// but a recovery or a kit import replaces the keys outright, and a placement
+// that outlived one would otherwise go into the index as a file nothing can
+// open. The caller erases the parts and reports the error; the user uploads
+// again under the keys the vault has now.
+func (v *Vault) placedKeyHeldLocked(keyID string) error {
+	key, err := v.dataKeyForLocked(keyID)
+	if err != nil {
+		return fmt.Errorf("the data key these parts were sealed under was replaced while they were "+
+			"being stored (%v); the parts were erased, try again", err)
+	}
+	crypto.ZeroBytes(key)
+	return nil
 }
 
 // shardPasswordLocked is the secret used to encrypt the parts of new uploads.
@@ -736,6 +835,15 @@ func (v *Vault) dataKeyForLocked(keyID string) ([]byte, error) {
 
 // persistLocked re-seals the mutable sections and writes the vault file. The
 // caller must hold the write lock and the vault must be unlocked.
+//
+// The store is written from a staged copy and the copy is adopted only once
+// the write has landed, so a failed write leaves v.store as it was. That is
+// what lets every caller roll its own change back after an error — put the
+// entry back, put the old thumbnail pack back — and know that the keys those
+// records name are still here. The retired-key prune is the part that would
+// otherwise bite: it runs on every write, and a key it had already wiped
+// would be gone from memory and from the next successful file alike, leaving
+// a rolled-back entry readable by nothing. See keyPrune.
 func (v *Vault) persistLocked() error {
 	if v.vaultKey == nil {
 		return ErrLocked
@@ -744,9 +852,21 @@ func (v *Vault) persistLocked() error {
 	now := time.Now().UTC()
 	v.manifest.UpdatedAt = now
 
+	staged := *v.store
+
 	// Every index change is a chance for the last file on a retired key to
 	// have moved off it, and a key nothing needs must not linger in the file.
-	v.pruneRetiredKeysLocked()
+	// The keys come out of the live maps here and are wiped below, after the
+	// write; until then a failure can put them back.
+	prune := &keyPrune{main: v.pruneRetiredKeysLocked()}
+	if prune.main != nil {
+		staged.RetiredKeys = make([]wrappedKey, 0, len(v.retired))
+		for _, wrapped := range v.store.RetiredKeys {
+			if _, ok := v.retired[wrapped.ID]; ok {
+				staged.RetiredKeys = append(staged.RetiredKeys, wrapped)
+			}
+		}
+	}
 	// And the plan that was moving files off it has nothing left to plan.
 	v.pruneRekeyPlanLocked()
 
@@ -754,37 +874,46 @@ func (v *Vault) persistLocked() error {
 	// refresh what the main vault is allowed to know about it. A locked sub
 	// vault's record is left exactly as it is — this is the write that carries
 	// it through untouched.
-	if err := v.resealSubVaultsLocked(now); err != nil {
+	subs, err := v.resealSubVaultsLocked(now, &staged)
+	prune.subs = subs
+	if err != nil {
+		prune.restore(v)
 		return err
 	}
 
 	providers, err := sealJSON(v.vaultKey, v.providers)
 	if err != nil {
+		prune.restore(v)
 		return err
 	}
 	manifest, err := sealJSON(v.vaultKey, v.manifest)
 	if err != nil {
+		prune.restore(v)
 		return err
 	}
 
-	v.store.Providers = providers
-	v.store.Manifest = manifest
+	staged.Providers = providers
+	staged.Manifest = manifest
 
 	// Written only once there is something in it, so a vault that has never set
 	// a preference carries no settings section at all.
 	if v.settings.empty() {
-		v.store.Settings = nil
+		staged.Settings = nil
 	} else {
 		settings, err := sealJSON(v.vaultKey, v.settings)
 		if err != nil {
+			prune.restore(v)
 			return err
 		}
-		v.store.Settings = &settings
+		staged.Settings = &settings
 	}
 
-	if err := writeStore(v.path, v.store); err != nil {
+	if err := writeStore(v.path, &staged); err != nil {
+		prune.restore(v)
 		return err
 	}
+	*v.store = staged
+	prune.zero()
 
 	// The index on disk just changed, so the copies on the accounts are now
 	// stale. Pushing happens on its own goroutine: this runs under the write

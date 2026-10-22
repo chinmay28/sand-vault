@@ -129,7 +129,9 @@ func TestWatchedReadNamesTheAccountThatFailed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
-	// One account goes dark. Two remain, which is enough to rebuild it.
+	// One account goes dark. Two remain, which is enough to rebuild it. The
+	// backup push is let land first, or the wipe races a write into the folder.
+	v.AwaitBackupSync()
 	if err := os.RemoveAll(roots[0]); err != nil {
 		t.Fatalf("removing an account's folder: %v", err)
 	}
@@ -166,6 +168,7 @@ func TestWatchedReadReportsAChunkThatCannotBeRebuilt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
+	v.AwaitBackupSync() // or the wipe races the backup still being written into it
 	for _, root := range roots[:2] {
 		if err := os.RemoveAll(root); err != nil {
 			t.Fatalf("removing an account's folder: %v", err)
