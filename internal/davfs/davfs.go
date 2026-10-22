@@ -160,6 +160,13 @@ func (fs *FileSystem) Mkdir(ctx context.Context, name string, perm os.FileMode) 
 }
 
 // RemoveAll deletes a file, or a folder and everything under it.
+//
+// Unless it is the library clearing the destination of a COPY or MOVE with
+// Overwrite: T, which it does by calling this before putting the replacement
+// in place. That is not a delete anyone asked for, and erasing the file's
+// parts for it would make a failed replacement a lost file; what was there is
+// moved aside instead, and dealt with once the request is answered. See
+// setAside.
 func (fs *FileSystem) RemoveAll(ctx context.Context, name string) error {
 	clean, err := cleanName(name)
 	if err != nil {
@@ -167,6 +174,10 @@ func (fs *FileSystem) RemoveAll(ctx context.Context, name string) error {
 	}
 	if clean == "/" {
 		return os.ErrPermission
+	}
+
+	if info := requestInfoFrom(ctx); info.replaces(clean) {
+		return fs.setAside(ctx, info, clean)
 	}
 
 	if fs.Vault.FolderExists(mainVault, clean) {
@@ -258,7 +269,7 @@ func (fs *FileSystem) OpenFile(ctx context.Context, name string, flag int, perm 
 		}
 	}
 
-	return newWriteFile(ctx, fs.Vault, dir, base, prefix), nil
+	return newWriteFile(ctx, fs.Vault, dir, base, prefix, fs.expectedSize(ctx, clean)), nil
 }
 
 // openRead opens a folder for listing or a file for reading.
