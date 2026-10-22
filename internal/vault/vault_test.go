@@ -38,6 +38,11 @@ func newTestVault(t *testing.T, accounts int) (*Vault, []string) {
 	t.Cleanup(v.AwaitBackupSync)
 	t.Cleanup(v.AwaitReadHistory)
 
+	// A local folder is created inside a parent that already exists, never
+	// through one that does not — a missing parent is an unmounted drive.
+	if err := os.MkdirAll(filepath.Join(dir, "cloud"), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
 	roots := make([]string, accounts)
 	for i := 0; i < accounts; i++ {
 		root := filepath.Join(dir, "cloud", string(rune('a'+i)))
@@ -121,7 +126,10 @@ func TestFetchSurvivesOneAccountGoingDark(t *testing.T) {
 	}
 
 	// Wipe the account holding part 1 entirely, as if the provider had gone
-	// offline or closed the account.
+	// offline or closed the account. The manifest backup is still being
+	// pushed into every account in the background; let it land first, or the
+	// wipe races a part being written and fails on a folder that is not empty.
+	v.AwaitBackupSync()
 	victim := entry.Shards[0].ProviderName
 	for _, root := range roots {
 		candidate := filepath.Join(root, filepath.FromSlash(entry.Shards[0].Key))
