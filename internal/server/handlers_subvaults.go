@@ -157,7 +157,12 @@ func (s *Server) handleSubVaultMigrate(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSubVaultDelete(w http.ResponseWriter, r *http.Request) {
 	force := r.URL.Query().Get("force") == "1" || r.URL.Query().Get("force") == "true"
 
-	ctx, cancel := contextWithTimeout(r, 30*time.Minute)
+	// Detached, for the same reason a single file's delete is: the record
+	// goes in one write and the erasing of everything it held follows, best
+	// effort, so a client gone partway through would leave the sub vault's
+	// objects on the accounts with the only record of them already removed.
+	// See detachedContextWithTimeout.
+	ctx, cancel := detachedContextWithTimeout(r, 30*time.Minute)
 	defer cancel()
 
 	v, _ := s.Vault()

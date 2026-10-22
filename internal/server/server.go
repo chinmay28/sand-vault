@@ -111,6 +111,10 @@ type Server struct {
 	// itself halfway through a film.
 	externalMu       sync.Mutex
 	externalActivity time.Time
+
+	// dav is the share, when one is served. It is asked whether a request is
+	// still running before the vault is locked for being idle.
+	dav *davfs.Endpoint
 }
 
 // DefaultWebDAVPrefix is where the share is mounted unless told otherwise.
@@ -228,6 +232,7 @@ func (s *Server) Handler() (http.Handler, error) {
 		if err != nil {
 			return nil, err
 		}
+		s.dav = dav
 		// Both forms: a client asking about the share itself sends the bare
 		// prefix, and everything inside it arrives with the trailing slash.
 		mux.Handle(prefix, dav)
@@ -807,8 +812,18 @@ func (s *Server) noteExternalActivity() {
 }
 
 // externalActive reports whether that happened inside the idle timeout, which
-// counts as use in exactly the way a live browser session does.
+// counts as use in exactly the way a live browser session does — or whether
+// the share is in the middle of a request right now.
+//
+// The second half matters for anything long. A request is noted as use once,
+// when it begins, so a PUT of a film or a DELETE of a folder that outlasts the
+// idle timeout would otherwise look idle while still running, and the lock
+// would take the keys out from under it.
 func (s *Server) externalActive() bool {
+	if s.dav != nil && s.dav.InFlight() > 0 {
+		return true
+	}
+
 	idle := s.IdleTimeout
 	if idle <= 0 {
 		idle = DefaultIdleTimeout

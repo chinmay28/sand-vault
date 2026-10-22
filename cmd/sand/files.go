@@ -387,10 +387,51 @@ func resolveAccountNames(v *vault.Vault, wanted []string) ([]string, error) {
 	return out, nil
 }
 
+// writeLocalFile copies body into target by way of a temporary file beside it,
+// renamed into place only once every byte is down.
+//
+// Whatever was at target before is untouched by a download that fails partway
+// — an account unreachable, a disk that fills. It used to be opened with
+// O_TRUNC and removed on any failure, so "get over a file I already have"
+// became "empty that file, then delete it" the moment a read failed, which is
+// exactly when the local copy was the one worth keeping.
+//
+// An existing file is refused unless force says to replace it. The temporary
+// file sits in the same directory so the final rename is a rename and not a
+// copy across filesystems, and it is removed on every path out but success.
+func writeLocalFile(target string, body io.Reader, force bool) (int64, error) {
+	if _, err := os.Lstat(target); err == nil {
+		if !force {
+			return 0, fmt.Errorf("%s already exists — pass --force to replace it", target)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return 0, fmt.Errorf("checking %s: %w", target, err)
+	}
+
+	tmp := target + ".sand-tmp"
+	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return 0, fmt.Errorf("writing %s: %w", tmp, err)
+	}
+	written, err := io.Copy(out, body)
+	if closeErr := out.Close(); err == nil {
+		err = closeErr
+	}
+	if err == nil {
+		err = os.Rename(tmp, target)
+	}
+	if err != nil {
+		os.Remove(tmp)
+		return written, fmt.Errorf("writing %s: %w", target, err)
+	}
+	return written, nil
+}
+
 func getCmd() *cobra.Command {
 	var (
 		output string
 		from   string
+		force  bool
 	)
 
 	cmd := &cobra.Command{
@@ -431,17 +472,9 @@ func getCmd() *cobra.Command {
 				return err
 			}
 
-			out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+			written, err := writeLocalFile(target, body, force)
 			if err != nil {
-				return fmt.Errorf("writing %s: %w", target, err)
-			}
-			written, err := io.Copy(out, body)
-			if closeErr := out.Close(); err == nil {
-				err = closeErr
-			}
-			if err != nil {
-				os.Remove(target)
-				return fmt.Errorf("writing %s: %w", target, err)
+				return err
 			}
 			fmt.Printf("Wrote %s (%s)\n", target, formatBytes(written))
 			return nil
@@ -450,6 +483,7 @@ func getCmd() *cobra.Command {
 
 	cmd.Flags().StringVarP(&output, "output", "o", "", "output file or directory")
 	cmd.Flags().StringVar(&from, "from", "", "read from the parts (default), the replica, or either")
+	cmd.Flags().BoolVar(&force, "force", false, "replace a local file that is already there")
 	return cmd
 }
 

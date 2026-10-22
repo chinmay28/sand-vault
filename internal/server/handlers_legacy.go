@@ -53,15 +53,46 @@ func handleArchive(w http.ResponseWriter, r *http.Request) {
 	}
 	defer os.RemoveAll(outputDir)
 
-	// Save each uploaded file to the temp input dir
+	// Save each uploaded file to the temp input dir.
+	//
+	// Each goes in a numbered folder of its own, because the parts are named
+	// after the file (report.pdf.p1.sand) and the file is named after the
+	// upload: two uploads sharing a name used to land on the same temporary
+	// path, so the second overwrote the first before either was archived and
+	// the zips came back holding the second one twice, with nothing said. A
+	// folder per upload keeps the name — a prefix would be archived into the
+	// part and restored as the file's name — while making the paths distinct
+	// by construction.
+	//
+	// The same clash would then happen again among the parts, which all go to
+	// one output folder, so two uploads with one name are refused outright.
 	var inputPaths []string
-	for _, fh := range uploadedFiles {
+	seen := map[string]bool{}
+	for i, fh := range uploadedFiles {
+		name := filepath.Base(fh.Filename)
+		if name == "." || name == string(filepath.Separator) || name == "" {
+			writeError(w, http.StatusBadRequest, "an uploaded file has no name", "MISSING_FILE")
+			return
+		}
+		if seen[name] {
+			writeError(w, http.StatusBadRequest,
+				fmt.Sprintf("two of the files are called %q — the parts are named after the file, so archive them separately", name),
+				"DUPLICATE_NAME")
+			return
+		}
+		seen[name] = true
+
 		f, err := fh.Open()
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "failed to read uploaded file", "READ_ERROR")
 			return
 		}
-		inputPath := filepath.Join(inputDir, filepath.Base(fh.Filename))
+		inputPath := filepath.Join(inputDir, fmt.Sprintf("%d", i), name)
+		if err := os.MkdirAll(filepath.Dir(inputPath), 0700); err != nil {
+			f.Close()
+			writeError(w, http.StatusInternalServerError, "failed to create temp dir", "INTERNAL_ERROR")
+			return
+		}
 		out, err := os.Create(inputPath)
 		if err != nil {
 			f.Close()
@@ -70,7 +101,9 @@ func handleArchive(w http.ResponseWriter, r *http.Request) {
 		}
 		_, copyErr := io.Copy(out, f)
 		f.Close()
-		out.Close()
+		if closeErr := out.Close(); copyErr == nil {
+			copyErr = closeErr
+		}
 		if copyErr != nil {
 			writeError(w, http.StatusInternalServerError, "failed to write temp file", "INTERNAL_ERROR")
 			return
@@ -179,24 +212,35 @@ func handleRestore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Numbered rather than named after the upload: a part's name means
+	// nothing to the restore, and two parts that happen to share one — the
+	// same archive's p1 and p2 saved from two places as "part.sand" — used
+	// to overwrite each other, so the restore saw one of them twice and
+	// failed on an archive it had everything for.
 	var partPaths []string
-	for _, fh := range files {
+	for i, fh := range files {
 		f, err := fh.Open()
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "failed to read part file", "READ_ERROR")
 			return
 		}
 
-		partPath := filepath.Join(partsDir, filepath.Base(fh.Filename))
+		partPath := filepath.Join(partsDir, fmt.Sprintf("%d-%s", i, filepath.Base(fh.Filename)))
 		out, err := os.Create(partPath)
 		if err != nil {
 			f.Close()
 			writeError(w, http.StatusInternalServerError, "failed to create temp file", "INTERNAL_ERROR")
 			return
 		}
-		io.Copy(out, f)
+		_, copyErr := io.Copy(out, f)
 		f.Close()
-		out.Close()
+		if closeErr := out.Close(); copyErr == nil {
+			copyErr = closeErr
+		}
+		if copyErr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to write temp file", "INTERNAL_ERROR")
+			return
+		}
 		partPaths = append(partPaths, partPath)
 	}
 
