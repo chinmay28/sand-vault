@@ -649,7 +649,21 @@ func (v *Vault) lockLocked() {
 
 // adoptLocked installs the keys and sections a password just opened. The
 // caller must hold the write lock, and must not zero what it passes in.
+//
+// An unlock on a vault that is already open replaces keys with fresh copies
+// of the same secrets, and the old copies are wiped rather than dropped —
+// including every open sub vault's, which an unlock shuts. Nothing outside
+// this package holds them: every transfer works from a copy of its own.
 func (v *Vault) adoptLocked(u *unsealed) {
+	crypto.ZeroBytes(v.vaultKey)
+	crypto.ZeroBytes(v.dataKey)
+	for _, key := range v.retired {
+		crypto.ZeroBytes(key)
+	}
+	for _, sub := range v.subs {
+		sub.zero()
+	}
+
 	v.vaultKey = u.vaultKey
 	v.dataKey = u.dataKey
 	v.dataKeyID = u.dataKeyID

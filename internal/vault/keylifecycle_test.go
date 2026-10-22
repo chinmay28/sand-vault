@@ -2,6 +2,7 @@ package vault
 
 import (
 	"context"
+	"crypto/rand"
 	"os"
 	"strings"
 	"testing"
@@ -371,5 +372,62 @@ func TestCommitRefusesAPlacementWhoseKeyIsGone(t *testing.T) {
 	v.AwaitBackupSync()
 	if left := storedObjects(t, roots); len(left) != 0 {
 		t.Errorf("%d part(s) left on the accounts after the refused commit, want none", len(left))
+	}
+}
+
+// Superseded keys are wiped, not dropped: the copies a password change made
+// of the old generations are what the retired map holds, and the originals
+// it unsealed go to zero.
+func TestRetainedKeysAreCopies(t *testing.T) {
+	key := make([]byte, DataKeySize)
+	rand.Read(key)
+	want := append([]byte(nil), key...)
+	u := &unsealed{dataKeyID: "gen-1", dataKey: key, retired: map[string][]byte{}}
+	m := newManifest()
+	m.add(&Entry{ID: "f", Dir: "/", Name: "f", KeyID: "gen-1"})
+
+	retained, err := retainedKeys(u, m, nil, nil)
+	if err != nil {
+		t.Fatalf("retainedKeys: %v", err)
+	}
+	u.zero()
+	if string(retained["gen-1"]) != string(want) {
+		t.Fatal("wiping the unsealed keys wiped the retained copy with them")
+	}
+}
+
+func isZero(b []byte) bool {
+	for _, x := range b {
+		if x != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// Unlocking a vault that is already open replaces its keys; the ones it
+// replaces are wiped.
+func TestUnlockOnAnOpenVaultWipesTheKeysItReplaces(t *testing.T) {
+	v, _ := newTestVault(t, 3)
+	id := createSubVault(t, v, "Taxes", subPassword)
+
+	v.mu.RLock()
+	oldVault, oldData, oldSub := v.vaultKey, v.dataKey, v.subs[id].dataKey
+	v.mu.RUnlock()
+	if isZero(oldVault) || isZero(oldData) || isZero(oldSub) {
+		t.Fatal("the keys should be live before the second unlock")
+	}
+
+	if err := v.Unlock(testPassword); err != nil {
+		t.Fatalf("Unlock: %v", err)
+	}
+	if !isZero(oldVault) || !isZero(oldData) {
+		t.Error("the main vault's replaced keys were not wiped")
+	}
+	if !isZero(oldSub) {
+		t.Error("the sub vault's keys were not wiped when the unlock shut it")
+	}
+	if !v.Unlocked() {
+		t.Fatal("the vault should still be open")
 	}
 }

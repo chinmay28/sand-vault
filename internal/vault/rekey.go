@@ -337,6 +337,11 @@ func (v *Vault) rotate(oldPassword, newPassword string, plan *RekeySettings) err
 	} else {
 		v.resealReadHistoryLocked(current.dataKey, dataKey)
 	}
+	// What the old password opened is finished with: the vault key it
+	// derived opens nothing on disk any more, and the data keys the files
+	// still need are the copies in the retired map. Wiped rather than left
+	// for the collector, like every other superseded key in this package.
+	current.zero()
 
 	// The copies on the accounts are sealed under the password, so they still
 	// answer to the old one until they are replaced. Forced, because the guard
@@ -355,10 +360,13 @@ func (v *Vault) rotate(oldPassword, newPassword string, plan *RekeySettings) err
 // inFlight names the generations a transfer is sealing parts under right now
 // (holdDataKeyLocked). Nothing in the index names them yet, and the commit
 // that will is minutes away; they are kept as if an entry did.
+//
+// What comes back is copies, so that u can be wiped once the change has
+// landed without taking a retained key with it.
 func retainedKeys(u *unsealed, manifest *Manifest, subs []subVaultRecord, inFlight map[string]bool) (map[string][]byte, error) {
-	available := map[string][]byte{u.dataKeyID: u.dataKey}
+	available := map[string][]byte{u.dataKeyID: append([]byte(nil), u.dataKey...)}
 	for id, key := range u.retired {
-		available[id] = key
+		available[id] = append([]byte(nil), key...)
 	}
 
 	// A file assigned out of a sub vault keeps that sub vault's generation until
@@ -428,6 +436,12 @@ func retainedKeys(u *unsealed, manifest *Manifest, subs []subVaultRecord, inFlig
 		}
 		if key, ok := available[id]; ok {
 			retained[id] = key
+		}
+	}
+	// The copies nothing wanted go the way of every unneeded key.
+	for id, key := range available {
+		if _, kept := retained[id]; !kept {
+			crypto.ZeroBytes(key)
 		}
 	}
 	return retained, nil
