@@ -74,10 +74,18 @@ test-deps:
 	pip install -r tests/requirements.txt
 	python -m playwright install chromium
 
-# Clean build artifacts
+# Clean build artifacts.
+#
+# internal/server/dist is deliberately NOT removed: it is the built web client
+# the Go binary embeds (go:embed in internal/server/server.go), and it is
+# committed, so that `go build` and scripts/quickstart.sh work from a bare
+# checkout with no Node. Deleting it broke the next `make build-go` (go:embed
+# refuses a pattern that matches nothing) until `make build-web` had run, and
+# left `git status` showing a hundred deleted files. `make build-web` rewrites
+# it from source; `git checkout -- internal/server/dist` puts the committed one
+# back.
 clean:
 	rm -f sand sand.exe coverage.out coverage.html
-	rm -rf internal/server/dist
 	rm -rf web/node_modules web/dist
 
 # Quick development (build Go only, assumes web is already built)
