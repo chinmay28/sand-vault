@@ -372,7 +372,12 @@ func (v *Vault) SyncManifestBackup(ctx context.Context, force bool) ([]string, e
 	force = force || v.store.BackupNeedsForce
 
 	vaultKey := append([]byte(nil), v.vaultKey...)
-	blob, err := sealBackup(v.snapshotLocked(), v.store.KDF, v.vaultKey)
+	// The KDF goes into the envelope, and its salt is also what this push
+	// is remembered by: a password change mints a new one, and a push that
+	// snapshotted under the old salt must not be the one that says the
+	// copies are current — see clearBackupForce.
+	kdf := v.store.KDF
+	blob, err := sealBackup(v.snapshotLocked(), kdf, v.vaultKey)
 	configs := append([]provider.Config(nil), v.providers...)
 	v.mu.RUnlock()
 
@@ -417,23 +422,37 @@ func (v *Vault) SyncManifestBackup(ctx context.Context, force bool) ([]string, e
 	if len(warnings) == 0 {
 		// Every account now holds a copy under the current password, so the
 		// standing instruction to overwrite has done its job.
-		v.clearBackupForce()
+		v.clearBackupForce(kdf.Salt)
 	}
 
 	sort.Strings(warnings)
 	return warnings, nil
 }
 
-// clearBackupForce records that the copies on the accounts are current again.
+// clearBackupForce records that the copies on the accounts are current again
+// — provided the push that just landed was sealed under the password the
+// vault has now. salt is the KDF salt the push snapshotted with.
+//
+// The check is what keeps a slow push honest. A push takes its snapshot
+// under the lock and then spends a while at the accounts; a password change
+// landing in between mints a new salt, sets the flag, and queues a forced
+// push behind this one. This one then finishes having written copies under
+// the *old* password, and clearing the flag on its account would say the
+// copies are current when they are not. If the forced push behind it then
+// fails on one account — offline for the day — that account is left holding
+// a copy the vault cannot open and no instruction to overwrite it, and the
+// guard against clobbering a stranger's backup refuses it from the next
+// unlock on. A push that snapshotted under a salt that is not the vault's
+// leaves the flag for the one that did.
 //
 // It writes the vault file directly rather than going through persistLocked:
 // nothing encrypted changed, and persisting would schedule the very push that
 // just finished.
-func (v *Vault) clearBackupForce() {
+func (v *Vault) clearBackupForce(salt string) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
-	if v.store == nil || !v.store.BackupNeedsForce {
+	if v.store == nil || !v.store.BackupNeedsForce || v.store.KDF.Salt != salt {
 		return
 	}
 	v.store.BackupNeedsForce = false
@@ -470,10 +489,15 @@ func (v *Vault) guardForeignBackup(ctx context.Context, p provider.Provider, cfg
 		return nil
 	}
 	if err != nil {
-		// Could not read it, so cannot judge it. Writing is the safer failure:
-		// a vault with no recoverable backup is the problem being solved.
-		v.markBackupChecked(cfg.ID)
-		return nil
+		// Could not read it, so cannot judge it — and a copy that cannot be
+		// judged is left alone. The account is not marked checked, so the
+		// next push asks again; a timeout against an account holding the only
+		// backup of a vault that died must not be the thing that overwrites
+		// it. The cost of being wrong in this direction is one push's worth
+		// of staleness on one account, which the next push repairs.
+		return fmt.Errorf(
+			"could not tell whether %s already holds another vault's recovery backup (%v), "+
+				"so it was left alone for now; the next change will try again", cfg.Name, err)
 	}
 
 	var b Backup
