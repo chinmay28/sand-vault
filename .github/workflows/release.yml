@@ -5,6 +5,13 @@
 # a shallow checkout reports patch 0 and the run refuses to release it). The
 # release body is the CHANGELOG.md section whose heading names the tag exactly,
 # which the changelog's own rules require to exist before a tag is published.
+#
+# Three things start it: a tag, a push to main, and a manual dispatch. Only
+# those — this job runs with contents: write and publishes under the
+# repository's own name, so a branch listed here is a branch whose every push
+# can cut a release. A push to main publishes only when the commit names its
+# own version in CHANGELOG.md (see "Release notes" below); any other push to
+# main is skipped.
 name: release
 
 on:
@@ -13,7 +20,7 @@ on:
     tags:
       - "v*"
     branches:
-      - claude/august-2026-sand-vault-j1wg8e
+      - main
 
 permissions:
   contents: write
