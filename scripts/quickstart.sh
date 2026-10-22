@@ -38,9 +38,11 @@
 #     command at the top of this file deploys main from whatever directory you
 #     happen to be standing in, including a clone of this repo.
 #   * The one exception is EXECUTING this file from a checkout (sudo ./scripts/
-#     quickstart.sh), which builds that checkout exactly as it stands and never
-#     pulls — that is how you deploy work in progress. Every run prints which
-#     of the two it is doing, and says so if the checkout is behind.
+#     quickstart.sh), which copies that checkout to $SAND_PREFIX/checkout and
+#     builds the copy exactly as the checkout stands, committed or not, and
+#     never pulls — that is how you deploy work in progress. Nothing in the
+#     checkout itself is written to. Every run prints which of the two it is
+#     doing, and says so if the checkout is behind.
 #   * The vault lives at a stable path OUTSIDE the source tree ($DATA_DIR), so
 #     cloning, rebuilding, or pulling can never clobber it.
 #   * Every upgrade STOPS the service and snapshots the vault file BEFORE
@@ -256,7 +258,8 @@ granted_paths() {
 }
 # The install prefix the unit was written for, or nothing. Read off the binary
 # it runs, which this script only ever puts at $PREFIX/bin/sand (release mode)
-# or $PREFIX/src/sand (source mode) — and only when WorkingDirectory= agrees,
+# $PREFIX/src/sand or $PREFIX/checkout/sand (source mode) — and only when
+# WorkingDirectory= agrees,
 # which rules out a unit something else wrote (scripts/deploy-linux.sh runs
 # /usr/local/bin/sand, and /usr/local is nobody's prefix) and one an older
 # version of this script wrote for a binary built inside somebody's checkout.
@@ -265,10 +268,11 @@ prior_prefix() {
   case "$bin" in
     */bin/sand) p="${bin%/bin/sand}" ;;
     */src/sand) p="${bin%/src/sand}" ;;
+    */checkout/sand) p="${bin%/checkout/sand}" ;;
     *) return 0 ;;
   esac
   case "$PRIOR_WORKDIR" in
-    "$p" | "$p/src") printf '%s' "$p" ;;
+    "$p" | "$p/src" | "$p/checkout") printf '%s' "$p" ;;
   esac
 }
 
@@ -394,6 +398,10 @@ PROTON_SDK_REF="${PROTON_SDK_REF:-main}"
 PROTON_CLI_URL="${PROTON_CLI_URL:-}"
 
 SRC_DIR="$PREFIX/src"
+# Where a checkout this script is executed from is copied to and built. The
+# checkout itself is never built in, chowned or otherwise written to — see
+# "Executed from inside a checkout" below.
+CHECKOUT_DIR="$PREFIX/checkout"
 # Written into the prefix by every install, and what --uninstall looks for
 # before it deletes anything there: see the uninstall section for why a name
 # alone is not enough.
@@ -463,8 +471,10 @@ fi
 #   * The service user, which still owns $DATA_DIR.
 #   * Any folder a Local folder account writes to. Those are the user's own
 #     files; the grant that let the service write there goes with the drop-in.
-#   * A checkout that `sudo ./scripts/quickstart.sh` built in place. It is the
-#     user's working copy, not a tree this script cloned.
+#   * A checkout `sudo ./scripts/quickstart.sh` was run from. It is the user's
+#     working copy; what goes is the copy of it this script built under
+#     $PREFIX/checkout. (An older version of this script built the checkout
+#     in place — that binary, and the node_modules beside it, stay too.)
 #   * Node, Go (/usr/local/go, /etc/profile.d/go.sh), git, curl, unzip. They
 #     were installed only if missing, and something else may use them now.
 #   * Anything under $PREFIX this script did not create. The prefix is only
@@ -503,7 +513,7 @@ if [ "$UNINSTALL" = 1 ]; then
     printf '     no %s, and no %s running a binary from under it.\n' "$PREFIX_MARK" "$UNIT_PATH" >&2
     printf '     Refusing to delete anything there. If it IS an old install whose unit is\n' >&2
     printf '     already gone, remove it by hand:\n' >&2
-    printf '       sudo rm -rf %s/src %s/bin %s/bun %s/proton-sdk %s\n' "$PREFIX" "$PREFIX" "$PREFIX" "$PREFIX" "$BUILD_HOME" >&2
+    printf '       sudo rm -rf %s/src %s/checkout %s/bin %s/bun %s/proton-sdk %s\n' "$PREFIX" "$PREFIX" "$PREFIX" "$PREFIX" "$PREFIX" "$BUILD_HOME" >&2
     exit 1
   fi
 
@@ -544,7 +554,7 @@ if [ "$UNINSTALL" = 1 ]; then
       rm -f "$PREFIX/bin/sand" "$PREFIX/bin/sand.prev" "$PREFIX/bin/sand.new" "$PROTON_BIN"
       rmdir "$PREFIX/bin" 2>/dev/null || warn "kept $PREFIX/bin — it still holds files this script did not put there."
     fi
-    rm -rf "${BUN_DIR:?}" "${PROTON_SDK_DIR:?}" "${BUILD_HOME:?}"
+    rm -rf "${CHECKOUT_DIR:?}" "${BUN_DIR:?}" "${PROTON_SDK_DIR:?}" "${BUILD_HOME:?}"
     rm -f "$BUN_LOG" "$PROTON_FETCH_LOG" "$PROTON_BUILD_LOG" "$PROTON_STAMP" "$PREFIX_MARK" "$QUICKSTART_LOG"
     if rmdir "$PREFIX" 2>/dev/null; then
       ok "removed $PREFIX"
@@ -572,8 +582,20 @@ if [ "$UNINSTALL" = 1 ]; then
 fi
 
 # Executed from inside a checkout (sudo ./scripts/quickstart.sh), build that
-# checkout in place; piped from curl, deploy $SAND_REF like any other install.
-# Release mode never builds, so it ignores the surrounding checkout entirely.
+# checkout as it stands; piped from curl, deploy $SAND_REF like any other
+# install. Release mode never builds, so it ignores the surrounding checkout
+# entirely.
+#
+# "As it stands" means copied, not built in place. The checkout is somebody's
+# working copy, and building in it meant `chown -R sand` over the whole tree,
+# .git included — the next `git status` in it failed with "dubious ownership"
+# and every file needed chowning back — and a unit whose ExecStart and
+# WorkingDirectory pointed into /home/<user>, which ProtectHome=true in that
+# very unit makes an empty directory to the service, so it could not start at
+# all. The checkout's history and working tree are instead copied to
+# $PREFIX/checkout (see sync_checkout), and that copy is what is built, owned
+# by the service user and run — the same arrangement as the managed clone,
+# one directory over. Nothing under the checkout is written to.
 #
 # Which of the two is happening has to be read off BASH_SOURCE, not $0. Piped,
 # bash sets $0 to "bash" and leaves BASH_SOURCE unset, so the old
@@ -591,7 +613,7 @@ if [ "$INSTALL_MODE" = source ] && [ -f "$SELF_FILE" ]; then
      && [ -f "$top/go.mod" ] \
      && grep -q 'module github.com/chinmay28/sand-vault' "$top/go.mod" 2>/dev/null; then
     LOCAL_CHECKOUT="$top"
-    SRC_DIR="$top"   # build & serve from where the user already cloned
+    SRC_DIR="$CHECKOUT_DIR"   # a copy of the checkout, built and served from here
   fi
 fi
 
@@ -607,6 +629,16 @@ fi
 PREV_BIN="${SERVER_BIN}.prev"
 STAGED_BIN="${SERVER_BIN}.new"
 
+# The unit sets ProtectHome=true (write_unit), which makes /home, /root and
+# /run/user empty directories to the service. A prefix under one of them is a
+# service that cannot find its own binary — systemd reports 203/EXEC, the
+# health check fails, and an upgrade rolls back. Said here, with the cause,
+# rather than there.
+case "$WORK_DIR" in
+  /home | /home/* | /root | /root/* | /run/user | /run/user/*)
+    die "SAND_PREFIX=$PREFIX is under a directory the service cannot see: the unit sets ProtectHome=true, which hides /home, /root and /run/user from it. Use a prefix outside them — /opt/sand, the default, or /srv/sand." ;;
+esac
+
 log "SAND Vault quick start"
 printf '  %-10s %s\n' "install"  "$INSTALL_MODE$( [ "$INSTALL_MODE" = release ] && echo " ($RELEASE_TAG)" )"
 if [ "$INSTALL_MODE" = release ]; then
@@ -617,7 +649,7 @@ else
   # changed after a deploy" is a much harder thing to sit and wonder about
   # than a line saying which commit the deploy was made from.
   if [ -n "$LOCAL_CHECKOUT" ]; then
-    printf '  %-10s %s\n' "ref"    "this checkout, built as it stands (not updated)"
+    printf '  %-10s %s\n' "ref"    "$LOCAL_CHECKOUT, copied and built as it stands (not updated)"
   else
     printf '  %-10s %s\n' "ref"    "origin/$SAND_REF"
   fi
@@ -764,34 +796,79 @@ release_arch() {
 
 # git in someone else's checkout, run as root. Without this, git refuses to
 # touch a tree it does not own and every read below fails identically to "no
-# repository here", which is the one answer that must not be guessed at.
-src_git() { git -C "$SRC_DIR" -c safe.directory="$SRC_DIR" "$@"; }
+# repository here", which is the one answer that must not be guessed at. Only
+# ever used to READ the checkout.
+checkout_git() { git -C "$LOCAL_CHECKOUT" -c safe.directory="$LOCAL_CHECKOUT" "$@"; }
+# git in the copy of it under $PREFIX, which the service user owns and root
+# writes to here, hence the same allowance.
+copy_git() { git -C "$SRC_DIR" -c safe.directory="$SRC_DIR" -c safe.directory="$LOCAL_CHECKOUT" "$@"; }
 
 # What the build is about to be made from, appended to the line announcing it.
 describe_head() {
-  [ -d "$SRC_DIR/.git" ] || return 0
-  sha="$(src_git rev-parse --short HEAD 2>/dev/null)" || return 0
+  sha="$(checkout_git rev-parse --short HEAD 2>/dev/null)" || return 0
   printf ' (%s)' "$sha"
 }
 
-# Building a checkout in place is the whole point of this mode — it is how you
-# deploy something you are still working on. But it also means a tree that was
-# cloned once and never pulled rebuilds the same commit forever, and the only
-# outward sign is a version number that will not move: the deploy succeeds, the
-# service restarts, and nothing whatsoever changes. Say it out loud instead.
+# Building a checkout as it stands is the whole point of this mode — it is how
+# you deploy something you are still working on. But it also means a tree that
+# was cloned once and never pulled rebuilds the same commit forever, and the
+# only outward sign is a version number that will not move: the deploy
+# succeeds, the service restarts, and nothing whatsoever changes. Say it out
+# loud instead.
 warn_if_behind() {
-  [ -d "$SRC_DIR/.git" ] || return 0
   # Offline, or a repo with no origin — nothing to compare against, so this
   # tells us nothing either way and stays quiet.
-  src_git fetch --quiet --prune origin 2>/dev/null || return 0
-  src_git rev-parse --verify --quiet "origin/$SAND_REF" >/dev/null 2>&1 || return 0
+  checkout_git fetch --quiet --prune origin 2>/dev/null || return 0
+  checkout_git rev-parse --verify --quiet "origin/$SAND_REF" >/dev/null 2>&1 || return 0
 
-  behind="$(src_git rev-list --count "HEAD..origin/$SAND_REF" 2>/dev/null || echo 0)"
+  behind="$(checkout_git rev-list --count "HEAD..origin/$SAND_REF" 2>/dev/null || echo 0)"
   [ "${behind:-0}" -gt 0 ] || return 0
 
   warn "this checkout is $behind commit(s) behind origin/$SAND_REF."
   warn "quickstart builds what is here, so none of them will be installed."
-  warn "to deploy them:  git -C '$SRC_DIR' pull --ff-only   (then re-run this)"
+  warn "to deploy them:  git -C '$LOCAL_CHECKOUT' pull --ff-only   (then re-run this)"
+}
+
+# sync_checkout makes $SRC_DIR ($PREFIX/checkout) a copy of the checkout as it
+# stands: its history, then its working tree over the top. Run as root,
+# because the checkout is the user's (a home directory is 0750 on a current
+# Ubuntu, so the service user cannot read it) and the copy is the service
+# user's; the copy is chowned to them at the end, which is the only chown in
+# this mode.
+#
+# The history comes along, not just the files, because the version number is
+# the commit count and the web build asks git for it: a copy without .git
+# would build something calling itself v2026.10.0. A fetch from the checkout's
+# path into a repository of our own carries only what is new on a re-run, and
+# `git init` on a repository that already exists is a no-op, so the one path
+# serves the first run and every later one.
+#
+# The working tree is what the person is about to deploy: every tracked file
+# as it is right now, committed or not, plus untracked files that are not
+# ignored (a new source file not yet added), minus files deleted in the
+# checkout. Ignored files — node_modules, a binary built there — stay out.
+sync_checkout() {
+  install -d -o "$SVC_USER" -g "$SVC_USER" -m 755 "$PREFIX" "$SRC_DIR"
+  copy_git init -q
+  copy_git fetch -q --no-tags "$LOCAL_CHECKOUT" HEAD
+  copy_git reset -q --hard FETCH_HEAD
+  # Whatever the last copy or the last build left that HEAD does not have: an
+  # untracked file since removed from the checkout, stale hashed assets in
+  # internal/server/dist (go:embed would ship them). The running binary, the
+  # staged one and the rollback copy live here too and are kept; so is
+  # anything ignored, which the build clears for itself.
+  copy_git clean -qfd -e /sand -e /sand.prev -e /sand.new
+
+  checkout_git diff --name-only -z --diff-filter=D HEAD | while IFS= read -r -d '' f; do
+    rm -rf "${SRC_DIR:?}/$f"
+  done
+  checkout_git ls-files -z --cached --others --exclude-standard | while IFS= read -r -d '' f; do
+    if [ -e "$LOCAL_CHECKOUT/$f" ] || [ -L "$LOCAL_CHECKOUT/$f" ]; then
+      printf '%s\0' "$f"
+    fi
+  done | tar -C "$LOCAL_CHECKOUT" --null -T - -cf - | tar -C "$SRC_DIR" -xf -
+
+  chown -R "$SVC_USER":"$SVC_USER" "$SRC_DIR"
 }
 
 # Move the managed clone onto a commit, whatever the last build left lying in
@@ -867,8 +944,9 @@ if [ "$INSTALL_MODE" = release ]; then
   ok "staged $RELEASE_VERSION → $STAGED_BIN"
 else
   if [ -n "$LOCAL_CHECKOUT" ]; then
-    ok "building the checkout at $SRC_DIR$(describe_head)"
-    [ -d "$SRC_DIR/.git" ] && PREV_SHA="$(src_git rev-parse HEAD 2>/dev/null || true)"
+    log "copying the checkout at $LOCAL_CHECKOUT$(describe_head) to $SRC_DIR…"
+    sync_checkout
+    ok "copied; the checkout itself is not touched"
     warn_if_behind
   elif [ -d "$SRC_DIR/.git" ]; then
     PREV_SHA="$(as_svc git -C "$SRC_DIR" rev-parse HEAD)"
@@ -918,6 +996,8 @@ build_src() {
 }
 
 if [ "$INSTALL_MODE" = source ]; then
+  # $SRC_DIR is always a tree this script made — the managed clone, or the copy
+  # of a checkout — never the checkout itself, so this is safe to do blind.
   chown -R "$SVC_USER":"$SVC_USER" "$SRC_DIR" 2>/dev/null || true
   # The build runs while the OLD binary keeps serving. A failure here leaves
   # the running service completely untouched.

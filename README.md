@@ -41,7 +41,9 @@ Install SAND Vault as a hardened **systemd service** with one command:
 curl -fsSL https://raw.githubusercontent.com/chinmay28/sand-vault/main/scripts/quickstart.sh | sudo bash
 ```
 
-(or, from a checkout: `sudo ./scripts/quickstart.sh`)
+(or, from a checkout: `sudo ./scripts/quickstart.sh`, which copies the checkout
+under `/opt/sand` and builds it as it stands, uncommitted changes included,
+without writing to the checkout itself)
 
 It installs Node 22 and Go if needed (both build-time only), creates a dedicated
 `sand` system user, compiles the web client and the static server binary, and
