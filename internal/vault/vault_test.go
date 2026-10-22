@@ -39,6 +39,12 @@ func newTestVault(t *testing.T, accounts int) (*Vault, []string) {
 	t.Cleanup(v.AwaitBackupSync)
 	t.Cleanup(v.AwaitReadHistory)
 
+	// An archive stays spoken for a while after its scatter returns (see
+	// inflight.go), and a test that uploads, deletes and scans in the same
+	// second would otherwise find the delete's leftovers protected. The window
+	// is tested on its own in inflight_test.go.
+	v.flights.settle = -1
+
 	// A local folder is created inside a parent that already exists, never
 	// through one that does not — a missing parent is an unmounted drive.
 	if err := os.MkdirAll(filepath.Join(dir, "cloud"), 0o700); err != nil {

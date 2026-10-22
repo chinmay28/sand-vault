@@ -175,6 +175,11 @@ func (v *Vault) scatterStream(ctx context.Context, scope Scope, name string, src
 	copy(archiveID[:], u[:])
 	out.archiveID = hex.EncodeToString(archiveID[:])
 
+	// Held for the same reason scatterChunked holds its ID: nothing written
+	// from here is the index's yet, and a sweep must not be the one to decide
+	// what that means. See inflight.go.
+	defer v.flights.hold(out.archiveID)()
+
 	seed := binary.BigEndian.Uint64(archiveID[:8])
 	plan, scheme, err := target.planFor(seed)
 	if err != nil {

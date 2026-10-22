@@ -483,7 +483,9 @@ type ShardResult struct {
 	// Failed is files a repair was attempted on and did not finish. Deferred is
 	// files that needed one and did not get one this time: past the run's
 	// repair bound, past the rebuild ceiling, or with too few clouds answering
-	// to keep the file's code. Both are named in Warnings.
+	// to keep the file's code — and files that could not be checked at all,
+	// because an account answered a part's metadata request with something
+	// other than yes or no. Both are named in Warnings.
 	Failed   int `json:"failed"`
 	Deferred int `json:"deferred"`
 }
@@ -945,9 +947,17 @@ func (v *Vault) DueAutomations(now time.Time) ([]FolderAutomation, error) {
 	}
 	due := make([]FolderAutomation, 0, len(all))
 	for _, fa := range all {
-		if fa.Due(now) {
-			due = append(due, fa)
+		if !fa.Due(now) {
+			continue
 		}
+		// A run the file could not record is still a run. Counted from the
+		// attempt rather than from the stamp the file holds, until a write
+		// succeeds and the two agree again.
+		if tried := v.lastAttempt(fa.Vault, fa.Folder); tried.After(fa.LastRunAt) &&
+			now.Before(fa.nextAfter(tried, time.Local)) {
+			continue
+		}
+		due = append(due, fa)
 	}
 	sort.SliceStable(due, func(i, j int) bool {
 		di, dj := depthOf(due[i].Folder), depthOf(due[j].Folder)
@@ -984,7 +994,7 @@ func (v *Vault) RunDueAutomations(ctx context.Context, now time.Time) ([]*Automa
 		return nil, nil
 	}
 
-	seen := map[string]bool{}
+	seen := seenSet{}
 	runs := make([]*AutomationRun, 0, len(due))
 	for _, fa := range due {
 		if err := ctx.Err(); err != nil {
@@ -1021,9 +1031,37 @@ func (v *Vault) RunAutomation(ctx context.Context, scope Scope, dir string) (*Au
 	return v.runAutomation(ctx, scope, dir, TriggerManual, nil)
 }
 
-// runAutomation is the sweep. seen, when given, is the set of file IDs an
-// earlier policy in the same tick has already accounted for; it is added to.
-func (v *Vault) runAutomation(ctx context.Context, scope Scope, dir string, trigger AutomationTrigger, seen map[string]bool) (*AutomationRun, error) {
+// seenSet is what one scheduler tick remembers across the policies it runs:
+// which files each task has already dealt with, so that a file under two due
+// policies is handled once by the deepest.
+//
+// Keyed by task as well as by file, because the tasks ask different questions
+// of the same file. A shards policy on /code/x and a git policy on /code, due
+// together, used to share one set keyed by file alone: whichever ran first
+// claimed the repository's bundle, and the other skipped it — the parts never
+// checked, or the upstream never asked about — on every tick they coincided.
+type seenSet map[string]bool
+
+// claim marks id as dealt with by task and reports whether it was free. A nil
+// set claims everything: a manual run has no tick to share with.
+func (s seenSet) claim(task AutomationTask, id string) bool {
+	if s == nil {
+		return true
+	}
+	if task == "" {
+		task = TaskShards
+	}
+	key := string(task) + "\x00" + id
+	if s[key] {
+		return false
+	}
+	s[key] = true
+	return true
+}
+
+// runAutomation is the sweep. seen, when given, is what earlier policies in
+// the same tick have already accounted for; it is added to.
+func (v *Vault) runAutomation(ctx context.Context, scope Scope, dir string, trigger AutomationTrigger, seen seenSet) (*AutomationRun, error) {
 	dir = CleanDir(dir)
 
 	// One sweep at a time, vault-wide. Claimed before anything is read so that
@@ -1134,16 +1172,33 @@ func (v *Vault) sweepShards(
 	online map[string]bool,
 	byID map[string]provider.Config,
 	dark map[string]bool,
-	seen map[string]bool,
+	seen seenSet,
 ) {
 	res := &ShardResult{Files: len(entries)}
 	run.Shards = res
 
-	states := v.checkEntries(ctx, entries, online, byID, seen)
+	states := v.checkEntries(ctx, entries, online, byID, seen, policy.Task)
 	res.Checked = len(states)
 
 	needy := make([]fileState, 0, len(states))
 	for _, st := range states {
+		if len(st.unknown) > 0 {
+			// Not short, not whole: unanswered. Counted as deferred rather
+			// than needy because the repair this sweep might do is a rebuild,
+			// and a rebuild on the strength of a rate limit erases parts that
+			// are still there. The account is named so that a week of these
+			// reads as the account's problem rather than the file's.
+			res.Deferred++
+			reasons := make([]string, 0, len(st.unknown))
+			for part, reason := range st.unknown {
+				reasons = append(reasons, fmt.Sprintf("part %d on %s", part, reason))
+			}
+			sort.Strings(reasons)
+			run.Warnings = append(run.Warnings, fmt.Sprintf(
+				"%s could not be checked this sweep and was left as it is — %s",
+				st.entry.Path(), strings.Join(reasons, "; ")))
+			continue
+		}
 		switch {
 		case st.reachable >= st.scheme.Total:
 			res.Whole++
@@ -1197,6 +1252,12 @@ type fileState struct {
 	// repair has to be told, since the index by itself still believes in them.
 	reachable int
 	absent    map[int]bool
+
+	// unknown names the recorded parts that could not be checked either way,
+	// with the account and error that stopped the asking. A file with any of
+	// these is not short and not whole: it is unanswered, and a sweep leaves
+	// it exactly as it is rather than rebuild it on a guess.
+	unknown map[int]string
 }
 
 // probeAccounts asks every connected account whether it is there, all at once.
@@ -1246,18 +1307,15 @@ func (v *Vault) probeAccounts(ctx context.Context, configs []provider.Config) (o
 // Everything else is a metadata request per part — per sampled chunk per part
 // for a chunked file, exactly as a single file's health check does, and for the
 // same reason it samples.
-func (v *Vault) checkEntries(ctx context.Context, entries []*Entry, online map[string]bool, byID map[string]provider.Config, seen map[string]bool) []fileState {
+func (v *Vault) checkEntries(ctx context.Context, entries []*Entry, online map[string]bool, byID map[string]provider.Config, seen seenSet, task AutomationTask) []fileState {
 	states := make([]fileState, 0, len(entries))
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	window := make(chan struct{}, automationCheckWindow)
 
 	for _, entry := range entries {
-		if seen != nil {
-			if seen[entry.ID] {
-				continue
-			}
-			seen[entry.ID] = true
+		if !seen.claim(task, entry.ID) {
+			continue
 		}
 		if ctx.Err() != nil {
 			break
@@ -1270,11 +1328,12 @@ func (v *Vault) checkEntries(ctx context.Context, entries []*Entry, online map[s
 			defer func() { <-window }()
 
 			state := fileState{entry: e, scheme: e.Scheme()}
-			present := v.reachableParts(ctx, e, online, byID)
+			present, unknown := v.reachableParts(ctx, e, online, byID)
 			state.reachable = len(present)
+			state.unknown = unknown
 			state.absent = map[int]bool{}
 			for _, s := range e.Shards {
-				if !present[s.Part] {
+				if !present[s.Part] && unknown[s.Part] == "" {
 					state.absent[s.Part] = true
 				}
 			}
@@ -1290,12 +1349,27 @@ func (v *Vault) checkEntries(ctx context.Context, entries []*Entry, online map[s
 	return states
 }
 
-// reachableParts is which distinct parts of one file are really there.
-func (v *Vault) reachableParts(ctx context.Context, e *Entry, online map[string]bool, byID map[string]provider.Config) map[int]bool {
+// reachableParts is which distinct parts of one file are really there, and
+// which could not be asked about.
+//
+// Only the account saying "not found" makes a part absent. Any other answer —
+// a rate limit, a timeout on one request, a gateway error, a backend that could
+// not be built — is no answer, and is reported in unknown with the account and
+// the error, keyed by part. The distinction is the whole safety of the repair
+// that follows: a part marked absent is rebuilt elsewhere and its original
+// erased or orphaned, which is the right thing to do to a part that is gone
+// and the wrong thing to do to one whose account was merely busy. A part on
+// an account that is not connected, or that failed the probe, is absent the
+// way it always was: there is nothing to ask, and the probe already said so.
+//
+// A part the index records on two accounts is present if either says so, and
+// unknown only if neither says so and at least one would not answer.
+func (v *Vault) reachableParts(ctx context.Context, e *Entry, online map[string]bool, byID map[string]provider.Config) (present map[int]bool, unknown map[int]string) {
 	sample := sampleChunks(e.Chunked(), e.ChunkCount)
 
 	var mu sync.Mutex
-	present := map[int]bool{}
+	present = map[int]bool{}
+	unknown = map[int]string{}
 	var wg sync.WaitGroup
 
 	for _, shard := range e.Shards {
@@ -1308,8 +1382,17 @@ func (v *Vault) reachableParts(ctx context.Context, e *Entry, online map[string]
 		go func(shard Shard, cfg provider.Config) {
 			defer wg.Done()
 
+			unanswered := func(err error) {
+				mu.Lock()
+				defer mu.Unlock()
+				if _, ok := unknown[shard.Part]; !ok {
+					unknown[shard.Part] = fmt.Sprintf("%s: %v", cfg.Name, err)
+				}
+			}
+
 			p, err := v.buildProvider(cfg)
 			if err != nil {
+				unanswered(err)
 				return
 			}
 			// Every sampled chunk or none: one chunk missing its part makes the
@@ -1320,6 +1403,9 @@ func (v *Vault) reachableParts(ctx context.Context, e *Entry, online map[string]
 					key = ChunkShardKey(e.ArchiveID, index, shard.Part)
 				}
 				if _, err := p.Stat(ctx, key); err != nil {
+					if !errors.Is(err, provider.ErrNotFound) {
+						unanswered(err)
+					}
 					return
 				}
 			}
@@ -1329,7 +1415,13 @@ func (v *Vault) reachableParts(ctx context.Context, e *Entry, online map[string]
 		}(shard, cfg)
 	}
 	wg.Wait()
-	return present
+
+	// A copy that answered settles the question for the part, whatever
+	// another copy's account said.
+	for part := range present {
+		delete(unknown, part)
+	}
+	return present, unknown
 }
 
 // repairFiles rebuilds what it can of the files the check found wanting.
@@ -1524,9 +1616,32 @@ func narrowScheme(have archive.Scheme, width int) (archive.Scheme, error) {
 // A run always lands, even one that failed: the history is the record of what
 // the folder has been through, and a fortnight of "no account answered" is
 // exactly the thing somebody needs to be able to see.
+//
+// A result that could not be written down is still a run that happened. The
+// index is put back the way the file on disk has it, so memory never claims a
+// history the file does not hold — but the attempt is remembered in memory
+// (see Vault.attempted), so that the policy is next due a cadence after this
+// run rather than on the next tick. Without that, a full disk made every
+// policy run every minute, rebuilds included, until somebody noticed.
 func (v *Vault) finishAutomation(scope Scope, dir string, run *AutomationRun) (*AutomationRun, error) {
 	run.FinishedAt = time.Now().UTC()
 
+	// What happened under the lock, told to the bookkeeping after it: the
+	// attempt record has its own leaf lock, and the rule for leaf locks is
+	// that mu is not held while they are taken.
+	written, tried := v.recordRunLocked(scope, dir, run)
+	switch {
+	case written:
+		v.forgetAttempt(scope, dir)
+	case tried:
+		v.noteAttempt(scope, dir, run.FinishedAt)
+	}
+	return run, nil
+}
+
+// recordRunLocked stamps the run onto the policy and persists it. tried says
+// there was a policy to stamp, written that the stamp reached the disk.
+func (v *Vault) recordRunLocked(scope Scope, dir string, run *AutomationRun) (written, tried bool) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.dataKey == nil {
@@ -1535,16 +1650,16 @@ func (v *Vault) finishAutomation(scope Scope, dir string, run *AutomationRun) (*
 		if run.Error == "" {
 			run.Error = "the vault was locked before the sweep finished"
 		}
-		return run, nil
+		return false, false
 	}
 	m, err := v.manifestForLocked(scope)
 	if err != nil {
-		return run, nil
+		return false, false
 	}
 	auto := m.Automations[dir]
 	if auto == nil {
 		// Removed while it was running. Nothing to record it against.
-		return run, nil
+		return false, false
 	}
 
 	previousRun, previousHistory := auto.LastRunAt, auto.History
@@ -1559,8 +1674,41 @@ func (v *Vault) finishAutomation(scope Scope, dir string, run *AutomationRun) (*
 		auto.LastRunAt, auto.History = previousRun, previousHistory
 		run.Warnings = append(run.Warnings,
 			fmt.Sprintf("the result of this sweep could not be written down: %v", err))
+		return false, true
 	}
-	return run, nil
+	return true, true
+}
+
+// automationKey names one policy in the attempt record.
+func automationKey(scope Scope, dir string) string {
+	return string(scope) + "\x00" + CleanDir(dir)
+}
+
+// noteAttempt remembers that a run of the policy finished at the given time
+// without its result reaching the disk.
+func (v *Vault) noteAttempt(scope Scope, dir string, at time.Time) {
+	v.attemptMu.Lock()
+	defer v.attemptMu.Unlock()
+	if v.attempted == nil {
+		v.attempted = map[string]time.Time{}
+	}
+	v.attempted[automationKey(scope, dir)] = at
+}
+
+// forgetAttempt drops the record once a write has succeeded: the file now
+// says what memory was standing in for.
+func (v *Vault) forgetAttempt(scope Scope, dir string) {
+	v.attemptMu.Lock()
+	delete(v.attempted, automationKey(scope, dir))
+	v.attemptMu.Unlock()
+}
+
+// lastAttempt is when the policy last ran without being able to say so, or
+// zero when every run it has had was written down.
+func (v *Vault) lastAttempt(scope Scope, dir string) time.Time {
+	v.attemptMu.Lock()
+	defer v.attemptMu.Unlock()
+	return v.attempted[automationKey(scope, dir)]
 }
 
 // formatSize writes a byte count the way the reports do, since these strings

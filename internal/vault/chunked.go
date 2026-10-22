@@ -70,6 +70,13 @@ func (v *Vault) scatterChunked(ctx context.Context, scope Scope, name string, da
 	out.archiveID = hex.EncodeToString(archiveID[:])
 	out.originalHash = sha256.Sum256(data)
 
+	// Spoken for from this moment: the parts about to be written belong to no
+	// index until the caller records the placement, and a sweep that ran in
+	// between would otherwise read them as abandoned. Released when this
+	// returns, success or rollback alike; the registry keeps the ID a while
+	// longer for the caller's commit. See inflight.go.
+	defer v.flights.hold(out.archiveID)()
+
 	seed := binary.BigEndian.Uint64(archiveID[:8])
 	plan, scheme, err := target.planFor(seed)
 	if err != nil {

@@ -306,6 +306,10 @@ func (v *Vault) scanForOrphans(ctx context.Context) (*OrphanScan, error) {
 		return nil, ErrLocked
 	}
 	owned := v.ownedArchivesLocked()
+	// Taken under the same lock as the index, so that an upload whose commit
+	// lands between the two reads is seen by at least one of them: either the
+	// index already names it, or the registry still does.
+	v.noteInFlight(owned)
 	configs := append([]provider.Config(nil), v.providers...)
 	policy := v.store.Policy
 	vaultKey := append([]byte(nil), v.vaultKey...)
@@ -639,7 +643,17 @@ func orphanGuard(owned map[string]*ownedArchive, accounts []OrphanAccount) []str
 	// happens to hold today; a backup it cannot open is proof somebody else
 	// has. So an emptied vault may tidy up after itself, and a fresh one on
 	// borrowed accounts may not.
-	if len(owned) == 0 {
+	//
+	// An archive that is only in flight does not count as the vault holding
+	// something: it is not in any index yet, and a fresh vault's first upload
+	// must not be what lets a sweep run on borrowed accounts.
+	indexed := 0
+	for _, row := range owned {
+		if !row.inFlight {
+			indexed++
+		}
+	}
+	if indexed == 0 {
 		holding, ours, foreign := false, false, false
 		for _, a := range accounts {
 			holding = holding || a.Orphans > 0
@@ -696,6 +710,13 @@ type ownedArchive struct {
 	// repaired, and a locked sub vault's inventory, which names archives
 	// without there being a readable index to write a record into.
 	reattachable bool
+
+	// inFlight marks a row that came from the registry in inflight.go rather
+	// than from any index: an archive a scatter is writing, or has just
+	// written, whose entry has not been recorded yet. Owned, so its parts are
+	// never offered; not a file, so it does not count as the vault holding
+	// anything.
+	inFlight bool
 }
 
 // ownedArchivesLocked collects every archive this vault still points at, across

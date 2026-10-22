@@ -396,7 +396,65 @@ func TestUpstreamGoneKeepsTheStoredCopy(t *testing.T) {
 	}
 }
 
-func TestPruneDeletesOnlyWhenAskedTo(t *testing.T) {
+// A prune needs the remote to say "not found" on gitGoneThreshold separate
+// sweeps. One is what an expired token looks like too.
+func TestPruneDeletesOnlyWhenAskedToAndOnlyAfterRepeatedNotFound(t *testing.T) {
+	v, _ := newTestVault(t, 3)
+	remote := newRemoteRepo(t)
+
+	repo, _, err := v.TrackRepo(context.Background(), MainScope, "/", remote.URL, UploadOptions{})
+	if err != nil {
+		t.Fatalf("TrackRepo: %v", err)
+	}
+	// The project is deleted upstream: the server is still there and answers
+	// 404, which git reports as "repository not found".
+	gone := strings.Replace(remote.URL, "/project.git", "/deleted.git", 1)
+	if err := v.setGitSource(MainScope, repo.ID, &GitSource{
+		URL: gone, Digest: repo.Digest, FetchedAt: repo.FetchedAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	policy := dailyAt("04:00", ActionPull)
+	policy.Task = TaskGit
+	policy.Git = &GitPolicy{Prune: true}
+	if _, err := v.SetAutomation(MainScope, "/", policy); err != nil {
+		t.Fatalf("SetAutomation: %v", err)
+	}
+
+	for sweep := 1; sweep < gitGoneThreshold; sweep++ {
+		run, err := v.RunAutomation(context.Background(), MainScope, "/")
+		if err != nil {
+			t.Fatalf("RunAutomation %d: %v", sweep, err)
+		}
+		if run.Git.Gone != 1 || run.Git.Pruned != 0 {
+			t.Fatalf("sweep %d: git result = %+v, want the repository counted gone and kept", sweep, run.Git)
+		}
+		after, err := v.TrackedRepo(MainScope, repo.ID)
+		if err != nil {
+			t.Fatalf("sweep %d deleted the repository: %v", sweep, err)
+		}
+		if after.GoneRuns != sweep || !after.Gone {
+			t.Fatalf("sweep %d: record = %+v, want %d gone run(s)", sweep, after.GitSource, sweep)
+		}
+	}
+
+	run, err := v.RunAutomation(context.Background(), MainScope, "/")
+	if err != nil {
+		t.Fatalf("RunAutomation: %v", err)
+	}
+	if run.Git.Pruned != 1 {
+		t.Fatalf("git result = %+v, want the gone repository pruned on sweep %d", run.Git, gitGoneThreshold)
+	}
+	if _, err := v.TrackedRepo(MainScope, repo.ID); err == nil {
+		t.Error("the pruned repository is still in the index")
+	}
+}
+
+// The failure that is not a verdict: the server is not answering at all. A
+// policy that prunes must never act on it, however many sweeps in a row it
+// happens — and the count that would lead to a prune must not move either.
+func TestPruneNeverActsOnARemoteThatDidNotAnswer(t *testing.T) {
 	v, _ := newTestVault(t, 3)
 	remote := newRemoteRepo(t)
 
@@ -417,15 +475,65 @@ func TestPruneDeletesOnlyWhenAskedTo(t *testing.T) {
 		t.Fatalf("SetAutomation: %v", err)
 	}
 
-	run, err := v.RunAutomation(context.Background(), MainScope, "/")
+	for sweep := 1; sweep <= gitGoneThreshold+1; sweep++ {
+		run, err := v.RunAutomation(context.Background(), MainScope, "/")
+		if err != nil {
+			t.Fatalf("RunAutomation %d: %v", sweep, err)
+		}
+		if run.Git.Gone != 1 || run.Git.Pruned != 0 {
+			t.Fatalf("sweep %d: git result = %+v, want the silence noted and nothing pruned", sweep, run.Git)
+		}
+	}
+	after, err := v.TrackedRepo(MainScope, repo.ID)
 	if err != nil {
+		t.Fatalf("a remote that did not answer got the repository deleted: %v", err)
+	}
+	if after.GoneRuns != 0 {
+		t.Errorf("GoneRuns = %d after connection-refused sweeps, want 0 — silence is not evidence", after.GoneRuns)
+	}
+	if !after.Gone || after.Reason == "" {
+		t.Errorf("the record does not say the upstream did not answer: %+v", after.GitSource)
+	}
+
+	// The server comes back and the count — had there been one — is reset.
+	if err := v.setGitSource(MainScope, repo.ID, &GitSource{
+		URL: remote.URL, Digest: repo.Digest, FetchedAt: repo.FetchedAt, Gone: true, GoneRuns: gitGoneThreshold - 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.RunAutomation(context.Background(), MainScope, "/"); err != nil {
 		t.Fatalf("RunAutomation: %v", err)
 	}
-	if run.Git.Pruned != 1 {
-		t.Fatalf("git result = %+v, want the gone repository pruned", run.Git)
+	after, err = v.TrackedRepo(MainScope, repo.ID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := v.TrackedRepo(MainScope, repo.ID); err == nil {
-		t.Error("the pruned repository is still in the index")
+	if after.Gone || after.GoneRuns != 0 {
+		t.Errorf("a remote that answered did not clear the record: %+v", after.GitSource)
+	}
+}
+
+// A sweep whose own context has given out has no verdict, whatever the count
+// says.
+func TestPruneRefusesACancelledSweep(t *testing.T) {
+	v, _ := newTestVault(t, 3)
+	remote := newRemoteRepo(t)
+
+	repo, _, err := v.TrackRepo(context.Background(), MainScope, "/", remote.URL, UploadOptions{})
+	if err != nil {
+		t.Fatalf("TrackRepo: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	res := &GitResult{}
+	run := &AutomationRun{}
+	v.pruneGone(ctx, MainScope, GitPolicy{Prune: true}, *repo, res, run)
+	if res.Pruned != 0 || res.Failed != 0 {
+		t.Fatalf("result = %+v, want nothing done", res)
+	}
+	if _, err := v.TrackedRepo(MainScope, repo.ID); err != nil {
+		t.Fatalf("a cancelled sweep deleted the repository: %v", err)
 	}
 }
 
