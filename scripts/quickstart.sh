@@ -394,6 +394,10 @@ PROTON_SDK_REF="${PROTON_SDK_REF:-main}"
 PROTON_CLI_URL="${PROTON_CLI_URL:-}"
 
 SRC_DIR="$PREFIX/src"
+# Written into the prefix by every install, and what --uninstall looks for
+# before it deletes anything there: see the uninstall section for why a name
+# alone is not enough.
+PREFIX_MARK="$PREFIX/.sand-prefix"
 # The service user is created with --no-create-home, so the home directory in
 # its passwd entry does not exist and it has no way to create one. npm needs a
 # writable HOME for its cache and logs — without it the install dies with
@@ -431,6 +435,14 @@ GO_MIN_MINOR=25
 GO_INSTALL_VERSION="1.25.0"
 NODE_MIN_MAJOR=18
 
+# The marker --uninstall looks for before it removes anything from $PREFIX
+# (see the uninstall section). Written first, so that an install which fails
+# part-way through can still be taken off again.
+if [ "$UNINSTALL" = 0 ]; then
+  install -d -m 755 "$PREFIX"
+  [ -f "$PREFIX_MARK" ] || printf 'Written by scripts/quickstart.sh: %s is a SAND Vault install prefix, and --uninstall removes what the script put here.\n' "$PREFIX" > "$PREFIX_MARK"
+fi
+
 # ---------------------------------------------------------------------------
 # Uninstall
 # ---------------------------------------------------------------------------
@@ -455,6 +467,16 @@ NODE_MIN_MAJOR=18
 #     user's working copy, not a tree this script cloned.
 #   * Node, Go (/usr/local/go, /etc/profile.d/go.sh), git, curl, unzip. They
 #     were installed only if missing, and something else may use them now.
+#   * Anything under $PREFIX this script did not create. The prefix is only
+#     ever removed piece by piece, by name, and src and bin — names other
+#     things use — only when what is there is recognisably ours.
+#
+# And none of it happens unless $PREFIX is a prefix this script installed
+# into: either it holds the marker every install writes ($PREFIX/.sand-prefix),
+# or the installed unit runs a binary from under it. The names removed below
+# are ordinary ones — src, bin — and SAND_PREFIX=/home/alice or
+# SAND_PREFIX=/usr/local, typed by mistake or from a stale shell history,
+# would otherwise have taken ~/src and ~/bin, or /usr/local/bin, with them.
 if [ "$UNINSTALL" = 1 ]; then
   log "Uninstalling SAND Vault"
   # An empty or root prefix would turn the removals below into /bin and /src.
@@ -465,6 +487,25 @@ if [ "$UNINSTALL" = 1 ]; then
   # The binary the unit ran, read before the unit goes: when it is not under
   # $PREFIX it was built inside somebody's checkout, which is theirs to keep.
   prior_bin="${PRIOR_EXEC%% *}"
+
+  # Is $PREFIX ours? Decided before anything is touched, so a refusal leaves
+  # the service exactly as it was. A prefix that is not there at all is fine —
+  # that is the second run, or a box that never had SAND.
+  installed_here() {
+    [ -f "$PREFIX_MARK" ] && return 0
+    case "$prior_bin" in
+      "$PREFIX"/*) return 0 ;;
+    esac
+    return 1
+  }
+  if [ -d "$PREFIX" ] && ! installed_here; then
+    printf '%serr %s nothing says %s was installed by this script:\n' "$C_RED" "$C_OFF" "$PREFIX" >&2
+    printf '     no %s, and no %s running a binary from under it.\n' "$PREFIX_MARK" "$UNIT_PATH" >&2
+    printf '     Refusing to delete anything there. If it IS an old install whose unit is\n' >&2
+    printf '     already gone, remove it by hand:\n' >&2
+    printf '       sudo rm -rf %s/src %s/bin %s/bun %s/proton-sdk %s\n' "$PREFIX" "$PREFIX" "$PREFIX" "$PREFIX" "$BUILD_HOME" >&2
+    exit 1
+  fi
 
   if command -v systemctl >/dev/null 2>&1; then
     systemctl disable --now "${SERVICE_NAME}.service" >/dev/null 2>&1 || true
@@ -489,11 +530,22 @@ if [ "$UNINSTALL" = 1 ]; then
 
   # Named piece by piece rather than `rm -rf $PREFIX`: a data directory placed
   # under the prefix by SAND_DATA_DIR would otherwise go with it, and that is
-  # the one thing this must never take.
+  # the one thing this must never take. bun, proton-sdk and the dot-files are
+  # names nothing but this script creates. src and bin are not, so src goes
+  # only when it is the clone this script manages, and bin loses the files
+  # this script put there and is removed only if that empties it.
   if [ -d "$PREFIX" ]; then
-    rm -rf "${PREFIX:?}/src" "${PREFIX:?}/bin" "${PREFIX:?}/bun" "${PREFIX:?}/proton-sdk" \
-           "$BUILD_HOME" "$BUN_LOG" "$PROTON_FETCH_LOG" "$PROTON_BUILD_LOG" \
-           "$PROTON_STAMP"
+    if [ -d "$SRC_DIR/.git" ] && grep -q 'module github.com/chinmay28/sand-vault' "$SRC_DIR/go.mod" 2>/dev/null; then
+      rm -rf "${SRC_DIR:?}"
+    elif [ -e "$SRC_DIR" ]; then
+      warn "kept $SRC_DIR — it is not the clone this script manages."
+    fi
+    if [ -d "$PREFIX/bin" ]; then
+      rm -f "$PREFIX/bin/sand" "$PREFIX/bin/sand.prev" "$PREFIX/bin/sand.new" "$PROTON_BIN"
+      rmdir "$PREFIX/bin" 2>/dev/null || warn "kept $PREFIX/bin — it still holds files this script did not put there."
+    fi
+    rm -rf "${BUN_DIR:?}" "${PROTON_SDK_DIR:?}" "${BUILD_HOME:?}"
+    rm -f "$BUN_LOG" "$PROTON_FETCH_LOG" "$PROTON_BUILD_LOG" "$PROTON_STAMP" "$PREFIX_MARK" "$QUICKSTART_LOG"
     if rmdir "$PREFIX" 2>/dev/null; then
       ok "removed $PREFIX"
     else
