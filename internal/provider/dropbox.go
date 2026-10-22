@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 )
@@ -46,11 +47,18 @@ func init() {
 	}, newDropboxProvider)
 }
 
-const (
-	dropboxRPC      = "https://api.dropboxapi.com/2"
-	dropboxContent  = "https://content.dropboxapi.com/2"
-	dropboxTokenURL = "https://api.dropbox.com/oauth2/token"
+// Dropbox's two hosts — JSON calls on one, bytes on the other. Variables rather
+// than constants so the tests can point the backend at a stub.
+var (
+	dropboxRPC     = "https://api.dropboxapi.com/2"
+	dropboxContent = "https://content.dropboxapi.com/2"
 )
+
+const dropboxTokenURL = "https://api.dropbox.com/oauth2/token"
+
+// dropboxErrorMaxBody bounds how much of an error answer is read to find out
+// what it says. Dropbox's error bodies are a few hundred bytes of JSON.
+const dropboxErrorMaxBody = 8 << 10
 
 // dropboxProvider stores each shard as a file under a folder in the account.
 type dropboxProvider struct {
@@ -90,6 +98,89 @@ func (p *dropboxProvider) remotePath(key string) string {
 	return "/" + strings.Join(parts, "/")
 }
 
+// Telling "not there" from "not now".
+//
+// Dropbox answers every endpoint-specific failure with a 409, and the status
+// alone says nothing about which: a path that does not exist, a path that is
+// a folder, a file somebody else has locked, a write refused for being one of
+// too many at once, a restricted-content takedown — all 409. The JSON body is
+// where the answer is: an "error" object whose ".tag" names the failure and
+// nests the next tag down, and an "error_summary" that spells the same chain
+// as "path/not_found/..". Only the chain that says the path is not there is a
+// missing object. Everything else, read as missing, would have the health
+// check rebuild parts that were never lost and Delete report success over a
+// file still on the account.
+type dropboxError struct {
+	Summary string          `json:"error_summary"`
+	Error   json.RawMessage `json:"error"`
+}
+
+// dropboxErrorTags returns the chain of tags an error body carries, outermost
+// first — "path", "not_found" — reading the nested error object and falling
+// back to the summary when the object cannot be followed.
+func dropboxErrorTags(body []byte) []string {
+	var e dropboxError
+	if err := json.Unmarshal(body, &e); err != nil {
+		return nil
+	}
+
+	var tags []string
+	node := e.Error
+	for len(node) > 0 {
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal(node, &obj); err != nil {
+			break
+		}
+		var tag string
+		if err := json.Unmarshal(obj[".tag"], &tag); err != nil || tag == "" {
+			break
+		}
+		tags = append(tags, tag)
+		node = obj[tag]
+	}
+	if len(tags) > 0 {
+		return tags
+	}
+
+	// The summary is the same chain with slashes, and a trailing one or two
+	// — "path/not_found/.." — that are not tags.
+	for _, part := range strings.Split(e.Summary, "/") {
+		if part != "" && part != ".." && part != "." {
+			tags = append(tags, part)
+		}
+	}
+	return tags
+}
+
+// dropboxNotFound reports whether a failed call's body says the path is not
+// there: path/not_found on a read, path_lookup/not_found on a delete. A path
+// that is there but is a folder is not an object either, and a download of it
+// says path/not_file.
+func dropboxNotFound(body []byte) bool {
+	tags := dropboxErrorTags(body)
+	if len(tags) < 2 {
+		return false
+	}
+	switch tags[0] {
+	case "path", "path_lookup":
+		return tags[1] == "not_found" || tags[1] == "not_file"
+	}
+	return false
+}
+
+// dropboxFailure builds the error for a call Dropbox refused, with the
+// summary — the part of the body that says why — rather than the whole body.
+func dropboxFailure(op string, resp *http.Response, body []byte) error {
+	var e dropboxError
+	if json.Unmarshal(body, &e) == nil && e.Summary != "" {
+		return fmt.Errorf("%s: %s: %s", op, resp.Status, strings.TrimSuffix(e.Summary, "/.."))
+	}
+	if msg := terseBody(string(body)); msg != "" {
+		return fmt.Errorf("%s: %s: %s", op, resp.Status, msg)
+	}
+	return fmt.Errorf("%s: %s", op, resp.Status)
+}
+
 // rpc calls a JSON-in/JSON-out endpoint on api.dropboxapi.com.
 func (p *dropboxProvider) rpc(ctx context.Context, path string, payload any) ([]byte, int, error) {
 	var body []byte
@@ -120,13 +211,15 @@ func (p *dropboxProvider) rpc(ctx context.Context, path string, payload any) ([]
 
 	data, readErr := readAllBody(resp)
 	if !isSuccess(resp.StatusCode) {
-		return data, resp.StatusCode, fmt.Errorf("dropbox %s: %s: %s",
-			path, resp.Status, strings.TrimSpace(string(data)))
+		return data, resp.StatusCode, dropboxFailure("dropbox "+path, resp, data)
 	}
 	return data, resp.StatusCode, readErr
 }
 
 func (p *dropboxProvider) Put(ctx context.Context, key string, data []byte) error {
+	if err := ValidateKey(key); err != nil {
+		return err
+	}
 	arg, err := json.Marshal(map[string]any{
 		"path":       p.remotePath(key),
 		"mode":       "overwrite",
@@ -161,6 +254,9 @@ func (p *dropboxProvider) Put(ctx context.Context, key string, data []byte) erro
 }
 
 func (p *dropboxProvider) Get(ctx context.Context, key string) ([]byte, error) {
+	if err := ValidateKey(key); err != nil {
+		return nil, err
+	}
 	arg, err := json.Marshal(map[string]any{"path": p.remotePath(key)})
 	if err != nil {
 		return nil, err
@@ -182,9 +278,14 @@ func (p *dropboxProvider) Get(ctx context.Context, key string) ([]byte, error) {
 	}
 	defer drainAndClose(resp)
 
-	if resp.StatusCode == http.StatusConflict || resp.StatusCode == http.StatusNotFound {
-		// Dropbox reports a missing path as 409 with a path/not_found tag.
-		return nil, ErrNotFound
+	if resp.StatusCode == http.StatusConflict {
+		// A missing path is a 409, but so is every other refusal; the body
+		// says which. See dropboxNotFound.
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, dropboxErrorMaxBody))
+		if dropboxNotFound(body) {
+			return nil, ErrNotFound
+		}
+		return nil, dropboxFailure("dropbox download", resp, body)
 	}
 	if !isSuccess(resp.StatusCode) {
 		return nil, httpError("dropbox download", resp)
@@ -193,8 +294,11 @@ func (p *dropboxProvider) Get(ctx context.Context, key string) ([]byte, error) {
 }
 
 func (p *dropboxProvider) Stat(ctx context.Context, key string) (ObjectInfo, error) {
+	if err := ValidateKey(key); err != nil {
+		return ObjectInfo{}, err
+	}
 	body, status, err := p.rpc(ctx, "/files/get_metadata", map[string]any{"path": p.remotePath(key)})
-	if status == http.StatusConflict || status == http.StatusNotFound {
+	if status == http.StatusConflict && dropboxNotFound(body) {
 		return ObjectInfo{}, ErrNotFound
 	}
 	if err != nil {
@@ -215,8 +319,17 @@ func (p *dropboxProvider) Stat(ctx context.Context, key string) (ObjectInfo, err
 }
 
 func (p *dropboxProvider) Delete(ctx context.Context, key string) error {
-	_, status, err := p.rpc(ctx, "/files/delete_v2", map[string]any{"path": p.remotePath(key)})
-	if status == http.StatusConflict || status == http.StatusNotFound {
+	// Without this, the empty key is the prefix folder, and delete_v2 of it
+	// takes every part with it.
+	if err := ValidateKey(key); err != nil {
+		return err
+	}
+	body, status, err := p.rpc(ctx, "/files/delete_v2", map[string]any{"path": p.remotePath(key)})
+	if status == http.StatusConflict && dropboxNotFound(body) {
+		// Already gone, which is what a delete is for. Any other 409 — too
+		// many writes at once, a locked file, a restricted path — leaves the
+		// file where it was, and saying nothing would have the orphan scan
+		// count it as removed.
 		return nil
 	}
 	return err
@@ -236,8 +349,11 @@ func (p *dropboxProvider) List(ctx context.Context, prefix string) ([]ObjectInfo
 	for {
 		body, status, err := p.rpc(ctx, endpoint, payload)
 		if err != nil {
-			if status == http.StatusConflict {
-				// Folder does not exist yet — nothing stored.
+			if status == http.StatusConflict && dropboxNotFound(body) {
+				// Folder does not exist yet — nothing stored. Any other
+				// refusal is a failure to list, not an empty account: the
+				// orphan scan and the recovery both act on what a listing
+				// says, so it is complete or it is an error.
 				return nil, nil
 			}
 			return nil, err
@@ -247,6 +363,7 @@ func (p *dropboxProvider) List(ctx context.Context, prefix string) ([]ObjectInfo
 			Entries []struct {
 				Tag         string `json:".tag"`
 				PathDisplay string `json:"path_display"`
+				PathLower   string `json:"path_lower"`
 				Size        int64  `json:"size"`
 			} `json:"entries"`
 			Cursor  string `json:"cursor"`
@@ -256,12 +373,25 @@ func (p *dropboxProvider) List(ctx context.Context, prefix string) ([]ObjectInfo
 			return nil, fmt.Errorf("dropbox list: parsing response: %w", err)
 		}
 
-		base := root + "/"
+		// Dropbox paths are case-insensitive and the account keeps whatever
+		// casing the folder was first made with, so a prefix of "sand" lists
+		// back as "/Sand/…" on an account where somebody created the folder
+		// by hand. The base is matched without regard to case; the key keeps
+		// the display casing, which is the casing it was written with, so a
+		// key is listed as it was put.
+		base := strings.ToLower(root) + "/"
 		for _, e := range page.Entries {
 			if e.Tag != "file" {
 				continue
 			}
-			key := strings.TrimPrefix(e.PathDisplay, base)
+			full := e.PathDisplay
+			if full == "" {
+				full = e.PathLower
+			}
+			if len(full) < len(base) || !strings.EqualFold(full[:len(base)], base) {
+				return nil, fmt.Errorf("dropbox list: %s is not under %s", full, root+"/")
+			}
+			key := full[len(base):]
 			if !strings.HasPrefix(key, prefix) {
 				continue
 			}

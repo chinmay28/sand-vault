@@ -352,8 +352,10 @@ func (p *sftpProvider) List(ctx context.Context, prefix string) ([]ObjectInfo, e
 			continue
 		}
 		// A half-written shard from an interrupted Put is not an object, and
-		// listing it would have the recovery scan try to read it.
-		if sandsftp.IsTempName(path.Base(rel)) {
+		// listing it would have the recovery scan try to read it. Nor is a
+		// previous copy an interrupted overwrite set aside and did not get
+		// to remove: the key it belonged to is listed under its own name.
+		if sandsftp.IsScratchName(path.Base(rel)) {
 			continue
 		}
 		out = append(out, ObjectInfo{Key: rel, Size: info.Size()})

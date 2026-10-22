@@ -30,11 +30,17 @@ func drainAndClose(resp *http.Response) {
 // a request was rejected.
 func httpError(op string, resp *http.Response) error {
 	snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+	return httpErrorWith(op, resp.Status, snippet)
+}
+
+// httpErrorWith is httpError for a caller that has already read the start of
+// the body, because it needs to look at it as well as report it.
+func httpErrorWith(op, status string, snippet []byte) error {
 	msg := terseBody(string(snippet))
-	if msg == "" || msg == resp.Status {
-		return fmt.Errorf("%s: %s", op, resp.Status)
+	if msg == "" || msg == status {
+		return fmt.Errorf("%s: %s", op, status)
 	}
-	return fmt.Errorf("%s: %s: %s", op, resp.Status, msg)
+	return fmt.Errorf("%s: %s: %s", op, status, msg)
 }
 
 var (

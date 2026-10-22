@@ -87,8 +87,11 @@ const gdriveFolderMIME = "application/vnd.google-apps.folder"
 // providers on the same account with different folders never see each other's
 // objects, even under the same keys. That is what lets one Drive account hold
 // more than one role, and it only holds because the scoping is on every path:
-// an unscoped lookup would find the other folder's object and Put, which
-// deletes before it writes, would replace it.
+// an unscoped lookup would find the other folder's object, and Put, which
+// erases the copies it is replacing, would erase it. The root is a folder like
+// any other for this purpose: a provider with no folder is scoped to the
+// children of the root, not to everything the app can see, or it would list
+// and delete the objects of every other provider on the account.
 //
 // The folder is one SAND makes. The account is connected with the drive.file
 // scope, which sees only what the app created, so a folder made in Drive's
@@ -213,10 +216,15 @@ func (p *gdriveProvider) createFolder(ctx context.Context) (string, error) {
 	return created.ID, nil
 }
 
-// scoped narrows a query to the folder, or leaves it alone at the root.
+// scoped narrows a query to the folder. An empty folder is the root of My
+// Drive, which Drive's query language names 'root' — and it is a boundary
+// like any other folder: a file created without a parent is a child of the
+// root, so an account that has been storing at the root since before this
+// was scoped still sees everything it wrote, and nothing another folder
+// holds.
 func scoped(q, folder string) string {
 	if folder == "" {
-		return q
+		folder = "root"
 	}
 	return fmt.Sprintf("%s and '%s' in parents", q, escapeDriveQuery(folder))
 }
@@ -230,9 +238,21 @@ func (p *gdriveProvider) do(ctx context.Context, req *http.Request) (*http.Respo
 
 // gdriveFile is the subset of Drive's file resource SAND reads.
 type gdriveFile struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Size string `json:"size"`
+	ID            string            `json:"id"`
+	Name          string            `json:"name"`
+	Size          string            `json:"size"`
+	AppProperties map[string]string `json:"appProperties"`
+}
+
+// key is the object key the file was stored under: the sandKey property,
+// which is what every lookup goes by, and the name only for a file that has
+// none — which is not one this backend wrote, but is what the fallback
+// listing in List can answer with.
+func (f gdriveFile) key() string {
+	if key := f.AppProperties["sandKey"]; key != "" {
+		return key
+	}
+	return f.Name
 }
 
 // fileIDFor resolves an object key to a Drive file ID.
@@ -315,22 +335,29 @@ func (p *gdriveProvider) query(ctx context.Context, q string) ([]gdriveFile, err
 	}
 }
 
+// Put stores data under key: it uploads a new file, and only then erases the
+// other files carrying the key.
+//
+// In that order, because Drive has no overwrite and the alternative — delete
+// the old copy, then upload — destroys the part when the upload fails. A
+// part being rewritten is a part the vault already has somewhere, but the
+// window between the delete and a failed upload is one where this account
+// holds nothing under the key, and a health check in that window rebuilds
+// and relocates. Uploading first means the worst a failure leaves is two
+// copies, and the next Put — or the next cleanup here — reduces them to one.
 func (p *gdriveProvider) Put(ctx context.Context, key string, data []byte) error {
-	// Overwrite semantics: drop any existing object under this key first.
-	if err := p.Delete(ctx, key); err != nil {
-		return err
-	}
-
 	folder, err := p.resolveFolder(ctx)
 	if err != nil {
 		return err
 	}
+	parent := folder
+	if parent == "" {
+		parent = "root"
+	}
 	metadata := map[string]any{
 		"name":          driveSafeName(key),
 		"appProperties": map[string]string{"sandKey": key},
-	}
-	if folder != "" {
-		metadata["parents"] = []string{folder}
+		"parents":       []string{parent},
 	}
 	metaJSON, err := json.Marshal(metadata)
 	if err != nil {
@@ -386,10 +413,60 @@ func (p *gdriveProvider) Put(ctx context.Context, key string, data []byte) error
 		return err
 	}
 	var created gdriveFile
-	if err := json.Unmarshal(raw, &created); err == nil && created.ID != "" {
-		p.mu.Lock()
-		p.idCache[key] = created.ID
-		p.mu.Unlock()
+	if err := json.Unmarshal(raw, &created); err != nil || created.ID == "" {
+		// Without the ID there is no telling the new copy from the ones it
+		// replaces, so nothing is erased. The next Put sorts it out.
+		return fmt.Errorf("drive upload: %s was stored but its ID was not reported", key)
+	}
+	p.mu.Lock()
+	p.idCache[key] = created.ID
+	p.mu.Unlock()
+
+	if err := p.deleteOthers(ctx, key, created.ID, folder); err != nil {
+		return fmt.Errorf("drive upload: replacing the old copy of %s: %w", key, err)
+	}
+	return nil
+}
+
+// deleteOthers erases every file in the folder carrying key, other than the
+// one to keep: the copy a Put replaced, and any duplicate an earlier failure
+// left behind.
+func (p *gdriveProvider) deleteOthers(ctx context.Context, key, keep, folder string) error {
+	files, err := p.query(ctx, scoped(fmt.Sprintf(
+		"appProperties has {key='sandKey' and value='%s'} and trashed=false",
+		escapeDriveQuery(key)), folder))
+	if err != nil {
+		return err
+	}
+	for _, f := range files {
+		if f.ID == keep {
+			continue
+		}
+		if err := p.deleteFile(ctx, f.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// deleteFile erases one file by ID. A file that is already gone is not an
+// error — it is what a delete is for.
+func (p *gdriveProvider) deleteFile(ctx context.Context, id string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete,
+		gdriveAPI+"/files/"+url.PathEscape(id), nil)
+	if err != nil {
+		return err
+	}
+	resp, err := p.do(ctx, req)
+	if err != nil {
+		return fmt.Errorf("drive delete: %w", err)
+	}
+	defer drainAndClose(resp)
+	if resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	if !isSuccess(resp.StatusCode) {
+		return httpError("drive delete", resp)
 	}
 	return nil
 }
@@ -465,25 +542,8 @@ func (p *gdriveProvider) Delete(ctx context.Context, key string) error {
 	if err != nil {
 		return err
 	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete,
-		gdriveAPI+"/files/"+url.PathEscape(id), nil)
-	if err != nil {
-		return err
-	}
-	resp, err := p.do(ctx, req)
-	if err != nil {
-		return fmt.Errorf("drive delete: %w", err)
-	}
-	defer drainAndClose(resp)
 	p.forget(key)
-	if resp.StatusCode == http.StatusNotFound {
-		return nil
-	}
-	if !isSuccess(resp.StatusCode) {
-		return httpError("drive delete", resp)
-	}
-	return nil
+	return p.deleteFile(ctx, id)
 }
 
 func (p *gdriveProvider) List(ctx context.Context, prefix string) ([]ObjectInfo, error) {
@@ -503,7 +563,11 @@ func (p *gdriveProvider) List(ctx context.Context, prefix string) ([]ObjectInfo,
 
 	var out []ObjectInfo
 	for _, f := range files {
-		key := f.Name
+		// The key is the sandKey property, which is what Get and Delete
+		// look a file up by; the name is the key flattened into something
+		// Drive will show, and reading it back would list a key nothing
+		// else can find.
+		key := f.key()
 		if !strings.HasPrefix(key, prefix) {
 			continue
 		}

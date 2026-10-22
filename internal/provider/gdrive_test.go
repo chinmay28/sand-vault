@@ -29,6 +29,10 @@ type driveStub struct {
 	// What the backend asked, for the assertions that are about the asking.
 	queries        []string
 	foldersCreated int
+
+	// failUploads makes every upload answer with a 500 after reading the
+	// body, the way Drive does when it is having a bad moment.
+	failUploads bool
 }
 
 type driveStubFile struct {
@@ -99,7 +103,9 @@ func (f *driveStubFile) matches(q string) bool {
 		return false
 	}
 	if m := reParent.FindStringSubmatch(q); m != nil {
-		has := false
+		// As Drive has it: a file created with no parent is a child of the
+		// root, and 'root' names it in a query.
+		has := m[1] == "root" && len(f.Parents) == 0
 		for _, p := range f.Parents {
 			if p == m[1] {
 				has = true
@@ -189,6 +195,11 @@ func (d *driveStub) upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data, _ := io.ReadAll(dataPart)
+	if d.failUploads {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error":{"code":500,"message":"Internal Error"}}`))
+		return
+	}
 	id := d.add(&driveStubFile{Name: meta.Name, Parents: meta.Parents, Props: meta.AppProperties, Data: data})
 	json.NewEncoder(w).Encode(map[string]string{"id": id})
 }
@@ -302,8 +313,8 @@ func TestGDriveTwoFoldersOnOneAccountKeepTheirObjectsApart(t *testing.T) {
 	if err := parts.Put(ctx, "x.1", []byte("part")); err != nil {
 		t.Fatal(err)
 	}
-	// The same key in the other folder. Put deletes before it writes, so an
-	// unscoped lookup here would have erased the part.
+	// The same key in the other folder. Put erases the copies it replaces,
+	// so an unscoped lookup here would have erased the part.
 	if err := replicas.Put(ctx, "x.1", []byte("replica")); err != nil {
 		t.Fatal(err)
 	}
@@ -340,10 +351,24 @@ func TestGDriveTwoFoldersOnOneAccountKeepTheirObjectsApart(t *testing.T) {
 	}
 }
 
-func TestGDriveRootStaysUnscoped(t *testing.T) {
+// A provider with no folder is scoped to the root, not to everything the app
+// can see: another provider's folder on the same account holds objects under
+// the same keys, and an unscoped root would list them, read them, and erase
+// them on a Put. Objects written at the root before this was scoped are
+// children of the root all the same, so they stay visible.
+func TestGDriveRootIsScopedToRoot(t *testing.T) {
 	stub := newDriveStub(t)
 	stub.install(t)
 	ctx := context.Background()
+
+	// What another provider on the account holds, under a key this one
+	// will use too — and an object written at the root before Put named
+	// its parent, which Drive reports with no parent at all.
+	stub.mu.Lock()
+	stub.add(&driveStubFile{Name: "r.1", Parents: []string{"other-folder"},
+		Props: map[string]string{"sandKey": "r.1"}, Data: []byte("theirs")})
+	stub.add(&driveStubFile{Name: "r.0", Props: map[string]string{"sandKey": "r.0"}, Data: []byte("old root")})
+	stub.mu.Unlock()
 
 	p := driveProvider(t, nil)
 	if err := p.Put(ctx, "r.1", []byte("root")); err != nil {
@@ -352,17 +377,138 @@ func TestGDriveRootStaysUnscoped(t *testing.T) {
 	if stub.foldersCreated != 0 {
 		t.Errorf("a provider with no folder created %d folders", stub.foldersCreated)
 	}
-	if stored := stub.byKey("r.1"); len(stored) != 1 || len(stored[0].Parents) != 0 {
-		t.Errorf("r.1 stored as %+v, want one file with no parent", stored)
-	}
 	for _, q := range stub.queries {
-		if strings.Contains(q, "in parents") {
-			t.Errorf("a root provider scoped a query to a folder: %q", q)
+		if !strings.Contains(q, "'root' in parents") {
+			t.Errorf("a root provider ran a query not scoped to the root: %q", q)
 		}
 	}
+	if stored := stub.byKey("r.1"); len(stored) != 2 {
+		t.Errorf("files under key r.1 = %d, want 2 — the other folder's copy was erased", len(stored))
+	}
+
 	listed, err := p.List(ctx, "")
-	if err != nil || len(listed) != 1 || listed[0].Key != "r.1" {
-		t.Errorf("List = %+v, %v", listed, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := map[string]string{}
+	for _, o := range listed {
+		keys[o.Key] = fmt.Sprint(o.Size)
+	}
+	if len(keys) != 2 || keys["r.1"] != "4" || keys["r.0"] != "8" {
+		t.Errorf("List = %+v, want r.1 and the old root object, and nothing from the other folder", listed)
+	}
+	got, err := p.Get(ctx, "r.0")
+	if err != nil || string(got) != "old root" {
+		t.Errorf("Get of an object written at the root before scoping = %q, %v", got, err)
+	}
+
+	if err := p.Delete(ctx, "r.1"); err != nil {
+		t.Fatal(err)
+	}
+	if stored := stub.byKey("r.1"); len(stored) != 1 || string(stored[0].Data) != "theirs" {
+		t.Errorf("after Delete, files under key r.1 = %+v, want only the other folder's copy", stored)
+	}
+}
+
+// Put uploads first and erases the old copy after. The other order — delete,
+// then upload — destroys the part when the upload fails, and the vault's
+// health check then rebuilds and relocates a part this account never lost.
+func TestGDriveFailedUploadLeavesTheOldCopy(t *testing.T) {
+	stub := newDriveStub(t)
+	stub.install(t)
+	ctx := context.Background()
+
+	p := driveProvider(t, map[string]string{"folder": "SAND"})
+	if err := p.Put(ctx, "a.1", []byte("one")); err != nil {
+		t.Fatal(err)
+	}
+
+	stub.mu.Lock()
+	stub.failUploads = true
+	stub.mu.Unlock()
+	if err := p.Put(ctx, "a.1", []byte("two")); err == nil {
+		t.Fatal("a Put whose upload failed reported success")
+	}
+	stub.mu.Lock()
+	stub.failUploads = false
+	stub.mu.Unlock()
+
+	if stored := stub.byKey("a.1"); len(stored) != 1 || string(stored[0].Data) != "one" {
+		t.Errorf("after a failed upload, files under a.1 = %+v, want the old copy untouched", stored)
+	}
+	got, err := p.Get(ctx, "a.1")
+	if err != nil || string(got) != "one" {
+		t.Errorf("Get after a failed overwrite = %q, %v, want the old copy", got, err)
+	}
+
+	// And a Put that does land replaces it: one file, the new bytes.
+	if err := p.Put(ctx, "a.1", []byte("three")); err != nil {
+		t.Fatal(err)
+	}
+	if stored := stub.byKey("a.1"); len(stored) != 1 || string(stored[0].Data) != "three" {
+		t.Errorf("after an overwrite, files under a.1 = %+v, want one file with the new bytes", stored)
+	}
+	got, err = p.Get(ctx, "a.1")
+	if err != nil || string(got) != "three" {
+		t.Errorf("Get after an overwrite = %q, %v", got, err)
+	}
+}
+
+// A duplicate an earlier failure left behind is cleared by the next Put,
+// which keeps exactly the copy it wrote.
+func TestGDrivePutClearsDuplicatesUnderTheKey(t *testing.T) {
+	stub := newDriveStub(t)
+	stub.install(t)
+	ctx := context.Background()
+
+	p := driveProvider(t, map[string]string{"folder": "SAND"})
+	if err := p.Put(ctx, "d.1", []byte("first")); err != nil {
+		t.Fatal(err)
+	}
+	folder := stub.byKey("d.1")[0].Parents[0]
+	stub.mu.Lock()
+	stub.add(&driveStubFile{Name: "d.1", Parents: []string{folder},
+		Props: map[string]string{"sandKey": "d.1"}, Data: []byte("stray")})
+	stub.mu.Unlock()
+
+	if err := p.Put(ctx, "d.1", []byte("second")); err != nil {
+		t.Fatal(err)
+	}
+	if stored := stub.byKey("d.1"); len(stored) != 1 || string(stored[0].Data) != "second" {
+		t.Errorf("files under d.1 = %+v, want only the copy the Put wrote", stored)
+	}
+}
+
+// List answers with the key a file was stored under — its sandKey property,
+// which is what Get and Delete look it up by — and not with the Drive
+// filename, which is the key flattened for display and can be renamed in
+// Drive's own UI without the property changing.
+func TestGDriveListReadsTheKeyFromAppProperties(t *testing.T) {
+	stub := newDriveStub(t)
+	stub.install(t)
+	ctx := context.Background()
+
+	p := driveProvider(t, map[string]string{"folder": "SAND"})
+	if err := p.Put(ctx, "abc-p1.sand", []byte("part")); err != nil {
+		t.Fatal(err)
+	}
+	stub.mu.Lock()
+	for _, f := range stub.files {
+		if f.Props["sandKey"] == "abc-p1.sand" {
+			f.Name = "renamed in the Drive UI.bin"
+		}
+	}
+	stub.mu.Unlock()
+
+	listed, err := p.List(ctx, "abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].Key != "abc-p1.sand" || listed[0].Size != 4 {
+		t.Errorf("List = %+v, want abc-p1.sand by its property", listed)
+	}
+	if got, err := p.Get(ctx, listed[0].Key); err != nil || string(got) != "part" {
+		t.Errorf("Get of the listed key = %q, %v", got, err)
 	}
 }
 

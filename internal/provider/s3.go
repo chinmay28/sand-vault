@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/xml"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"sort"
@@ -208,6 +209,54 @@ func (p *s3Provider) do(ctx context.Context, method string, u *url.URL, body []b
 	return httpClient.Do(req)
 }
 
+// Telling a missing key from a missing bucket.
+//
+// S3 answers both with a 404, and the backend used to read the status alone:
+// a bucket that was mistyped, deleted, or moved out of reach of the key made
+// every part look missing — which the health check acts on by rebuilding and
+// relocating — and made every Delete look like it had worked. The body says
+// which. Every 404 that carries one is an XML <Error> whose <Code> is NoSuchKey
+// for an object that is not there and NoSuchBucket for a bucket that is not,
+// and only the first is what ErrNotFound means.
+//
+// A HEAD has no body, so Stat's 404 stays ambiguous. It is left as ErrNotFound
+// because that is what it means on every bucket that exists, and Ping is what
+// says whether the bucket does: its listing fails with NoSuchBucket, and an
+// account whose ping fails is reported unhealthy rather than repaired.
+type s3Error struct {
+	Code    string `xml:"Code"`
+	Message string `xml:"Message"`
+}
+
+// s3ErrorMaxBody bounds how much of an error answer is read. S3's error
+// documents are a few hundred bytes.
+const s3ErrorMaxBody = 8 << 10
+
+// s3ReadError reads the error document out of a failed response, which it
+// consumes; the zero value when the body is not one.
+func s3ReadError(resp *http.Response) s3Error {
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, s3ErrorMaxBody))
+	var e s3Error
+	if err := xml.Unmarshal(body, &e); err != nil {
+		return s3Error{Message: terseBody(string(body))}
+	}
+	return e
+}
+
+// s3Failure builds the error for a call the service refused: the code is what
+// a person searches for, and the message is what the service wanted to say.
+func s3Failure(op string, resp *http.Response, e s3Error) error {
+	switch {
+	case e.Code != "" && e.Message != "":
+		return fmt.Errorf("%s: %s: %s: %s", op, resp.Status, e.Code, e.Message)
+	case e.Code != "":
+		return fmt.Errorf("%s: %s: %s", op, resp.Status, e.Code)
+	case e.Message != "":
+		return fmt.Errorf("%s: %s: %s", op, resp.Status, e.Message)
+	}
+	return fmt.Errorf("%s: %s", op, resp.Status)
+}
+
 func (p *s3Provider) Put(ctx context.Context, key string, data []byte) error {
 	resp, err := p.do(ctx, http.MethodPut, p.objectURL(key), data)
 	if err != nil {
@@ -227,7 +276,11 @@ func (p *s3Provider) Get(ctx context.Context, key string) ([]byte, error) {
 	}
 	defer drainAndClose(resp)
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, ErrNotFound
+		e := s3ReadError(resp)
+		if e.Code == "NoSuchKey" {
+			return nil, ErrNotFound
+		}
+		return nil, s3Failure("s3 get", resp, e)
 	}
 	if !isSuccess(resp.StatusCode) {
 		return nil, httpError("s3 get", resp)
@@ -242,6 +295,8 @@ func (p *s3Provider) Stat(ctx context.Context, key string) (ObjectInfo, error) {
 	}
 	defer drainAndClose(resp)
 	if resp.StatusCode == http.StatusNotFound {
+		// No body on a HEAD, so this is also what a missing bucket answers;
+		// see s3Error for why it is read as a missing key all the same.
 		return ObjectInfo{}, ErrNotFound
 	}
 	if !isSuccess(resp.StatusCode) {
@@ -257,7 +312,14 @@ func (p *s3Provider) Delete(ctx context.Context, key string) error {
 	}
 	defer drainAndClose(resp)
 	if resp.StatusCode == http.StatusNotFound {
-		return nil
+		// S3 itself answers a delete of a missing key with 204, so a 404 here
+		// is nearly always the bucket — and a delete that never reached the
+		// object is not a delete that found it gone.
+		e := s3ReadError(resp)
+		if e.Code == "NoSuchKey" {
+			return nil
+		}
+		return s3Failure("s3 delete", resp, e)
 	}
 	if !isSuccess(resp.StatusCode) {
 		return httpError("s3 delete", resp)
@@ -294,7 +356,7 @@ func (p *s3Provider) List(ctx context.Context, prefix string) ([]ObjectInfo, err
 			return nil, fmt.Errorf("s3 list: %w", err)
 		}
 		if !isSuccess(resp.StatusCode) {
-			err := httpError("s3 list", resp)
+			err := s3Failure("s3 list", resp, s3ReadError(resp))
 			drainAndClose(resp)
 			return nil, err
 		}
@@ -445,7 +507,11 @@ func (p *s3Provider) DeleteVersion(ctx context.Context, key, versionID string) e
 	}
 	defer drainAndClose(resp)
 	if resp.StatusCode == http.StatusNotFound {
-		return nil
+		e := s3ReadError(resp)
+		if e.Code == "NoSuchKey" || e.Code == "NoSuchVersion" {
+			return nil
+		}
+		return s3Failure("s3 delete version", resp, e)
 	}
 	if !isSuccess(resp.StatusCode) {
 		return httpError("s3 delete version", resp)
@@ -453,9 +519,11 @@ func (p *s3Provider) DeleteVersion(ctx context.Context, key, versionID string) e
 	return nil
 }
 
+// Ping proves that the bucket exists and that the credentials reach it, with
+// the cheapest listing there is. It is the one call that can tell a vanished
+// bucket from a missing object — Stat cannot, see s3Error — so an account
+// whose bucket has gone fails here, and is reported rather than repaired.
 func (p *s3Provider) Ping(ctx context.Context) error {
-	// A zero-key list is the cheapest call that proves both that the bucket
-	// exists and that the credentials are accepted.
 	u := p.bucketURL()
 	q := url.Values{}
 	q.Set("list-type", "2")
@@ -468,7 +536,11 @@ func (p *s3Provider) Ping(ctx context.Context) error {
 	}
 	defer drainAndClose(resp)
 	if !isSuccess(resp.StatusCode) {
-		return httpError("s3 bucket check", resp)
+		e := s3ReadError(resp)
+		if e.Code == "NoSuchBucket" {
+			return fmt.Errorf("s3 bucket check: bucket %q does not exist at %s", p.bucket, p.endpoint.Host)
+		}
+		return s3Failure("s3 bucket check", resp, e)
 	}
 	return nil
 }

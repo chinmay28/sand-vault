@@ -8,7 +8,10 @@ import (
 	"io"
 	"os"
 	"path"
+	"strings"
 	"time"
+
+	pkgsftp "github.com/pkg/sftp"
 )
 
 // Writing to a machine, which the rest of this package was built not to do.
@@ -41,6 +44,31 @@ func IsTempName(name string) bool {
 	return len(name) > len(tempPrefix) && name[:len(tempPrefix)] == tempPrefix
 }
 
+// asideInfix marks the previous copy of a file while a new one is renamed
+// into its place — see RenameOver. It goes on the end of the name rather
+// than the front so the copy stays beside the file it was, which is where
+// somebody looking for it after a failure would look.
+const asideInfix = ".sand-old-"
+
+// asideName is where RenameOver keeps the file it is about to replace.
+func asideName(name string) string {
+	return name + asideInfix + randomSuffix()
+}
+
+// IsAsideName reports whether a name is a previous copy RenameOver set aside
+// and did not get to remove, for listings that should not offer it as an
+// object of its own.
+func IsAsideName(name string) bool {
+	return strings.Contains(name, asideInfix)
+}
+
+// IsScratchName reports whether a name is one of SAND's own working files —
+// a file still arriving, or a previous copy set aside — rather than an
+// object. A listing of a folder SAND writes into hides both.
+func IsScratchName(name string) bool {
+	return IsTempName(name) || IsAsideName(name)
+}
+
 // randomSuffix is eight random bytes as hex. Random rather than counted because
 // two instances may share a folder, and a counter would have them collide.
 func randomSuffix() string {
@@ -60,17 +88,62 @@ func randomSuffix() string {
 // leaves the behaviour of a rename onto an existing name to the server, and
 // OpenSSH's answer is to refuse — so OpenSSH also ships posix-rename@openssh.com,
 // which is atomic and overwrites, and is what nearly every server SAND will
-// meet supports. The fallback for the ones that do not is remove-then-rename,
-// which has a window where the file does not exist.
+// meet supports. The fallback for the ones that do not is renameAside.
 func RenameOver(c *Client, from, to string) error {
 	fs := c.SFTP()
 	if err := fs.PosixRename(from, to); err == nil {
 		return nil
 	}
-	if err := fs.Remove(to); err != nil && !errors.Is(err, os.ErrNotExist) {
+	return renameAside(fs, from, to)
+}
+
+// renameAside replaces to with from on a server without posix-rename, by
+// renaming the old file aside, renaming the new one into place, and then
+// removing the old one.
+//
+// Not remove-then-rename, which is the obvious fallback and the wrong one:
+// between the remove and the rename there is a moment where nothing is under
+// the name, and the thing that interrupts a network write is a dropped
+// connection, which is common. A connection that drops there leaves the key
+// empty on a server that still holds a perfectly good copy under a temporary
+// name — a part lost to the vault, which repairs it, and an orphan nobody
+// lists. Rename-aside has no such moment: at every point the name holds
+// either the old file or the new one, and a failure after the old file has
+// been moved out of the way puts it back.
+//
+// What a dropped connection can leave behind instead is the aside copy, when
+// it drops after the new file is in place and before the old one is removed.
+// That is a file nobody is missing, hidden from listings by IsAsideName, and
+// at worst some space to reclaim by hand.
+func renameAside(fs *pkgsftp.Client, from, to string) error {
+	aside := asideName(to)
+	if err := fs.Rename(to, aside); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			// Nothing to overwrite, so the plain rename is the whole job.
+			return fs.Rename(from, to)
+		}
+		return fmt.Errorf("setting aside the previous %s: %w", path.Base(to), err)
+	}
+
+	if err := fs.Rename(from, to); err != nil {
+		// The name is empty right now. Put the old file back, so a failed
+		// write is a failed write and not a vanished part.
+		if restoreErr := fs.Rename(aside, to); restoreErr != nil {
+			return fmt.Errorf("%w (and the previous copy could not be put back from %s: %v)",
+				err, path.Base(aside), restoreErr)
+		}
 		return err
 	}
-	return fs.Rename(from, to)
+
+	if err := fs.Remove(aside); err != nil && !errors.Is(err, os.ErrNotExist) {
+		// The new file is in place and the write has succeeded; what has
+		// not happened is the tidying. Reported all the same, because an
+		// aside copy that cannot be removed is space the account will go on
+		// spending until somebody removes it by hand, and an error is how
+		// they find out there is one.
+		return fmt.Errorf("removing the previous copy %s: %w", path.Base(aside), err)
+	}
+	return nil
 }
 
 // MkdirUnder makes a directory under root, and everything above it, and
