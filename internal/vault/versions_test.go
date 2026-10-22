@@ -2,6 +2,7 @@ package vault
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -417,16 +418,159 @@ func TestStaleVersionSweepCanBeAimedAtOneAccount(t *testing.T) {
 	}
 }
 
+// stubbornVersioner is a versioned account on which one particular version
+// will not be erased, the way a bucket under a legal hold or a transient 5xx
+// leaves one behind. Everything else about it is the real backend.
+type stubbornVersioner struct {
+	provider.Provider
+	keep string
+}
+
+func (s stubbornVersioner) ListVersions(ctx context.Context, prefix string) ([]provider.ObjectVersion, error) {
+	return s.Provider.(provider.Versioner).ListVersions(ctx, prefix)
+}
+
+func (s stubbornVersioner) DeleteVersion(ctx context.Context, key, versionID string) error {
+	if versionID == s.keep {
+		return errors.New("503 slow down")
+	}
+	return s.Provider.(provider.Versioner).DeleteVersion(ctx, key, versionID)
+}
+
+// A marker is erased only once every version beneath it has gone. Removing
+// the marker over a version that is still there does not tidy anything: it
+// brings that version back as the live object.
+func TestStaleVersionSweepKeepsTheMarkerOverAVersionItCouldNotErase(t *testing.T) {
+	ctx := context.Background()
+	v, stub, configs := newVersionedVault(t, 3)
+
+	entry, _, err := v.Upload(ctx, MainScope, "/", "gone.txt", []byte("deleted, and one version stuck"), UploadOptions{})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if _, err := v.Delete(ctx, entry.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	v.AwaitBackupSync()
+
+	// One data version of one deleted part is going to refuse to go.
+	var stuck s3test.Version
+	for _, ver := range stub.Versions(configs[0].Name) {
+		if _, _, part := partOfKey(ver.Key); part && !ver.DeleteMarker {
+			stuck = ver
+			break
+		}
+	}
+	if stuck.Key == "" {
+		t.Fatalf("no deleted part's version on the bucket: %+v", stub.Versions(configs[0].Name))
+	}
+	v.liveMu.Lock()
+	real, ok := v.live[configs[0].ID]
+	if !ok {
+		v.liveMu.Unlock()
+		t.Fatalf("no live backend for %s", configs[0].Name)
+	}
+	v.live[configs[0].ID] = stubbornVersioner{Provider: real, keep: stuck.VersionID}
+	v.liveMu.Unlock()
+
+	report, err := v.SweepStaleVersions(ctx, nil, false, nil)
+	if err != nil {
+		t.Fatalf("SweepStaleVersions: %v", err)
+	}
+	kept := false
+	for _, w := range report.Warnings {
+		if strings.Contains(w, "left the delete marker on "+stuck.Key) {
+			kept = true
+		}
+	}
+	if !kept {
+		t.Errorf("warnings = %v, want the kept marker named", report.Warnings)
+	}
+
+	// The stuck key still has its marker on top and its version beneath; a
+	// Get answers not-found, exactly as before the sweep. Every other key
+	// of the deleted file is clean.
+	marker, version := false, false
+	for _, ver := range stub.Versions(configs[0].Name) {
+		switch {
+		case ver.Key == stuck.Key && ver.DeleteMarker:
+			marker = true
+		case ver.Key == stuck.Key:
+			version = true
+		case ver.DeleteMarker:
+			t.Errorf("a marker survived on a key whose versions all went: %+v", ver)
+		}
+	}
+	if !marker || !version {
+		t.Fatalf("stuck key %s: marker %v, version %v — want both still there", stuck.Key, marker, version)
+	}
+	console, err := provider.New(provider.Config{Kind: provider.KindS3, Options: stub.Options(configs[0].Name)})
+	if err != nil {
+		t.Fatalf("provider.New: %v", err)
+	}
+	if _, err := console.Get(ctx, stuck.Key); !errors.Is(err, provider.ErrNotFound) {
+		t.Errorf("Get(%s) = %v, want not-found — the sweep resurrected a deleted part", stuck.Key, err)
+	}
+}
+
 // The decision itself, against every shape of bucket, with no I/O.
 func TestClassifyVersions(t *testing.T) {
 	ver := func(key, id string, size int64, latest, marker bool) provider.ObjectVersion {
 		return provider.ObjectVersion{Key: key, VersionID: id, Size: size, Latest: latest, DeleteMarker: marker}
 	}
-	owns := func(id string) bool { return id == "0000000000000000" }
+	// The index records the stored archive's part on account "b" and on no
+	// other; the test accounts are all "b" unless a case says otherwise.
+	owns := func(id, providerID string) ownership {
+		switch {
+		case id != "0000000000000000":
+			return ownsNowhere
+		case providerID == "b":
+			return ownsHere
+		}
+		return ownsElsewhere
+	}
 	const stored, deleted = "0000000000000000-p1.sand", "ffffffffffffffff-p2.sand"
 
+	t.Run("a marker over a part SAND moved off this account is stale", func(t *testing.T) {
+		// A relocation erased the part from account "c"; the index still
+		// owns the archive, on "b". Held forever under a hold keyed by the
+		// archive alone — which is what this case guards against.
+		account := &VersionAccount{Name: "c", ProviderID: "c"}
+		rows, doomed := classifyVersions(account, []provider.ObjectVersion{
+			ver(stored, "m", 0, true, true),
+			ver(stored, "d", 100, false, false),
+		}, owns, "")
+		if len(rows) != 1 || !rows[0].Deletable {
+			t.Fatalf("rows %+v, want the moved part's history deletable", rows)
+		}
+		if rows[0].What != "a part of a stored file, moved off this account" {
+			t.Errorf("What = %q", rows[0].What)
+		}
+		if len(doomed.data) != 1 || len(doomed.markers) != 1 {
+			t.Errorf("doomed %+v", doomed)
+		}
+	})
+
+	t.Run("the index backup under a marker is held", func(t *testing.T) {
+		// Somebody deleted manifest.sand from the bucket's console. The
+		// versions beneath the marker are the only copies of the index here,
+		// and the thing a recovery reads.
+		account := &VersionAccount{Name: "b", ProviderID: "b"}
+		rows, doomed := classifyVersions(account, []provider.ObjectVersion{
+			ver(BackupKey, "m", 0, true, true),
+			ver(BackupKey, "2", 20, false, false),
+			ver(BackupKey, "1", 10, false, false),
+		}, owns, "")
+		if len(rows) != 1 || rows[0].Deletable || !strings.Contains(rows[0].Reason, "only copies of this vault's index") {
+			t.Fatalf("rows %+v, want the backup's versions held", rows)
+		}
+		if doomed.count() != 0 || account.Deletable != 0 || account.Stale != 3 {
+			t.Errorf("doomed %+v, account %+v", doomed, account)
+		}
+	})
+
 	t.Run("an unversioned bucket has nothing stale", func(t *testing.T) {
-		account := &VersionAccount{Name: "b"}
+		account := &VersionAccount{Name: "b", ProviderID: "b"}
 		rows, doomed := classifyVersions(account, []provider.ObjectVersion{
 			ver(BackupKey, "null", 10, true, false),
 			ver(stored, "null", 100, true, false),
@@ -440,7 +584,7 @@ func TestClassifyVersions(t *testing.T) {
 	})
 
 	t.Run("superseded backups and deleted parts go, data before markers", func(t *testing.T) {
-		account := &VersionAccount{Name: "b"}
+		account := &VersionAccount{Name: "b", ProviderID: "b"}
 		rows, doomed := classifyVersions(account, []provider.ObjectVersion{
 			ver(BackupKey, "3", 30, true, false),
 			ver(BackupKey, "2", 20, false, false),
@@ -469,7 +613,7 @@ func TestClassifyVersions(t *testing.T) {
 	})
 
 	t.Run("a marker over a part the index still wants is held", func(t *testing.T) {
-		account := &VersionAccount{Name: "b"}
+		account := &VersionAccount{Name: "b", ProviderID: "b"}
 		rows, doomed := classifyVersions(account, []provider.ObjectVersion{
 			ver(stored, "m", 0, true, true),
 			ver(stored, "d", 100, false, false),
@@ -485,7 +629,7 @@ func TestClassifyVersions(t *testing.T) {
 	t.Run("a marker beneath a live backup is stale", func(t *testing.T) {
 		// The backup was switched off, its object deleted, and switched back
 		// on: a marker in the middle of the stack.
-		account := &VersionAccount{Name: "b"}
+		account := &VersionAccount{Name: "b", ProviderID: "b"}
 		rows, doomed := classifyVersions(account, []provider.ObjectVersion{
 			ver(BackupKey, "3", 30, true, false),
 			ver(BackupKey, "m", 0, false, true),
@@ -500,7 +644,7 @@ func TestClassifyVersions(t *testing.T) {
 	})
 
 	t.Run("an orphan's current version is not this sweep's, its history is", func(t *testing.T) {
-		account := &VersionAccount{Name: "b"}
+		account := &VersionAccount{Name: "b", ProviderID: "b"}
 		rows, doomed := classifyVersions(account, []provider.ObjectVersion{
 			ver(deleted, "2", 200, true, false),
 			ver(deleted, "1", 100, false, false),
@@ -517,7 +661,7 @@ func TestClassifyVersions(t *testing.T) {
 	})
 
 	t.Run("somebody else's files are counted and never touched", func(t *testing.T) {
-		account := &VersionAccount{Name: "b"}
+		account := &VersionAccount{Name: "b", ProviderID: "b"}
 		rows, doomed := classifyVersions(account, []provider.ObjectVersion{
 			ver("photos/cat.jpg", "2", 2000, true, false),
 			ver("photos/cat.jpg", "1", 1000, false, false),
@@ -533,7 +677,7 @@ func TestClassifyVersions(t *testing.T) {
 	})
 
 	t.Run("a hold reports every row and dooms nothing", func(t *testing.T) {
-		account := &VersionAccount{Name: "b"}
+		account := &VersionAccount{Name: "b", ProviderID: "b"}
 		rows, doomed := classifyVersions(account, []provider.ObjectVersion{
 			ver(BackupKey, "2", 20, true, false),
 			ver(BackupKey, "1", 10, false, false),
@@ -547,7 +691,7 @@ func TestClassifyVersions(t *testing.T) {
 	})
 
 	t.Run("a bucket that marks nothing current is not guessed at", func(t *testing.T) {
-		account := &VersionAccount{Name: "b"}
+		account := &VersionAccount{Name: "b", ProviderID: "b"}
 		rows, doomed := classifyVersions(account, []provider.ObjectVersion{
 			ver(BackupKey, "2", 20, false, false),
 			ver(BackupKey, "1", 10, false, false),
