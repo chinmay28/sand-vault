@@ -312,7 +312,22 @@ adding a backend. In order:
    buttons.
 3. **The six methods** — `Put`, `Get`, `Stat`, `Delete`, `List`, `Ping`.
    `Get`/`Stat` return `ErrNotFound` for a missing object; `Delete` is
-   idempotent. Implement `UsageReporter` where the service reports a quota —
+   idempotent. The contract is stricter than it reads, because of what the
+   vault does with the answers. `ErrNotFound` means *the object is definitely
+   not there*: the health check and the automated repair act on it by
+   rebuilding and relocating, so a status that can also mean something else
+   — Dropbox's 409, S3's 404 — has to have its body read before it is called
+   not-found, and an ambiguous answer is an error. `Delete` returns nil only
+   for an object already gone, never for a refusal; the orphan scan counts a
+   nil as removed. `List` is complete or it fails — the orphan scan deletes
+   by archive what the index does not name, and recovery rebuilds the index
+   from listings — so an entry that cannot be placed is an error, not a
+   skipped line, and a folder that lists under another spelling (casing, a
+   proxy's path, a canonical user id) is still the folder. `Put` on a store
+   with no overwrite uploads first and erases the old copy after, never the
+   other way round. And `ValidateKey` goes at the top of the four object
+   methods on any backend where the empty key would resolve to the folder
+   itself. Implement `UsageReporter` where the service reports a quota —
    cheaply, since it is on the ping path — `UsageMeasurer` where it can only be
    counted, as an S3 bucket can, `Identifier` so a freshly connected account can
    name itself, and `CredentialRotator` if credentials change as they are
