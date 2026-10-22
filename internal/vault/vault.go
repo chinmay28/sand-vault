@@ -101,6 +101,12 @@ type Vault struct {
 	spoolMu sync.Mutex
 	spools  map[string]bool
 
+	// flights is the set of archives a scatter is writing, or has just
+	// written, that the index does not point at yet — the same question as
+	// spools, asked of the accounts rather than of the local directory. Its
+	// own leaf lock, inside. See inflight.go.
+	flights archiveFlights
+
 	// thumbMu guards the decrypted thumbnails held in memory, by folder and
 	// then by file. Another leaf lock: nothing is acquired while it is held,
 	// which is what lets Lock clear the cache while holding mu.

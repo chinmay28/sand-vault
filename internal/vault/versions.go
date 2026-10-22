@@ -211,6 +211,9 @@ func (v *Vault) scanForStaleVersions(ctx context.Context) (*VersionScan, map[str
 		return nil, nil, ErrLocked
 	}
 	owned := v.ownedArchivesLocked()
+	// Under the same lock, for the reason scanForOrphans gives: an archive
+	// being written is owned by somebody, whichever of the two reads sees it.
+	v.noteInFlight(owned)
 	configs := append([]provider.Config(nil), v.providers...)
 	vaultKey := append([]byte(nil), v.vaultKey...)
 	v.mu.RUnlock()

@@ -35,6 +35,9 @@ func newVersionedVault(t *testing.T, buckets int) (*Vault, *s3test.Server, []pro
 	t.Cleanup(v.AwaitBackupSync)
 	t.Cleanup(v.AwaitReadHistory)
 
+	// No settling window, for the reason newTestVault gives.
+	v.flights.settle = -1
+
 	configs := make([]provider.Config, buckets)
 	for i := range configs {
 		name := "bucket-" + string(rune('a'+i))
