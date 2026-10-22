@@ -877,22 +877,58 @@ write_unit
 # keeps every other path read-only, so a "Local folder" account outside those
 # roots cannot connect ("read-only file system") until its directory is granted
 # too. SAND_LOCAL_PATHS grants such paths here, colon-separated;
-# scripts/allow-local-path.sh does the same later. Both write this one drop-in,
-# and neither installer touches it on a re-run, so grants survive upgrades.
+# scripts/allow-local-path.sh does the same later. Both write this one drop-in.
+#
+# A re-run without SAND_LOCAL_PATHS leaves the drop-in alone, so grants survive
+# upgrades. A re-run WITH it adds to what is there rather than replacing it:
+# the drop-in is the one record of every path allow-local-path.sh has granted
+# since the install, and an installer that rewrote it from the variable alone
+# took those grants away — every Local folder account outside the mount roots
+# went read-only on the next upgrade that happened to name a path.
 DROPIN_DIR="${UNIT_PATH}.d"
+LOCAL_PATHS_DROPIN="$DROPIN_DIR/10-local-paths.conf"
+
+# The paths a unit or drop-in grants, one per line, stripped of the systemd
+# syntax around them: the leading '-' that says a missing path must not fail
+# the unit, and the quotes that keep a path with a space in it as one path.
+# The same reading scripts/allow-local-path.sh does of the same file.
+granted_paths() {
+  [ -f "$1" ] || return 0
+  grep -E '^ReadWritePaths=' "$1" 2>/dev/null |
+    sed -e 's/^ReadWritePaths=//' -e 's/^-//' -e 's/^"//' -e 's/"$//' |
+    grep -v '^$' || true
+}
+
+# What the drop-in should grant after this run: what it grants now, then the
+# paths SAND_LOCAL_PATHS names, each once, in that order.
+merged_local_paths() {
+  {
+    granted_paths "$LOCAL_PATHS_DROPIN"
+    printf '%s:' "$SAND_LOCAL_PATHS" | tr ':' '\n' | while IFS= read -r entry; do
+      [ -n "$entry" ] || continue
+      [ "$entry" != / ] && entry="${entry%/}"
+      printf '%s\n' "$entry"
+    done
+  } | awk '!seen[$0]++'
+}
+
 if [ -n "${SAND_LOCAL_PATHS:-}" ]; then
+  # Read before the redirect below opens the file: `> file` truncates it
+  # before the block runs, and what is being merged in is that file.
+  LOCAL_PATHS_FINAL="$(merged_local_paths)"
   mkdir -p "$DROPIN_DIR"
   {
     echo "# Paths a Local folder account may use. Also managed by"
     echo "# scripts/allow-local-path.sh. A leading '-' lets the service start"
     echo "# when the drive is not plugged in."
     echo "[Service]"
-    printf '%s:' "$SAND_LOCAL_PATHS" | tr ':' '\n' | while IFS= read -r entry; do
+    printf '%s\n' "$LOCAL_PATHS_FINAL" | while IFS= read -r entry; do
       [ -n "$entry" ] || continue
-      printf 'ReadWritePaths=-"%s"\n' "${entry%/}"
+      printf 'ReadWritePaths=-"%s"\n' "$entry"
     done
-  } > "$DROPIN_DIR/10-local-paths.conf"
-  ok "local paths granted → $DROPIN_DIR/10-local-paths.conf"
+  } > "$LOCAL_PATHS_DROPIN"
+  ok "local paths granted → $LOCAL_PATHS_DROPIN"
+  granted_paths "$LOCAL_PATHS_DROPIN" | sed 's/^/       /'
 fi
 
 systemctl daemon-reload
