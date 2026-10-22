@@ -693,7 +693,20 @@ func collectParts(held map[int][]byte) [][]byte {
 // account. Provider failures are returned as warnings: the index entry is
 // dropped either way so a dead account cannot pin a file in the browser
 // forever.
+//
+// The keys are held for the whole of it — here, and in DeleteMany and Rmdir
+// — because a delete is the one order of operations that cannot be undone
+// by stopping: the parts are erased first, outside the lock, and the index
+// write that stops listing them comes after. A lock that landed in between
+// (the idle timer during a long folder delete, or the Lock button) made the
+// write fail with ErrLocked and left the entries listed, pointing at parts
+// that were gone — files that opened to an error and could not be deleted
+// again, because there was nothing left to erase. holdKeys turns that lock
+// into one that is carried out the moment the delete has written the index:
+// it delays an idle lock rather than defeating it.
 func (v *Vault) Delete(ctx context.Context, id string) ([]string, error) {
+	defer v.holdKeys()()
+
 	v.mu.RLock()
 	if v.dataKey == nil {
 		v.mu.RUnlock()
@@ -849,6 +862,9 @@ type DeleteReport struct {
 func (v *Vault) DeleteMany(ctx context.Context, ids []string, onProgress func(done, total int)) (*DeleteReport, error) {
 	report := &DeleteReport{Missing: []string{}, Warnings: []string{}}
 
+	// Held until the index is written: see Delete.
+	defer v.holdKeys()()
+
 	v.mu.RLock()
 	if v.dataKey == nil {
 		v.mu.RUnlock()
@@ -948,6 +964,9 @@ func (v *Vault) Rmdir(ctx context.Context, scope Scope, dir string, recursive bo
 		return nil, fmt.Errorf("cannot remove the root folder")
 	}
 
+	// Held until the index is written: see Delete.
+	defer v.holdKeys()()
+
 	v.mu.RLock()
 	m, err := v.manifestForLocked(scope)
 	if err != nil {
@@ -958,7 +977,15 @@ func (v *Vault) Rmdir(ctx context.Context, scope Scope, dir string, recursive bo
 		v.mu.RUnlock()
 		return nil, fmt.Errorf("no such folder: %s", dir)
 	}
-	doomed := m.Descendants(dir)
+	// Copies, as Delete and DeleteMany take: the erasing runs outside the
+	// lock and reads each row's shards, archive ID and chunk count, while a
+	// relocation or a re-encryption of the same file writes those fields
+	// under it. Descendants hands back the manifest's own rows.
+	found := m.Descendants(dir)
+	doomed := make([]*Entry, 0, len(found))
+	for _, e := range found {
+		doomed = append(doomed, copyEntry(e))
+	}
 	subfolders, files := m.Children(dir)
 	v.mu.RUnlock()
 
@@ -966,8 +993,8 @@ func (v *Vault) Rmdir(ctx context.Context, scope Scope, dir string, recursive bo
 		return nil, fmt.Errorf("%s is not empty", dir)
 	}
 
-	// Read before the erasing rather than after: these are the manifest's own
-	// entries, and a move under a delete is the one race worth a line.
+	// Read from the copies, as they stood when the delete began: a move
+	// under a delete is the one race worth a line.
 	ids := make([]string, len(doomed))
 	dirs := make([]string, len(doomed))
 	for i, e := range doomed {

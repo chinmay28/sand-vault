@@ -275,6 +275,12 @@ func (v *Vault) commitUpload(ctx context.Context, scope Scope, dir, name string,
 		if opts.Overwrite {
 			replaced = existing
 			m.remove(existing.ID)
+			// Everything the replaced row carried goes in the same write,
+			// as Delete does: a film title, a repo, a folder's chosen
+			// picture, each keyed by an ID nothing names any more.
+			m.forgetMovies(existing.ID)
+			m.forgetRepos(existing.ID)
+			m.forgetFolderArt(existing.ID)
 		} else {
 			entry.Name = m.uniqueName(dir, name)
 		}
