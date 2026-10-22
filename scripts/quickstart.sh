@@ -904,7 +904,25 @@ ok "service enabled and started"
 # 7. Health check (with rollback on a failed upgrade)
 # ---------------------------------------------------------------------------
 step "[7/8] Health check"
-health_url="http://127.0.0.1:$PORT/api/health"
+
+# The address to probe is the one the unit binds, not loopback. The probe used
+# to go to 127.0.0.1 regardless of HOST, which was right for the default
+# (0.0.0.0 answers on loopback too) and wrong for every other address: an
+# install bound to a LAN or Tailscale address — the one thing the warning in
+# the header asks for — failed this check on every run, a fresh install died
+# "unhealthy", and an upgrade rolled a working service back to the previous
+# commit and the pre-upgrade vault. A wildcard still maps to loopback, since a
+# wildcard is not an address curl can connect to, and an IPv6 address goes in
+# brackets, which is how a URL spells one.
+probe_host() {
+  case "$1" in
+    "" | 0.0.0.0 | :: | "[::]") printf '127.0.0.1' ;;
+    "["*"]") printf '%s' "$1" ;;
+    *:*) printf '[%s]' "$1" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+health_url="http://$(probe_host "$HOST"):$PORT/api/health"
 check_health() {
   for _ in $(seq 1 30); do
     curl -fsS "$health_url" >/dev/null 2>&1 && return 0
