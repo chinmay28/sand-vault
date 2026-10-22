@@ -40,6 +40,14 @@ func newTestClient(t *testing.T) *testClient {
 	if err != nil {
 		t.Fatalf("Handler: %v", err)
 	}
+	// These tests upload, delete and scan within a second. An archive stays
+	// owned for a settling window after its scatter returns (vault/inflight.go),
+	// which would make every orphan scan here read as nothing abandoned.
+	v, err := s.Vault()
+	if err != nil {
+		t.Fatalf("Vault: %v", err)
+	}
+	v.SetArchiveSettleWindow(-1)
 	// Manifest backups are pushed in the background, and so is the read
 	// history's own save, so let both finish before the temporary folders they
 	// write into are cleaned up.

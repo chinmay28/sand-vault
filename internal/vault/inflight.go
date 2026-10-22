@@ -149,3 +149,19 @@ func (v *Vault) noteInFlight(owned map[string]*ownedArchive) {
 		}
 	}
 }
+
+// SetArchiveSettleWindow changes how long an archive stays owned after its
+// scatter returns. Zero restores the default, archiveSettleWindow; a negative
+// value turns the window off, so an archive is owned only while a scatter is
+// holding it.
+//
+// It exists for tests outside this package that upload, delete and scan in
+// the same second: under the default every one of them would find the parts
+// it just abandoned still spoken for, and read that as nothing abandoned at
+// all. The window itself is tested in inflight_test.go. The service never
+// calls this.
+func (v *Vault) SetArchiveSettleWindow(d time.Duration) {
+	v.flights.mu.Lock()
+	defer v.flights.mu.Unlock()
+	v.flights.settle = d
+}
