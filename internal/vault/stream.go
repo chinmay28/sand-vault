@@ -299,6 +299,7 @@ func (v *Vault) commitUpload(ctx context.Context, scope Scope, dir, name string,
 	// best-effort basis so a failure here does not fail the upload.
 	if replaced != nil {
 		v.deleteEntryShards(context.WithoutCancel(ctx), replaced)
+		v.deleteReplicaShards(context.WithoutCancel(ctx), replaced.Replica)
 		// Its thumbnail showed the old contents and is keyed by an ID nothing
 		// points at any more.
 		v.removeThumbs(context.WithoutCancel(ctx), scope, dir, replaced.ID)

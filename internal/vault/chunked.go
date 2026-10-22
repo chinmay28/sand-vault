@@ -407,7 +407,9 @@ type readSnapshot struct {
 	configs map[string]provider.Config
 }
 
-func (v *Vault) snapshotRead(entry *Entry) (*readSnapshot, error) {
+// role says which root of each account the shards are on: the parts folder
+// for an entry, the replica folder for an entry's replicaView.
+func (v *Vault) snapshotRead(entry *Entry, role provider.Role) (*readSnapshot, error) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 
@@ -420,14 +422,14 @@ func (v *Vault) snapshotRead(entry *Entry) (*readSnapshot, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", entry.Path(), err)
 	}
-	return &readSnapshot{dataKey: key, configs: v.configsForLocked(entry.Shards)}, nil
+	return &readSnapshot{dataKey: key, configs: v.configsAtLocked(role, entry.Shards)}, nil
 }
 
 // gatherChunkedFile rebuilds a whole chunked file, chunk by chunk, and checks
 // the result against the hash recorded when it was stored. Reading end to end
 // is the one path that can still make that check — see §6.4.
 func (v *Vault) gatherChunkedFile(ctx context.Context, entry *Entry) ([]byte, error) {
-	snap, err := v.snapshotRead(entry)
+	snap, err := v.snapshotRead(entry, provider.Parts)
 	if err != nil {
 		return nil, err
 	}

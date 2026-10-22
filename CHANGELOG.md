@@ -12,6 +12,47 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### Replication: a second copy of chosen folders, on clouds you already have
+
+A folder — or one file — can be given a *replica*: a second, independent
+placement of the same bytes, cut again under their own archive ID and the
+current key, and scattered into a *replica folder* on each of the clouds the
+replication policy names. The parts stay exactly where and as they are. The
+replication clouds are ones already connected; the replica folder is a second
+folder beside the one their parts are in, and it is the only thing that tells
+a replica object from a part. Nothing on a cloud names a file, and nothing on
+a replica says it is one: the object names have a part's shape under an
+archive ID drawn fresh, so the two folders on one account cannot be paired up
+by eye.
+
+With one replication cloud a replica is the whole sealed file on that cloud —
+the one placement in SAND where a single account holds a file, and the
+settings dialog says so plainly rather than hiding it. With several, a replica
+is cut k-of-n like anything else, with the same three trades the upload picker
+shows.
+
+The policy lives in *Vault settings › Replication*: which clouds, the replica
+folder on each (refused if it is the parts folder, inside it, or beside parts
+kept at the root), how a replica is cut, and how much a day. A folder's menu
+gains *Replicate this folder*, which says what the copy will cost before
+anything moves; a file's menu gains the same for one file, over whatever its
+folder says, and *Drop the replica*. The copies are made by `sand serve` while
+the vault is open, smallest file first at the pace set, and by
+`sand replicate run` in the foreground. A replica is made again when the
+file's bytes change, the key changes after a password change, or the policy
+does, and erased with the file.
+
+A file with a replica carries a second, outlined group of badges after its
+parts. Opening, streaming and downloading such a file gain a *Read from*
+choice: the parts, the replica alone, or either — the parts, with the replica
+standing in for any chunk they cannot give. A stream link made for the replica
+keeps reading the replica whoever follows it. `sand get --from replica` does
+the same from the command line.
+
+The vault file's version goes to 4, for the reason it went to 3: an older
+build would drop the new fields and strand every replica object. A version 3
+vault opens as it stands and is upgraded on its first write.
+
 ### Google Drive makes its own folder, and keeps to it
 
 A Drive account's folder was a *Folder ID* pasted by hand, and it almost never

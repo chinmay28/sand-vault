@@ -70,6 +70,19 @@ type Config struct {
 	// other accounts come and go.
 	Color string `json:"color,omitempty"`
 
+	// ReplicaFolder is where this account keeps replicas, when it keeps any:
+	// a second folder beside the one its parts are in, named the way the
+	// backend's own folder setting is named (a folder at the top of the
+	// account, a key prefix, a directory on this machine). Empty — which is
+	// every account connected before replication existed — means this
+	// account takes no replicas.
+	//
+	// It is a field of its own rather than an option so that the backend's
+	// form never shows it: the option is what the backend reads, and this is
+	// what Open swaps into the option at the Replicas role. Validate says
+	// which folders can be one; see replica.go.
+	ReplicaFolder string `json:"replica_folder,omitempty"`
+
 	// Capacity is how big the account holder says this account is, in bytes,
 	// for the backends that cannot say it themselves. A bucket has no quota
 	// call — S3 has never had one and B2's own API does not add one — so the

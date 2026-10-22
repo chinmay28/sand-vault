@@ -578,6 +578,10 @@ export default function FileBrowser({
 
   const listProps = {
     previousKey: listing?.previous_key,
+    /* Whether files in this folder get a second copy, and which subfolders
+       do: what a row's menu needs to say "replicate" or "stop". */
+    replicate: listing?.replicate,
+    replicatedFolders: listing?.replicated_folders,
     entries,
     thumbs,
     movies,
@@ -1145,7 +1149,7 @@ function EntryTable({
   entries, thumbs, movies, films, mobile, providers, selecting, selected,
   onToggle, onSelectAll, onSelectNone,
   onNavigate, onPreview, onInspect, onFilm, onRefresh, onError,
-  vault, subVaults, previousKey,
+  vault, subVaults, previousKey, replicate, replicatedFolders,
 }) {
   const all = entries.length > 0 && entries.every((entry) => selected.has(entry.key))
   /* One template for the whole table, headings included: a film folder's rows
@@ -1212,6 +1216,7 @@ function EntryTable({
           location={entry.location}
           art={entry.art}
           previousKey={previousKey?.[entry.path] || 0}
+          replicated={!!replicatedFolders?.[entry.path]}
           mobile={mobile}
           providers={providers}
           columns={columns}
@@ -1227,6 +1232,7 @@ function EntryTable({
           key={entry.key}
           vault={vault}
           subVaults={subVaults}
+          replicate={replicate}
           file={entry.file}
           location={entry.location}
           mobile={mobile}
@@ -1251,7 +1257,7 @@ function EntryTable({
 function EntryGrid({
   entries, thumbs, movies, films, mobile, providers, selecting, selected, onToggle,
   onNavigate, onPreview, onInspect, onFilm, onRefresh, onError,
-  vault, subVaults,
+  vault, subVaults, replicate, replicatedFolders,
 }) {
   /* Posters are two-by-three and photographs are not, so the shape belongs to
      the folder rather than to the tile: one shape per grid keeps the rows level
@@ -1273,6 +1279,7 @@ function EntryGrid({
           path={entry.path}
           location={entry.location}
           art={entry.art}
+          replicated={!!replicatedFolders?.[entry.path]}
           mobile={mobile}
           providers={providers}
           aspect={aspect}
@@ -1288,6 +1295,7 @@ function EntryGrid({
           key={entry.key}
           vault={vault}
           subVaults={subVaults}
+          replicate={replicate}
           file={entry.file}
           location={entry.location}
           mobile={mobile}

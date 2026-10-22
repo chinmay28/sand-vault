@@ -20,7 +20,15 @@ import (
 )
 
 // StoreVersion is the on-disk vault format version written by this build.
-const StoreVersion = 3
+//
+// Version 4 adds replicas: a second placement on an entry, and a replica
+// folder on an account. Both are additive, and a version 3 vault is read as
+// it stands and upgraded on the first write. The number goes up for the same
+// reason it went up for sub vaults: an older build would parse the file,
+// drop the fields it had never heard of, and write it back without them —
+// and every replica object on every cloud would then be a stray nothing
+// points at.
+const StoreVersion = 4
 
 // minStoreVersion is the oldest format this build still opens. A version 2
 // vault is read as it stands and upgraded the first time anything is written,

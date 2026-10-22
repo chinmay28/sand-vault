@@ -74,6 +74,22 @@ type Entry struct {
 	// Scheme.
 	DataShards  int `json:"data_shards,omitempty"`
 	TotalShards int `json:"total_shards,omitempty"`
+
+	// Replica is the file's second, independent placement — its own archive
+	// ID, its own code, its own shards in the replica folders of the accounts
+	// the replication policy names — or nil, which is every file that has not
+	// been replicated. See replica.go.
+	//
+	// Never changed in place. Entries are copied shallowly all over this
+	// package (`snapshot := *entry`), and a copy shares this pointer; so a
+	// replica is replaced by assigning a fresh one, and what any copy holds
+	// stays what it held.
+	Replica *Replica `json:"replica,omitempty"`
+
+	// Replicate, when set, says for this one file whether it is replicated,
+	// over whatever its folder says. Nil — the usual — means the folder
+	// decides. See replicatedLocked.
+	Replicate *bool `json:"replicate,omitempty"`
 }
 
 // Scheme is the erasure code this file's shards were cut with. A file recorded
@@ -203,6 +219,15 @@ type Manifest struct {
 	// the index rather than beside the policy because the folders it names
 	// are index. See rekeyplan.go.
 	Rekey *RekeyPlan `json:"rekey,omitempty"`
+
+	// Replication is the standing instruction for second copies: which
+	// accounts, how a replica is cut, how much a day. Nil until somebody sets
+	// it. ReplicatedFolders says, by folder path, which folders are
+	// replicated and which are explicitly not, the nearest folder up the tree
+	// deciding for everything under it. Both only ever on the main vault's
+	// manifest: a replica is a main-vault placement. See replica.go.
+	Replication       *ReplicationPolicy `json:"replication,omitempty"`
+	ReplicatedFolders map[string]bool    `json:"replicated_folders,omitempty"`
 
 	// AccountRemap is left behind by a recovery for the sub vaults it could not
 	// open, mapping the account IDs of the vault that was lost onto the ones
@@ -691,6 +716,16 @@ func (m *Manifest) moveFolder(oldDir, newDir string) func() {
 		m.FolderArt = rekeyed
 	}
 
+	previousReplicated := m.ReplicatedFolders
+	if len(m.ReplicatedFolders) > 0 {
+		rekeyed := make(map[string]bool, len(m.ReplicatedFolders))
+		for dir, on := range m.ReplicatedFolders {
+			to, _ := underFolder(dir, oldDir, newDir)
+			rekeyed[to] = on
+		}
+		m.ReplicatedFolders = rekeyed
+	}
+
 	return func() {
 		for _, m := range changed {
 			m.entry.Dir = m.from
@@ -700,6 +735,24 @@ func (m *Manifest) moveFolder(oldDir, newDir string) func() {
 		m.MovieFolders = previousMovieFolders
 		m.Automations = previousAutomations
 		m.FolderArt = previousFolderArt
+		m.ReplicatedFolders = previousReplicated
+	}
+}
+
+// dropReplicatedFolders forgets the replication standing of a folder and
+// everything under it, for a folder that is going.
+func (m *Manifest) dropReplicatedFolders(dir string) {
+	if len(m.ReplicatedFolders) == 0 {
+		return
+	}
+	dir = CleanDir(dir)
+	for stored := range m.ReplicatedFolders {
+		if underDir(stored, dir) {
+			delete(m.ReplicatedFolders, stored)
+		}
+	}
+	if len(m.ReplicatedFolders) == 0 {
+		m.ReplicatedFolders = nil
 	}
 }
 

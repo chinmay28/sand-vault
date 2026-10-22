@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/chinmay28/sand-vault/internal/crypto"
+	"github.com/chinmay28/sand-vault/internal/provider"
 )
 
 // DefaultChunkCacheBytes is how much decrypted chunk data one vault keeps in
@@ -188,6 +189,15 @@ type ChunkedReader struct {
 
 	// observer hears where the read has got to, or is nil. See readwatch.go.
 	observer ReadObserver
+
+	// source is which placement this reader serves from, and role the root
+	// of each account the entry's shards are on — the replica folder when
+	// entry is a replicaView. fallback is the replica's view when the source
+	// is ReadEither and the file has one: asked for a chunk only once the
+	// parts have failed to give it. See replica.go.
+	source   ReadSource
+	role     provider.Role
+	fallback *Entry
 }
 
 // ErrNeedsConversion is returned for a file still stored in the pre-chunking
@@ -227,6 +237,16 @@ func (v *Vault) OpenReader(id string, opts ...ReadOption) (*ChunkedReader, error
 	reader := &ChunkedReader{v: v, entry: &snapshot}
 	for _, opt := range opts {
 		opt(reader)
+	}
+	switch reader.source {
+	case ReadReplica:
+		view := snapshot.replicaView()
+		if view == nil {
+			return nil, fmt.Errorf("%s: %w", entry.Path(), ErrNoReplica)
+		}
+		reader.entry, reader.role = view, provider.Replicas
+	case ReadEither:
+		reader.fallback = snapshot.replicaView()
 	}
 	return reader, nil
 }
@@ -311,15 +331,14 @@ func (r *ChunkedReader) chunkAt(ctx context.Context, index int) ([]byte, error) 
 			return data, nil
 		}
 
-		// Re-read the key every time rather than holding one: a reader open
-		// across a lock must stop reading, not carry on from what it captured.
-		snap, err := r.v.snapshotRead(r.entry)
-		if err != nil {
-			return nil, err
+		data, err := r.gather(ctx, r.entry, r.role, index)
+		if err != nil && r.fallback != nil && ctx.Err() == nil {
+			// The parts could not give this chunk. The replica is a second
+			// placement of the same bytes, and this is what it is for.
+			if fromReplica, ferr := r.gather(ctx, r.fallback, provider.Replicas, index); ferr == nil {
+				data, err = fromReplica, nil
+			}
 		}
-		defer crypto.ZeroBytes(snap.dataKey)
-
-		data, err := r.v.gatherChunk(ctx, r.entry, index, snap.configs, snap.dataKey, r.observer)
 		if err != nil {
 			return nil, err
 		}
@@ -335,6 +354,19 @@ func (r *ChunkedReader) chunkAt(ctx context.Context, index int) ([]byte, error) 
 	notifyRead(r.observer, r.entry, ReadEvent{Kind: ReadChunkReady, Chunk: index})
 	r.hold(index, data)
 	return data, nil
+}
+
+// gather fetches one chunk of a placement from the accounts, at the root
+// the placement's shards are on.
+func (r *ChunkedReader) gather(ctx context.Context, entry *Entry, role provider.Role, index int) ([]byte, error) {
+	// Re-read the key every time rather than holding one: a reader open
+	// across a lock must stop reading, not carry on from what it captured.
+	snap, err := r.v.snapshotRead(entry, role)
+	if err != nil {
+		return nil, err
+	}
+	defer crypto.ZeroBytes(snap.dataKey)
+	return r.v.gatherChunk(ctx, entry, index, snap.configs, snap.dataKey, r.observer)
 }
 
 // hold keeps the chunk a sequential reader is in, letting go of the one

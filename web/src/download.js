@@ -89,8 +89,8 @@ export async function shareBlob(blob, filename) {
    Read through fetchToBlob so the bytes are counted as they land, and with a
    watch token so the server can say what it is waiting on before any do —
    see readwatch.js. */
-export async function fetchFileBlob(file, { onProgress, watch = '' } = {}) {
-  return fetchToBlob(api.contentURL(file.id, { download: true, watch }), onProgress)
+export async function fetchFileBlob(file, { onProgress, watch = '', from = '' } = {}) {
+  return fetchToBlob(api.contentURL(file.id, { download: true, watch, from }), onProgress)
 }
 
 export async function downloadFile(file, options) {
@@ -159,17 +159,19 @@ export function useDownload(onError) {
      downloads. */
   const [progress, setProgress] = useState(null)
 
-  const start = useCallback(async (file) => {
+  /* `from` is which placement the bytes come from — the parts unless the
+     dialog that started the download chose the replica. See Replication.jsx. */
+  const start = useCallback(async (file, from = '') => {
     const watch = readToken()
     setDownloading(true)
     setProgress({ watch, received: 0, size: file.size || 0 })
     const onProgress = (received) => setProgress((p) => (p && p.watch === watch ? { ...p, received } : p))
     try {
       if (needsShareSheet()) {
-        const blob = await fetchFileBlob(file, { onProgress, watch })
+        const blob = await fetchFileBlob(file, { onProgress, watch, from })
         setPending({ blob, name: file.name })
       } else {
-        await downloadFile(file, { onProgress, watch })
+        await downloadFile(file, { onProgress, watch, from })
       }
     } catch (err) {
       onError(err.message)

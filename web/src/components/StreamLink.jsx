@@ -5,6 +5,7 @@ import { useIsMobile } from '../hooks'
 import { saveBlob } from '../download'
 import { absoluteURL, attemptDeepLink, playlistFor, vlcHandoff } from '../stream'
 import { Banner, Button, CopyField, Modal, Spinner } from './ui'
+import { ReadFromChoice } from './Replication'
 
 /* Play a stored file somewhere that is not this browser.
 
@@ -16,10 +17,13 @@ import { Banner, Button, CopyField, Modal, Spinner } from './ui'
 
    `autoplay` is the difference between the two ways in. "Stream in VLC" opens
    this already reaching for the player; "Copy link" opens it sitting still. */
-export default function StreamLink({ file, autoplay, zIndex, onClose }) {
+export default function StreamLink({ file, autoplay, from = 'parts', zIndex, onClose }) {
   const mobile = useIsMobile()
   const [link, setLink] = useState(null)
   const [error, setError] = useState(null)
+  /* Which placement the link plays from. It rides in the link's own ticket,
+     so changing it here mints a fresh address. */
+  const [source, setSource] = useState(file.replica ? from : 'parts')
   /* idle · handing (waiting to see whether an app took it) · gone (one did,
      as far as anything here can tell) · no-app (nothing answered). */
   const [state, setState] = useState('idle')
@@ -27,11 +31,12 @@ export default function StreamLink({ file, autoplay, zIndex, onClose }) {
 
   useEffect(() => {
     let cancelled = false
-    api.streamLink(file.id)
+    setLink(null)
+    api.streamLink(file.id, source)
       .then((resp) => { if (!cancelled) setLink({ ...resp, address: absoluteURL(resp.url) }) })
       .catch((err) => { if (!cancelled) setError(err.message) })
     return () => { cancelled = true }
-  }, [file.id])
+  }, [file.id, source])
 
   // Held steady across renders, so the effect below is not woken by a fresh
   // object describing the same device.
@@ -95,10 +100,18 @@ export default function StreamLink({ file, autoplay, zIndex, onClose }) {
             </Banner>
           )}
 
+          {file.replica && (
+            <div style={{ marginBottom: '14px' }}>
+              <ReadFromChoice file={file} value={source} onChange={setSource} compact={mobile} />
+            </div>
+          )}
+
           <CopyField
             label="Stream address"
             value={link.address}
-            help="Plays on its own — a player following this needs no password."
+            help={source === 'parts'
+              ? 'Plays on its own — a player following this needs no password.'
+              : 'Plays on its own, and the placement is in the address: a link made for the replica keeps reading the replica.'}
           />
 
           <div style={{

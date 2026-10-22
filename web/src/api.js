@@ -827,16 +827,41 @@ export const api = {
      authenticates this app — the session cookie is HttpOnly and SameSite=Strict
      — so the server mints a bearer link standing for this one file, which is
      the only credential a player can actually be handed. */
-  streamLink: (id) => request(`/api/files/${encodeURIComponent(id)}/stream`, { method: 'POST' }),
+  /* `from` is which placement the link plays from — parts, replica, or
+     either — and rides in the link's own ticket, so a link made for the
+     replica keeps reading the replica whoever follows it. */
+  streamLink: (id, from = '') =>
+    request(`/api/files/${encodeURIComponent(id)}/stream${from && from !== 'parts' ? `?from=${from}` : ''}`,
+      { method: 'POST' }),
 
-  contentURL: (id, { download = false, watch = '' } = {}) => {
+  contentURL: (id, { download = false, watch = '', from = '' } = {}) => {
     const params = []
     if (download) params.push('download=1')
     /* A token the browser minted, for asking where the read has got to
        while it waits on it — see readWatch and readwatch.js. */
     if (watch) params.push(`watch=${encodeURIComponent(watch)}`)
+    /* Which placement serves the bytes: the parts unless said otherwise.
+       See Replication.jsx. */
+    if (from && from !== 'parts') params.push(`from=${encodeURIComponent(from)}`)
     return `/api/files/${encodeURIComponent(id)}/content${params.length ? `?${params.join('&')}` : ''}`
   },
+
+  /* Second copies. The policy — which clouds, the folder on each, how a
+     replica is cut, how much a day — and how far the worker has got. An
+     empty account list clears the policy and leaves every replica made so
+     far where it is. */
+  replicationStatus: () => request('/api/vault/replication'),
+  setReplication: ({ accounts, scheme = '', bytesPerDay = 0, paused = false }) =>
+    request('/api/vault/replication', {
+      method: 'PUT',
+      body: { accounts, scheme, bytes_per_day: bytesPerDay, paused },
+    }),
+  /* Whether a folder — and everything under it — or one file is replicated.
+     null puts it back to following its parent. Main vault only. */
+  setReplicate: (path, enabled) =>
+    request('/api/replicate', { method: 'POST', body: { path, enabled } }),
+  /* Erase one file's replica now rather than at the next sweep. */
+  dropReplica: (id) => request(`/api/files/${encodeURIComponent(id)}/replica`, { method: 'DELETE' }),
 
   /* Where the read under a token has got to: which accounts it is waiting on,
      whether it is decrypting, how much has been sent. Asked beside a content

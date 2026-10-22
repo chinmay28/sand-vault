@@ -634,6 +634,13 @@ function AccountCard({ provider, providers, isDefault, resuming, onRemove, onCha
         lineHeight: 1.7,
       }}>
         <div>{provider.kind} · {provider.shards} part{provider.shards === 1 ? '' : 's'} · {formatBytes(provider.stored)}</div>
+        {/* The account's second root, when it has one: where replicas go,
+            apart from the parts. See Replication.jsx. */}
+        {provider.replica_folder && (
+          <div title="Replicas go here, in a folder of their own beside the parts" style={{ color: COLORS.textDim }}>
+            ⧉ replicas in <code>{provider.replica_folder}</code>
+          </div>
+        )}
         {/* How full the account is, and how much of that is ours. A local drive
             answers this as well as a cloud does now — the disk it sits on is
             shared with everything else on the machine, and a folder holding

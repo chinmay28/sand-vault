@@ -129,6 +129,21 @@ type spread struct {
 	// wants; a file being re-encrypted passes the code it is already cut with,
 	// so that a password change does not quietly recode it.
 	scheme archive.Scheme
+
+	// role is which root of each account the shards go to: the parts folder
+	// for everything but a replica. At the Replicas role the accounts in play
+	// are the ones with a replica folder, opened there, and the whole copy is
+	// a code the scatter may be asked for. See replica.go.
+	role provider.Role
+}
+
+// check is the scheme check a spread is held to: Check for parts, and for
+// replicas Storable, which is Check with the whole copy allowed.
+func (sp spread) check(scheme archive.Scheme) error {
+	if sp.role == provider.Replicas {
+		return scheme.Storable()
+	}
+	return scheme.Check()
 }
 
 // resolveAccounts turns an explicit account selection into the list of IDs to
@@ -152,6 +167,14 @@ func resolveAccounts(selected []string, byID map[string]provider.Config, scheme 
 		}
 		seen[id] = true
 		out = append(out, id)
+	}
+	if scheme.IsWholeCopy() {
+		// The one code checkSpread would refuse, and the one that is only
+		// ever asked for by a replica going to a single account.
+		if len(out) != 1 {
+			return nil, fmt.Errorf("a whole copy goes to one account, not %d", len(out))
+		}
+		return out, nil
 	}
 	if scheme != (archive.Scheme{}) {
 		if err := checkSpread(len(out), scheme); err != nil {
@@ -254,7 +277,7 @@ func (t *transferTarget) width() int {
 // about storage rather than about secrecy.
 func (v *Vault) snapshotTarget(scope Scope, sp spread) (*transferTarget, error) {
 	if sp.scheme != (archive.Scheme{}) {
-		if err := sp.scheme.Check(); err != nil {
+		if err := sp.check(sp.scheme); err != nil {
 			return nil, err
 		}
 	}
@@ -286,15 +309,48 @@ func (v *Vault) snapshotTarget(scope Scope, sp spread) (*transferTarget, error) 
 	configs := append([]provider.Config(nil), v.providers...)
 	v.mu.RUnlock()
 
-	if len(configs) == 0 {
-		return nil, fmt.Errorf("connect at least one cloud account before uploading")
-	}
-
-	t.byID = make(map[string]provider.Config, len(configs))
-	t.ids = make([]string, 0, len(configs))
-	for _, cfg := range configs {
-		t.ids = append(t.ids, cfg.ID)
-		t.byID[cfg.ID] = cfg
+	if sp.role == provider.Replicas {
+		// The accounts in play are the ones with a replica folder, each
+		// opened there. Nothing defaults: a replica goes exactly where the
+		// policy says, and the policy was checked when it was set. The
+		// configs carry suffixed IDs so the live cache keeps the two roots
+		// apart; the shards a scatter records under them are put back on the
+		// account's real ID by the caller. See replica.go.
+		defaults = nil
+		at := configs[:0:0]
+		for _, cfg := range configs {
+			if cfg.ReplicaFolder == "" {
+				continue
+			}
+			derived, err := replicaConfig(cfg)
+			if err != nil {
+				return nil, err
+			}
+			at = append(at, derived)
+		}
+		configs = at
+		if len(configs) == 0 {
+			return nil, fmt.Errorf("no connected account has a replica folder")
+		}
+		// The preference names real IDs, and this map is keyed by them, so a
+		// replica's accounts resolve to their replica roots.
+		t.byID = make(map[string]provider.Config, len(configs))
+		t.ids = make([]string, 0, len(configs))
+		for _, cfg := range configs {
+			id := accountIDOf(cfg.ID)
+			t.ids = append(t.ids, id)
+			t.byID[id] = cfg
+		}
+	} else {
+		if len(configs) == 0 {
+			return nil, fmt.Errorf("connect at least one cloud account before uploading")
+		}
+		t.byID = make(map[string]provider.Config, len(configs))
+		t.ids = make([]string, 0, len(configs))
+		for _, cfg := range configs {
+			t.ids = append(t.ids, cfg.ID)
+			t.byID[cfg.ID] = cfg
+		}
 	}
 
 	t.preferred = sp.preferred
@@ -654,6 +710,7 @@ func (v *Vault) Delete(ctx context.Context, id string) ([]string, error) {
 	v.mu.RUnlock()
 
 	warnings := v.deleteEntryShards(ctx, &doomed)
+	warnings = append(warnings, v.deleteReplicaShards(ctx, doomed.Replica)...)
 
 	v.mu.Lock()
 	m, err := v.manifestForLocked(scope)
@@ -733,6 +790,7 @@ func (v *Vault) eraseEntries(ctx context.Context, doomed []*Entry, onProgress fu
 			defer wg.Done()
 			defer func() { <-window }()
 			found := v.deleteEntryShards(inflight, e)
+			found = append(found, v.deleteReplicaShards(inflight, e.Replica)...)
 			mu.Lock()
 			warnings = append(warnings, found...)
 			finished++
@@ -936,6 +994,7 @@ func (v *Vault) Rmdir(ctx context.Context, scope Scope, dir string, recursive bo
 		m.dropMovieFolders(dir)
 		m.dropAutomations(dir)
 		m.dropFolderArt(dir)
+		m.dropReplicatedFolders(dir)
 	}
 	err = v.persistLocked()
 	v.mu.Unlock()
@@ -985,13 +1044,19 @@ func (v *Vault) deleteEntryShards(ctx context.Context, entry *Entry) []string {
 // one object per chunk — all of which have to go, or disconnecting the account
 // later reports space held by a file that no longer exists.
 func (v *Vault) deleteStoredShards(ctx context.Context, archiveID string, chunkCount int, shards []Shard) []string {
+	return v.deleteStoredShardsAt(ctx, provider.Parts, archiveID, chunkCount, shards)
+}
+
+// deleteStoredShardsAt is deleteStoredShards at a role: the parts folder of
+// each account, or its replica folder.
+func (v *Vault) deleteStoredShardsAt(ctx context.Context, role provider.Role, archiveID string, chunkCount int, shards []Shard) []string {
 	if len(shards) == 0 {
 		return nil
 	}
 
 	v.mu.RLock()
 	locked := v.dataKey == nil
-	configs := v.configsForLocked(shards)
+	configs := v.configsAtLocked(role, shards)
 	v.mu.RUnlock()
 	if locked {
 		return []string{"vault locked before parts could be erased"}

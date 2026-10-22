@@ -901,6 +901,56 @@ clouds brings back a shard that was never written. `sand check` and the file's
 own **Where the shards live** say the same thing per file; this is the vault-wide
 answer to "which ones, and can I fix them from here".
 
+## Replication: a second copy on clouds you already have
+
+Everything above is one placement per file. Replication adds a second,
+independent one for the folders you choose: the same bytes cut again, under
+their own archive ID and the current key, into a **replica folder** on each of
+the clouds the policy names. The parts stay exactly where and as they are.
+
+The replication clouds are accounts already connected. What makes one a
+replication cloud is a second folder on it — beside the one its parts are in,
+never inside it — and that folder is the only thing that tells a replica object
+from a part. Nothing on a cloud names a file, and nothing on a replica says it
+is one: the object names have a part's shape under an archive ID drawn fresh,
+so the two folders on one account cannot be paired up by eye. An account whose
+parts are kept at the root cannot take replicas until its parts have a folder
+of their own, because a listing of the root takes every folder in.
+
+- **One replication cloud** holds the **whole sealed file**. It is the one
+  placement in SAND where a single account holds a file — still unreadable
+  without the key, but enough on its own once the key is known — and the
+  settings dialog says so rather than hiding it.
+- **Several replication clouds** cut a replica k-of-n like anything else, with
+  the same three trades the upload picker shows: storage, how many clouds can
+  go dark, how many must be broken into together.
+
+```bash
+sand replicate set --cloud r2-cold=sand-replica --cloud nas=/mnt/nas/replica \
+    --cloud drive="Vault replicas" --scheme 2-of-3 --per-day 10G
+sand replicate add /photos          # the folder and everything under it
+sand replicate exclude /photos/raw  # a folder kept out, whatever its parent says
+sand replicate status
+sand replicate run                  # in the foreground; 'sand serve' does it on its own
+sand get --from replica /photos/hike.jpg
+```
+
+In the app the policy is **Vault settings › Replication**: tick the clouds,
+name the replica folder on each, choose the code, set a daily budget. A
+folder's menu gains **Replicate this folder**, which says what the copy will
+cost before anything moves; a file's menu gains the same for one file, over
+whatever its folder says, and **Drop the replica**. Copies are made while the
+vault is open, smallest file first at the pace set, and a replica is made again
+when the file's bytes change, when the key changes after a password change, or
+when the policy does. Deleting a file erases its replica with it; clearing the
+policy leaves every replica already made where it is.
+
+A file with a replica carries a second, outlined group of badges after its
+parts. Opening, streaming or downloading it offers **Read from**: the parts,
+the replica alone, or **either** — the parts, with the replica standing in for
+any chunk they cannot give. A stream link made for the replica keeps reading
+the replica whoever follows it.
+
 ## A folder that looks after itself
 
 Everything above waits to be asked. Somebody clicks the count of short files;
