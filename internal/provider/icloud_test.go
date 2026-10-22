@@ -315,6 +315,11 @@ func TestICloudPingRejectsFolderOutsideDrive(t *testing.T) {
 		t.Errorf("error does not say why: %v", err)
 	}
 
+	// iCloud Drive's own folder is always there on a machine with the client
+	// on; a local folder is only ever created inside a parent that exists.
+	if err := os.MkdirAll(filepath.Join(container, "com~apple~CloudDocs"), 0700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
 	inside := newTestICloud(t, filepath.Join(container, "com~apple~CloudDocs", "sand"))
 	inside.containers = []string{container}
 	if err := inside.Ping(context.Background()); err != nil {

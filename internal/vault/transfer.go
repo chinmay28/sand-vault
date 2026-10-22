@@ -101,6 +101,7 @@ func (v *Vault) Upload(ctx context.Context, scope Scope, dir, name string, data 
 	// neither picks accounts of its own, inside the scatter.
 	placed, err := v.scatterChunked(ctx, scope, name, data,
 		spread{preferred: opts.Accounts, exact: true, scheme: opts.Scheme}, v.uploadChunkSize())
+	defer v.releaseDataKey(placed.keyID)
 	if err != nil {
 		return nil, placed.warnings, err
 	}
@@ -297,6 +298,9 @@ func (v *Vault) snapshotTarget(scope Scope, sp spread) (*transferTarget, error) 
 		v.mu.RUnlock()
 		return nil, err
 	}
+	// Held from here until the caller releases the placement's key: the
+	// generation must survive any rotation that lands before the commit.
+	v.holdDataKeyLocked(keyID)
 	t := &transferTarget{
 		keyID:         keyID,
 		shardPassword: shardPasswordFor(dataKey),
