@@ -314,6 +314,25 @@ func (v *Vault) SetReplication(s ReplicationSettings) error {
 		if err := cfg.Validate(); err != nil {
 			return err
 		}
+		// Reached at its replica root the way AddProvider reaches an account
+		// at its parts root. A backend creates its folder on Ping and only
+		// there — a local folder's Put refuses a root that is not there, so
+		// a replica folder nobody has Pinged would take no replica.
+		at, err := replicaConfig(cfg)
+		if err != nil {
+			return err
+		}
+		live, err := v.newLiveProvider(at)
+		if err != nil {
+			return err
+		}
+		pingCtx, cancel := context.WithTimeout(context.Background(), healthPingTimeout)
+		err = live.Ping(pingCtx)
+		cancel()
+		closeProvider(live)
+		if err != nil {
+			return fmt.Errorf("%s's replica folder does not answer: %w", cfg.Name, err)
+		}
 		updated[idx] = cfg
 		ids = append(ids, a.ID)
 	}

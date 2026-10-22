@@ -256,6 +256,9 @@ func TestReadWatchEndpointSaysWhichAccountFailed(t *testing.T) {
 	roots := c.setup("watch a failing read", 3)
 
 	id := c.upload("doomed.txt", "/", []byte("two of the three clouds went dark"))["id"].(string)
+	// The manifest backup is still being pushed into every account; let it
+	// land, or the wipe races a write into the folder and fails on it.
+	c.server.vault.AwaitBackupSync()
 	for _, root := range roots[:2] {
 		if err := os.RemoveAll(root); err != nil {
 			t.Fatalf("removing an account's folder: %v", err)
