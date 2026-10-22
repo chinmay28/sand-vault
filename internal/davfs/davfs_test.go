@@ -38,6 +38,10 @@ func newTestVault(t *testing.T) *vault.Vault {
 	// vault file is in — let it land before that directory is removed.
 	t.Cleanup(v.AwaitReadHistory)
 
+	// A local folder is created inside a parent that already exists.
+	if err := os.MkdirAll(filepath.Join(dir, "cloud"), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
 	for i := 0; i < 3; i++ {
 		if _, err := v.AddProvider(context.Background(), provider.Config{
 			Kind:    provider.KindLocal,

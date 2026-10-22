@@ -241,13 +241,14 @@ type syncFolderProvider struct {
 	client string
 }
 
-// Ping refuses a folder whose parent is not there. The plain local backend
-// creates a whole path happily, which is right for a disk and wrong here: if
-// the folder the client syncs does not exist, the client is not running on
-// this machine, and creating `~/MEGA/sand` underneath it would produce an
-// account that accepts every part and uploads none of them. Naming a new
-// folder inside one that does exist stays fine — that is the normal way to
-// connect one.
+// Ping refuses a folder whose parent is not there, and says why in terms of
+// the client. The plain local backend refuses the same thing — a missing
+// parent is an unmounted drive to it — but its sentence is about mounts, and
+// here the cause is different: if the folder the client syncs does not exist,
+// the client is not running on this machine, and creating `~/MEGA/sand`
+// underneath it would produce an account that accepts every part and uploads
+// none of them. Naming a new folder inside one that does exist stays fine —
+// that is the normal way to connect one.
 func (p *syncFolderProvider) Ping(ctx context.Context) error {
 	parent := filepath.Dir(p.root)
 	if info, err := os.Stat(parent); err != nil || !info.IsDir() {

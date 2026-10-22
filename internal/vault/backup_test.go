@@ -83,6 +83,11 @@ func TestBackupCarriesNoCredentials(t *testing.T) {
 	if err := v.Init(testPassword, PolicyStrict); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
+	// A local folder is created inside a parent that already exists, never
+	// through one that does not — a missing parent is an unmounted drive.
+	if err := os.MkdirAll(filepath.Join(dir, "cloud"), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
 	for i := 0; i < 2; i++ {
 		if _, err := v.AddProvider(context.Background(), provider.Config{
 			Kind: provider.KindLocal,
@@ -152,6 +157,10 @@ func TestBackupCanBeTurnedOff(t *testing.T) {
 	if !v.BackupEnabled() {
 		t.Fatal("the manifest backup should be on by default")
 	}
+	// Connecting the accounts queued a push in the background. Let it land
+	// before switching off, so that the erase the switch does comes after it
+	// rather than racing it and losing.
+	v.AwaitBackupSync()
 	if _, err := v.SetBackupEnabled(context.Background(), false); err != nil {
 		t.Fatalf("SetBackupEnabled: %v", err)
 	}
