@@ -540,6 +540,90 @@ func TestARunIsWrittenIntoTheFoldersHistory(t *testing.T) {
 	}
 }
 
+// A run whose result could not be written down must not look like a run that
+// never happened. With the disk refusing the vault file, the old code reverted
+// the stamp and the policy was due again on the next tick — every minute,
+// rebuilds and all, until the disk was fixed.
+func TestAFailedStampStillHoldsThePolicyUntilItsNextSlot(t *testing.T) {
+	v, _ := newTestVault(t, 3)
+	policy := Automation{Enabled: true, Cadence: CadenceHourly, Action: ActionCheck}
+	if _, err := v.SetAutomation(MainScope, "/", policy); err != nil {
+		t.Fatalf("SetAutomation: %v", err)
+	}
+	// Made two hours ago, so it is due now.
+	v.mu.Lock()
+	v.manifest.Automations["/"].CreatedAt = time.Now().Add(-2 * time.Hour)
+	goodPath := v.path
+	v.mu.Unlock()
+
+	now := time.Now()
+	if due, _ := v.DueAutomations(now); len(due) != 1 {
+		t.Fatalf("due = %d policies before the run, want 1", len(due))
+	}
+
+	// The disk stops taking the vault file: a regular file where its
+	// directory should be is the one refusal that works for root as well.
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	v.mu.Lock()
+	v.path = filepath.Join(blocker, "vault.sand")
+	v.mu.Unlock()
+
+	runs, err := v.RunDueAutomations(context.Background(), now)
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("RunDueAutomations = %d runs, %v; want 1", len(runs), err)
+	}
+	complained := false
+	for _, w := range runs[0].Warnings {
+		if strings.Contains(w, "could not be written down") {
+			complained = true
+		}
+	}
+	if !complained {
+		t.Fatalf("warnings = %v, want the failed write reported", runs[0].Warnings)
+	}
+	auto, err := v.AutomationFor(MainScope, "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !auto.LastRunAt.IsZero() || len(auto.History) != 0 {
+		t.Errorf("memory claims a history the file does not hold: last %v, %d run(s)", auto.LastRunAt, len(auto.History))
+	}
+
+	// Not due a minute later; due again an hour after the attempt.
+	if due, _ := v.DueAutomations(now.Add(time.Minute)); len(due) != 0 {
+		t.Errorf("due = %d policies a minute after a run the disk refused, want 0", len(due))
+	}
+	if due, _ := v.DueAutomations(now.Add(61 * time.Minute)); len(due) != 1 {
+		t.Errorf("due = %d policies an hour after the attempt, want 1", len(due))
+	}
+
+	// The disk comes back. The next run is written down, and from then on the
+	// file's stamp is the one that counts.
+	v.mu.Lock()
+	v.path = goodPath
+	v.mu.Unlock()
+	runs, err = v.RunDueAutomations(context.Background(), now.Add(61*time.Minute))
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("RunDueAutomations after the disk came back = %d runs, %v; want 1", len(runs), err)
+	}
+	auto, err = v.AutomationFor(MainScope, "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auto.LastRunAt.IsZero() || len(auto.History) != 1 {
+		t.Errorf("the written run was not stamped: last %v, %d run(s)", auto.LastRunAt, len(auto.History))
+	}
+	if !v.lastAttempt(MainScope, "/").IsZero() {
+		t.Error("the failed-attempt record outlived a successful write")
+	}
+	if due, _ := v.DueAutomations(auto.LastRunAt.Add(time.Minute)); len(due) != 0 {
+		t.Errorf("due = %d policies a minute after a written run, want 0", len(due))
+	}
+}
+
 func TestRunningOneFolderIsRefusedWhenThereIsNoPolicy(t *testing.T) {
 	v, _ := newTestVault(t, 3)
 

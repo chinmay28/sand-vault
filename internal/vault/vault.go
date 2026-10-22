@@ -85,6 +85,20 @@ type Vault struct {
 	autoMu     sync.Mutex
 	autoActive string
 
+	// attempted is when each policy last finished a run whose result could
+	// not be written down, by scope and folder (see automationKey). The
+	// stamp a run leaves lives in the vault file, and a disk that will not
+	// take the write would otherwise leave the policy looking as if it had
+	// never run — due again on the next tick, and the tick after, rebuilding
+	// files every minute for as long as the disk stays full. Consulted by
+	// DueAutomations until a write succeeds, and cleared then.
+	//
+	// Its own leaf lock, because the stamp is decided while mu is held and
+	// autoMu is never taken under mu. In memory on purpose: the vault file is
+	// the thing that could not be written.
+	attemptMu sync.Mutex
+	attempted map[string]time.Time
+
 	// liveMu guards the cache of constructed providers. It is a leaf lock,
 	// always taken last, so cache warming can happen while mu is held.
 	liveMu sync.Mutex

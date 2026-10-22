@@ -947,9 +947,17 @@ func (v *Vault) DueAutomations(now time.Time) ([]FolderAutomation, error) {
 	}
 	due := make([]FolderAutomation, 0, len(all))
 	for _, fa := range all {
-		if fa.Due(now) {
-			due = append(due, fa)
+		if !fa.Due(now) {
+			continue
 		}
+		// A run the file could not record is still a run. Counted from the
+		// attempt rather than from the stamp the file holds, until a write
+		// succeeds and the two agree again.
+		if tried := v.lastAttempt(fa.Vault, fa.Folder); tried.After(fa.LastRunAt) &&
+			now.Before(fa.nextAfter(tried, time.Local)) {
+			continue
+		}
+		due = append(due, fa)
 	}
 	sort.SliceStable(due, func(i, j int) bool {
 		di, dj := depthOf(due[i].Folder), depthOf(due[j].Folder)
@@ -1602,9 +1610,32 @@ func narrowScheme(have archive.Scheme, width int) (archive.Scheme, error) {
 // A run always lands, even one that failed: the history is the record of what
 // the folder has been through, and a fortnight of "no account answered" is
 // exactly the thing somebody needs to be able to see.
+//
+// A result that could not be written down is still a run that happened. The
+// index is put back the way the file on disk has it, so memory never claims a
+// history the file does not hold — but the attempt is remembered in memory
+// (see Vault.attempted), so that the policy is next due a cadence after this
+// run rather than on the next tick. Without that, a full disk made every
+// policy run every minute, rebuilds included, until somebody noticed.
 func (v *Vault) finishAutomation(scope Scope, dir string, run *AutomationRun) (*AutomationRun, error) {
 	run.FinishedAt = time.Now().UTC()
 
+	// What happened under the lock, told to the bookkeeping after it: the
+	// attempt record has its own leaf lock, and the rule for leaf locks is
+	// that mu is not held while they are taken.
+	written, tried := v.recordRunLocked(scope, dir, run)
+	switch {
+	case written:
+		v.forgetAttempt(scope, dir)
+	case tried:
+		v.noteAttempt(scope, dir, run.FinishedAt)
+	}
+	return run, nil
+}
+
+// recordRunLocked stamps the run onto the policy and persists it. tried says
+// there was a policy to stamp, written that the stamp reached the disk.
+func (v *Vault) recordRunLocked(scope Scope, dir string, run *AutomationRun) (written, tried bool) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.dataKey == nil {
@@ -1613,16 +1644,16 @@ func (v *Vault) finishAutomation(scope Scope, dir string, run *AutomationRun) (*
 		if run.Error == "" {
 			run.Error = "the vault was locked before the sweep finished"
 		}
-		return run, nil
+		return false, false
 	}
 	m, err := v.manifestForLocked(scope)
 	if err != nil {
-		return run, nil
+		return false, false
 	}
 	auto := m.Automations[dir]
 	if auto == nil {
 		// Removed while it was running. Nothing to record it against.
-		return run, nil
+		return false, false
 	}
 
 	previousRun, previousHistory := auto.LastRunAt, auto.History
@@ -1637,8 +1668,41 @@ func (v *Vault) finishAutomation(scope Scope, dir string, run *AutomationRun) (*
 		auto.LastRunAt, auto.History = previousRun, previousHistory
 		run.Warnings = append(run.Warnings,
 			fmt.Sprintf("the result of this sweep could not be written down: %v", err))
+		return false, true
 	}
-	return run, nil
+	return true, true
+}
+
+// automationKey names one policy in the attempt record.
+func automationKey(scope Scope, dir string) string {
+	return string(scope) + "\x00" + CleanDir(dir)
+}
+
+// noteAttempt remembers that a run of the policy finished at the given time
+// without its result reaching the disk.
+func (v *Vault) noteAttempt(scope Scope, dir string, at time.Time) {
+	v.attemptMu.Lock()
+	defer v.attemptMu.Unlock()
+	if v.attempted == nil {
+		v.attempted = map[string]time.Time{}
+	}
+	v.attempted[automationKey(scope, dir)] = at
+}
+
+// forgetAttempt drops the record once a write has succeeded: the file now
+// says what memory was standing in for.
+func (v *Vault) forgetAttempt(scope Scope, dir string) {
+	v.attemptMu.Lock()
+	delete(v.attempted, automationKey(scope, dir))
+	v.attemptMu.Unlock()
+}
+
+// lastAttempt is when the policy last ran without being able to say so, or
+// zero when every run it has had was written down.
+func (v *Vault) lastAttempt(scope Scope, dir string) time.Time {
+	v.attemptMu.Lock()
+	defer v.attemptMu.Unlock()
+	return v.attempted[automationKey(scope, dir)]
 }
 
 // formatSize writes a byte count the way the reports do, since these strings
