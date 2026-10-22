@@ -83,7 +83,12 @@ func (v *Vault) RotateDataKey() (string, error) {
 	}{v.dataKey, v.dataKeyID, v.retired, v.store.DataKey, v.store.DataKeyID, v.store.RetiredKeys,
 		v.store.InheritedKeyID}
 
-	retired := map[string][]byte{v.dataKeyID: v.dataKey}
+	// A copy of the outgoing key, not the slice itself. The retired map is
+	// what the prune wipes a generation out of, and on a vault with no files
+	// that is this very generation in this very write; aliasing the live
+	// slice would have a failed write's rollback restore an active key that
+	// is all zeros, and every upload after it sealed under nothing.
+	retired := map[string][]byte{v.dataKeyID: append([]byte(nil), v.dataKey...)}
 	for id, key := range v.retired {
 		retired[id] = key
 	}
@@ -114,6 +119,10 @@ func (v *Vault) RotateDataKey() (string, error) {
 		crypto.ZeroBytes(fresh)
 		return "", err
 	}
+	// The outgoing key lives on as the copy in the retired map, if anything
+	// still needs it; the slice that was the active key is a second copy of
+	// the same secret and goes.
+	crypto.ZeroBytes(previous.dataKey)
 	return freshID, nil
 }
 

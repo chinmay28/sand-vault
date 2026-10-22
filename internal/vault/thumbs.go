@@ -491,6 +491,9 @@ func (v *Vault) savePackOn(ctx context.Context, scope Scope, dir string, items m
 
 	placed, err := v.scatter(ctx, scope, thumbArchiveName, encodePack(items),
 		spread{preferred: accounts, exact: len(accounts) > 0, scheme: archive.SchemeDefault})
+	// The pack's key is held until it is in the index or erased, so a
+	// rotation landing in between keeps the generation — see holdDataKeyLocked.
+	defer v.releaseDataKey(placed.keyID)
 	if err != nil {
 		return err
 	}
@@ -510,6 +513,9 @@ func (v *Vault) savePackOn(ctx context.Context, scope Scope, dir string, items m
 
 	v.mu.Lock()
 	m, err := v.manifestForLocked(scope)
+	if err == nil {
+		err = v.placedKeyHeldLocked(placed.keyID)
+	}
 	if err != nil {
 		v.mu.Unlock()
 		v.deleteShards(context.WithoutCancel(ctx), placed.shards)

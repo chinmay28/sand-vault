@@ -452,6 +452,59 @@ func TestRebalanceRebuildsOntoTheCloudsThatAnswer(t *testing.T) {
 	}
 }
 
+// A repair rebuilds the file — migrateFile, pointed at the clouds that answer
+// — and so it runs in the re-encryption slot. A sweep that finds the slot
+// taken by the paced step leaves the file for the next sweep rather than
+// gathering and scattering it alongside, and does not count it as failed.
+func TestARepairWaitsForTheReEncryptionSlot(t *testing.T) {
+	v, roots := newTestVault(t, 4)
+
+	payload := []byte("a file short a cloud while a password change is moving things\n")
+	entry, _, err := v.Upload(context.Background(), MainScope, "/", "notes.txt", payload, UploadOptions{})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	held := map[string]bool{}
+	for _, s := range entry.Shards {
+		held[s.ProviderID] = true
+	}
+	providers, err := v.Providers()
+	if err != nil {
+		t.Fatalf("Providers: %v", err)
+	}
+	for i, cfg := range providers {
+		if held[cfg.ID] {
+			darken(t, roots[i])
+			break
+		}
+	}
+	if _, err := v.SetAutomation(MainScope, "/", dailyAt("10:00", ActionRebalance)); err != nil {
+		t.Fatalf("SetAutomation: %v", err)
+	}
+
+	// Stand in for a paced step that is mid-file.
+	v.migrateMu.Lock()
+	run, err := v.RunAutomation(context.Background(), MainScope, "/")
+	v.migrateMu.Unlock()
+	if err != nil {
+		t.Fatalf("RunAutomation while the slot is busy: %v", err)
+	}
+	if run.Shards.Deferred != 1 || run.Shards.Failed != 0 || run.Shards.Repaired != 0 {
+		t.Fatalf("run while the slot is busy = %+v, want the file deferred, not failed", run.Shards)
+	}
+	if untouched := v.manifest.ByID(entry.ID); untouched.ArchiveID != entry.ArchiveID {
+		t.Error("the file was rebuilt while the slot was busy")
+	}
+
+	again, err := v.RunAutomation(context.Background(), MainScope, "/")
+	if err != nil {
+		t.Fatalf("RunAutomation once the slot is free: %v", err)
+	}
+	if again.Shards.Repaired != 1 || again.Shards.Failed != 0 {
+		t.Fatalf("run once the slot is free = %+v, want the file rebuilt", again.Shards)
+	}
+}
+
 func TestRebalanceLeavesAFilePastTheRebuildCeiling(t *testing.T) {
 	v, roots := newTestVault(t, 4)
 

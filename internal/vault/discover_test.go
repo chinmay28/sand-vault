@@ -2,6 +2,7 @@ package vault
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -23,6 +24,10 @@ func abandonedVault(t *testing.T, accounts int) (roots []string, password string
 	}
 	if err := old.Init(password, PolicyStrict); err != nil {
 		t.Fatalf("Init: %v", err)
+	}
+	// A local folder is created inside a parent that already exists.
+	if err := os.MkdirAll(filepath.Join(dir, "cloud"), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
 	}
 	for i := 0; i < accounts; i++ {
 		root := filepath.Join(dir, "cloud", string(rune('a'+i)))
