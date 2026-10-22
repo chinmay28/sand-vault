@@ -288,6 +288,11 @@ func TestConversionLeavesARowRewrittenUnderneathItAlone(t *testing.T) {
 	}
 	t.Cleanup(v.AwaitBackupSync)
 	t.Cleanup(v.AwaitReadHistory)
+	// The local backend creates an account folder only inside a parent that
+	// already exists, so the parent is made here, as the other fixtures do.
+	if err := os.MkdirAll(filepath.Join(dir, "cloud"), 0o755); err != nil {
+		t.Fatalf("creating the accounts' parent: %v", err)
+	}
 	roots := make([]string, 3)
 	for i := range roots {
 		roots[i] = filepath.Join(dir, "cloud", string(rune('a'+i)))
