@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -38,6 +39,11 @@ func TestWebDAVRequestInFlightHoldsOffTheAutoLock(t *testing.T) {
 	}
 	t.Cleanup(v.AwaitBackupSync)
 	t.Cleanup(v.AwaitReadHistory)
+	// The local backend creates an account folder only inside a parent that
+	// already exists, so the parent is made here, as the other fixtures do.
+	if err := os.MkdirAll(filepath.Join(dir, "cloud"), 0o755); err != nil {
+		t.Fatalf("creating the accounts' parent: %v", err)
+	}
 	for i := 0; i < 3; i++ {
 		if _, err := v.AddProvider(context.Background(), provider.Config{
 			Kind:    provider.KindLocal,
