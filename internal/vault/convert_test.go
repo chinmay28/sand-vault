@@ -11,7 +11,11 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"strings"
+	"sync"
 	"testing"
+
+	"github.com/chinmay28/sand-vault/internal/provider"
 )
 
 // convertPeak reports the most heap live at any moment during work.
@@ -218,6 +222,153 @@ func TestConvertingAnAlreadyChunkedFileDoesNothing(t *testing.T) {
 	}
 	if after.ArchiveID != entry.ArchiveID {
 		t.Error("an already-chunked file was re-uploaded for nothing")
+	}
+}
+
+// hookedLocal is a local-folder account that calls a hook on the first part it
+// is asked to store, from inside the Put — the one moment between a
+// conversion's read and its commit a test can stand in. The hook is keyed by
+// the account's folder, since the factory is handed only the config.
+type hookedLocal struct {
+	provider.Provider
+	root string
+}
+
+var (
+	putHooksMu sync.Mutex
+	putHooks   = map[string]func(){}
+)
+
+func (h *hookedLocal) Put(ctx context.Context, key string, data []byte) error {
+	// Only a part: the manifest backup is pushed on its own goroutine and
+	// must not be the thing that fires it.
+	if strings.Contains(key, "-c0000000-p") {
+		putHooksMu.Lock()
+		hook := putHooks[h.root]
+		delete(putHooks, h.root)
+		putHooksMu.Unlock()
+		if hook != nil {
+			hook()
+		}
+	}
+	return h.Provider.Put(ctx, key, data)
+}
+
+func registerHookedLocal(t *testing.T) provider.Kind {
+	t.Helper()
+	kind := provider.Kind("hooked-local")
+	provider.Register(provider.Spec{
+		Kind:   kind,
+		Label:  "Hooked folder",
+		Fields: []provider.FieldSpec{{Key: "path", Label: "Folder", Required: true}},
+	}, func(cfg provider.Config) (provider.Provider, error) {
+		inner, err := provider.New(provider.Config{ID: cfg.ID, Kind: provider.KindLocal, Name: cfg.Name, Options: cfg.Options})
+		if err != nil {
+			return nil, err
+		}
+		return &hookedLocal{Provider: inner, root: cfg.Options["path"]}, nil
+	})
+	return kind
+}
+
+// A conversion and a re-encryption — or two conversions, one from the
+// browser and one from the backlog — read the same pre-chunking row and each
+// scatter a fresh chunked copy. Whichever commits second used to overwrite
+// the first's placement and leave the first's parts pointed at by nothing. A
+// commit now checks the row is the one it read.
+func TestConversionLeavesARowRewrittenUnderneathItAlone(t *testing.T) {
+	kind := registerHookedLocal(t)
+	dir := t.TempDir()
+	v, err := Open(filepath.Join(dir, "vault.sand"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := v.Init(testPassword, PolicyStrict); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Cleanup(v.AwaitBackupSync)
+	t.Cleanup(v.AwaitReadHistory)
+	// The local backend creates an account folder only inside a parent that
+	// already exists, so the parent is made here, as the other fixtures do.
+	if err := os.MkdirAll(filepath.Join(dir, "cloud"), 0o755); err != nil {
+		t.Fatalf("creating the accounts' parent: %v", err)
+	}
+	roots := make([]string, 3)
+	for i := range roots {
+		roots[i] = filepath.Join(dir, "cloud", string(rune('a'+i)))
+		if _, err := v.AddProvider(context.Background(), provider.Config{
+			Kind: kind, Name: "cloud-" + string(rune('a'+i)), Options: map[string]string{"path": roots[i]},
+		}); err != nil {
+			t.Fatalf("AddProvider %d: %v", i, err)
+		}
+	}
+	v.mu.Lock()
+	v.chunkSize = 4096
+	v.mu.Unlock()
+	ctx := context.Background()
+
+	payload := readerPayload(10000)
+	// The fixture is the manifest's own row, so its archive ID is read now,
+	// before either conversion rewrites it in place.
+	entry := addWholeEntry(t, v, "legacy", "film.bin", payload)
+	original := entry.ArchiveID
+
+	// The outer conversion has read the file and is storing its first chunk
+	// when the inner one runs to completion on the same row. The hook runs
+	// on the scatter's own goroutines, hence the lock around what it records.
+	var hookMu sync.Mutex
+	var inner string
+	fired := false
+	putHooksMu.Lock()
+	for _, root := range roots {
+		putHooks[root] = func() {
+			hookMu.Lock()
+			defer hookMu.Unlock()
+			if fired {
+				return
+			}
+			fired = true
+			if _, err := v.Convert(ctx, entry.ID); err != nil {
+				t.Errorf("inner Convert: %v", err)
+			}
+			if e, err := v.Entry(entry.ID); err == nil {
+				inner = e.ArchiveID
+			}
+		}
+	}
+	putHooksMu.Unlock()
+
+	report, err := v.Convert(ctx, entry.ID)
+	if err != nil {
+		t.Fatalf("outer Convert: %v", err)
+	}
+	hookMu.Lock()
+	defer hookMu.Unlock()
+	if !fired || inner == "" || inner == original {
+		t.Fatalf("the inner conversion did not rewrite the file first: fired %v, archive %q → %q", fired, original, inner)
+	}
+	if !strings.Contains(strings.Join(report.Warnings, "\n"), "rewritten") {
+		t.Errorf("warnings = %v, want the outer conversion to say it stood down", report.Warnings)
+	}
+
+	// The inner conversion's placement stands, the outer's parts are gone,
+	// and the file reads.
+	now, err := v.Entry(entry.ID)
+	if err != nil {
+		t.Fatalf("Entry: %v", err)
+	}
+	if now.ArchiveID != inner || !now.Chunked() {
+		t.Errorf("row after both conversions = archive %s chunked %v, want the inner one's %s", now.ArchiveID, now.Chunked(), inner)
+	}
+	if n := objectsUnder(t, roots); n != 3*now.ChunkCount {
+		t.Errorf("%d objects on the accounts, want the %d of the one placement the index names", n, 3*now.ChunkCount)
+	}
+	whole, _, err := v.Fetch(ctx, entry.ID)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if !bytes.Equal(whole, payload) {
+		t.Error("the converted file did not match the original")
 	}
 }
 

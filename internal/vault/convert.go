@@ -165,6 +165,21 @@ func (v *Vault) Convert(ctx context.Context, id string) (*ConversionReport, erro
 			v.deleteEntryShards(context.WithoutCancel(ctx), fresh)...)
 		return report, nil
 	}
+	if e.ArchiveID != stale.ArchiveID {
+		// Rewritten while it was being converted — by a re-encryption, a
+		// recode, or a second conversion that got there first. Whatever did
+		// so has committed its own parts and erased the ones this read from;
+		// writing this placement over it would orphan that pass's parts and
+		// point the index at a copy of a file it no longer holds. The parts
+		// just written are the ones referenced by nothing, so they go.
+		v.mu.Unlock()
+		report.Warnings = append(report.Warnings,
+			v.deleteEntryShards(context.WithoutCancel(ctx), fresh)...)
+		report.Warnings = append(report.Warnings, fmt.Sprintf(
+			"%s was rewritten while it was being converted, so this pass left it alone", stale.Path()))
+		report.ChunkCount = e.ChunkCount
+		return report, nil
+	}
 
 	previous := *e
 	e.ArchiveID = placed.archiveID

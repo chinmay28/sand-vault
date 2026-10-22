@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/chinmay28/sand-vault/internal/archive"
+	"github.com/chinmay28/sand-vault/internal/movie"
 	"github.com/chinmay28/sand-vault/internal/provider"
 )
 
@@ -1239,5 +1240,126 @@ func TestRmdirStopsWhereItIsAsked(t *testing.T) {
 	}
 	if len(listing.Files) == 0 || len(listing.Files) > files-2 {
 		t.Errorf("%d files left in the folder after a stop at 2, want between 1 and %d", len(listing.Files), files-2)
+	}
+}
+
+// A delete erases the parts first and writes the index after. A lock that
+// lands in between — the idle timer during a long folder delete, or the Lock
+// button — used to make the write fail and leave the files listed, pointing
+// at parts that were gone. The lock is honoured instead the moment the index
+// is written: delayed, not refused, and not dropped.
+func TestALockAskedForMidDeleteIsHonouredAfterwards(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		remove func(t *testing.T, v *Vault, ids []string, lock func(done int))
+	}{
+		{"DeleteMany", func(t *testing.T, v *Vault, ids []string, lock func(done int)) {
+			report, err := v.DeleteMany(context.Background(), ids, func(done, total int) { lock(done) })
+			if err != nil {
+				t.Fatalf("DeleteMany: %v", err)
+			}
+			if report.Deleted != len(ids) {
+				t.Fatalf("Deleted = %d, want %d", report.Deleted, len(ids))
+			}
+		}},
+		{"Rmdir", func(t *testing.T, v *Vault, ids []string, lock func(done int)) {
+			if _, err := v.Rmdir(context.Background(), MainScope, "/bulk", true, func(done, total int) { lock(done) }); err != nil {
+				t.Fatalf("Rmdir: %v", err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v, roots := newTestVault(t, 3)
+			ctx := context.Background()
+			if err := v.Mkdir(MainScope, "/bulk"); err != nil {
+				t.Fatalf("Mkdir: %v", err)
+			}
+			var ids []string
+			var shards []Shard
+			for i := 0; i < 6; i++ {
+				name := fmt.Sprintf("f%02d.txt", i)
+				entry, _, err := v.Upload(ctx, MainScope, "/bulk", name, []byte(name), UploadOptions{})
+				if err != nil {
+					t.Fatalf("Upload %s: %v", name, err)
+				}
+				ids = append(ids, entry.ID)
+				shards = append(shards, entry.Shards...)
+			}
+
+			locked := false
+			tc.remove(t, v, ids, func(done int) {
+				if done == 1 && !locked {
+					locked = true
+					v.Lock()
+				}
+			})
+			if !locked {
+				t.Fatal("the lock was never asked for")
+			}
+
+			// Locked now, as asked — once the delete had written the index.
+			if v.Unlocked() {
+				t.Fatal("the vault is still open after a lock asked for mid-delete")
+			}
+			if err := v.Unlock(testPassword); err != nil {
+				t.Fatalf("Unlock: %v", err)
+			}
+			for _, id := range ids {
+				if _, err := v.Entry(id); err == nil {
+					t.Errorf("%s is still listed after the delete", id)
+				}
+			}
+			for _, shard := range shards {
+				for _, root := range roots {
+					if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(shard.Key))); err == nil {
+						t.Errorf("part %s is still on disk", shard.Key)
+					}
+				}
+			}
+		})
+	}
+}
+
+// An overwrite takes the replaced row out of the index in the same write the
+// new one goes in. Everything keyed by the replaced ID — a film title, a repo,
+// a folder's chosen picture — has to go in that write too, or it sits in the
+// index forever naming a file that is not there.
+func TestUploadOverwriteForgetsWhatTheReplacedFileCarried(t *testing.T) {
+	v, _ := newTestVault(t, 3)
+	ctx := context.Background()
+
+	if err := v.Mkdir(MainScope, "/films"); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	first, _, err := v.Upload(ctx, MainScope, "/films", "same.mkv", []byte("first"), UploadOptions{})
+	if err != nil {
+		t.Fatalf("first Upload: %v", err)
+	}
+	// Written straight into the index: what each of these means is the
+	// business of the code that sets it, and this is about the ID going.
+	v.mu.Lock()
+	v.manifest.Movies = map[string]*movie.Info{first.ID: {Title: "Same"}}
+	v.manifest.Repos = map[string]*GitSource{first.ID: {}}
+	v.manifest.FolderArt = map[string]string{"/films": first.ID}
+	v.mu.Unlock()
+
+	second, _, err := v.Upload(ctx, MainScope, "/films", "same.mkv", []byte("second"), UploadOptions{Overwrite: true})
+	if err != nil {
+		t.Fatalf("overwrite Upload: %v", err)
+	}
+	if second.ID == first.ID {
+		t.Fatal("the overwrite kept the replaced row's ID")
+	}
+
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	if _, still := v.manifest.Movies[first.ID]; still {
+		t.Error("the replaced file's film title is still in the index")
+	}
+	if _, still := v.manifest.Repos[first.ID]; still {
+		t.Error("the replaced file's repo is still in the index")
+	}
+	if id, still := v.manifest.FolderArt["/films"]; still && id == first.ID {
+		t.Error("the folder's picture still names the replaced file")
 	}
 }
