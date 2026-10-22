@@ -58,8 +58,9 @@ Local folder grants), the `/usr/local/bin/proton-drive` link and everything
 under `/opt/sand`. It **keeps your vault**: `/var/lib/sand` (the vault, its
 backups and Proton's client state) and the `sand` user stay, as do any folders
 a Local folder account wrote to, and it prints the command that deletes them.
-Pass the same `SAND_PREFIX` / `SAND_DATA_DIR` / `SAND_USER` you installed with.
-Running it again, or on a machine without SAND, does nothing and succeeds.
+A `SAND_PREFIX` / `SAND_DATA_DIR` / `SAND_USER` you installed with is read back
+from the unit; pass it only if the unit is already gone. Running it again, or
+on a machine without SAND, does nothing and succeeds.
 
 **Or skip the build entirely** and install the prebuilt binary from the latest
 [release](https://github.com/chinmay28/sand-vault/releases) — no Node, no Go, no
@@ -96,10 +97,14 @@ Override defaults with env vars (`PORT`, `HOST`, `SAND_WEBDAV`, `SAND_INSTALL`,
 `SAND_LOCAL_PATHS`, …). Manage it with `systemctl status sand` and
 `journalctl -u sand -f`.
 
-`PORT`, `HOST` and `SAND_WEBDAV` are **remembered**: on an upgrade, leaving one
-unset keeps whatever the service is already running with rather than resetting
-it, so re-running the script to pick up a new version can't quietly move a
-loopback-only install back onto every interface.
+`PORT`, `HOST`, `SAND_WEBDAV`, `SAND_USER`, `SAND_PREFIX`, `SAND_DATA_DIR` and
+`SAND_MOUNT_ROOTS` are **remembered**: on an upgrade, leaving one unset keeps
+whatever the service is already running with rather than resetting it, so
+re-running the script to pick up a new version can't quietly move a
+loopback-only install back onto every interface, or point the service at a
+vault other than the one it has. Naming a *different* path than the installed
+service uses is refused, with both printed, unless `SAND_FORCE_PATHS=1` says
+the move is meant — and even then nothing is moved, only pointed at.
 
 > **`HOST` defaults to `0.0.0.0`** — the service is reachable from your network
 > as soon as it is installed. Know what that exposes: this server is the one

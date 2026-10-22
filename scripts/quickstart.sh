@@ -89,10 +89,18 @@
 #                    every request rather than once at sign-in, so put TLS in
 #                    front before turning it on anywhere but loopback.
 #
-# PORT, HOST and SAND_WEBDAV are remembered. On an upgrade, leaving one unset
-# keeps whatever the service is already running with rather than resetting it
-# to the default — so re-running this script to pick up a new version cannot
-# quietly move a loopback-only install back onto every interface.
+# PORT, HOST, SAND_WEBDAV, SAND_USER, SAND_PREFIX, SAND_DATA_DIR and
+# SAND_MOUNT_ROOTS are remembered. On an upgrade, leaving one unset keeps
+# whatever the service is already running with rather than resetting it to the
+# default — so re-running this script to pick up a new version cannot quietly
+# move a loopback-only install back onto every interface, or point the service
+# at a vault that is not where the install put it. Setting one of the four
+# paths to something OTHER than what the installed service uses is refused,
+# with both values printed, unless the move is confirmed:
+#
+#   SAND_FORCE_PATHS 1                      point the service at the paths the
+#                    environment names even though the installed unit differs.
+#                    Nothing is moved: the vault, if any, stays at the old path.
 #   INSTALL_NODE     auto | never            install Node 22 if missing/old (default: auto; build-time only)
 #   INSTALL_GO       auto | never            install Go if missing/old (default: auto; build-time only)
 #   BACKUP_KEEP      pre-upgrade backups kept (default: 10)
@@ -189,11 +197,151 @@ esac
 SAND_REPO="${SAND_REPO:-https://github.com/chinmay28/sand-vault.git}"
 SAND_REF="${SAND_REF:-main}"
 RELEASE_TAG="${SAND_RELEASE:-latest}"
-SVC_USER="${SAND_USER:-sand}"
-PREFIX="${SAND_PREFIX:-/opt/sand}"
-DATA_DIR="${SAND_DATA_DIR:-/var/lib/sand}"
 SERVICE_NAME="sand"
 UNIT_PATH="/etc/systemd/system/${SERVICE_NAME}.service"
+DEFAULT_MOUNT_ROOTS="/media:/run/media:/mnt:/srv"
+
+# How the service is already running, if it is. The unit is rewritten from
+# scratch on every run, so without reading it back an upgrade would silently
+# reset anything the env did not name again — re-running this script to pick up
+# a new version would move a loopback-only install back onto every interface,
+# which is the last thing an upgrade should do quietly. An unset variable
+# therefore means "keep what it runs with now", and only a fresh install falls
+# through to the defaults below.
+#
+# That goes for the PATHS as much as for the port. The one-liner at the top of
+# this file is how people upgrade, and it carries no environment: an install
+# made with SAND_DATA_DIR=/srv/sand, upgraded that way, used to get a unit
+# pointing at /var/lib/sand/vault.sand — a file that did not exist, so no
+# snapshot was taken, the service came up offering to create a new vault, and
+# the real one sat orphaned at the old path. Likewise a custom SAND_USER,
+# SAND_PREFIX or SAND_MOUNT_ROOTS silently went back to the default. So the
+# unit's User=, WorkingDirectory=, --vault and ReadWritePaths= are read back
+# here, before anything else is decided, and an explicit variable that
+# DISAGREES with the installed service is refused rather than acted on — see
+# check_against_unit below.
+PRIOR_EXEC=""
+PRIOR_USER=""
+PRIOR_WORKDIR=""
+PRIOR_VAULT=""
+PRIOR_DATA_DIR=""
+PRIOR_ROOTS=""
+PRIOR_ROOTS_KNOWN=0
+
+# The value of a Key= line in the installed unit, or nothing.
+unit_value() {
+  [ -f "$UNIT_PATH" ] || return 0
+  sed -n "s/^$1=//p" "$UNIT_PATH" | head -n 1
+}
+# The value of --flag in the running unit, or nothing.
+prior_flag() {
+  printf '%s' "$PRIOR_EXEC" | sed -n "s/.*--$1[= ]\([^ ]*\).*/\1/p" | head -n 1
+}
+# Whether a valueless --flag is in the running unit.
+prior_switch() {
+  case " $PRIOR_EXEC " in
+    *" --$1 "* | *" --$1="*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+# The paths a unit or drop-in grants, one per line, stripped of the systemd
+# syntax around them: the leading '-' that says a missing path must not fail
+# the unit, and the quotes that keep a path with a space in it as one path.
+# The same reading scripts/allow-local-path.sh does of the same files.
+granted_paths() {
+  [ -f "$1" ] || return 0
+  grep -E '^ReadWritePaths=' "$1" 2>/dev/null |
+    sed -e 's/^ReadWritePaths=//' -e 's/^-//' -e 's/^"//' -e 's/"$//' |
+    grep -v '^$' || true
+}
+# The install prefix the unit was written for, or nothing. Read off the binary
+# it runs, which this script only ever puts at $PREFIX/bin/sand (release mode)
+# or $PREFIX/src/sand (source mode) — and only when WorkingDirectory= agrees,
+# which rules out a unit something else wrote (scripts/deploy-linux.sh runs
+# /usr/local/bin/sand, and /usr/local is nobody's prefix) and one an older
+# version of this script wrote for a binary built inside somebody's checkout.
+prior_prefix() {
+  bin="${PRIOR_EXEC%% *}"
+  case "$bin" in
+    */bin/sand) p="${bin%/bin/sand}" ;;
+    */src/sand) p="${bin%/src/sand}" ;;
+    *) return 0 ;;
+  esac
+  case "$PRIOR_WORKDIR" in
+    "$p" | "$p/src") printf '%s' "$p" ;;
+  esac
+}
+
+if [ -f "$UNIT_PATH" ]; then
+  PRIOR_EXEC="$(unit_value ExecStart)"
+  PRIOR_USER="$(unit_value User)"
+  PRIOR_WORKDIR="$(unit_value WorkingDirectory)"
+  PRIOR_VAULT="$(prior_flag vault)"
+  [ -n "$PRIOR_VAULT" ] || PRIOR_VAULT="$(unit_value Environment=SAND_VAULT)"
+  [ -n "$PRIOR_VAULT" ] && PRIOR_DATA_DIR="$(dirname "$PRIOR_VAULT")"
+  # The mount roots. A unit this script wrote names them on a comment line,
+  # which is the only way "none" (SAND_MOUNT_ROOTS set empty) can be told from
+  # a unit written before there were any. Failing that, they are whatever the
+  # unit grants besides the data directory.
+  if grep -q '^# SAND_MOUNT_ROOTS=' "$UNIT_PATH"; then
+    PRIOR_ROOTS="$(sed -n 's/^# SAND_MOUNT_ROOTS=//p' "$UNIT_PATH" | head -n 1)"
+    PRIOR_ROOTS_KNOWN=1
+  else
+    PRIOR_ROOTS="$(granted_paths "$UNIT_PATH" | grep -vx -- "$PRIOR_DATA_DIR" | paste -sd: - || true)"
+    [ -n "$PRIOR_ROOTS" ] && PRIOR_ROOTS_KNOWN=1
+  fi
+fi
+
+# An explicit variable that names a different path from the one the installed
+# service uses is almost always a mistake — the usual one being an upgrade run
+# with a stale shell history — and acting on it is how a vault gets orphaned.
+# So it is refused, with both values printed, unless SAND_FORCE_PATHS=1 says
+# the move is meant. Nothing is moved either way: with the override, the
+# service is simply pointed at the new path, and whatever is at the old one
+# stays there for the person who asked.
+case "${SAND_FORCE_PATHS:-0}" in
+  1 | true | yes | on) FORCE_PATHS=1 ;;
+  *) FORCE_PATHS=0 ;;
+esac
+PATH_CONFLICTS=""
+check_against_unit() {
+  # check_against_unit VARIABLE value-this-run value-from-the-unit
+  [ -n "$3" ] && [ "$2" != "$3" ] || return 0
+  PATH_CONFLICTS="${PATH_CONFLICTS}  $1=$2   (the installed service uses $3)"$'\n'
+}
+
+SVC_USER="${SAND_USER:-${PRIOR_USER:-sand}}"
+PREFIX="${SAND_PREFIX:-$(prior_prefix)}"
+PREFIX="${PREFIX:-/opt/sand}"
+DATA_DIR="${SAND_DATA_DIR:-${PRIOR_DATA_DIR:-/var/lib/sand}}"
+[ -n "${SAND_USER:-}" ]     && check_against_unit SAND_USER     "$SVC_USER" "$PRIOR_USER"
+[ -n "${SAND_PREFIX:-}" ]   && check_against_unit SAND_PREFIX   "$PREFIX"   "$(prior_prefix)"
+[ -n "${SAND_DATA_DIR:-}" ] && check_against_unit SAND_DATA_DIR "$DATA_DIR" "$PRIOR_DATA_DIR"
+if [ -n "$PATH_CONFLICTS" ]; then
+  if [ "$FORCE_PATHS" = 1 ]; then
+    warn "moving the install as asked (SAND_FORCE_PATHS=1):"
+    printf '%s' "$PATH_CONFLICTS" >&2
+    warn "nothing is moved: the service is pointed at the new paths, and the old ones are left as they are."
+  else
+    printf '%serr %s the environment names paths the installed service does not use:\n' "$C_RED" "$C_OFF" >&2
+    printf '%s' "$PATH_CONFLICTS" >&2
+    printf '     Re-run without those variables to keep the install as it is — an upgrade\n' >&2
+    printf '     reads them back from %s — or with SAND_FORCE_PATHS=1 to\n' "$UNIT_PATH" >&2
+    printf '     point the service at the new paths. The vault is not moved either way.\n' >&2
+    exit 1
+  fi
+fi
+
+# The mount roots a Local folder account may live under (see write_unit). The
+# variable set EMPTY is a choice — a unit that grants nothing but the data
+# directory — so it is tested for being set rather than for having a value.
+if [ -n "${SAND_MOUNT_ROOTS+set}" ]; then
+  MOUNT_ROOTS="$SAND_MOUNT_ROOTS"
+elif [ "$PRIOR_ROOTS_KNOWN" = 1 ]; then
+  MOUNT_ROOTS="$PRIOR_ROOTS"
+else
+  MOUNT_ROOTS="$DEFAULT_MOUNT_ROOTS"
+fi
 
 # Everything from here on is also written to this file, appended, so that an
 # install whose terminal went away still has a record — and so "what did it
@@ -208,28 +356,6 @@ if [ "$UNINSTALL" = 0 ] && install -d -m 755 "$PREFIX" 2>/dev/null \
   printf '\n--- quickstart %s ---\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$QUICKSTART_LOG" 2>/dev/null || :
   log "a copy of everything below is kept in $QUICKSTART_LOG"
 fi
-
-# How the service is already running, if it is. The unit is rewritten from
-# scratch on every run, so without reading it back an upgrade would silently
-# reset anything the env did not name again — re-running this script to pick up
-# a new version would move a loopback-only install back onto every interface,
-# which is the last thing an upgrade should do quietly. An unset variable
-# therefore means "keep what it runs with now", and only a fresh install falls
-# through to the defaults below.
-PRIOR_EXEC=""
-[ -f "$UNIT_PATH" ] && PRIOR_EXEC="$(sed -n 's/^ExecStart=//p' "$UNIT_PATH" | head -n 1)"
-
-# The value of --flag in the running unit, or nothing.
-prior_flag() {
-  printf '%s' "$PRIOR_EXEC" | sed -n "s/.*--$1[= ]\([^ ]*\).*/\1/p" | head -n 1
-}
-# Whether a valueless --flag is in the running unit.
-prior_switch() {
-  case " $PRIOR_EXEC " in
-    *" --$1 "* | *" --$1="*) return 0 ;;
-    *) return 1 ;;
-  esac
-}
 
 PORT="${PORT:-$(prior_flag port)}"
 PORT="${PORT:-8123}"
@@ -274,7 +400,10 @@ SRC_DIR="$PREFIX/src"
 # `EACCES: permission denied, mkdir '/home/sand'` — and Go wants one for
 # GOCACHE. Everything run as the service user therefore gets a HOME it owns.
 BUILD_HOME="$PREFIX/.build-home"
+# The vault the installed service already serves, when the data directory is
+# the one it lives in; the conventional name under $DATA_DIR otherwise.
 VAULT_PATH="$DATA_DIR/vault.sand"
+[ "$PRIOR_DATA_DIR" = "$DATA_DIR" ] && [ -n "$PRIOR_VAULT" ] && VAULT_PATH="$PRIOR_VAULT"
 BACKUP_DIR="$DATA_DIR/backups"
 
 # Proton's client, the checkout it is built from, and the bun that builds it.
@@ -306,10 +435,12 @@ NODE_MIN_MAJOR=18
 # Uninstall
 # ---------------------------------------------------------------------------
 #
-# Undoes what the steps below put on the machine, from the same resolved paths,
-# so an install made with SAND_PREFIX or SAND_DATA_DIR set is removed by an
-# uninstall run with the same variables. Every step tolerates its target being
-# gone already, which is what lets it run twice, or on a box that never had SAND.
+# Undoes what the steps below put on the machine, from the same resolved paths:
+# an install made with SAND_PREFIX, SAND_DATA_DIR or SAND_USER set is removed by
+# an uninstall that reads them back from the unit, so the variables need naming
+# again only when the unit is already gone. Every step tolerates its target
+# being gone already, which is what lets it run twice, or on a box that never
+# had SAND.
 #
 # What stays, deliberately:
 #
@@ -800,8 +931,9 @@ install_staged
 # well-known roots, so the unit grants those outright: a "Local folder" account
 # on an external drive connects with no extra step, while /etc, /usr, /home and
 # everything else stay read-only. SAND_MOUNT_ROOTS overrides the list; set it
-# empty for a unit that grants nothing but $DATA_DIR.
-MOUNT_ROOTS="${SAND_MOUNT_ROOTS-/media:/run/media:/mnt:/srv}"
+# empty for a unit that grants nothing but $DATA_DIR. $MOUNT_ROOTS was settled
+# in the configuration section, from the variable, the installed unit, or the
+# default, in that order.
 mount_root_lines() {
   # The trailing ':' gives the last root a newline of its own, so `read` sees
   # it. The leading '-' lets the service start on a host where a root does not
@@ -865,6 +997,12 @@ ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
 ReadWritePaths=$DATA_DIR
+# The mount roots this unit was written with, as SAND_MOUNT_ROOTS had them.
+# The next run of quickstart.sh reads this line back, so an upgrade keeps the
+# list — including an empty one, which the ReadWritePaths= lines alone could
+# not say. Edit the lines below rather than this one; they are what systemd
+# reads.
+# SAND_MOUNT_ROOTS=$MOUNT_ROOTS
 $MOUNT_ROOT_LINES
 
 [Install]
@@ -887,17 +1025,6 @@ write_unit
 # went read-only on the next upgrade that happened to name a path.
 DROPIN_DIR="${UNIT_PATH}.d"
 LOCAL_PATHS_DROPIN="$DROPIN_DIR/10-local-paths.conf"
-
-# The paths a unit or drop-in grants, one per line, stripped of the systemd
-# syntax around them: the leading '-' that says a missing path must not fail
-# the unit, and the quotes that keep a path with a space in it as one path.
-# The same reading scripts/allow-local-path.sh does of the same file.
-granted_paths() {
-  [ -f "$1" ] || return 0
-  grep -E '^ReadWritePaths=' "$1" 2>/dev/null |
-    sed -e 's/^ReadWritePaths=//' -e 's/^-//' -e 's/^"//' -e 's/"$//' |
-    grep -v '^$' || true
-}
 
 # What the drop-in should grant after this run: what it grants now, then the
 # paths SAND_LOCAL_PATHS names, each once, in that order.
