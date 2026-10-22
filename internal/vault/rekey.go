@@ -197,7 +197,22 @@ func (v *Vault) rotate(oldPassword, newPassword string, plan *RekeySettings) err
 		current.zero()
 		return err
 	}
+
+	// A fresh store starts with nothing set, so every preference the old one
+	// held has to be named here or it is silently gone the moment the
+	// password changes — which is how the chosen accounts, the default code
+	// and the health-check schedule were once lost. The contract: every
+	// field of storeFile that is a setting the user made comes across; what
+	// stays behind is what the change itself replaces (the KDF, the
+	// verifier, the data key and its id, the retired keys, which are rebuilt
+	// below) and the one note a fresh key answers — InheritedKeyID says new
+	// writes are on a key another vault minted, and after this they are not.
+	// The sealed sections (accounts, index, settings) are re-sealed below.
 	sf.ManifestBackupDisabled = v.store.ManifestBackupDisabled
+	sf.DefaultAccounts = append([]string(nil), v.store.DefaultAccounts...)
+	sf.DefaultScheme = v.store.DefaultScheme
+	sf.HealthCheckMinutes = v.store.HealthCheckMinutes
+	sf.HealthCheckOff = v.store.HealthCheckOff
 
 	// The sub vaults come across untouched, and this line is the whole of what
 	// "a password change does not touch a sub vault" means on disk. Their

@@ -297,6 +297,43 @@ func TestSubVaultUploadInFlightAcrossItsPasswordChangeKeepsItsKey(t *testing.T) 
 	}
 }
 
+// A password change rebuilds the store from scratch, and every preference
+// the old one held has to be named across or it is lost without a word.
+func TestChangePasswordCarriesEveryPreference(t *testing.T) {
+	v, _ := newTestVault(t, 3)
+	ctx := context.Background()
+	ids, _ := v.Providers()
+	if err := v.SetDefaultAccounts([]string{ids[0].ID, ids[1].ID, ids[2].ID}); err != nil {
+		t.Fatalf("SetDefaultAccounts: %v", err)
+	}
+	if _, err := v.SetHealthSchedule(HealthSchedule{Enabled: false, Minutes: 120}); err != nil {
+		t.Fatalf("SetHealthSchedule: %v", err)
+	}
+	v.mu.Lock()
+	// Stored directly: SetDefaults refuses to record the code the count
+	// already names, and three accounts only ever name 2-of-3.
+	v.store.DefaultScheme = "2-of-3"
+	v.mu.Unlock()
+
+	if _, err := v.ChangePassword(ctx, testPassword, "new password", false); err != nil {
+		t.Fatalf("ChangePassword: %v", err)
+	}
+	relock(t, v, "new password")
+
+	if got := v.DefaultAccounts(); len(got) != 3 {
+		t.Errorf("default accounts after the password change = %v, want 3", got)
+	}
+	if got := v.store.DefaultScheme; got != "2-of-3" {
+		t.Errorf("default scheme after the password change = %q, want 2-of-3", got)
+	}
+	if s := v.HealthSchedule(); s.Enabled || s.Minutes != 120 {
+		t.Errorf("health schedule after the password change = %+v, want off every 120 minutes", s)
+	}
+	if !v.BackupEnabled() {
+		t.Error("the backup switch was lost")
+	}
+}
+
 // The other half: when the key really is gone by the time the commit runs —
 // nothing holds it across a recovery that replaces every key, and this test
 // stands in for one by releasing the hold early — the commit must refuse
