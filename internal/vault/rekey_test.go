@@ -587,3 +587,99 @@ func TestMigrationProgressReportsEveryFile(t *testing.T) {
 		t.Fatalf("migrated %d file(s), progress saw %d", report.Migrated, len(seen))
 	}
 }
+
+// The case that stripped a vault of its spares: a password change with one
+// account dead. The re-encryption reads the file from the two accounts still
+// answering, writes it back to all three, and the scatter — which tolerates a
+// shard failing, as an upload must — commits two parts. The old three are then
+// erased. Every file re-encrypted while the account was down came out one part
+// short, for good. A re-encryption must never commit a placement with fewer
+// parts than the file had: the file stays on the previous key, readable, until
+// the account is back.
+func TestMigrationRefusesToCommitAFileShortOfAPart(t *testing.T) {
+	v, roots := newTestVault(t, 3)
+	ctx := context.Background()
+
+	entry, _, err := v.Upload(ctx, MainScope, "/", "spare.txt", []byte("three parts, and it should stay three"), UploadOptions{})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if len(entry.Shards) != 3 {
+		t.Fatalf("uploaded with %d parts, want 3", len(entry.Shards))
+	}
+	before := placementOf(entry)
+	ids := accountIDs(t, v)
+
+	// The account holding part 2 goes dark, still connected.
+	var dead string
+	for i, id := range ids {
+		if id == before[2] {
+			dead = roots[i]
+		}
+	}
+	kept := filepath.Join(t.TempDir(), "away")
+	if err := os.Rename(dead, kept); err != nil {
+		t.Fatalf("moving the account's folder away: %v", err)
+	}
+	if err := os.WriteFile(dead, []byte("not a folder"), 0o600); err != nil {
+		t.Fatalf("blocking the account's folder: %v", err)
+	}
+
+	report, err := v.ChangePassword(ctx, testPassword, "changed with a cloud down", true)
+	if err != nil {
+		t.Fatalf("ChangePassword: %v", err)
+	}
+	if report.Migrated != 0 || report.Remaining != 1 {
+		t.Fatalf("report = %+v, want the file left on the previous key rather than committed short", report)
+	}
+	if !strings.Contains(strings.Join(report.Warnings, "\n"), "/spare.txt") {
+		t.Errorf("warnings do not say why the file stayed: %v", report.Warnings)
+	}
+
+	// Untouched: the same three parts, on the previous key, and readable.
+	still, err := v.Entry(entry.ID)
+	if err != nil {
+		t.Fatalf("Entry: %v", err)
+	}
+	if still.ArchiveID != entry.ArchiveID || len(still.Shards) != 3 {
+		t.Fatalf("the file was rewritten: archive %s → %s with %d parts", entry.ArchiveID, still.ArchiveID, len(still.Shards))
+	}
+	if retiredCount(v) != 1 {
+		t.Errorf("the vault holds %d old key(s), want the one the file still needs", retiredCount(v))
+	}
+	if _, _, err := v.Fetch(ctx, entry.ID); err != nil {
+		t.Errorf("the file does not read with one account down: %v", err)
+	}
+	// And the parts the refused attempt wrote are not left on the two accounts
+	// that took them.
+	for i, root := range roots {
+		if root == dead {
+			continue
+		}
+		if n := objectsIn(t, root); n != 1 {
+			t.Errorf("account %d holds %d objects after the refused re-encryption, want its one part", i, n)
+		}
+	}
+
+	// With the account back, the file moves with all three parts.
+	if err := os.Remove(dead); err != nil {
+		t.Fatalf("unblocking: %v", err)
+	}
+	if err := os.Rename(kept, dead); err != nil {
+		t.Fatalf("restoring the account's folder: %v", err)
+	}
+	resumed, err := v.MigrateFiles(ctx, nil)
+	if err != nil {
+		t.Fatalf("MigrateFiles: %v", err)
+	}
+	if resumed.Migrated != 1 || !resumed.Done() {
+		t.Fatalf("resumed = %+v, want the file migrated", resumed)
+	}
+	moved, _ := v.Entry(entry.ID)
+	if len(moved.Shards) != 3 {
+		t.Errorf("migrated with %d parts, want 3", len(moved.Shards))
+	}
+	if retiredCount(v) != 0 {
+		t.Error("the old key outlived the last file on it")
+	}
+}

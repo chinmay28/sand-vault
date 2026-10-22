@@ -642,6 +642,30 @@ func (v *Vault) migrateFile(ctx context.Context, scope Scope, id string, account
 		TotalShards: placed.scheme.Total,
 	}
 
+	// What a re-encryption refuses to do: trade a file for a shorter one.
+	//
+	// The scatter tolerates a shard that would not land, as an upload has to —
+	// a file stored on two of three accounts is a file stored, and the warning
+	// says so. A re-encryption is not an upload. It erases the old parts the
+	// moment the new ones commit, so a shard lost on the way across is not a
+	// warning but a spare gone for good: a password change while one account
+	// was down came out of this with every file re-encrypted one part short,
+	// and nothing in the index to say they had ever been whole. So the new
+	// placement is held to the old one. Fewer distinct parts than the file had
+	// — or than a deliberate recode onto fewer accounts calls for, which is
+	// the one time narrowing is the point — and the fresh parts are erased,
+	// the file stays on the previous key exactly as it was, and the error
+	// leaves it to the paced step's retry to try again when the account is
+	// back.
+	if got, floor := distinctShards(placed.shards), min(stale.Redundancy(), placed.scheme.Total); got < floor {
+		warnings = append(warnings, v.deleteEntryShards(context.WithoutCancel(ctx), fresh)...)
+		return path, 0, warnings, fmt.Errorf(
+			"%s was not re-encrypted: only %d of its %d parts could be written and it has %d now, "+
+				"so re-encrypting it would have lost a part — the file is left on the previous key, "+
+				"and tried again once every account holding it is reachable: %s",
+			path, got, placed.scheme.Total, stale.Redundancy(), strings.Join(placed.warnings, "; "))
+	}
+
 	v.mu.Lock()
 	if m, err = v.manifestForLocked(scope); err != nil {
 		v.mu.Unlock()
@@ -657,8 +681,23 @@ func (v *Vault) migrateFile(ctx context.Context, scope Scope, id string, account
 			v.deleteEntryShards(context.WithoutCancel(ctx), fresh)...)
 		return path, 0, warnings, nil
 	}
+	if e.ArchiveID != stale.ArchiveID {
+		// Rewritten while it was being re-encrypted — by a conversion, a
+		// recode, or another pass that got to it first. Whatever did so has
+		// already committed its own parts and erased the ones this read from;
+		// writing this placement over it would orphan that pass's parts and
+		// point the index at a copy of a file it no longer holds. The parts
+		// just written are the ones referenced by nothing, so they go.
+		v.mu.Unlock()
+		warnings = append(warnings,
+			v.deleteEntryShards(context.WithoutCancel(ctx), fresh)...)
+		warnings = append(warnings, fmt.Sprintf(
+			"%s was rewritten while it was being re-encrypted, so this pass left it alone", path))
+		return path, 0, warnings, nil
+	}
 
 	previous := *e
+	previous.Shards = append([]Shard(nil), e.Shards...)
 	e.ArchiveID = placed.archiveID
 	e.KeyID = placed.keyID
 	e.Shards = placed.shards
@@ -683,8 +722,11 @@ func (v *Vault) migrateFile(ctx context.Context, scope Scope, id string, account
 	// The old parts are unreferenced now, and they are the ones the old
 	// password could open, so getting rid of them is the point rather than
 	// housekeeping. A failure here is reported, not fatal: the index already
-	// points at the new parts.
-	for _, w := range v.deleteEntryShards(context.WithoutCancel(ctx), &stale) {
+	// points at the new parts. They are erased where the row said they were
+	// at the commit rather than where it said when the read began: a
+	// relocation in between moves parts without touching the archive ID,
+	// and its copies are what the index has just stopped naming.
+	for _, w := range v.deleteEntryShards(context.WithoutCancel(ctx), &previous) {
 		warnings = append(warnings, fmt.Sprintf("%s: a part under the old key is still there — %s", path, w))
 	}
 	return path, size, warnings, nil
