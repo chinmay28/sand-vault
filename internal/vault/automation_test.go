@@ -5,10 +5,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/chinmay28/sand-vault/internal/archive"
+	"github.com/chinmay28/sand-vault/internal/provider"
 )
 
 // dailyAt is the policy most of these tests are about: check this folder every
@@ -684,6 +686,97 @@ func TestAutomationNeedsAnUnlockedVault(t *testing.T) {
 // is simply not holding what the index says it is. Nothing about the index
 // betrays that, so a repair that trusted the index would decide the file was
 // already where it should be and do nothing at all.
+// busyProvider is an account whose metadata requests fail with something that
+// is not "not found": a rate limit, say. Everything else about it works, which
+// is what makes it dangerous — it passes the probe and then will not say
+// whether a part is there.
+type busyProvider struct {
+	provider.Provider
+	err error
+}
+
+func (p busyProvider) Stat(ctx context.Context, key string) (provider.ObjectInfo, error) {
+	return provider.ObjectInfo{}, p.err
+}
+
+// A part an account would not answer about is not a part that is missing. A
+// rebalance that read it so would rebuild the file elsewhere and erase the
+// original, on the strength of a rate limit.
+func TestASweepLeavesAloneAFileAnAccountWouldNotAnswerAbout(t *testing.T) {
+	v, roots := newTestVault(t, 3)
+
+	payload := []byte("every part of this file is exactly where it should be\n")
+	entry, _, err := v.Upload(context.Background(), MainScope, "/", "notes.txt", payload, UploadOptions{})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	before := append([]Shard(nil), entry.Shards...)
+
+	// One account starts rate-limiting its metadata requests. The live cache
+	// is what every call goes through, so the wrapper goes in there.
+	busyID := providerHolding(t, v, roots[1])
+	v.liveMu.Lock()
+	real, ok := v.live[busyID]
+	if !ok {
+		v.liveMu.Unlock()
+		t.Fatalf("no live backend for %s", busyID)
+	}
+	v.live[busyID] = busyProvider{Provider: real, err: errors.New("429 too many requests")}
+	v.liveMu.Unlock()
+	v.AwaitBackupSync()
+	held := len(objectsOn(t, roots[1]))
+
+	if _, err := v.SetAutomation(MainScope, "/", dailyAt("10:00", ActionRebalance)); err != nil {
+		t.Fatalf("SetAutomation: %v", err)
+	}
+	run, err := v.RunAutomation(context.Background(), MainScope, "/")
+	if err != nil {
+		t.Fatalf("RunAutomation: %v", err)
+	}
+	if len(run.Offline) != 0 {
+		t.Errorf("offline = %v, want none — the account answered the probe", run.Offline)
+	}
+	if run.Shards.Deferred != 1 || run.Shards.Short != 0 || run.Shards.Whole != 0 || run.Shards.AtRisk != 0 {
+		t.Errorf("run = %+v, want the file deferred and neither short nor whole", run.Shards)
+	}
+	if run.Shards.Repaired != 0 || run.Shards.PartsWritten != 0 || run.Shards.Bytes != 0 {
+		t.Errorf("a file nobody could check was rebuilt: %+v", run.Shards)
+	}
+	named := false
+	for _, w := range run.Warnings {
+		if strings.Contains(w, "could not be checked") && strings.Contains(w, "cloud-b") && strings.Contains(w, "429") {
+			named = true
+		}
+	}
+	if !named {
+		t.Errorf("warnings = %v, want the account and its error named", run.Warnings)
+	}
+
+	after := v.manifest.ByID(entry.ID)
+	if len(after.Shards) != len(before) {
+		t.Fatalf("shards = %d, want the %d it started with", len(after.Shards), len(before))
+	}
+	for i := range before {
+		if after.Shards[i] != before[i] {
+			t.Errorf("shard %d changed: %+v -> %+v", i, before[i], after.Shards[i])
+		}
+	}
+	v.AwaitBackupSync()
+	if got := len(objectsOn(t, roots[1])); got != held {
+		t.Errorf("the busy account holds %d object(s), want the %d it had — nothing should have been erased", got, held)
+	}
+}
+
+// objectsOn lists what a local-folder account is holding, by name.
+func objectsOn(t *testing.T, root string) []string {
+	t.Helper()
+	names, err := filepath.Glob(filepath.Join(root, "*"))
+	if err != nil {
+		t.Fatalf("listing %s: %v", root, err)
+	}
+	return names
+}
+
 func TestRebalancePutsBackAPartLostFromACloudThatIsAnswering(t *testing.T) {
 	v, roots := newTestVault(t, 3)
 

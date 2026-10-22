@@ -483,7 +483,9 @@ type ShardResult struct {
 	// Failed is files a repair was attempted on and did not finish. Deferred is
 	// files that needed one and did not get one this time: past the run's
 	// repair bound, past the rebuild ceiling, or with too few clouds answering
-	// to keep the file's code. Both are named in Warnings.
+	// to keep the file's code — and files that could not be checked at all,
+	// because an account answered a part's metadata request with something
+	// other than yes or no. Both are named in Warnings.
 	Failed   int `json:"failed"`
 	Deferred int `json:"deferred"`
 }
@@ -1144,6 +1146,23 @@ func (v *Vault) sweepShards(
 
 	needy := make([]fileState, 0, len(states))
 	for _, st := range states {
+		if len(st.unknown) > 0 {
+			// Not short, not whole: unanswered. Counted as deferred rather
+			// than needy because the repair this sweep might do is a rebuild,
+			// and a rebuild on the strength of a rate limit erases parts that
+			// are still there. The account is named so that a week of these
+			// reads as the account's problem rather than the file's.
+			res.Deferred++
+			reasons := make([]string, 0, len(st.unknown))
+			for part, reason := range st.unknown {
+				reasons = append(reasons, fmt.Sprintf("part %d on %s", part, reason))
+			}
+			sort.Strings(reasons)
+			run.Warnings = append(run.Warnings, fmt.Sprintf(
+				"%s could not be checked this sweep and was left as it is — %s",
+				st.entry.Path(), strings.Join(reasons, "; ")))
+			continue
+		}
 		switch {
 		case st.reachable >= st.scheme.Total:
 			res.Whole++
@@ -1197,6 +1216,12 @@ type fileState struct {
 	// repair has to be told, since the index by itself still believes in them.
 	reachable int
 	absent    map[int]bool
+
+	// unknown names the recorded parts that could not be checked either way,
+	// with the account and error that stopped the asking. A file with any of
+	// these is not short and not whole: it is unanswered, and a sweep leaves
+	// it exactly as it is rather than rebuild it on a guess.
+	unknown map[int]string
 }
 
 // probeAccounts asks every connected account whether it is there, all at once.
@@ -1270,11 +1295,12 @@ func (v *Vault) checkEntries(ctx context.Context, entries []*Entry, online map[s
 			defer func() { <-window }()
 
 			state := fileState{entry: e, scheme: e.Scheme()}
-			present := v.reachableParts(ctx, e, online, byID)
+			present, unknown := v.reachableParts(ctx, e, online, byID)
 			state.reachable = len(present)
+			state.unknown = unknown
 			state.absent = map[int]bool{}
 			for _, s := range e.Shards {
-				if !present[s.Part] {
+				if !present[s.Part] && unknown[s.Part] == "" {
 					state.absent[s.Part] = true
 				}
 			}
@@ -1290,12 +1316,27 @@ func (v *Vault) checkEntries(ctx context.Context, entries []*Entry, online map[s
 	return states
 }
 
-// reachableParts is which distinct parts of one file are really there.
-func (v *Vault) reachableParts(ctx context.Context, e *Entry, online map[string]bool, byID map[string]provider.Config) map[int]bool {
+// reachableParts is which distinct parts of one file are really there, and
+// which could not be asked about.
+//
+// Only the account saying "not found" makes a part absent. Any other answer —
+// a rate limit, a timeout on one request, a gateway error, a backend that could
+// not be built — is no answer, and is reported in unknown with the account and
+// the error, keyed by part. The distinction is the whole safety of the repair
+// that follows: a part marked absent is rebuilt elsewhere and its original
+// erased or orphaned, which is the right thing to do to a part that is gone
+// and the wrong thing to do to one whose account was merely busy. A part on
+// an account that is not connected, or that failed the probe, is absent the
+// way it always was: there is nothing to ask, and the probe already said so.
+//
+// A part the index records on two accounts is present if either says so, and
+// unknown only if neither says so and at least one would not answer.
+func (v *Vault) reachableParts(ctx context.Context, e *Entry, online map[string]bool, byID map[string]provider.Config) (present map[int]bool, unknown map[int]string) {
 	sample := sampleChunks(e.Chunked(), e.ChunkCount)
 
 	var mu sync.Mutex
-	present := map[int]bool{}
+	present = map[int]bool{}
+	unknown = map[int]string{}
 	var wg sync.WaitGroup
 
 	for _, shard := range e.Shards {
@@ -1308,8 +1349,17 @@ func (v *Vault) reachableParts(ctx context.Context, e *Entry, online map[string]
 		go func(shard Shard, cfg provider.Config) {
 			defer wg.Done()
 
+			unanswered := func(err error) {
+				mu.Lock()
+				defer mu.Unlock()
+				if _, ok := unknown[shard.Part]; !ok {
+					unknown[shard.Part] = fmt.Sprintf("%s: %v", cfg.Name, err)
+				}
+			}
+
 			p, err := v.buildProvider(cfg)
 			if err != nil {
+				unanswered(err)
 				return
 			}
 			// Every sampled chunk or none: one chunk missing its part makes the
@@ -1320,6 +1370,9 @@ func (v *Vault) reachableParts(ctx context.Context, e *Entry, online map[string]
 					key = ChunkShardKey(e.ArchiveID, index, shard.Part)
 				}
 				if _, err := p.Stat(ctx, key); err != nil {
+					if !errors.Is(err, provider.ErrNotFound) {
+						unanswered(err)
+					}
 					return
 				}
 			}
@@ -1329,7 +1382,13 @@ func (v *Vault) reachableParts(ctx context.Context, e *Entry, online map[string]
 		}(shard, cfg)
 	}
 	wg.Wait()
-	return present
+
+	// A copy that answered settles the question for the part, whatever
+	// another copy's account said.
+	for part := range present {
+		delete(unknown, part)
+	}
+	return present, unknown
 }
 
 // repairFiles rebuilds what it can of the files the check found wanting.
