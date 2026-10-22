@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/chinmay28/sand-vault/internal/vault"
 )
@@ -442,4 +443,74 @@ func TestDeleteIsStillADelete(t *testing.T) {
 	if got := names(t, v, "/"); len(got) != 0 {
 		t.Errorf("the folder holds %v after the delete, want nothing", got)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// In-flight requests
+// ---------------------------------------------------------------------------
+
+// A request still running counts for as long as it runs, not only for the
+// moment it began — that is what keeps a long upload from meeting the idle
+// auto-lock partway.
+func TestInFlightCountsARunningRequest(t *testing.T) {
+	v := newTestVault(t)
+	h, err := Handler(v, Options{Prefix: "/dav"})
+	if err != nil {
+		t.Fatalf("Handler: %v", err)
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/dav/", h)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	if h.InFlight() != 0 {
+		t.Fatalf("InFlight = %d before any request", h.InFlight())
+	}
+
+	// A PUT whose body is held open: the request is running for as long as
+	// the writer is.
+	pr, pw := io.Pipe()
+	req, err := http.NewRequest("PUT", srv.URL+"/dav/slow.bin", pr)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.SetBasicAuth("anyone", testPassword)
+	done := make(chan *http.Response, 1)
+	go func() {
+		resp, err := srv.Client().Do(req)
+		if err != nil {
+			t.Errorf("PUT: %v", err)
+			done <- nil
+			return
+		}
+		done <- resp
+	}()
+
+	if _, err := pw.Write(payload(1000)); err != nil {
+		t.Fatalf("writing the body: %v", err)
+	}
+	waitFor(t, "the request to be counted", func() bool { return h.InFlight() == 1 })
+
+	pw.Close()
+	resp := <-done
+	if resp == nil {
+		t.FailNow()
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("PUT = %d, want 201", resp.StatusCode)
+	}
+	waitFor(t, "the request to be uncounted", func() bool { return h.InFlight() == 0 })
+}
+
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
 }

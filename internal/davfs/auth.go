@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/chinmay28/sand-vault/internal/vault"
@@ -126,9 +127,10 @@ type Options struct {
 	// Realm is what a client shows when it asks for the password.
 	Realm string
 
-	// OnActivity, when set, is called after every authenticated request. The
-	// server uses it to keep a share that is being read from counting as use,
-	// so a film playing over it does not meet the idle auto-lock halfway.
+	// OnActivity, when set, is called as every authenticated request begins.
+	// The server uses it to keep a share that is being read from counting as
+	// use, so a film playing over it does not meet the idle auto-lock halfway.
+	// A request still running counts on its own, through Endpoint.InFlight.
 	OnActivity func()
 }
 
@@ -139,6 +141,13 @@ type Endpoint struct {
 	auth  *verifier
 	realm string
 	opts  Options
+
+	// inFlight counts the requests being served right now. A PUT of a film or
+	// a DELETE of a folder runs for as long as the clouds take, and only the
+	// moment it began is otherwise recorded as use (OnActivity) — so a
+	// transfer longer than the idle timeout used to meet the auto-lock
+	// partway through.
+	inFlight atomic.Int64
 }
 
 // Handler builds the WebDAV endpoint.
@@ -172,6 +181,10 @@ func Handler(v *vault.Vault, opts Options) (*Endpoint, error) {
 	return &Endpoint{fs: fs, dav: dav, auth: auth, realm: realm, opts: opts}, nil
 }
 
+// InFlight is how many requests the endpoint is serving at this moment. The
+// server reads it to keep the vault open while one of them is still running.
+func (e *Endpoint) InFlight() int64 { return e.inFlight.Load() }
+
 func (e *Endpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// The username is not checked. A vault has one owner (§15), so there is
 	// nothing for a name to distinguish — the password is the whole
@@ -191,6 +204,8 @@ func (e *Endpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	e.inFlight.Add(1)
+	defer e.inFlight.Add(-1)
 	if e.opts.OnActivity != nil {
 		e.opts.OnActivity()
 	}
