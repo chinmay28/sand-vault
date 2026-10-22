@@ -42,6 +42,11 @@ type drimeStub struct {
 	failures map[string]int
 	ghost    bool
 	requests map[string]int
+
+	// refuseDelete, when set, is the 422 body every delete answers with
+	// instead of deleting — a validation failure about something other
+	// than the entry ID.
+	refuseDelete string
 }
 
 type drimeStubFile struct {
@@ -240,10 +245,17 @@ func (d *drimeStub) serveDelete(w http.ResponseWriter, r *http.Request) {
 		DeleteForever bool     `json:"deleteForever"`
 	}
 	json.NewDecoder(r.Body).Decode(&body)
+	if d.refuseDelete != "" {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		w.Write([]byte(d.refuseDelete))
+		return
+	}
 	for _, id := range body.EntryIDs {
 		if _, ok := d.files[id]; !ok {
+			// Laravel's validation answer for an ID the exists rule does
+			// not find, as Drime sends it.
 			w.WriteHeader(http.StatusUnprocessableEntity)
-			w.Write([]byte(`{"message":"The selected entry ids is invalid."}`))
+			w.Write([]byte(`{"message":"The selected entryIds.0 is invalid.","errors":{"entryIds.0":["The selected entryIds.0 is invalid."]}}`))
 			return
 		}
 		delete(d.files, id)
@@ -529,6 +541,56 @@ func TestDrimeDeleteOfAVanishedFileIsQuiet(t *testing.T) {
 	}
 	if _, err := p.Get(ctx, "gone-c0000000-p3.sand"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("Get = %v, want ErrNotFound", err)
+	}
+}
+
+// A 422 is Laravel's answer to any validation failure, not only to an ID it
+// does not have. One about something else leaves the file where it was, and
+// a Delete that reported success over it would have the orphan scan count
+// the part as removed.
+func TestDrimeDeleteRefusedForAnotherReasonIsAnError(t *testing.T) {
+	p, stub := newTestDrime(t)
+	ctx := context.Background()
+
+	if err := p.Put(ctx, "kept-c0000000-p1.sand", []byte("x")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	stub.refuseDelete = `{"message":"The selected workspace id is invalid.","errors":{"workspaceId":["The selected workspace id is invalid."]}}`
+
+	err := p.Delete(ctx, "kept-c0000000-p1.sand")
+	if err == nil {
+		t.Fatal("Delete refused by validation reported success")
+	}
+	if !strings.Contains(err.Error(), "workspace") {
+		t.Errorf("Delete error does not say why: %v", err)
+	}
+	if len(stub.files) != 1 {
+		t.Errorf("the stub holds %d files, want the one it refused to delete", len(stub.files))
+	}
+}
+
+func TestDrimeEntryUnknownReadsTheValidationMessage(t *testing.T) {
+	cases := []struct {
+		status int
+		body   string
+		gone   bool
+	}{
+		{404, ``, true},
+		{422, `{"message":"The selected entryIds.0 is invalid.","errors":{"entryIds.0":["The selected entryIds.0 is invalid."]}}`, true},
+		{422, `{"message":"The selected entry ids is invalid."}`, true},
+		{422, `{"message":"The selected workspace id is invalid.","errors":{"workspaceId":["..."]}}`, false},
+		{422, `{"message":"The delete forever field must be true or false."}`, false},
+		{422, `not json`, false},
+		{500, `{"message":"The selected entryIds.0 is invalid."}`, false},
+	}
+	for _, c := range cases {
+		err := &drimeError{status: c.status, body: c.body, err: errors.New("drime delete")}
+		if got := drimeEntryUnknown(fmt.Errorf("wrapped: %w", err)); got != c.gone {
+			t.Errorf("drimeEntryUnknown(%d %s) = %v, want %v", c.status, c.body, got, c.gone)
+		}
+	}
+	if drimeEntryUnknown(errors.New("not a request at all")) {
+		t.Error("an error that is not a refused request was taken as gone")
 	}
 }
 
