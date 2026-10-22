@@ -818,10 +818,11 @@ func (v *Vault) relocateEntry(ctx context.Context, plan *FilePlan, accounts []st
 	stale, err := v.commitRelocation(ctx, plan, landed, &out)
 	if err != nil {
 		// The index still points at the parts where they were, so the copies
-		// just made are referenced by nothing.
+		// just made are referenced by nothing — unless another run committed
+		// them meanwhile, which eraseUnclaimedCopy checks for.
 		for _, move := range landed {
 			if cfg, ok := configs[move.To]; ok {
-				v.erasePartCopy(context.WithoutCancel(ctx), cfg, archiveID, chunkCount, move.Part)
+				v.eraseUnclaimedCopy(context.WithoutCancel(ctx), plan, cfg, archiveID, chunkCount, move)
 			}
 		}
 		out.moved -= len(landed)
@@ -829,7 +830,9 @@ func (v *Vault) relocateEntry(ctx context.Context, plan *FilePlan, accounts []st
 	}
 
 	// The index names the new accounts now, so what is left behind is
-	// unreferenced. Failing to erase it is litter, not breakage.
+	// unreferenced — and so are the copies themselves, when the commit found
+	// the file deleted or rewritten and handed them back instead. Failing to
+	// erase any of it is litter, not breakage.
 	for _, w := range v.deleteStoredShards(context.WithoutCancel(ctx), archiveID, chunkCount, stale) {
 		out.warnings = append(out.warnings, fmt.Sprintf("%s: %s", plan.Path, w))
 	}
@@ -914,8 +917,11 @@ func (v *Vault) copyParts(
 			if err != nil {
 				// Half a part on the destination is worse than none: it would
 				// answer a read with a hole. The record still points at the
-				// source, which still has all of it.
-				v.erasePartCopy(context.WithoutCancel(ctx), dst, archiveID, chunkCount, move.Part)
+				// source, which still has all of it — unless another run of
+				// the same plan has moved it there already, in which case the
+				// destination is the part and is left alone. See
+				// eraseUnclaimedCopy.
+				v.eraseUnclaimedCopy(context.WithoutCancel(ctx), plan, dst, archiveID, chunkCount, move)
 			}
 
 			mu.Lock()
@@ -1034,6 +1040,26 @@ func (v *Vault) copyPart(
 
 // commitRelocation writes the new placement into the index in one atomic write,
 // and returns the shards that are now unreferenced and can be erased.
+//
+// What a commit requires of a row, and why it checks rather than trusts: the
+// plan was drawn from the index as it stood, and nothing stops a second plan
+// over the same file being drawn and run meanwhile — a folder and a file
+// inside it, or the same folder twice. A landed move is applied to a row only
+// if the row still says the part is on the account the move copied it from.
+// A row that already names the destination has been moved by the other run,
+// and that run has since erased the source: re-pointing the row would change
+// nothing, but adding the "old" shard to the erase list would erase the
+// destination object — the only copy there is. Such a move is skipped, with a
+// warning, and nothing is erased for it: the copy it made is the same bytes
+// under the same key as what the index now names, and it is that object.
+//
+// A row that is gone, or holds a different archive ID, was deleted or
+// rewritten while the copies were being made. The copies then belong to
+// nothing — they are keyed by the old archive ID, which the index no longer
+// names anywhere — and they are handed back as the stale shards, on the
+// accounts they landed on, so the caller erases them as it would the parts
+// a successful move leaves behind. Before this they were left where they
+// were, while the warning said they had been discarded.
 func (v *Vault) commitRelocation(ctx context.Context, plan *FilePlan, landed []PartMove, out *relocateOutcome) ([]Shard, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -1045,14 +1071,16 @@ func (v *Vault) commitRelocation(ctx context.Context, plan *FilePlan, landed []P
 	entry := m.ByID(plan.ID)
 	if entry == nil {
 		out.warnings = append(out.warnings, fmt.Sprintf(
-			"%s was deleted while it was being moved", plan.Path))
-		return nil, nil
+			"%s was deleted while it was being moved, so the copies made for it were discarded", plan.Path))
+		out.moved -= len(landed)
+		return landedShards(plan.archiveID, landed), nil
 	}
 	if entry.ArchiveID != plan.archiveID {
 		out.warnings = append(out.warnings, fmt.Sprintf(
 			"%s was rewritten while it was being moved, so the copies made for it were discarded",
 			plan.Path))
-		return nil, nil
+		out.moved -= len(landed)
+		return landedShards(plan.archiveID, landed), nil
 	}
 
 	byPart := make(map[int]PartMove, len(landed))
@@ -1082,7 +1110,7 @@ func (v *Vault) commitRelocation(ctx context.Context, plan *FilePlan, landed []P
 
 	previous := append([]Shard(nil), entry.Shards...)
 	var stale []Shard
-	dropped := 0
+	dropped, skipped := 0, 0
 	kept := make([]Shard, 0, len(previous))
 	for _, s := range previous {
 		if drop[s.Part] {
@@ -1091,6 +1119,17 @@ func (v *Vault) commitRelocation(ctx context.Context, plan *FilePlan, landed []P
 			continue
 		}
 		if move, moved := byPart[s.Part]; moved {
+			if s.ProviderID != move.From {
+				// Moved from under this plan by another: see above. The row
+				// stands, and nothing is erased for this move.
+				skipped++
+				out.warnings = append(out.warnings, fmt.Sprintf(
+					"%s: shard %d is on %s now, not %s where this move was copying it from — "+
+						"another move got there first, so this one was left alone",
+					plan.Path, s.Part, s.ProviderName, move.FromName))
+				kept = append(kept, s)
+				continue
+			}
 			stale = append(stale, s)
 			// The object key does not change: it never named the account, only
 			// the file and the shard.
@@ -1113,7 +1152,56 @@ func (v *Vault) commitRelocation(ctx context.Context, plan *FilePlan, landed []P
 	}
 
 	out.dropped += dropped
+	out.moved -= skipped
 	return stale, nil
+}
+
+// landedShards is the copies a set of landed moves made, as shards on the
+// accounts they went to — the shape deleteStoredShards erases by. The key is
+// the part's own, since a copy keeps it.
+func landedShards(archiveID string, landed []PartMove) []Shard {
+	out := make([]Shard, 0, len(landed))
+	for _, move := range landed {
+		out = append(out, Shard{
+			Part:         move.Part,
+			Key:          ShardKey(archiveID, move.Part),
+			ProviderID:   move.To,
+			ProviderName: move.ToName,
+		})
+	}
+	return out
+}
+
+// eraseUnclaimedCopy removes the copy a move made on its destination, unless
+// the index has come to name that destination for the part meanwhile.
+//
+// It is the rollback for a copy that did not finish, or that finished for a
+// commit that then failed, and the danger it guards against is the one
+// commitRelocation describes: a second run of the same plan, started while
+// the first was in flight. The first run commits the part to the destination
+// and erases the source; the second run's copy of the same part then fails on
+// the read — the source is gone — and its rollback would erase the destination
+// object, which the index now names and nothing else holds. So the row is
+// read first, and a destination the row names is left exactly as it is: the
+// bytes there are the part, whichever run wrote them.
+func (v *Vault) eraseUnclaimedCopy(ctx context.Context, plan *FilePlan, cfg provider.Config, archiveID string, chunkCount int, move PartMove) {
+	v.mu.RLock()
+	claimed := false
+	if m, err := v.manifestForLocked(plan.vault); err == nil {
+		if entry := m.ByID(plan.ID); entry != nil && entry.ArchiveID == archiveID {
+			for _, s := range entry.Shards {
+				if s.Part == move.Part && s.ProviderID == move.To {
+					claimed = true
+					break
+				}
+			}
+		}
+	}
+	v.mu.RUnlock()
+	if claimed {
+		return
+	}
+	v.erasePartCopy(ctx, cfg, archiveID, chunkCount, move.Part)
 }
 
 // erasePartCopy removes every object one part of a file occupies on one

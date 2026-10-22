@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -1162,5 +1163,250 @@ func TestRelocateWatchedReportsBytesAgainstThePlan(t *testing.T) {
 	}
 	if last.Bytes <= 0 {
 		t.Error("no bytes were ever reported")
+	}
+}
+
+// partObjectsIn counts the objects one part of a file occupies in one
+// account's folder — one per chunk, so a small file is one.
+func partObjectsIn(t *testing.T, root, archiveID string, part int) int {
+	t.Helper()
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return 0
+	}
+	suffix := fmt.Sprintf("-p%d.sand", part)
+	count := 0
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), archiveID) && strings.HasSuffix(e.Name(), suffix) {
+			count++
+		}
+	}
+	return count
+}
+
+// twoPlansOnOneFile is the setup the overlapping-relocation tests share: a
+// file on three of four accounts, and a plan that moves its third part to the
+// fourth, drawn once and run once. The plan is handed back as a second run
+// would hold it — drawn before the first run, stale after it.
+func twoPlansOnOneFile(t *testing.T) (v *Vault, roots []string, entry *Entry, fp *FilePlan, accounts []string, to int) {
+	t.Helper()
+	v, roots = newTestVault(t, 4)
+	ctx := context.Background()
+	ids := accountIDs(t, v)
+
+	entry, _, err := v.Upload(ctx, MainScope, "/", "twice.txt", []byte("moved by two runs at once\n"), UploadOptions{
+		Accounts: ids[:3],
+	})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	before := placementOf(entry)
+	targets := []string{before[1], before[2], ids[3]}
+	from := 0
+	for i, id := range ids {
+		if id == before[3] {
+			from = i
+		}
+	}
+	to = 3
+
+	plan, err := v.planRelocation(MainScope, entry.ID, targets, archive.Scheme{}, relocationOptions{})
+	if err != nil {
+		t.Fatalf("planRelocation: %v", err)
+	}
+	if len(plan.Files) != 1 || len(plan.Files[0].Moves) != 1 || plan.Files[0].Moves[0].Part != 3 {
+		t.Fatalf("plan = %+v, want one move of part 3", plan.Files)
+	}
+	fp = &plan.Files[0]
+
+	// The first run, to completion: part 3 is on the fourth account and the
+	// source copy is gone.
+	first := *fp
+	first.Moves = append([]PartMove(nil), fp.Moves...)
+	outcome, err := v.relocateEntry(ctx, &first, plan.Accounts, nil)
+	if err != nil || outcome.moved != 1 {
+		t.Fatalf("first run = %+v, %v; want part 3 moved", outcome, err)
+	}
+	if n := partObjectsIn(t, roots[to], entry.ArchiveID, 3); n != 1 {
+		t.Fatalf("the destination holds %d objects of part 3 after the first run, want 1", n)
+	}
+	if n := partObjectsIn(t, roots[from], entry.ArchiveID, 3); n != 0 {
+		t.Fatalf("the source still holds %d objects of part 3 after the first run, want 0", n)
+	}
+	return v, roots, entry, fp, plan.Accounts, to
+}
+
+// Two relocations of the same file at once — a folder and a file inside it,
+// or one folder twice — both plan the same move. The first finishes: the
+// index names the destination and the source copy is erased. The second then
+// copies from a source that is gone, and its rollback used to erase the
+// destination, which the index named and nothing else held. The only copy of
+// the part, gone to tidy up after a copy that never happened.
+func TestASecondRunOfTheSamePlanDoesNotEraseThePartTheFirstMoved(t *testing.T) {
+	v, roots, entry, fp, accounts, to := twoPlansOnOneFile(t)
+	ctx := context.Background()
+
+	// The second run's copy, with the accounts as it snapshotted them while
+	// the first run was still in flight — the source among them. It reads a
+	// source the first run has since erased, and fails.
+	configs := map[string]provider.Config{}
+	for _, id := range accountIDs(t, v) {
+		v.mu.RLock()
+		cfg, ok := v.configForLocked(id)
+		v.mu.RUnlock()
+		if ok {
+			configs[id] = cfg
+		}
+	}
+	var outcome relocateOutcome
+	landed := v.copyParts(ctx, fp, fp.archiveID, fp.chunkCount, configs, nil, &outcome)
+	if len(landed) != 0 || outcome.moved != 0 || len(outcome.warnings) == 0 {
+		t.Errorf("second run's copy = %+v landed %v, want nothing landed and the failed copy reported", outcome, landed)
+	}
+
+	if n := partObjectsIn(t, roots[to], entry.ArchiveID, 3); n != 1 {
+		t.Fatalf("the destination holds %d objects of part 3 after the second run, want the 1 the first run put there", n)
+	}
+	now, err := v.Entry(entry.ID)
+	if err != nil {
+		t.Fatalf("Entry: %v", err)
+	}
+	if len(now.Shards) != 3 || placementOf(now)[3] != accounts[2] {
+		t.Errorf("placement after the second run = %v, want part 3 still on the fourth account", placementOf(now))
+	}
+	data, _, err := v.Fetch(ctx, entry.ID)
+	if err != nil {
+		t.Fatalf("Fetch after two overlapping runs: %v", err)
+	}
+	if string(data) != "moved by two runs at once\n" {
+		t.Errorf("content = %q", data)
+	}
+}
+
+// The same two runs, with the second one's copy succeeding — the source copy
+// still there because the first run's erase failed or had not got there yet,
+// and the source account still in play for the row because it holds another
+// part. The commit used to re-point part 3 to the destination and list the
+// row's "old" shard as stale: the destination again, erased in the same
+// breath. A commit applies a move only to a row that still says the part is
+// where the move copied it from, and erases nothing for one it skips.
+func TestACommitDoesNotApplyAMoveToAPartThatIsAlreadyThere(t *testing.T) {
+	v, roots, entry, fp, accounts, to := twoPlansOnOneFile(t)
+	ctx := context.Background()
+
+	// The second run's copy, landed: the same bytes under the same key on
+	// the destination, which the first run already made the part's home.
+	var out relocateOutcome
+	out.moved = len(fp.Moves)
+	stale, err := v.commitRelocation(ctx, fp, fp.Moves, &out)
+	if err != nil {
+		t.Fatalf("commitRelocation: %v", err)
+	}
+	if len(stale) != 0 {
+		t.Errorf("the commit handed back %+v to erase; a skipped move must erase nothing", stale)
+	}
+	if out.moved != 0 {
+		t.Errorf("the commit counts %d moved, want 0: the move was not applied", out.moved)
+	}
+	if joined := strings.Join(out.warnings, "\n"); !strings.Contains(joined, "another move got there first") {
+		t.Errorf("warnings = %v, want the skipped move explained", out.warnings)
+	}
+
+	if n := partObjectsIn(t, roots[to], entry.ArchiveID, 3); n != 1 {
+		t.Fatalf("the destination holds %d objects of part 3 after the second commit, want 1", n)
+	}
+	now, err := v.Entry(entry.ID)
+	if err != nil {
+		t.Fatalf("Entry: %v", err)
+	}
+	if len(now.Shards) != 3 || placementOf(now)[3] != accounts[2] {
+		t.Errorf("placement after the second commit = %v, want part 3 on the fourth account", placementOf(now))
+	}
+	if _, _, err := v.Fetch(ctx, entry.ID); err != nil {
+		t.Errorf("Fetch after the overlapping commit: %v", err)
+	}
+}
+
+// A file deleted or rewritten while its parts were being copied leaves the
+// copies belonging to nothing. The commit used to return nothing to erase and
+// say the copies were discarded; they were not.
+func TestRelocationCopiesAreErasedWhenTheFileWentAway(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		gone func(t *testing.T, v *Vault, entry *Entry)
+	}{
+		{"deleted", func(t *testing.T, v *Vault, entry *Entry) {
+			if _, err := v.Delete(context.Background(), entry.ID); err != nil {
+				t.Fatalf("Delete: %v", err)
+			}
+		}},
+		{"rewritten", func(t *testing.T, v *Vault, entry *Entry) {
+			// A password change's re-encryption rewrites every file under a
+			// fresh archive ID, which is the case the commit's check names.
+			report, err := v.ChangePassword(context.Background(), testPassword, "rewritten underneath", true)
+			if err != nil || report.Migrated != 1 {
+				t.Fatalf("ChangePassword = %+v, %v; want the file re-encrypted", report, err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v, roots := newTestVault(t, 4)
+			ctx := context.Background()
+			ids := accountIDs(t, v)
+
+			entry, _, err := v.Upload(ctx, MainScope, "/", "gone.txt", []byte("copied, then gone\n"), UploadOptions{
+				Accounts: ids[:3],
+			})
+			if err != nil {
+				t.Fatalf("Upload: %v", err)
+			}
+			before := placementOf(entry)
+			plan, err := v.planRelocation(MainScope, entry.ID, []string{before[1], before[2], ids[3]}, archive.Scheme{}, relocationOptions{})
+			if err != nil {
+				t.Fatalf("planRelocation: %v", err)
+			}
+			fp := &plan.Files[0]
+
+			// The copy, by hand, so the file can go away between it and the
+			// commit — the window relocateEntry closes on its own.
+			var out relocateOutcome
+			configs := map[string]provider.Config{}
+			for _, id := range ids {
+				cfg, ok := func() (provider.Config, bool) {
+					v.mu.RLock()
+					defer v.mu.RUnlock()
+					return v.configForLocked(id)
+				}()
+				if ok {
+					configs[id] = cfg
+				}
+			}
+			landed := v.copyParts(ctx, fp, fp.archiveID, fp.chunkCount, configs, nil, &out)
+			if len(landed) != 1 {
+				t.Fatalf("copied %d parts, want 1: %v", len(landed), out.warnings)
+			}
+			if n := partObjectsIn(t, roots[3], entry.ArchiveID, 3); n != 1 {
+				t.Fatalf("the destination holds %d objects of part 3 after the copy, want 1", n)
+			}
+
+			tc.gone(t, v, entry)
+
+			stale, err := v.commitRelocation(ctx, fp, landed, &out)
+			if err != nil {
+				t.Fatalf("commitRelocation: %v", err)
+			}
+			if len(stale) != 1 || stale[0].Part != 3 || stale[0].ProviderID != ids[3] {
+				t.Fatalf("stale = %+v, want the copy of part 3 on the fourth account handed back to erase", stale)
+			}
+			if joined := strings.Join(out.warnings, "\n"); !strings.Contains(joined, "discarded") {
+				t.Errorf("warnings = %v, want the discard said", out.warnings)
+			}
+			if w := v.deleteStoredShards(ctx, fp.archiveID, fp.chunkCount, stale); len(w) != 0 {
+				t.Errorf("erasing the copies: %v", w)
+			}
+			if n := partObjectsIn(t, roots[3], entry.ArchiveID, 3); n != 0 {
+				t.Errorf("the destination still holds %d objects of the old part 3, want none", n)
+			}
+		})
 	}
 }
