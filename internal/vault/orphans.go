@@ -179,11 +179,21 @@ type StrayShard struct {
 	Reason       string `json:"reason,omitempty"`
 }
 
-// OrphanAccount is one connected account's share of the answer.
+// OrphanAccount is one connected account's share of the answer — or one
+// root's: an account that keeps a replica folder answers twice, once for its
+// parts folder and once, in a row of its own, for its replicas.
 type OrphanAccount struct {
+	// ProviderID is the account's ID for its parts folder, and the account's
+	// ID with replicaSuffix for its replica folder, so that a sweep target
+	// names one root and never the other. Name says which in words.
 	ProviderID string `json:"provider_id"`
 	Name       string `json:"name"`
 	Kind       string `json:"kind"`
+
+	// Replicas says this row is the account's replica folder. What it counts
+	// is replica objects against the replicas the index names; a part never
+	// lives there, and a replica object never counts in the parts row.
+	Replicas bool `json:"replicas,omitempty"`
 
 	// Objects and Bytes are every part object the account is holding, whether
 	// or not the index accounts for it — the denominator the orphan figures
@@ -310,7 +320,7 @@ func (v *Vault) scanForOrphans(ctx context.Context) (*OrphanScan, error) {
 	// lands between the two reads is seen by at least one of them: either the
 	// index already names it, or the registry still does.
 	v.noteInFlight(owned)
-	configs := append([]provider.Config(nil), v.providers...)
+	listings := v.orphanListingsLocked(owned)
 	policy := v.store.Policy
 	vaultKey := append([]byte(nil), v.vaultKey...)
 	v.mu.RUnlock()
@@ -327,7 +337,7 @@ func (v *Vault) scanForOrphans(ctx context.Context) (*OrphanScan, error) {
 		// state a half-finished import leaves the most spools behind in.
 		Leftovers: v.ScanForLeftovers(),
 	}
-	if len(configs) == 0 {
+	if len(listings) == 0 {
 		return scan, nil
 	}
 
@@ -336,11 +346,11 @@ func (v *Vault) scanForOrphans(ctx context.Context) (*OrphanScan, error) {
 	var found []OrphanArchive
 	var loose []StrayShard
 
-	for _, cfg := range configs {
+	for _, listing := range listings {
 		wg.Add(1)
-		go func(cfg provider.Config) {
+		go func(listing orphanListing) {
 			defer wg.Done()
-			account, archives, strays := v.scanAccountForOrphans(ctx, cfg, owned, policy, vaultKey)
+			account, archives, strays := v.scanAccountForOrphans(ctx, listing, policy, vaultKey)
 
 			mu.Lock()
 			defer mu.Unlock()
@@ -350,9 +360,9 @@ func (v *Vault) scanForOrphans(ctx context.Context) (*OrphanScan, error) {
 			if account.Error != "" {
 				scan.Warnings = append(scan.Warnings, fmt.Sprintf(
 					"could not ask %s what it holds, so anything abandoned there is not counted: %s",
-					cfg.Name, account.Error))
+					account.Name, account.Error))
 			}
-		}(cfg)
+		}(listing)
 	}
 	wg.Wait()
 
@@ -429,18 +439,72 @@ func (v *Vault) scanForOrphans(ctx context.Context) (*OrphanScan, error) {
 	return scan, nil
 }
 
-// scanAccountForOrphans is ScanForOrphans' work for a single account.
+// orphanListing is one root to be listed: an account at its parts folder, or
+// the same account at its replica folder, with the archives the index owns
+// in that root.
+//
+// The two roots are listed separately and judged against separate owned
+// sets, because the folder is the only thing that tells a replica object from
+// a part (see replica.go) and an object is abandoned only relative to the
+// root it is in: a replica archive the index names is owned in the replica
+// folder and would be an orphan anywhere else.
+type orphanListing struct {
+	// cfg is what the root is opened with: the account's own config, or its
+	// replicaConfig, whose ID carries replicaSuffix.
+	cfg      provider.Config
+	owned    map[string]*ownedArchive
+	replicas bool
+}
+
+// orphanListingsLocked is every root the scan lists: each connected account
+// at its parts folder, judged against owned, and each account that keeps a
+// replica folder at that folder too, judged against the replica archives the
+// index names. The caller must hold at least the read lock.
+func (v *Vault) orphanListingsLocked(owned map[string]*ownedArchive) []orphanListing {
+	var replicas map[string]*ownedArchive
+	out := make([]orphanListing, 0, len(v.providers))
+	for _, cfg := range v.providers {
+		out = append(out, orphanListing{cfg: cfg, owned: owned})
+		if cfg.ReplicaFolder == "" {
+			continue
+		}
+		at, err := replicaConfig(cfg)
+		if err != nil {
+			// A folder that no longer validates against its parts folder
+			// cannot be opened, and a root that cannot be opened is one the
+			// scan says nothing about rather than one it empties.
+			continue
+		}
+		if replicas == nil {
+			replicas = v.ownedReplicaArchivesLocked()
+			// A replica being written is registered in the same in-flight
+			// registry as a part (the scatter does not know which root it is
+			// at), so the replica roots honour it the way the parts roots do.
+			v.noteInFlight(replicas)
+		}
+		out = append(out, orphanListing{cfg: at, owned: replicas, replicas: true})
+	}
+	return out
+}
+
+// scanAccountForOrphans is ScanForOrphans' work for a single root.
 func (v *Vault) scanAccountForOrphans(
 	ctx context.Context,
-	cfg provider.Config,
-	owned map[string]*ownedArchive,
+	listing orphanListing,
 	policy Policy,
 	vaultKey []byte,
 ) (OrphanAccount, []OrphanArchive, []StrayShard) {
+	cfg, owned := listing.cfg, listing.owned
 	account := OrphanAccount{
 		ProviderID: cfg.ID,
 		Name:       cfg.Name,
 		Kind:       string(cfg.Kind),
+		Replicas:   listing.replicas,
+	}
+	if listing.replicas {
+		// Said in the name as well as the flag, so a row is never read as
+		// the parts folder by anything that shows only names.
+		account.Name = cfg.Name + " (replicas)"
 	}
 
 	p, err := v.buildProvider(cfg)
@@ -457,7 +521,11 @@ func (v *Vault) scanAccountForOrphans(
 		return account, nil, nil
 	}
 
-	account.Backup, account.Foreign = v.backupState(ctx, p, vaultKey)
+	// The manifest backup lives in the parts folder, so only the parts row
+	// can say whose account this is; the replica row has nothing to read.
+	if !listing.replicas {
+		account.Backup, account.Foreign = v.backupState(ctx, p, vaultKey)
+	}
 
 	reason := ""
 	if account.Foreign {
@@ -824,7 +892,53 @@ func (v *Vault) ownedArchivesLocked() map[string]*ownedArchive {
 	return owned
 }
 
-// OrphanTarget names one archive on one account to erase.
+// ownedReplicaArchivesLocked collects every replica archive the index still
+// points at, which is the owned set for a replica folder: anything else in
+// one is abandoned. Main vault only, since a replica is a main-vault
+// placement.
+//
+// Replicas are forgotten without being erased more often than parts are —
+// a recovery drops them all, a disconnect drops the ones that lost too many
+// shards, a retired key being dropped takes its replicas with it, and an
+// erase that fails leaves objects behind — so this is the only way the space
+// ever comes back. Left unreattachable: a replica short of a shard is made
+// again by the worker, not mended.
+//
+// A replica being made right now is not in the index yet; it is in the
+// index, or erased, by the time replicateFile returns, and the worker holds
+// one slot. When a registry of archives in flight exists, the IDs it holds
+// at the Replicas role belong in this set too, so a scan that overlaps a
+// long copy does not offer to erase it.
+//
+// The caller must hold at least the read lock.
+func (v *Vault) ownedReplicaArchivesLocked() map[string]*ownedArchive {
+	owned := map[string]*ownedArchive{}
+	for _, e := range v.manifest.Entries {
+		r := e.Replica
+		if r == nil || r.ArchiveID == "" {
+			continue
+		}
+		row := &ownedArchive{
+			scope:      MainScope,
+			entryID:    e.ID,
+			path:       e.Path(),
+			scheme:     r.Scheme(),
+			chunkCount: r.ChunkCount,
+			parts:      map[int]bool{},
+			accounts:   map[string]bool{},
+		}
+		for _, s := range r.Shards {
+			row.parts[s.Part] = true
+			row.accounts[s.ProviderID] = true
+		}
+		owned[r.ArchiveID] = row
+	}
+	return owned
+}
+
+// OrphanTarget names one archive on one account to erase. ProviderID is the
+// account's ID for its parts folder, or the ID the scan reported for its
+// replica folder (see OrphanAccount.ProviderID).
 type OrphanTarget struct {
 	ProviderID string `json:"provider_id"`
 	ArchiveID  string `json:"archive_id"`
@@ -915,10 +1029,13 @@ func (v *Vault) SweepOrphans(ctx context.Context, targets []OrphanTarget, dryRun
 		return report, nil
 	}
 
+	// Every root a target can name: the account at its parts folder under
+	// its own ID, and at its replica folder under the suffixed one the scan
+	// reported — so an erase lands in the folder the archive was found in.
 	v.mu.RLock()
 	configs := make(map[string]provider.Config, len(v.providers))
-	for _, cfg := range v.providers {
-		configs[cfg.ID] = cfg
+	for _, listing := range v.orphanListingsLocked(nil) {
+		configs[listing.cfg.ID] = listing.cfg
 	}
 	v.mu.RUnlock()
 

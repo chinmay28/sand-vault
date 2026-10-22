@@ -165,6 +165,13 @@ type RekeyStatus struct {
 	Pending      int   `json:"pending"`
 	PendingBytes int64 `json:"pending_bytes"`
 
+	// StaleReplicas counts the replicas still sealed under a key other than
+	// the current one. Not in Pending — a replica is not re-encrypted but
+	// made again by the replication worker, or erased (dropStaleReplicas) —
+	// and reported separately because each one keeps the previous key, and
+	// so the previous password, alive after Pending has reached zero.
+	StaleReplicas int `json:"stale_replicas,omitempty"`
+
 	// Total and TotalBytes are what there was to move when the plan began —
 	// or what there is now, when nothing has been planned — so that the
 	// fraction done is Pending over Total. Never less than Pending.
@@ -433,6 +440,7 @@ func (v *Vault) RekeyStatus() (*RekeyStatus, error) {
 	}
 	status.Pending, status.PendingBytes = pendingIn(v.manifest, v.dataKeyID)
 	status.Total, status.TotalBytes = status.Pending, status.PendingBytes
+	status.StaleReplicas = v.staleReplicasLocked()
 
 	if plan := v.manifest.Rekey; plan != nil {
 		copied := *plan

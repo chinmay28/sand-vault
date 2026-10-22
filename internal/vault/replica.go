@@ -44,10 +44,14 @@ type Replica struct {
 	ChunkSize   int64   `json:"chunk_size"`
 	ChunkCount  int     `json:"chunk_count"`
 
-	// Hash is the plaintext hash the replica was cut from, which is the
-	// entry's Hash at the time. A file whose content changes underneath its
-	// replica — an overwrite keeps the entry's ID — is a replica to make
-	// again, and this is how that is noticed.
+	// Hash is the plaintext hash the replica was cut from. It is the entry's
+	// Hash when the entry has one; an entry from before hashes were recorded
+	// has none, and then it is the hash of what the parts read back as, which
+	// the commit writes onto the entry too (see replicateFile). An overwrite
+	// mints a new entry with a new ID (commitUpload), so a replica never has
+	// to notice its file's content changing underneath it; what the hash
+	// catches is an index whose record of the file is not the file the
+	// replica was cut from.
 	Hash string `json:"hash"`
 
 	CreatedAt time.Time `json:"created_at"`
@@ -226,8 +230,13 @@ func (v *Vault) Replication() (*ReplicationPolicy, map[string]string, error) {
 }
 
 // SetReplication sets the policy: which accounts, where on each, how a
-// replica is cut, and how much a day. An empty account list clears it, and
-// leaves every replica already made where it is.
+// replica is cut, and how much a day. An empty account list clears it.
+//
+// Clearing, like pausing, leaves every replica on the current key where it
+// is — they are read through the folders their accounts keep — and drops the
+// ones still sealed under a retired key. With the worker stopped nothing
+// would ever re-make those, and a replica is what keeps a retired key, and
+// the old password, alive (dropStaleReplicas).
 //
 // Each account's replica folder is stored on the account itself, where
 // provider.Open reads it, and checked there: a folder that could not keep
@@ -235,6 +244,20 @@ func (v *Vault) Replication() (*ReplicationPolicy, map[string]string, error) {
 // that is no longer in the policy keeps its folder, since replicas made
 // earlier are still read through it.
 func (v *Vault) SetReplication(s ReplicationSettings) error {
+	if err := v.setReplication(s); err != nil {
+		return err
+	}
+	if len(s.Accounts) == 0 || s.Paused {
+		warnings, err := v.dropStaleReplicas(context.Background())
+		v.noteReplicateWarnings(warnings)
+		return err
+	}
+	return nil
+}
+
+// setReplication is SetReplication's one write: the policy and the folders,
+// all checked first and applied together.
+func (v *Vault) setReplication(s ReplicationSettings) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.dataKey == nil {
@@ -523,7 +546,16 @@ func (v *Vault) replicaCurrentLocked(e *Entry, p *ReplicationPolicy) bool {
 	if r == nil || p == nil {
 		return false
 	}
-	if r.Hash != e.Hash || r.KeyID != v.dataKeyID {
+	// An entry with no hash is a file from before hashes were recorded, or
+	// one a conversion or a re-encryption left without one. Nothing can
+	// change its content under the same ID — an overwrite mints a new entry
+	// — so whatever its replica was cut from is what it still holds, and
+	// requiring the replica's hash to equal "" would make it a replica to
+	// remake on every step, forever.
+	if e.Hash != "" && r.Hash != e.Hash {
+		return false
+	}
+	if r.KeyID != v.dataKeyID {
 		return false
 	}
 	if r.DataShards != p.DataShards || r.TotalShards != p.TotalShards {
@@ -674,12 +706,23 @@ func (v *Vault) ReplicateStep(ctx context.Context, now time.Time) (ReplicateStep
 		v.replicate.skip = map[string]time.Time{}
 	}
 	v.replicate.skip[id] = now.Add(replicateRetryAfter)
-	v.replicate.warnings = append(v.replicate.warnings, warning)
+	v.replicateMu.Unlock()
+	v.noteReplicateWarnings([]string{warning})
+	return ReplicateStep{Path: path, Warning: warning}, nil
+}
+
+// noteReplicateWarnings keeps the latest few things that went wrong around
+// replicas where ReplicationStatus shows them, dropping the oldest.
+func (v *Vault) noteReplicateWarnings(warnings []string) {
+	if len(warnings) == 0 {
+		return
+	}
+	v.replicateMu.Lock()
+	defer v.replicateMu.Unlock()
+	v.replicate.warnings = append(v.replicate.warnings, warnings...)
 	if len(v.replicate.warnings) > maxReplicateWarnings {
 		v.replicate.warnings = v.replicate.warnings[len(v.replicate.warnings)-maxReplicateWarnings:]
 	}
-	v.replicateMu.Unlock()
-	return ReplicateStep{Path: path, Warning: warning}, nil
 }
 
 // replicateTracked is replicateFile with the file's progress on show.
@@ -771,6 +814,21 @@ func (v *Vault) replicateFile(ctx context.Context, id string, progress func(done
 		fresh.Hash = hexHash(placed.originalHash)
 	}
 
+	// The scatter tolerates a failed shard, as an upload does: a k-of-n
+	// replica that landed on k is still a replica. But it is not the one the
+	// policy asks for, so replicaCurrentLocked would send it back here on the
+	// next step, which — while the account that refused stays down — is a
+	// full download and upload every step, each one erasing the last, with
+	// nothing to show for it. A short placement is refused instead: its
+	// objects go, the file is left alone for a while (ReplicateStep), and
+	// the replica it had, if any, stays.
+	if stored := distinctShards(fresh.Shards); stored < fresh.TotalShards {
+		warnings := append(placed.warnings, v.deleteReplicaShards(context.WithoutCancel(ctx), fresh)...)
+		return false, warnings, fmt.Errorf(
+			"stored only %d of the %d shards the replica calls for, so it was not kept; %s",
+			stored, fresh.TotalShards, strings.Join(placed.warnings, "; "))
+	}
+
 	v.mu.Lock()
 	if err := v.placedKeyHeldLocked(placed.keyID); err != nil {
 		v.mu.Unlock()
@@ -786,9 +844,22 @@ func (v *Vault) replicateFile(ctx context.Context, id string, progress func(done
 		return false, append(placed.warnings, warnings...), nil
 	}
 	previous := current.Replica
+	previousHash := current.Hash
 	current.Replica = fresh
+	if current.Hash == "" {
+		// The index never recorded this file's hash, and the replica has
+		// just been cut from one that can be trusted: a chunked file was
+		// read through its own seals, each chunk authenticated as it went,
+		// and hashed as it passed (rescatter); a file still stored whole was
+		// rebuilt by DecodeLegacyTo, which checks what it rebuilt against the
+		// hash sealed inside the archive. Either way the hash is of the bytes
+		// the parts actually hold, which is all Entry.Hash ever meant — so
+		// the entry gets it, and the replica's hash is its hash from here on.
+		current.Hash = fresh.Hash
+	}
 	if err := v.persistLocked(); err != nil {
 		current.Replica = previous
+		current.Hash = previousHash
 		v.mu.Unlock()
 		warnings := v.deleteReplicaShards(context.WithoutCancel(ctx), fresh)
 		return false, append(placed.warnings, warnings...), err
@@ -813,33 +884,114 @@ func (v *Vault) deleteReplicaShards(ctx context.Context, r *Replica) []string {
 // DropReplica erases one file's replica and forgets it, which is what
 // "stop replicating" means when somebody wants the space back now rather than
 // at the next sweep. The file's own parts are untouched.
+//
+// Forgotten first, erased second. The other order would, on an index that
+// could not be written, put the record back on a replica whose objects had
+// just gone — a replica the index says is there and a read finds is not.
+// This way round the failure mode is objects the index no longer names,
+// which is what the orphan scan is for.
 func (v *Vault) DropReplica(ctx context.Context, id string) ([]string, error) {
-	v.mu.RLock()
+	v.mu.Lock()
 	if v.dataKey == nil {
-		v.mu.RUnlock()
+		v.mu.Unlock()
 		return nil, ErrLocked
 	}
 	entry := v.manifest.ByID(id)
 	if entry == nil {
-		v.mu.RUnlock()
+		v.mu.Unlock()
 		return nil, fmt.Errorf("no such file: %s", id)
 	}
 	doomed := entry.Replica
-	v.mu.RUnlock()
 	if doomed == nil {
+		v.mu.Unlock()
 		return nil, nil
 	}
+	entry.Replica = nil
+	if err := v.persistLocked(); err != nil {
+		entry.Replica = doomed
+		v.mu.Unlock()
+		return nil, err
+	}
+	v.mu.Unlock()
 
-	warnings := v.deleteReplicaShards(ctx, doomed)
+	return v.deleteReplicaShards(ctx, doomed), nil
+}
 
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	if entry := v.manifest.ByID(id); entry != nil && entry.Replica == doomed {
-		entry.Replica = nil
-		if err := v.persistLocked(); err != nil {
-			entry.Replica = doomed
-			return warnings, err
+// ---------------------------------------------------------------------------
+// Replicas on a key the vault wants rid of
+
+// replicaStaleKeyLocked reports whether a file's replica is sealed under a
+// key other than the current one. The caller must hold at least the read
+// lock.
+func (v *Vault) replicaStaleKeyLocked(e *Entry) bool {
+	return e.Replica != nil && e.Replica.KeyID != v.dataKeyID
+}
+
+// staleReplicasLocked counts the replicas still sealed under a key other than
+// the current one, which is what keeps a retired key alive once every file
+// has left it. The caller must hold at least the read lock.
+func (v *Vault) staleReplicasLocked() int {
+	n := 0
+	for _, e := range v.manifest.Entries {
+		if v.replicaStaleKeyLocked(e) {
+			n++
 		}
+	}
+	return n
+}
+
+// dropStaleReplicas forgets, and then erases, every replica sealed under a
+// key other than the current one whose file is no longer on that key.
+//
+// A password change retires a key, and the worker re-makes replicas onto the
+// new one — but only while the policy is active. Paused, cleared or merely
+// metered, a replica stays on the retired key for as long as nobody makes
+// it again, and with it stays the key: pruneRetiredKeysLocked keeps a key
+// any replica names, so a whole-file copy readable with the old password
+// outlives the change that was meant to end that. A replica is derived data,
+// and the worker will make it again the moment the policy wants one, so the
+// answer is to erase rather than re-encrypt.
+//
+// Only the replicas whose file has already moved. One whose file is still on
+// the same retired key holds nothing that key does not already hold for the
+// file, and it is the file's stand-in (ReadEither) for as long as the parts
+// are on an account that may be down; it goes with the file, on the pass that
+// moves the file.
+//
+// Forgotten in one write, erased after it: see DropReplica for why that
+// order. The warnings are the erase's.
+func (v *Vault) dropStaleReplicas(ctx context.Context) ([]string, error) {
+	v.mu.Lock()
+	if v.dataKey == nil {
+		v.mu.Unlock()
+		return nil, ErrLocked
+	}
+	var doomed []*Replica
+	restore := map[*Entry]*Replica{}
+	for _, e := range v.manifest.Entries {
+		if !v.replicaStaleKeyLocked(e) || e.Replica.KeyID == e.KeyID {
+			continue
+		}
+		restore[e] = e.Replica
+		doomed = append(doomed, e.Replica)
+		e.Replica = nil
+	}
+	if len(doomed) == 0 {
+		v.mu.Unlock()
+		return nil, nil
+	}
+	if err := v.persistLocked(); err != nil {
+		for e, r := range restore {
+			e.Replica = r
+		}
+		v.mu.Unlock()
+		return nil, err
+	}
+	v.mu.Unlock()
+
+	var warnings []string
+	for _, r := range doomed {
+		warnings = append(warnings, v.deleteReplicaShards(ctx, r)...)
 	}
 	return warnings, nil
 }
