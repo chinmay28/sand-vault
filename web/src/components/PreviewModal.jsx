@@ -14,6 +14,7 @@ import { MachineTransfer, fileItem } from './MachineTransfer'
 import { RelocateClouds, fileScheme, schemeName, storedParts } from './CloudSelect'
 import FilmDetails, { FilmSummary, filmLabel } from './FilmDetails'
 import { Banner, Button, Modal, Spinner } from './ui'
+import { ReadFromChoice } from './Replication'
 
 /* How much of the visible viewport a preview may take before the modal's own
    chrome and the buttons under it start being pushed off. */
@@ -35,7 +36,7 @@ const TEXT_CAP = 512 * 1024
 
    `wanted` is whether this preview takes a whole file at all; a video does
    not, and is not fetched here. */
-function useRebuilt(file, wanted, asText) {
+function useRebuilt(file, wanted, asText, from = 'parts') {
   const [state, setState] = useState({ watch: null, url: null, text: null, received: 0, error: null })
 
   useEffect(() => {
@@ -46,7 +47,7 @@ function useRebuilt(file, wanted, asText) {
     setState({ watch, url: null, text: null, received: 0, error: null })
 
     fetchToBlob(
-      api.contentURL(file.id, { watch }),
+      api.contentURL(file.id, { watch, from }),
       (received) => { if (live) setState((prev) => ({ ...prev, received })) },
       { signal: abort.signal },
     )
@@ -66,7 +67,7 @@ function useRebuilt(file, wanted, asText) {
       })
 
     return () => { live = false; abort.abort() }
-  }, [file.id, wanted, asText])
+  }, [file.id, wanted, asText, from])
 
   /* The plaintext is reachable through the object URL for as long as it
      lives, so it lives exactly as long as the preview does. */
@@ -112,7 +113,12 @@ export default function PreviewModal({
   /* The whole file, for the two previews that take one — see useRebuilt.
      Its own error joins the preview's: a picture that could not be rebuilt
      and one that could not be decoded are the same dark box to fill. */
-  const rebuilt = useRebuilt(file, kind === 'image' || kind === 'text', kind === 'text')
+  /* Which placement this dialog reads from: the parts, until somebody says
+     otherwise for a file that has a replica. Everything the dialog fetches
+     follows it — the preview, the player, the download, the stream link. */
+  const [source, setSource] = useState('parts')
+  useEffect(() => { setSource('parts') }, [file.id])
+  const rebuilt = useRebuilt(file, kind === 'image' || kind === 'text', kind === 'text', source)
   const text = rebuilt.text
   const loading = kind === 'text' ? text === null && !rebuilt.error : rebuilt.url === null && !rebuilt.error
   const shown = error || rebuilt.error
@@ -123,7 +129,7 @@ export default function PreviewModal({
   const [playerWatch, setPlayerWatch] = useState(() => readToken())
   const [playerReady, setPlayerReady] = useState(false)
   useEffect(() => { setPlayerWatch(readToken()); setPlayerReady(false) }, [file.id])
-  const playerURL = api.contentURL(file.id, { watch: playerWatch })
+  const playerURL = api.contentURL(file.id, { watch: playerWatch, from: source })
 
   /* Kept apart from the preview's own error: a file whose download fails is
      still a file the preview above may be rendering perfectly well. */
@@ -426,6 +432,14 @@ export default function PreviewModal({
           <Banner tone="error" onDismiss={() => setDownloadError(null)}>{downloadError}</Banner>
         )}
 
+        {/* Only for a file that has a replica; everything else has one
+            placement and nothing to choose. */}
+        {file.replica && (
+          <div style={{ padding: mobile ? '10px 0 12px' : '4px 0 14px' }}>
+            <ReadFromChoice file={file} value={source} onChange={setSource} compact={mobile} />
+          </div>
+        )}
+
         {/* The download's own wait, said over the button that started it. */}
         {downloading && downloadProgress && (
           <ReadStatus
@@ -477,7 +491,7 @@ export default function PreviewModal({
           >⇡ Send to a machine</Button>
           <Button
             variant="primary"
-            onClick={() => download(file)}
+            onClick={() => download(file, source)}
             disabled={downloading}
             title="Download the rebuilt, decrypted file"
             style={mobile ? { flex: 2, justifyContent: 'center' } : null}
@@ -508,6 +522,7 @@ export default function PreviewModal({
         {streaming && (
           <StreamLink
             file={file}
+            from={source}
             autoplay={streaming === 'play'}
             /* Opened from inside a dialog, so it has to sit above the one that
                opened it rather than wherever the portal happened to put it. */

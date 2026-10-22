@@ -13,6 +13,7 @@ import ConvertFile from './ConvertFile'
 import { PreviousKeyPill } from './Rekey'
 import { onPreviousKey } from '../keys'
 import { RelocateClouds, fileScheme, schemeName, storedParts } from './CloudSelect'
+import { ReplicaBadges, ReplicaDots, ReplicateFolderDialog } from './Replication'
 import MoveToFolder from './MoveToFolder'
 import FolderArtPicker from './FolderArt'
 import RenameDialog from './Rename'
@@ -47,7 +48,7 @@ export const FILM_COLUMNS = 'minmax(0,1fr) 92px 150px 132px 216px'
    down to a single part cannot be rebuilt at all. Working that out twice —
    once for rows and once for tiles — is how the two views drift apart. */
 export function useFileActions({
-  file, providers, film, vault = '', subVaults = [],
+  file, providers, film, vault = '', subVaults = [], replicate = null,
   onPreview, onInspect, onFilm, onRefresh, onError,
 }) {
   const [busy, setBusy] = useState(false)
@@ -98,6 +99,35 @@ export function useFileActions({
     } catch (err) {
       onError(err.message)
       setConfirming(false)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /* Whether this file gets a second copy: its own say if it has one, and its
+     folder's otherwise. Main vault only — a replica is a main-vault placement,
+     so inside a sub vault the menu says nothing about it. */
+  const replicated = file.replicate ?? !!replicate?.enabled
+  const filePath = `${file.dir === '/' ? '' : file.dir}/${file.name}`
+  const setReplicate = async (enabled) => {
+    setBusy(true)
+    try {
+      await api.setReplicate(filePath, enabled)
+      onRefresh()
+    } catch (err) {
+      onError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+  const dropReplica = async () => {
+    setBusy(true)
+    try {
+      const resp = await api.dropReplica(file.id)
+      if (resp.warnings?.length) onError(resp.warnings.join('\n'))
+      onRefresh()
+    } catch (err) {
+      onError(err.message)
     } finally {
       setBusy(false)
     }
@@ -198,6 +228,26 @@ export function useFileActions({
               label: 'Where the shards live',
               hint: describeParts(file),
               onSelect: onInspect,
+            },
+            /* The second copy: on or off for this one file, over whatever its
+               folder says, and the replica itself gone now rather than at the
+               next sweep. */
+            !vault && {
+              key: 'replicate',
+              glyph: '⧉',
+              label: replicated ? 'Stop replicating this file' : 'Replicate this file',
+              hint: replicated
+                ? (file.replica ? 'Its replica stays until it is dropped' : 'Whatever its folder says')
+                : 'A second copy on the replication clouds, whatever its folder says',
+              onSelect: () => setReplicate(!replicated),
+            },
+            !vault && file.replica && {
+              key: 'drop-replica',
+              glyph: '⧉',
+              label: 'Drop the replica',
+              hint: 'Erase the second copy now; the parts are untouched',
+              danger: true,
+              onSelect: dropReplica,
             },
             /* Rename and the two moves, together: all three change where a
                file answers from and none of them touch what is stored. */
@@ -516,6 +566,8 @@ function PartBadges({ file }) {
           {dead ? '✗' : '!'}
         </span>
       )}
+      {/* The second copy, outlined, after a hairline. See Replication.jsx. */}
+      <ReplicaBadges file={file} />
       {/* Still sealed under the key the previous password protected, waiting
           for the re-encryption to reach it. Beside the parts because it is a
           fact about how the parts are sealed, and quiet because it is not a
@@ -574,6 +626,7 @@ function PartDots({ file }) {
       ) : (
         <span style={{ fontSize: '10px', color: COLORS.textMuted }}>{schemeName(scheme)}</span>
       )}
+      <ReplicaDots file={file} />
       {onPreviousKey(file) && <PreviousKeyPill tiny />}
     </>
   )
@@ -582,10 +635,10 @@ function PartDots({ file }) {
 export function FileRow({
   file, location, mobile, providers, hasThumb, film, columns, selecting, selected,
   onSelect, onPreview, onInspect, onFilm, onRefresh, onError,
-  vault = '', subVaults = [],
+  vault = '', subVaults = [], replicate = null,
 }) {
   const a = useFileActions({
-    file, providers, film, vault, subVaults, onPreview, onInspect, onFilm, onRefresh, onError,
+    file, providers, film, vault, subVaults, replicate, onPreview, onInspect, onFilm, onRefresh, onError,
   })
   const icon = fileIcon(file.mime, file.name)
 
@@ -859,10 +912,12 @@ function folderNote(held) {
    folder is a name in the index rather than something stored: it can be walked
    into, moved onto other clouds wholesale, or deleted with what is inside it. */
 function useFolderActions({
-  name, path, art, providers, vault = '', subVaults = [], onNavigate, onRefresh, onError,
+  name, path, art, providers, vault = '', subVaults = [], replicated = false,
+  onNavigate, onRefresh, onError,
 }) {
   const [menu, setMenu] = useState(false)
   const [confirming, setConfirming] = useState(false)
+  const [replicating, setReplicating] = useState(false)
   const [relocating, setRelocating] = useState(false)
   const [moving, setMoving] = useState(false)
   const [renaming, setRenaming] = useState(false)
@@ -949,6 +1004,17 @@ function useFolderActions({
               hint: 'Copy it onto a machine you have a login on — in the clear',
               onSelect: () => setSending(true),
             },
+            /* The second copy, for the folder and everything under it. Main
+               vault only: a replica is a main-vault placement. */
+            !vault && {
+              key: 'replicate',
+              glyph: '⧉',
+              label: replicated ? 'Stop replicating' : 'Replicate this folder',
+              hint: replicated
+                ? 'Replicas already made stay until they are dropped'
+                : 'A second copy on the replication clouds, in a folder of their own',
+              onSelect: () => setReplicating(true),
+            },
             /* Only where there is something to choose from. A folder with
                nothing picturable inside it has nothing to offer, and the entry
                would open a dialog whose whole content is an apology. */
@@ -1000,6 +1066,17 @@ function useFolderActions({
               onSelect: () => setConfirming(true),
             },
           ]}
+        />
+      )}
+
+      {replicating && (
+        <ReplicateFolderDialog
+          path={path}
+          name={name}
+          held={held}
+          replicated={replicated}
+          onClose={() => setReplicating(false)}
+          onChanged={onRefresh}
         />
       )}
 
@@ -1135,9 +1212,9 @@ function useFolderActions({
 export function FolderRow({
   name, path, location, art, mobile, providers, columns, selecting, selected,
   onSelect, onNavigate, onRefresh, onError,
-  vault = '', subVaults = [], previousKey = 0,
+  vault = '', subVaults = [], previousKey = 0, replicated = false,
 }) {
-  const a = useFolderActions({ name, path, art, providers, vault, subVaults, onNavigate, onRefresh, onError })
+  const a = useFolderActions({ name, path, art, providers, vault, subVaults, replicated, onNavigate, onRefresh, onError })
 
   const check = selecting && (
     <SelectBox mobile={mobile} checked={selected} label={`Select ${name}`} onChange={onSelect} />
@@ -1332,10 +1409,10 @@ export function FileTile({
   file, location, mobile, providers, hasThumb, film, aspect = TILE_SQUARE,
   selecting, selected,
   onSelect, onPreview, onInspect, onFilm, onRefresh, onError,
-  vault = '', subVaults = [],
+  vault = '', subVaults = [], replicate = null,
 }) {
   const a = useFileActions({
-    file, providers, film, vault, subVaults, onPreview, onInspect, onFilm, onRefresh, onError,
+    file, providers, film, vault, subVaults, replicate, onPreview, onInspect, onFilm, onRefresh, onError,
   })
   const icon = fileIcon(file.mime, file.name)
 
@@ -1399,9 +1476,9 @@ export function FileTile({
 export function FolderTile({
   name, path, location, art, mobile, providers, aspect = TILE_SQUARE, selecting, selected,
   onSelect, onNavigate, onRefresh, onError,
-  vault = '', subVaults = [],
+  vault = '', subVaults = [], replicated = false,
 }) {
-  const a = useFolderActions({ name, path, art, providers, vault, subVaults, onNavigate, onRefresh, onError })
+  const a = useFolderActions({ name, path, art, providers, vault, subVaults, replicated, onNavigate, onRefresh, onError })
 
   return (
     <Tile

@@ -13,6 +13,7 @@ import { StrayParts } from './CleanOrphans'
 import {
   DefaultClouds, PARTS_PER_FILE, defaultSchemeFor, parseScheme, schemeName,
 } from './CloudSelect'
+import { ReplicationSettings, replicationStatusLine, replicationStatusTone } from './Replication'
 
 /* Everything you set on the vault itself, in one place.
 
@@ -101,6 +102,21 @@ export default function VaultSettings({
                 parseScheme(stats?.default_scheme) || defaultSchemeFor(defaults.length))}`
               : `${PARTS_PER_FILE} per upload`}
             onClick={() => setOpen('defaults')}
+          />
+        )}
+
+        {/* A second copy of chosen folders, on clouds already connected, in a
+            folder of their own on each. The line says what is set and how far
+            the copy has got, in the shape the default-clouds line uses, and
+            borrows the warning colour while files are still waiting. */}
+        {providers.length > 0 && (
+          <Setting
+            icon="⧉"
+            label="Replication"
+            hint="A second copy of chosen folders, on clouds set aside for it"
+            status={replicationStatusLine(stats)}
+            tone={replicationStatusTone(stats)}
+            onClick={() => setOpen('replication')}
           />
         )}
 
@@ -223,6 +239,16 @@ export default function VaultSettings({
           providers={providers}
           defaults={stats?.default_accounts || []}
           defaultScheme={stats?.default_scheme || ''}
+          zIndex={CHILD_Z}
+          onClose={close}
+          onChanged={onChanged}
+        />
+      )}
+
+      {open === 'replication' && (
+        <ReplicationSettings
+          providers={providers}
+          stats={stats}
           zIndex={CHILD_Z}
           onClose={close}
           onChanged={onChanged}
