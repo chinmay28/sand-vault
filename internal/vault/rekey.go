@@ -810,15 +810,21 @@ func (s *hashingReaderAt) sum() (out [32]byte, ok bool) {
 	return out, true
 }
 
-// pruneRetiredKeysLocked drops every data key no entry names any more, wiping
-// it from memory and from the vault file. Called from persistLocked, so a key
-// stops being held the moment the last file leaves it — whether that file was
-// migrated or simply deleted.
+// pruneRetiredKeysLocked takes every data key no entry names any more out of
+// the retired map and returns it, so the write that follows goes out without
+// it. Called from persistLocked, so a key stops being held the moment the
+// last file leaves it — whether that file was migrated or simply deleted.
+//
+// What it returns is not zeroed, and the vault file is not touched: that is
+// persistLocked's business, once the write has landed (see keyPrune). A
+// prune that wiped the key before the write and then saw the write fail would
+// leave the caller's rollback pointing an entry at a key that no longer exists
+// anywhere, and the next successful write would make that permanent.
 //
 // The caller must hold the write lock.
-func (v *Vault) pruneRetiredKeysLocked() {
+func (v *Vault) pruneRetiredKeysLocked() map[string][]byte {
 	if len(v.retired) == 0 {
-		return
+		return nil
 	}
 
 	inUse := make(map[string]bool, len(v.manifest.Entries))
@@ -848,24 +854,51 @@ func (v *Vault) pruneRetiredKeysLocked() {
 		inUse[id] = true
 	}
 
-	dropped := false
+	var dropped map[string][]byte
 	for id, key := range v.retired {
 		if inUse[id] {
 			continue
 		}
-		crypto.ZeroBytes(key)
+		if dropped == nil {
+			dropped = map[string][]byte{}
+		}
+		dropped[id] = key
 		delete(v.retired, id)
-		dropped = true
 	}
-	if !dropped {
-		return
-	}
+	return dropped
+}
 
-	kept := v.store.RetiredKeys[:0]
-	for _, wrapped := range v.store.RetiredKeys {
-		if _, ok := v.retired[wrapped.ID]; ok {
-			kept = append(kept, wrapped)
+// keyPrune is what one persist is about to let go of: the retired generations
+// nothing names any more, the main vault's and each open sub vault's. They are
+// taken out of the live maps before the file is sealed, so the write goes out
+// without them, and they are wiped only once it has landed. If it did not,
+// restore puts every one of them back exactly where it was, so that a caller
+// rolling its own change back finds the key its entry still names.
+type keyPrune struct {
+	main map[string][]byte
+	subs map[*subVault]map[string][]byte
+}
+
+// restore puts the keys back, for a write that failed.
+func (p *keyPrune) restore(v *Vault) {
+	for id, key := range p.main {
+		v.retired[id] = key
+	}
+	for sub, keys := range p.subs {
+		for id, key := range keys {
+			sub.retired[id] = key
 		}
 	}
-	v.store.RetiredKeys = kept
+}
+
+// zero wipes the keys, for a write that landed.
+func (p *keyPrune) zero() {
+	for _, key := range p.main {
+		crypto.ZeroBytes(key)
+	}
+	for _, keys := range p.subs {
+		for _, key := range keys {
+			crypto.ZeroBytes(key)
+		}
+	}
 }
