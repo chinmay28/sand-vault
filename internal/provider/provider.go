@@ -54,6 +54,32 @@ const (
 // ErrNotFound is returned by Get and Delete when an object does not exist.
 var ErrNotFound = errors.New("object not found")
 
+// ValidateKey refuses a key that does not name one object.
+//
+// Every backend maps a key onto a path or a name under the account's folder,
+// and the empty key maps onto the folder itself: Dropbox's delete_v2 of the
+// prefix path removes the prefix, OneDrive resolves "" to the drive root, a
+// WebDAV DELETE of the collection takes everything in it. A key with a
+// separator in it would reach outside the folder on the path-addressed
+// backends and be flattened on the others, and "." and ".." are the folder and
+// its parent by another name. None of these are keys the vault ever writes —
+// see vault.ShardKey — so refusing them costs nothing and turns a bug upstream
+// into an error instead of an emptied account.
+//
+// Exported so a backend kept in another file or package shares one rule rather
+// than spelling a slightly different one.
+func ValidateKey(key string) error {
+	switch {
+	case key == "":
+		return fmt.Errorf("object key is empty")
+	case key == "." || key == "..":
+		return fmt.Errorf("object key %q names a folder, not an object", key)
+	case strings.ContainsAny(key, `/\`):
+		return fmt.Errorf("object key %q contains a path separator", key)
+	}
+	return nil
+}
+
 // Config is the persisted description of a connected account. Options holds
 // backend-specific settings including credentials, so a Config is only ever
 // written to disk inside the encrypted vault.

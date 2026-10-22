@@ -427,6 +427,23 @@ func TestDropboxRequiresAToken(t *testing.T) {
 	}
 }
 
+// A key is one object under the account's folder. The empty key and the ones
+// that spell the folder or climb out of it are refused up front, because on
+// the path-addressed backends they resolve to the folder itself and a Delete
+// of that takes every part with it.
+func TestValidateKey(t *testing.T) {
+	for _, good := range []string{"abc-p1.sand", "abc-c0000001-p2.sand", "manifest.sand", "a b"} {
+		if err := ValidateKey(good); err != nil {
+			t.Errorf("ValidateKey(%q) = %v, want nil", good, err)
+		}
+	}
+	for _, bad := range []string{"", ".", "..", "a/b", "/abc-p1.sand", `a\b`, "../abc-p1.sand"} {
+		if err := ValidateKey(bad); err == nil {
+			t.Errorf("ValidateKey(%q) was accepted", bad)
+		}
+	}
+}
+
 func TestNormalizePrefix(t *testing.T) {
 	cases := map[string]string{
 		"":         "",

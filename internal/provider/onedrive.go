@@ -177,6 +177,9 @@ func (p *onedriveProvider) getJSON(ctx context.Context, op, rawURL string, out a
 }
 
 func (p *onedriveProvider) Put(ctx context.Context, key string, data []byte) error {
+	if err := ValidateKey(key); err != nil {
+		return err
+	}
 	if len(data) > graphSimpleUploadLimit {
 		return p.putSession(ctx, key, data)
 	}
@@ -292,6 +295,9 @@ func (p *onedriveProvider) cancelSession(ctx context.Context, uploadURL string) 
 }
 
 func (p *onedriveProvider) Get(ctx context.Context, key string) ([]byte, error) {
+	if err := ValidateKey(key); err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		p.itemURL(p.itemPath(key), "content"), nil)
 	if err != nil {
@@ -321,6 +327,9 @@ type driveItem struct {
 }
 
 func (p *onedriveProvider) Stat(ctx context.Context, key string) (ObjectInfo, error) {
+	if err := ValidateKey(key); err != nil {
+		return ObjectInfo{}, err
+	}
 	var item driveItem
 	err := p.getJSON(ctx, "onedrive stat",
 		p.itemURL(p.itemPath(key), "")+"?$select=name,size,folder", &item)
@@ -334,6 +343,11 @@ func (p *onedriveProvider) Stat(ctx context.Context, key string) (ObjectInfo, er
 }
 
 func (p *onedriveProvider) Delete(ctx context.Context, key string) error {
+	// Without this, the empty key resolves to /me/drive/root — or to the
+	// folder, when one is set — and Graph deletes it, parts and all.
+	if err := ValidateKey(key); err != nil {
+		return err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete,
 		p.itemURL(p.itemPath(key), ""), nil)
 	if err != nil {

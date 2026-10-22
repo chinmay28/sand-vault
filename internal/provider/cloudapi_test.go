@@ -292,6 +292,43 @@ func TestOneDriveLargeShardUsesAnUploadSession(t *testing.T) {
 	}
 }
 
+// The empty key resolves to the folder — or, with no folder, to the drive's
+// root — so a Delete of it would be a Delete of everything. It is refused
+// before any request is made, and so are the other spellings of the folder.
+func TestOneDriveRefusesKeysThatNameTheFolder(t *testing.T) {
+	stub := newGraphStub(t)
+	server := httptest.NewServer(stub)
+	defer server.Close()
+
+	restore := graphAPI
+	graphAPI = server.URL
+	defer func() { graphAPI = restore }()
+
+	p := newTestOneDrive()
+	ctx := context.Background()
+	if err := p.Put(ctx, "abc-p1.sand", []byte("part")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	for _, key := range []string{"", ".", "..", "../abc-p1.sand"} {
+		if err := p.Delete(ctx, key); err == nil {
+			t.Errorf("Delete(%q) was allowed", key)
+		}
+		if _, err := p.Get(ctx, key); err == nil || errors.Is(err, ErrNotFound) {
+			t.Errorf("Get(%q) = %v, want a refusal that is not ErrNotFound", key, err)
+		}
+		if _, err := p.Stat(ctx, key); err == nil || errors.Is(err, ErrNotFound) {
+			t.Errorf("Stat(%q) = %v, want a refusal that is not ErrNotFound", key, err)
+		}
+		if err := p.Put(ctx, key, []byte("x")); err == nil {
+			t.Errorf("Put(%q) was allowed", key)
+		}
+	}
+	if _, ok := stub.files["sand/abc-p1.sand"]; !ok {
+		t.Error("a refused key still reached the drive and took the part with it")
+	}
+}
+
 func TestOneDriveItemPathsAreEscaped(t *testing.T) {
 	p := newTestOneDrive()
 	if got := p.itemPath("abc-p1.sand"); got != "sand/abc-p1.sand" {
