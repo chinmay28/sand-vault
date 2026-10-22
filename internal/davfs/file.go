@@ -52,8 +52,22 @@ func (f *readFile) Readdir(int) ([]os.FileInfo, error) { return nil, os.ErrInval
 // index only learns about the file once the whole body has been read. A client
 // that hangs up midway leaves nothing behind, because the scatter erases what
 // it wrote when it cannot finish.
+//
+// Whether the whole body arrived is this file's question to answer, not the
+// handler's. The library's handlePut copies the body in and then closes the
+// file whether or not the copy succeeded, and a close is the one signal the
+// upload has for "that was all of it" — so a body cut off at 3 GB of 4 would
+// otherwise be hashed, committed and, since a PUT replaces, put in place of
+// the whole file it was meant to update. Close therefore compares what was
+// written against what the request promised (see expectedSize) and ends the
+// upload with an error, not an EOF, when they disagree.
 type writeFile struct {
 	name string
+	ctx  context.Context
+
+	// expected is how many bytes the request said would come, or -1 when it
+	// did not say.
+	expected int64
 
 	pw   *io.PipeWriter
 	done chan uploadResult
@@ -73,9 +87,12 @@ type uploadResult struct {
 // newWriteFile begins storing a file. A non-nil prefix is read into the upload
 // ahead of anything written, which is how appending works: the file already
 // stored goes in first, the new bytes follow, and neither is held in memory.
-func newWriteFile(ctx context.Context, v *vault.Vault, dir, base string, prefix io.Reader) *writeFile {
+//
+// expected is the number of bytes the caller will write before closing, or -1
+// if that is not known; it counts only what is written, not the prefix.
+func newWriteFile(ctx context.Context, v *vault.Vault, dir, base string, prefix io.Reader, expected int64) *writeFile {
 	pr, pw := io.Pipe()
-	f := &writeFile{name: base, pw: pw, done: make(chan uploadResult, 1)}
+	f := &writeFile{name: base, ctx: ctx, expected: expected, pw: pw, done: make(chan uploadResult, 1)}
 
 	var source io.Reader = pr
 	if prefix != nil {
@@ -117,11 +134,38 @@ func (f *writeFile) Close() error {
 		return f.result.err
 	}
 	f.closed = true
+	written := f.written
 	f.mu.Unlock()
 
-	// Closing the write end is what tells the upload the body has ended.
-	f.pw.Close()
+	// Closing the write end is what tells the upload the body has ended — and
+	// how it is closed is what tells it whether the body was whole. A plain
+	// Close is a clean EOF, which the upload takes as the whole file; closing
+	// with an error reaches it as a failed read, so it stores nothing and the
+	// file that was there stays.
+	//
+	// A context already done is the client gone: the connection dropped
+	// partway, which is the only way a chunked body ever announces that it
+	// was cut short. A count that does not match the declared size is the
+	// same thing told differently.
+	var short error
+	switch {
+	case f.ctx.Err() != nil:
+		short = f.ctx.Err()
+	case f.expected >= 0 && written != f.expected:
+		short = fmt.Errorf("the body ended after %d of %d bytes", written, f.expected)
+	}
+
+	if short != nil {
+		f.pw.CloseWithError(short)
+	} else {
+		f.pw.Close()
+	}
 	result := <-f.done
+	if short != nil {
+		// Reported in preference to what the upload said about the read it
+		// was handed, which is this same error in spooling terms.
+		result.err = short
+	}
 
 	f.mu.Lock()
 	f.result = result

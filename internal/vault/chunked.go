@@ -171,6 +171,19 @@ func (v *Vault) putChunks(
 			break
 		}
 
+		// Asked here as well as left to the providers, because not every
+		// provider asks: the local one ignores ctx, so an upload whose caller
+		// had gone would otherwise run to the end and be committed.
+		if err := ctx.Err(); err != nil {
+			mu.Lock()
+			if fatal == nil {
+				fatal = fmt.Errorf("chunk %d: %w", index, err)
+				cancel()
+			}
+			mu.Unlock()
+			break
+		}
+
 		plaintext, err := next()
 		if err != nil {
 			mu.Lock()

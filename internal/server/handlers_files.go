@@ -23,6 +23,22 @@ func contextWithTimeout(r *http.Request, d time.Duration) (context.Context, cont
 	return context.WithTimeout(r.Context(), d)
 }
 
+// detachedContextWithTimeout is contextWithTimeout for an operation that has
+// to finish once it has started, whatever the client does: it keeps the time
+// limit and drops the request's own cancellation.
+//
+// For most of the vault's long operations the request context is the right
+// one. A folder delete, a batch delete and a relocation are built to be
+// stopped — the browser's stop button cancels this very context — and a
+// conversion or a rekey leaves the file readable at every point. A single
+// file's delete is not like that: it erases the parts first and drops the
+// index entry afterwards whatever came of the erasing, so a client that
+// closed the tab partway through left parts on the accounts that nothing
+// pointed at any more, with the warnings about them sent to nobody.
+func detachedContextWithTimeout(r *http.Request, d time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(r.Context()), d)
+}
+
 // requestScope reads which of the vaults inside the file a request is aimed at.
 //
 // Only the endpoints that address something by path need it — a listing, a
@@ -782,7 +798,10 @@ func (s *Server) handleFileThumbSet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleFileDelete(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := contextWithTimeout(r, 5*time.Minute)
+	// Detached: once the erasing has begun the entry is going to leave the
+	// index whether or not the client is still there to hear about it, so
+	// the parts had better go too. See detachedContextWithTimeout.
+	ctx, cancel := detachedContextWithTimeout(r, 5*time.Minute)
 	defer cancel()
 
 	v, _ := s.Vault()
