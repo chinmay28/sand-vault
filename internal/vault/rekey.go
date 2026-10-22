@@ -242,8 +242,10 @@ func (v *Vault) rotate(oldPassword, newPassword string, plan *RekeySettings) err
 
 	// The keys the stored files are on have to survive the change, or the
 	// files become unreadable the moment the password is typed. Only the
-	// generations something still points at are kept.
-	retained, err := retainedKeys(current, current.manifest, v.store.SubVaults)
+	// generations something still points at are kept — an entry, a sub
+	// vault's borrowed-key list, or a transfer that has copied the key out
+	// and is still writing parts under it.
+	retained, err := retainedKeys(current, current.manifest, v.store.SubVaults, v.keysInFlightLocked())
 	if err != nil {
 		current.zero()
 		crypto.ZeroBytes(newVaultKey)
@@ -334,7 +336,11 @@ func (v *Vault) rotate(oldPassword, newPassword string, plan *RekeySettings) err
 // It is asked about the main vault's index alone. A sub vault's entries name
 // keys sealed under the sub vault's own password, which this change neither
 // holds nor needs: their record is carried across untouched, keys and all.
-func retainedKeys(u *unsealed, manifest *Manifest, subs []subVaultRecord) (map[string][]byte, error) {
+//
+// inFlight names the generations a transfer is sealing parts under right now
+// (holdDataKeyLocked). Nothing in the index names them yet, and the commit
+// that will is minutes away; they are kept as if an entry did.
+func retainedKeys(u *unsealed, manifest *Manifest, subs []subVaultRecord, inFlight map[string]bool) (map[string][]byte, error) {
 	available := map[string][]byte{u.dataKeyID: u.dataKey}
 	for id, key := range u.retired {
 		available[id] = key
@@ -399,6 +405,14 @@ func retainedKeys(u *unsealed, manifest *Manifest, subs []subVaultRecord) (map[s
 			if key, ok := available[id]; ok {
 				retained[id] = key
 			}
+		}
+	}
+	for id := range inFlight {
+		if _, done := retained[id]; done {
+			continue
+		}
+		if key, ok := available[id]; ok {
+			retained[id] = key
 		}
 	}
 	return retained, nil
@@ -629,6 +643,8 @@ func (v *Vault) migrateFile(ctx context.Context, scope Scope, id string, account
 	// format costs nothing beyond what the re-encryption was paying.
 	placed, err := v.rescatter(ctx, scope, &stale,
 		spread{preferred: current, exact: exact, scheme: scheme}, progress)
+	// Held until the new parts are in the index or erased — see holdDataKeyLocked.
+	defer v.releaseDataKey(placed.keyID)
 	warnings = placed.warnings
 	if err != nil {
 		return path, 0, warnings, err
@@ -643,7 +659,10 @@ func (v *Vault) migrateFile(ctx context.Context, scope Scope, id string, account
 	}
 
 	v.mu.Lock()
-	if m, err = v.manifestForLocked(scope); err != nil {
+	if m, err = v.manifestForLocked(scope); err == nil {
+		err = v.placedKeyHeldLocked(placed.keyID)
+	}
+	if err != nil {
 		v.mu.Unlock()
 		v.deleteEntryShards(context.WithoutCancel(ctx), fresh)
 		return path, 0, warnings, err
@@ -821,6 +840,9 @@ func (s *hashingReaderAt) sum() (out [32]byte, ok bool) {
 // leave the caller's rollback pointing an entry at a key that no longer exists
 // anywhere, and the next successful write would make that permanent.
 //
+// A key a transfer is sealing parts under right now counts as in use, even
+// though nothing in the index names it yet — see holdDataKeyLocked.
+//
 // The caller must hold the write lock.
 func (v *Vault) pruneRetiredKeysLocked() map[string][]byte {
 	if len(v.retired) == 0 {
@@ -851,6 +873,9 @@ func (v *Vault) pruneRetiredKeysLocked() map[string][]byte {
 	// sub vault's index — open or shut — while the generation sealing its
 	// parts lives here, and this is the only copy of it.
 	for id := range v.keyIDsNamedOutsideLocked(MainScope) {
+		inUse[id] = true
+	}
+	for id := range v.keysInFlightLocked() {
 		inUse[id] = true
 	}
 

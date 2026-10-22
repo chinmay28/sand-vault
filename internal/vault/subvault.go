@@ -218,10 +218,17 @@ func (v *Vault) resealSubVaultsLocked(now time.Time, staged *storeFile) (map[*su
 	// A copy, so that a write that fails leaves v.store's records as they were.
 	staged.SubVaults = append([]subVaultRecord(nil), v.store.SubVaults...)
 
+	// A generation some transfer is still writing parts under is in use
+	// whichever vault it belongs to — see holdDataKeyLocked.
+	inFlight := v.keysInFlightLocked()
 	var pruned map[*subVault]map[string][]byte
 	for id, sub := range v.subs {
 		sub.manifest.UpdatedAt = now
-		if dropped := sub.pruneRetiredKeys(v.keyIDsNamedOutsideLocked(Scope(id))); dropped != nil {
+		lent := v.keyIDsNamedOutsideLocked(Scope(id))
+		for keyID := range inFlight {
+			lent[keyID] = true
+		}
+		if dropped := sub.pruneRetiredKeys(lent); dropped != nil {
 			if pruned == nil {
 				pruned = map[*subVault]map[string][]byte{}
 			}
@@ -1067,7 +1074,12 @@ func (v *Vault) ChangeSubVaultPassword(ctx context.Context, id, oldPassword, new
 	// holds, and nothing in this index names it any more. It is carried across
 	// the password change all the same — dropping it here would erase the only
 	// copy of the key while the main vault still lists the file.
+	// And so is a generation an upload into this sub vault copied out and is
+	// still sealing parts under: the commit will name it — see holdDataKeyLocked.
 	lent := v.keyIDsNamedOutsideLocked(Scope(id))
+	for keyID := range v.keysInFlightLocked() {
+		lent[keyID] = true
+	}
 	carry := func(keyID string, key []byte) {
 		if _, done := next.retired[keyID]; done {
 			return

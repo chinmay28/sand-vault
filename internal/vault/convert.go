@@ -132,6 +132,7 @@ func (v *Vault) Convert(ctx context.Context, id string) (*ConversionReport, erro
 	// the default family.
 	placed, err := v.scatterStream(ctx, scope, stale.Name, spool, size, hash,
 		spread{preferred: current, scheme: stale.Scheme()}, v.uploadChunkSize(), nil)
+	defer v.releaseDataKey(placed.keyID)
 	report := &ConversionReport{Path: stale.Path(), Size: size, Warnings: placed.warnings}
 	if err != nil {
 		return report, fmt.Errorf("storing the converted %s: %w", stale.Path(), err)
@@ -147,6 +148,9 @@ func (v *Vault) Convert(ctx context.Context, id string) (*ConversionReport, erro
 
 	v.mu.Lock()
 	m, err := v.manifestForLocked(scope)
+	if err == nil {
+		err = v.placedKeyHeldLocked(placed.keyID)
+	}
 	if err != nil {
 		v.mu.Unlock()
 		v.deleteEntryShards(context.WithoutCancel(ctx), fresh)

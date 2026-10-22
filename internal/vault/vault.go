@@ -136,6 +136,18 @@ type Vault struct {
 	keyHold    int
 	lockWanted bool
 
+	// keyUse counts, by generation, the transfers sealing parts under a data
+	// key right now: taken when a scatter snapshots the key, released once
+	// the placement is in the index or has been erased. A generation with a
+	// count is in use even though nothing in the index names it yet, and the
+	// prune and the rotations treat it so. See holdDataKeyLocked.
+	//
+	// Its own leaf lock rather than mu, because the hold is taken under the
+	// read lock — snapshotTarget shares mu with every browse — and a counter
+	// cannot be written under a read lock.
+	keyUseMu sync.Mutex
+	keyUse   map[string]int
+
 	// backupChecked remembers the accounts already known to hold this vault's
 	// own backup, so the guard against clobbering another vault's copy costs
 	// one read per account per unlock rather than one per push.
@@ -654,6 +666,79 @@ func (v *Vault) adoptLocked(u *unsealed) {
 	// Sub vaults are not opened by the main password, so an unlock starts with
 	// every one of them shut.
 	v.subs = map[string]*subVault{}
+}
+
+// holdDataKeyLocked marks one transfer as sealing parts under a generation,
+// from the moment the key is copied out of the vault until releaseDataKey.
+//
+// It closes the gap between a scatter and its commit. A scatter copies the
+// active key out under the lock and then spends minutes at the accounts
+// without it; a password change or a key rotation landing in between keeps
+// only the generations the index names — and this one is named by nothing
+// yet. The commit would then record an entry under a key the vault no longer
+// holds, and the file would be unreadable from the moment it landed. A held
+// generation is kept by rotate, RotateDataKey, ChangeSubVaultPassword and the
+// prune alike, exactly as if an entry named it; the commit is what turns the
+// hold into an entry, and the prune catches up on the write after the release.
+//
+// The caller must hold mu, read or write; the counter has a lock of its own.
+func (v *Vault) holdDataKeyLocked(keyID string) {
+	v.keyUseMu.Lock()
+	defer v.keyUseMu.Unlock()
+	if v.keyUse == nil {
+		v.keyUse = map[string]int{}
+	}
+	v.keyUse[keyID]++
+}
+
+// releaseDataKey ends one hold. It is keyed by generation rather than by a
+// token so that every path out of a scatter — committed, rolled back, or
+// failed before a byte moved — can release what the placement names: a
+// placement that never snapshotted a key names "", and releasing that is
+// nothing. Safe without mu.
+func (v *Vault) releaseDataKey(keyID string) {
+	if keyID == "" {
+		return
+	}
+	v.keyUseMu.Lock()
+	defer v.keyUseMu.Unlock()
+	if v.keyUse[keyID] <= 1 {
+		delete(v.keyUse, keyID)
+		return
+	}
+	v.keyUse[keyID]--
+}
+
+// keysInFlightLocked is the set of generations some transfer is sealing parts
+// under right now. The caller must hold mu.
+func (v *Vault) keysInFlightLocked() map[string]bool {
+	v.keyUseMu.Lock()
+	defer v.keyUseMu.Unlock()
+	if len(v.keyUse) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(v.keyUse))
+	for id := range v.keyUse {
+		out[id] = true
+	}
+	return out
+}
+
+// placedKeyHeldLocked is the check a commit makes before it records parts
+// under the generation a scatter snapshotted: that the vault still holds that
+// key. The hold above is what keeps the ordinary rotations from dropping it,
+// but a recovery or a kit import replaces the keys outright, and a placement
+// that outlived one would otherwise go into the index as a file nothing can
+// open. The caller erases the parts and reports the error; the user uploads
+// again under the keys the vault has now.
+func (v *Vault) placedKeyHeldLocked(keyID string) error {
+	key, err := v.dataKeyForLocked(keyID)
+	if err != nil {
+		return fmt.Errorf("the data key these parts were sealed under was replaced while they were "+
+			"being stored (%v); the parts were erased, try again", err)
+	}
+	crypto.ZeroBytes(key)
+	return nil
 }
 
 // shardPasswordLocked is the secret used to encrypt the parts of new uploads.

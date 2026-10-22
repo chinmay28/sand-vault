@@ -3,6 +3,7 @@ package vault
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -202,5 +203,136 @@ func TestRotateDataKeyRollbackKeepsTheActiveKeyIntact(t *testing.T) {
 	relock(t, v, testPassword)
 	if _, _, err := v.Fetch(ctx, entry.ID); err != nil {
 		t.Fatalf("a file uploaded after the failed rotation is unreadable: %v", err)
+	}
+}
+
+// A scatter copies the active key out and spends a while at the accounts; a
+// password change landing in between keeps only the generations the index
+// names, and the parts being written are named by nothing yet. The hold a
+// scatter takes is what keeps the generation until the commit names it.
+func TestUploadInFlightAcrossAPasswordChangeKeepsItsKey(t *testing.T) {
+	v, _ := newTestVault(t, 3)
+	ctx := context.Background()
+
+	placed, err := v.scatter(ctx, MainScope, "late.txt", []byte("sealed under the old key"), spread{})
+	if err != nil {
+		t.Fatalf("scatter: %v", err)
+	}
+	if _, err := v.ChangePassword(ctx, testPassword, "new password", false); err != nil {
+		t.Fatalf("ChangePassword: %v", err)
+	}
+	if retiredCount(v) != 1 {
+		t.Fatalf("retired = %d after the change, want the in-flight generation kept", retiredCount(v))
+	}
+	entry, _, err := v.commitUpload(ctx, MainScope, "/", "late.txt", 24, "text/plain", placed, UploadOptions{})
+	v.releaseDataKey(placed.keyID)
+	if err != nil {
+		t.Fatalf("commitUpload: %v", err)
+	}
+	if entry.KeyID == v.dataKeyID {
+		t.Fatalf("the entry should be on the generation it was sealed under, not the new one")
+	}
+	if _, _, err := v.Fetch(ctx, entry.ID); err != nil {
+		t.Fatalf("the upload committed after the rotation is unreadable: %v", err)
+	}
+
+	// Once released, the generation is an ordinary retired key: the file on
+	// it is pending migration, and moving it drops the key as usual.
+	if got := v.PendingMigration(); got != 1 {
+		t.Errorf("PendingMigration = %d, want 1", got)
+	}
+	if report, err := v.MigrateFiles(ctx, nil); err != nil || !report.Done() {
+		t.Fatalf("MigrateFiles: %+v, %v", report, err)
+	}
+	if retiredCount(v) != 0 {
+		t.Errorf("retired = %d after the migration, want 0", retiredCount(v))
+	}
+}
+
+func TestUploadInFlightAcrossARotateDataKeyKeepsItsKey(t *testing.T) {
+	v, _ := newTestVault(t, 3)
+	ctx := context.Background()
+
+	placed, err := v.scatter(ctx, MainScope, "late.txt", []byte("sealed under the old key"), spread{})
+	if err != nil {
+		t.Fatalf("scatter: %v", err)
+	}
+	// On an empty vault the rotation would otherwise drop the outgoing key in
+	// the same write.
+	if _, err := v.RotateDataKey(); err != nil {
+		t.Fatalf("RotateDataKey: %v", err)
+	}
+	entry, _, err := v.commitUpload(ctx, MainScope, "/", "late.txt", 24, "text/plain", placed, UploadOptions{})
+	v.releaseDataKey(placed.keyID)
+	if err != nil {
+		t.Fatalf("commitUpload: %v", err)
+	}
+	if _, _, err := v.Fetch(ctx, entry.ID); err != nil {
+		t.Fatalf("the upload committed after the rotation is unreadable: %v", err)
+	}
+}
+
+func TestSubVaultUploadInFlightAcrossItsPasswordChangeKeepsItsKey(t *testing.T) {
+	v, _ := newTestVault(t, 3)
+	ctx := context.Background()
+	id := createSubVault(t, v, "Taxes", subPassword)
+
+	placed, err := v.scatter(ctx, Scope(id), "late.txt", []byte("sealed under the old key"), spread{})
+	if err != nil {
+		t.Fatalf("scatter: %v", err)
+	}
+	if _, err := v.ChangeSubVaultPassword(ctx, id, subPassword, "new sub password", false); err != nil {
+		t.Fatalf("ChangeSubVaultPassword: %v", err)
+	}
+	entry, _, err := v.commitUpload(ctx, Scope(id), "/", "late.txt", 24, "text/plain", placed, UploadOptions{})
+	v.releaseDataKey(placed.keyID)
+	if err != nil {
+		t.Fatalf("commitUpload: %v", err)
+	}
+	if _, _, err := v.Fetch(ctx, entry.ID); err != nil {
+		t.Fatalf("the sub vault upload committed after the rotation is unreadable: %v", err)
+	}
+	if report, err := v.MigrateFilesIn(ctx, Scope(id), nil, nil); err != nil || !report.Done() {
+		t.Fatalf("MigrateFilesIn: %+v, %v", report, err)
+	}
+}
+
+// The other half: when the key really is gone by the time the commit runs —
+// nothing holds it across a recovery that replaces every key, and this test
+// stands in for one by releasing the hold early — the commit must refuse
+// rather than record a file nothing can open, and erase what it wrote.
+func TestCommitRefusesAPlacementWhoseKeyIsGone(t *testing.T) {
+	v, roots := newTestVault(t, 3)
+	ctx := context.Background()
+	v.AwaitBackupSync()
+
+	placed, err := v.scatter(ctx, MainScope, "late.txt", []byte("sealed under the old key"), spread{})
+	if err != nil {
+		t.Fatalf("scatter: %v", err)
+	}
+	if len(storedObjects(t, roots)) == 0 {
+		t.Fatal("the scatter should have put parts on the accounts")
+	}
+	v.releaseDataKey(placed.keyID)
+	if _, err := v.ChangePassword(ctx, testPassword, "new password", false); err != nil {
+		t.Fatalf("ChangePassword: %v", err)
+	}
+	if retiredCount(v) != 0 {
+		t.Fatalf("retired = %d, want the unheld generation dropped", retiredCount(v))
+	}
+
+	_, _, err = v.commitUpload(ctx, MainScope, "/", "late.txt", 24, "text/plain", placed, UploadOptions{})
+	if err == nil {
+		t.Fatal("commitUpload should refuse a placement under a key the vault no longer holds")
+	}
+	if !strings.Contains(err.Error(), "replaced while") {
+		t.Errorf("error = %q, want it to say the key was replaced", err)
+	}
+	if listing, err := v.List(MainScope, "/"); err != nil || len(listing.Files) != 0 {
+		t.Errorf("the refused upload is in the index: %+v (%v)", listing, err)
+	}
+	v.AwaitBackupSync()
+	if left := storedObjects(t, roots); len(left) != 0 {
+		t.Errorf("%d part(s) left on the accounts after the refused commit, want none", len(left))
 	}
 }

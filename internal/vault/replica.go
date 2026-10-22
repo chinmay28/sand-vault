@@ -730,6 +730,7 @@ func (v *Vault) replicateFile(ctx context.Context, id string, progress func(done
 		scheme:    scheme,
 		role:      provider.Replicas,
 	}, progress)
+	defer v.releaseDataKey(placed.keyID)
 	if err != nil {
 		return false, placed.warnings, err
 	}
@@ -752,6 +753,11 @@ func (v *Vault) replicateFile(ctx context.Context, id string, progress func(done
 	}
 
 	v.mu.Lock()
+	if err := v.placedKeyHeldLocked(placed.keyID); err != nil {
+		v.mu.Unlock()
+		warnings := v.deleteReplicaShards(context.WithoutCancel(ctx), fresh)
+		return false, append(placed.warnings, warnings...), err
+	}
 	current := v.manifest.ByID(id)
 	if current == nil || current.Hash != stale.Hash {
 		// Deleted or overwritten while the copy was being made. What was
