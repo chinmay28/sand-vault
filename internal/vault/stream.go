@@ -52,6 +52,7 @@ func (v *Vault) UploadStream(ctx context.Context, scope Scope, dir, name string,
 	placed, err := v.scatterStream(ctx, scope, name, spool, size, hash,
 		spread{preferred: opts.Accounts, exact: true, scheme: opts.Scheme}, v.uploadChunkSize(),
 		opts.OnScattered)
+	defer v.releaseDataKey(placed.keyID)
 	if err != nil {
 		return nil, placed.warnings, err
 	}
@@ -108,6 +109,7 @@ func (v *Vault) UploadStreamAt(ctx context.Context, scope Scope, dir, name strin
 	placed, err := v.scatterStream(ctx, scope, name, readerAt, size, hash,
 		spread{preferred: opts.Accounts, exact: true, scheme: opts.Scheme}, v.uploadChunkSize(),
 		opts.OnScattered)
+	defer v.releaseDataKey(placed.keyID)
 	if err != nil {
 		return nil, placed.warnings, err
 	}
@@ -233,6 +235,11 @@ func (v *Vault) scatterStream(ctx context.Context, scope Scope, name string, src
 // commitUpload records a scattered file in the index, which is the half of an
 // upload that both Upload and UploadStream do identically once the bytes are on
 // the accounts.
+//
+// The caller keeps the placement's key held until this returns — see
+// holdDataKeyLocked — so that the generation the parts were sealed under is
+// still here to be named. It is checked all the same, because a recovery or
+// a kit import replaces the keys outright and no hold survives that.
 func (v *Vault) commitUpload(ctx context.Context, scope Scope, dir, name string, size int64, mime string, placed placement, opts UploadOptions) (*Entry, []string, error) {
 	shards, warnings := placed.shards, placed.warnings
 
@@ -264,6 +271,9 @@ func (v *Vault) commitUpload(ctx context.Context, scope Scope, dir, name string,
 
 	v.mu.Lock()
 	m, err := v.manifestForLocked(scope)
+	if err == nil {
+		err = v.placedKeyHeldLocked(placed.keyID)
+	}
 	if err != nil {
 		v.mu.Unlock()
 		v.deleteEntryShards(context.WithoutCancel(ctx), entry)
@@ -275,6 +285,12 @@ func (v *Vault) commitUpload(ctx context.Context, scope Scope, dir, name string,
 		if opts.Overwrite {
 			replaced = existing
 			m.remove(existing.ID)
+			// Everything the replaced row carried goes in the same write,
+			// as Delete does: a film title, a repo, a folder's chosen
+			// picture, each keyed by an ID nothing names any more.
+			m.forgetMovies(existing.ID)
+			m.forgetRepos(existing.ID)
+			m.forgetFolderArt(existing.ID)
 		} else {
 			entry.Name = m.uniqueName(dir, name)
 		}

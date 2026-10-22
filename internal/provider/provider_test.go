@@ -79,6 +79,10 @@ func TestLocalProviderContainsEscapingKeys(t *testing.T) {
 	}
 
 	ctx := context.Background()
+	// Put never creates the account folder; connecting the account does.
+	if err := p.Ping(ctx); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
 	for _, key := range []string{"../../escaped.sand", "/../../escaped.sand", "a/../../../escaped.sand"} {
 		if err := p.Put(ctx, key, []byte("nope")); err != nil {
 			continue // rejecting outright is fine too

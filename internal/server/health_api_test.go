@@ -11,9 +11,13 @@ import (
 // blockFolder puts a plain file where a connected local folder was, which is
 // what a cloud that has stopped answering looks like from here: the account is
 // still configured and there is nothing usable at the end of it.
-func blockFolder(t *testing.T, root string) {
+func blockFolder(t *testing.T, v *vault.Vault, root string) {
 	t.Helper()
 
+	// Connecting the accounts queued a manifest push in the background. Let
+	// it land before pulling the folder out from under it, or the wipe races
+	// a part being written and fails on a folder that is not empty.
+	v.AwaitBackupSync()
 	if err := os.RemoveAll(root); err != nil {
 		t.Fatalf("clearing %s: %v", root, err)
 	}
@@ -36,7 +40,7 @@ func TestCloudHealthReportsTheOneThatIsDown(t *testing.T) {
 		t.Fatalf("three working clouds: %v", health)
 	}
 
-	blockFolder(t, roots[0])
+	blockFolder(t, c.server.vault, roots[0])
 
 	_, body = c.json(http.MethodPost, "/api/providers/health/check", nil)
 	health = body["health"].(map[string]any)

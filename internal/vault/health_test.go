@@ -12,9 +12,13 @@ import (
 // does it, because a folder cannot be made at a path a file already occupies —
 // which is true for root as well, so the test means the same thing in a
 // container as it does on a laptop.
-func breakCloud(t *testing.T, root string) {
+func breakCloud(t *testing.T, v *Vault, root string) {
 	t.Helper()
 
+	// Connecting the accounts queued a manifest push in the background. Let
+	// it land before pulling the folder out from under it, or the wipe races
+	// a part being written and fails on a folder that is not empty.
+	v.AwaitBackupSync()
 	if err := os.RemoveAll(root); err != nil {
 		t.Fatalf("clearing %s: %v", root, err)
 	}
@@ -40,7 +44,7 @@ func TestCheckCloudsFindsTheOneThatIsDown(t *testing.T) {
 		t.Error("a check that ran reports no time")
 	}
 
-	breakCloud(t, roots[1])
+	breakCloud(t, v, roots[1])
 
 	report, err = v.CheckClouds(t.Context())
 	if err != nil {
@@ -69,7 +73,7 @@ func TestCheckCloudsFindsTheOneThatIsDown(t *testing.T) {
 // and the one that decides whether this is a blip or a fortnight.
 func TestFailingSinceSurvivesLaterChecks(t *testing.T) {
 	v, roots := newTestVault(t, 2)
-	breakCloud(t, roots[0])
+	breakCloud(t, v, roots[0])
 
 	first, err := v.CheckClouds(t.Context())
 	if err != nil {
@@ -103,7 +107,7 @@ func TestFailingSinceSurvivesLaterChecks(t *testing.T) {
 		t.Fatalf("a repaired cloud is still unhealthy: %+v", report.Clouds)
 	}
 
-	breakCloud(t, roots[0])
+	breakCloud(t, v, roots[0])
 	third, err := v.CheckClouds(t.Context())
 	if err != nil {
 		t.Fatalf("CheckClouds: %v", err)
@@ -117,7 +121,7 @@ func TestFailingSinceSurvivesLaterChecks(t *testing.T) {
 // last check ran.
 func TestCloudHealthFollowsTheConnectedAccounts(t *testing.T) {
 	v, roots := newTestVault(t, 3)
-	breakCloud(t, roots[2])
+	breakCloud(t, v, roots[2])
 
 	if _, err := v.CheckClouds(t.Context()); err != nil {
 		t.Fatalf("CheckClouds: %v", err)

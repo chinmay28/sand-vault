@@ -101,6 +101,39 @@ alike. The choice is in the plan, so it survives a restart; `--unskip` and
 "Back in turn" undo it. The panel also shows how far through the current file
 the move is.
 
+### The quick start keeps the install's paths on an upgrade, and leaves a checkout alone
+
+Re-running `scripts/quickstart.sh` read only `PORT`, `HOST` and `SAND_WEBDAV`
+back from the installed service; `SAND_DATA_DIR`, `SAND_PREFIX`, `SAND_USER`
+and `SAND_MOUNT_ROOTS` came from the environment or the defaults every time.
+The one-liner carries no environment, so an install made with a custom data
+directory came out of its first upgrade pointed at `/var/lib/sand/vault.sand`
+— no snapshot, a UI offering to create a new vault, and the real one orphaned
+at the old path — and a custom mount-root list went back to the defaults. All
+four are now read from the unit, an unset variable keeps what the service runs
+with, and a variable that names a *different* path is refused with both values
+printed unless `SAND_FORCE_PATHS=1` says the move is meant. The uninstall reads
+the same values, so it no longer needs them repeated.
+
+Running the script from a checkout (`sudo ./scripts/quickstart.sh`) built the
+checkout in place: it was `chown`ed to the service user, `.git` and all, and
+the unit pointed into `/home`, which its own `ProtectHome=true` hides from the
+service, so it could not start. The checkout is now copied under
+`$SAND_PREFIX/checkout` — history and working tree, uncommitted changes
+included — and the copy is what is built and run; nothing in the checkout is
+written to, and a prefix under `/home` or `/root` is refused with the reason.
+
+Smaller things: the health check probes the address the unit binds rather
+than always `127.0.0.1`, so an install bound to a LAN or Tailscale address no
+longer fails every health check and rolls back; `SAND_LOCAL_PATHS` on a re-run
+adds to the Local folder drop-in instead of replacing it, so grants made with
+`allow-local-path.sh` survive; and `--uninstall` refuses to delete anything
+under a prefix this script did not install into (`SAND_PREFIX=/home/alice`
+used to take `~/src` and `~/bin`), and inside one it removes only what it put
+there. `make clean` no longer deletes the committed web client in
+`internal/server/dist`, and the release workflow no longer publishes on pushes
+to a leftover development branch.
+
 ### The quick start no longer hangs, or fails, on Proton's client
 
 Two things were wrong with the Proton step of `scripts/quickstart.sh`, and

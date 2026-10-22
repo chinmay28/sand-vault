@@ -38,9 +38,11 @@
 #     command at the top of this file deploys main from whatever directory you
 #     happen to be standing in, including a clone of this repo.
 #   * The one exception is EXECUTING this file from a checkout (sudo ./scripts/
-#     quickstart.sh), which builds that checkout exactly as it stands and never
-#     pulls — that is how you deploy work in progress. Every run prints which
-#     of the two it is doing, and says so if the checkout is behind.
+#     quickstart.sh), which copies that checkout to $SAND_PREFIX/checkout and
+#     builds the copy exactly as the checkout stands, committed or not, and
+#     never pulls — that is how you deploy work in progress. Nothing in the
+#     checkout itself is written to. Every run prints which of the two it is
+#     doing, and says so if the checkout is behind.
 #   * The vault lives at a stable path OUTSIDE the source tree ($DATA_DIR), so
 #     cloning, rebuilding, or pulling can never clobber it.
 #   * Every upgrade STOPS the service and snapshots the vault file BEFORE
@@ -89,10 +91,18 @@
 #                    every request rather than once at sign-in, so put TLS in
 #                    front before turning it on anywhere but loopback.
 #
-# PORT, HOST and SAND_WEBDAV are remembered. On an upgrade, leaving one unset
-# keeps whatever the service is already running with rather than resetting it
-# to the default — so re-running this script to pick up a new version cannot
-# quietly move a loopback-only install back onto every interface.
+# PORT, HOST, SAND_WEBDAV, SAND_USER, SAND_PREFIX, SAND_DATA_DIR and
+# SAND_MOUNT_ROOTS are remembered. On an upgrade, leaving one unset keeps
+# whatever the service is already running with rather than resetting it to the
+# default — so re-running this script to pick up a new version cannot quietly
+# move a loopback-only install back onto every interface, or point the service
+# at a vault that is not where the install put it. Setting one of the four
+# paths to something OTHER than what the installed service uses is refused,
+# with both values printed, unless the move is confirmed:
+#
+#   SAND_FORCE_PATHS 1                      point the service at the paths the
+#                    environment names even though the installed unit differs.
+#                    Nothing is moved: the vault, if any, stays at the old path.
 #   INSTALL_NODE     auto | never            install Node 22 if missing/old (default: auto; build-time only)
 #   INSTALL_GO       auto | never            install Go if missing/old (default: auto; build-time only)
 #   BACKUP_KEEP      pre-upgrade backups kept (default: 10)
@@ -189,11 +199,153 @@ esac
 SAND_REPO="${SAND_REPO:-https://github.com/chinmay28/sand-vault.git}"
 SAND_REF="${SAND_REF:-main}"
 RELEASE_TAG="${SAND_RELEASE:-latest}"
-SVC_USER="${SAND_USER:-sand}"
-PREFIX="${SAND_PREFIX:-/opt/sand}"
-DATA_DIR="${SAND_DATA_DIR:-/var/lib/sand}"
 SERVICE_NAME="sand"
 UNIT_PATH="/etc/systemd/system/${SERVICE_NAME}.service"
+DEFAULT_MOUNT_ROOTS="/media:/run/media:/mnt:/srv"
+
+# How the service is already running, if it is. The unit is rewritten from
+# scratch on every run, so without reading it back an upgrade would silently
+# reset anything the env did not name again — re-running this script to pick up
+# a new version would move a loopback-only install back onto every interface,
+# which is the last thing an upgrade should do quietly. An unset variable
+# therefore means "keep what it runs with now", and only a fresh install falls
+# through to the defaults below.
+#
+# That goes for the PATHS as much as for the port. The one-liner at the top of
+# this file is how people upgrade, and it carries no environment: an install
+# made with SAND_DATA_DIR=/srv/sand, upgraded that way, used to get a unit
+# pointing at /var/lib/sand/vault.sand — a file that did not exist, so no
+# snapshot was taken, the service came up offering to create a new vault, and
+# the real one sat orphaned at the old path. Likewise a custom SAND_USER,
+# SAND_PREFIX or SAND_MOUNT_ROOTS silently went back to the default. So the
+# unit's User=, WorkingDirectory=, --vault and ReadWritePaths= are read back
+# here, before anything else is decided, and an explicit variable that
+# DISAGREES with the installed service is refused rather than acted on — see
+# check_against_unit below.
+PRIOR_EXEC=""
+PRIOR_USER=""
+PRIOR_WORKDIR=""
+PRIOR_VAULT=""
+PRIOR_DATA_DIR=""
+PRIOR_ROOTS=""
+PRIOR_ROOTS_KNOWN=0
+
+# The value of a Key= line in the installed unit, or nothing.
+unit_value() {
+  [ -f "$UNIT_PATH" ] || return 0
+  sed -n "s/^$1=//p" "$UNIT_PATH" | head -n 1
+}
+# The value of --flag in the running unit, or nothing.
+prior_flag() {
+  printf '%s' "$PRIOR_EXEC" | sed -n "s/.*--$1[= ]\([^ ]*\).*/\1/p" | head -n 1
+}
+# Whether a valueless --flag is in the running unit.
+prior_switch() {
+  case " $PRIOR_EXEC " in
+    *" --$1 "* | *" --$1="*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+# The paths a unit or drop-in grants, one per line, stripped of the systemd
+# syntax around them: the leading '-' that says a missing path must not fail
+# the unit, and the quotes that keep a path with a space in it as one path.
+# The same reading scripts/allow-local-path.sh does of the same files.
+granted_paths() {
+  [ -f "$1" ] || return 0
+  grep -E '^ReadWritePaths=' "$1" 2>/dev/null |
+    sed -e 's/^ReadWritePaths=//' -e 's/^-//' -e 's/^"//' -e 's/"$//' |
+    grep -v '^$' || true
+}
+# The install prefix the unit was written for, or nothing. Read off the binary
+# it runs, which this script only ever puts at $PREFIX/bin/sand (release mode)
+# $PREFIX/src/sand or $PREFIX/checkout/sand (source mode) — and only when
+# WorkingDirectory= agrees,
+# which rules out a unit something else wrote (scripts/deploy-linux.sh runs
+# /usr/local/bin/sand, and /usr/local is nobody's prefix) and one an older
+# version of this script wrote for a binary built inside somebody's checkout.
+prior_prefix() {
+  bin="${PRIOR_EXEC%% *}"
+  case "$bin" in
+    */bin/sand) p="${bin%/bin/sand}" ;;
+    */src/sand) p="${bin%/src/sand}" ;;
+    */checkout/sand) p="${bin%/checkout/sand}" ;;
+    *) return 0 ;;
+  esac
+  case "$PRIOR_WORKDIR" in
+    "$p" | "$p/src" | "$p/checkout") printf '%s' "$p" ;;
+  esac
+}
+
+if [ -f "$UNIT_PATH" ]; then
+  PRIOR_EXEC="$(unit_value ExecStart)"
+  PRIOR_USER="$(unit_value User)"
+  PRIOR_WORKDIR="$(unit_value WorkingDirectory)"
+  PRIOR_VAULT="$(prior_flag vault)"
+  [ -n "$PRIOR_VAULT" ] || PRIOR_VAULT="$(unit_value Environment=SAND_VAULT)"
+  [ -n "$PRIOR_VAULT" ] && PRIOR_DATA_DIR="$(dirname "$PRIOR_VAULT")"
+  # The mount roots. A unit this script wrote names them on a comment line,
+  # which is the only way "none" (SAND_MOUNT_ROOTS set empty) can be told from
+  # a unit written before there were any. Failing that, they are whatever the
+  # unit grants besides the data directory.
+  if grep -q '^# SAND_MOUNT_ROOTS=' "$UNIT_PATH"; then
+    PRIOR_ROOTS="$(sed -n 's/^# SAND_MOUNT_ROOTS=//p' "$UNIT_PATH" | head -n 1)"
+    PRIOR_ROOTS_KNOWN=1
+  else
+    PRIOR_ROOTS="$(granted_paths "$UNIT_PATH" | grep -vx -- "$PRIOR_DATA_DIR" | paste -sd: - || true)"
+    [ -n "$PRIOR_ROOTS" ] && PRIOR_ROOTS_KNOWN=1
+  fi
+fi
+
+# An explicit variable that names a different path from the one the installed
+# service uses is almost always a mistake — the usual one being an upgrade run
+# with a stale shell history — and acting on it is how a vault gets orphaned.
+# So it is refused, with both values printed, unless SAND_FORCE_PATHS=1 says
+# the move is meant. Nothing is moved either way: with the override, the
+# service is simply pointed at the new path, and whatever is at the old one
+# stays there for the person who asked.
+case "${SAND_FORCE_PATHS:-0}" in
+  1 | true | yes | on) FORCE_PATHS=1 ;;
+  *) FORCE_PATHS=0 ;;
+esac
+PATH_CONFLICTS=""
+check_against_unit() {
+  # check_against_unit VARIABLE value-this-run value-from-the-unit
+  [ -n "$3" ] && [ "$2" != "$3" ] || return 0
+  PATH_CONFLICTS="${PATH_CONFLICTS}  $1=$2   (the installed service uses $3)"$'\n'
+}
+
+SVC_USER="${SAND_USER:-${PRIOR_USER:-sand}}"
+PREFIX="${SAND_PREFIX:-$(prior_prefix)}"
+PREFIX="${PREFIX:-/opt/sand}"
+DATA_DIR="${SAND_DATA_DIR:-${PRIOR_DATA_DIR:-/var/lib/sand}}"
+[ -n "${SAND_USER:-}" ]     && check_against_unit SAND_USER     "$SVC_USER" "$PRIOR_USER"
+[ -n "${SAND_PREFIX:-}" ]   && check_against_unit SAND_PREFIX   "$PREFIX"   "$(prior_prefix)"
+[ -n "${SAND_DATA_DIR:-}" ] && check_against_unit SAND_DATA_DIR "$DATA_DIR" "$PRIOR_DATA_DIR"
+if [ -n "$PATH_CONFLICTS" ]; then
+  if [ "$FORCE_PATHS" = 1 ]; then
+    warn "moving the install as asked (SAND_FORCE_PATHS=1):"
+    printf '%s' "$PATH_CONFLICTS" >&2
+    warn "nothing is moved: the service is pointed at the new paths, and the old ones are left as they are."
+  else
+    printf '%serr %s the environment names paths the installed service does not use:\n' "$C_RED" "$C_OFF" >&2
+    printf '%s' "$PATH_CONFLICTS" >&2
+    printf '     Re-run without those variables to keep the install as it is — an upgrade\n' >&2
+    printf '     reads them back from %s — or with SAND_FORCE_PATHS=1 to\n' "$UNIT_PATH" >&2
+    printf '     point the service at the new paths. The vault is not moved either way.\n' >&2
+    exit 1
+  fi
+fi
+
+# The mount roots a Local folder account may live under (see write_unit). The
+# variable set EMPTY is a choice — a unit that grants nothing but the data
+# directory — so it is tested for being set rather than for having a value.
+if [ -n "${SAND_MOUNT_ROOTS+set}" ]; then
+  MOUNT_ROOTS="$SAND_MOUNT_ROOTS"
+elif [ "$PRIOR_ROOTS_KNOWN" = 1 ]; then
+  MOUNT_ROOTS="$PRIOR_ROOTS"
+else
+  MOUNT_ROOTS="$DEFAULT_MOUNT_ROOTS"
+fi
 
 # Everything from here on is also written to this file, appended, so that an
 # install whose terminal went away still has a record — and so "what did it
@@ -208,28 +360,6 @@ if [ "$UNINSTALL" = 0 ] && install -d -m 755 "$PREFIX" 2>/dev/null \
   printf '\n--- quickstart %s ---\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$QUICKSTART_LOG" 2>/dev/null || :
   log "a copy of everything below is kept in $QUICKSTART_LOG"
 fi
-
-# How the service is already running, if it is. The unit is rewritten from
-# scratch on every run, so without reading it back an upgrade would silently
-# reset anything the env did not name again — re-running this script to pick up
-# a new version would move a loopback-only install back onto every interface,
-# which is the last thing an upgrade should do quietly. An unset variable
-# therefore means "keep what it runs with now", and only a fresh install falls
-# through to the defaults below.
-PRIOR_EXEC=""
-[ -f "$UNIT_PATH" ] && PRIOR_EXEC="$(sed -n 's/^ExecStart=//p' "$UNIT_PATH" | head -n 1)"
-
-# The value of --flag in the running unit, or nothing.
-prior_flag() {
-  printf '%s' "$PRIOR_EXEC" | sed -n "s/.*--$1[= ]\([^ ]*\).*/\1/p" | head -n 1
-}
-# Whether a valueless --flag is in the running unit.
-prior_switch() {
-  case " $PRIOR_EXEC " in
-    *" --$1 "* | *" --$1="*) return 0 ;;
-    *) return 1 ;;
-  esac
-}
 
 PORT="${PORT:-$(prior_flag port)}"
 PORT="${PORT:-8123}"
@@ -268,13 +398,24 @@ PROTON_SDK_REF="${PROTON_SDK_REF:-main}"
 PROTON_CLI_URL="${PROTON_CLI_URL:-}"
 
 SRC_DIR="$PREFIX/src"
+# Where a checkout this script is executed from is copied to and built. The
+# checkout itself is never built in, chowned or otherwise written to — see
+# "Executed from inside a checkout" below.
+CHECKOUT_DIR="$PREFIX/checkout"
+# Written into the prefix by every install, and what --uninstall looks for
+# before it deletes anything there: see the uninstall section for why a name
+# alone is not enough.
+PREFIX_MARK="$PREFIX/.sand-prefix"
 # The service user is created with --no-create-home, so the home directory in
 # its passwd entry does not exist and it has no way to create one. npm needs a
 # writable HOME for its cache and logs — without it the install dies with
 # `EACCES: permission denied, mkdir '/home/sand'` — and Go wants one for
 # GOCACHE. Everything run as the service user therefore gets a HOME it owns.
 BUILD_HOME="$PREFIX/.build-home"
+# The vault the installed service already serves, when the data directory is
+# the one it lives in; the conventional name under $DATA_DIR otherwise.
 VAULT_PATH="$DATA_DIR/vault.sand"
+[ "$PRIOR_DATA_DIR" = "$DATA_DIR" ] && [ -n "$PRIOR_VAULT" ] && VAULT_PATH="$PRIOR_VAULT"
 BACKUP_DIR="$DATA_DIR/backups"
 
 # Proton's client, the checkout it is built from, and the bun that builds it.
@@ -302,14 +443,24 @@ GO_MIN_MINOR=25
 GO_INSTALL_VERSION="1.25.0"
 NODE_MIN_MAJOR=18
 
+# The marker --uninstall looks for before it removes anything from $PREFIX
+# (see the uninstall section). Written first, so that an install which fails
+# part-way through can still be taken off again.
+if [ "$UNINSTALL" = 0 ]; then
+  install -d -m 755 "$PREFIX"
+  [ -f "$PREFIX_MARK" ] || printf 'Written by scripts/quickstart.sh: %s is a SAND Vault install prefix, and --uninstall removes what the script put here.\n' "$PREFIX" > "$PREFIX_MARK"
+fi
+
 # ---------------------------------------------------------------------------
 # Uninstall
 # ---------------------------------------------------------------------------
 #
-# Undoes what the steps below put on the machine, from the same resolved paths,
-# so an install made with SAND_PREFIX or SAND_DATA_DIR set is removed by an
-# uninstall run with the same variables. Every step tolerates its target being
-# gone already, which is what lets it run twice, or on a box that never had SAND.
+# Undoes what the steps below put on the machine, from the same resolved paths:
+# an install made with SAND_PREFIX, SAND_DATA_DIR or SAND_USER set is removed by
+# an uninstall that reads them back from the unit, so the variables need naming
+# again only when the unit is already gone. Every step tolerates its target
+# being gone already, which is what lets it run twice, or on a box that never
+# had SAND.
 #
 # What stays, deliberately:
 #
@@ -320,10 +471,22 @@ NODE_MIN_MAJOR=18
 #   * The service user, which still owns $DATA_DIR.
 #   * Any folder a Local folder account writes to. Those are the user's own
 #     files; the grant that let the service write there goes with the drop-in.
-#   * A checkout that `sudo ./scripts/quickstart.sh` built in place. It is the
-#     user's working copy, not a tree this script cloned.
+#   * A checkout `sudo ./scripts/quickstart.sh` was run from. It is the user's
+#     working copy; what goes is the copy of it this script built under
+#     $PREFIX/checkout. (An older version of this script built the checkout
+#     in place — that binary, and the node_modules beside it, stay too.)
 #   * Node, Go (/usr/local/go, /etc/profile.d/go.sh), git, curl, unzip. They
 #     were installed only if missing, and something else may use them now.
+#   * Anything under $PREFIX this script did not create. The prefix is only
+#     ever removed piece by piece, by name, and src and bin — names other
+#     things use — only when what is there is recognisably ours.
+#
+# And none of it happens unless $PREFIX is a prefix this script installed
+# into: either it holds the marker every install writes ($PREFIX/.sand-prefix),
+# or the installed unit runs a binary from under it. The names removed below
+# are ordinary ones — src, bin — and SAND_PREFIX=/home/alice or
+# SAND_PREFIX=/usr/local, typed by mistake or from a stale shell history,
+# would otherwise have taken ~/src and ~/bin, or /usr/local/bin, with them.
 if [ "$UNINSTALL" = 1 ]; then
   log "Uninstalling SAND Vault"
   # An empty or root prefix would turn the removals below into /bin and /src.
@@ -334,6 +497,25 @@ if [ "$UNINSTALL" = 1 ]; then
   # The binary the unit ran, read before the unit goes: when it is not under
   # $PREFIX it was built inside somebody's checkout, which is theirs to keep.
   prior_bin="${PRIOR_EXEC%% *}"
+
+  # Is $PREFIX ours? Decided before anything is touched, so a refusal leaves
+  # the service exactly as it was. A prefix that is not there at all is fine —
+  # that is the second run, or a box that never had SAND.
+  installed_here() {
+    [ -f "$PREFIX_MARK" ] && return 0
+    case "$prior_bin" in
+      "$PREFIX"/*) return 0 ;;
+    esac
+    return 1
+  }
+  if [ -d "$PREFIX" ] && ! installed_here; then
+    printf '%serr %s nothing says %s was installed by this script:\n' "$C_RED" "$C_OFF" "$PREFIX" >&2
+    printf '     no %s, and no %s running a binary from under it.\n' "$PREFIX_MARK" "$UNIT_PATH" >&2
+    printf '     Refusing to delete anything there. If it IS an old install whose unit is\n' >&2
+    printf '     already gone, remove it by hand:\n' >&2
+    printf '       sudo rm -rf %s/src %s/checkout %s/bin %s/bun %s/proton-sdk %s\n' "$PREFIX" "$PREFIX" "$PREFIX" "$PREFIX" "$PREFIX" "$BUILD_HOME" >&2
+    exit 1
+  fi
 
   if command -v systemctl >/dev/null 2>&1; then
     systemctl disable --now "${SERVICE_NAME}.service" >/dev/null 2>&1 || true
@@ -358,11 +540,22 @@ if [ "$UNINSTALL" = 1 ]; then
 
   # Named piece by piece rather than `rm -rf $PREFIX`: a data directory placed
   # under the prefix by SAND_DATA_DIR would otherwise go with it, and that is
-  # the one thing this must never take.
+  # the one thing this must never take. bun, proton-sdk and the dot-files are
+  # names nothing but this script creates. src and bin are not, so src goes
+  # only when it is the clone this script manages, and bin loses the files
+  # this script put there and is removed only if that empties it.
   if [ -d "$PREFIX" ]; then
-    rm -rf "${PREFIX:?}/src" "${PREFIX:?}/bin" "${PREFIX:?}/bun" "${PREFIX:?}/proton-sdk" \
-           "$BUILD_HOME" "$BUN_LOG" "$PROTON_FETCH_LOG" "$PROTON_BUILD_LOG" \
-           "$PROTON_STAMP"
+    if [ -d "$SRC_DIR/.git" ] && grep -q 'module github.com/chinmay28/sand-vault' "$SRC_DIR/go.mod" 2>/dev/null; then
+      rm -rf "${SRC_DIR:?}"
+    elif [ -e "$SRC_DIR" ]; then
+      warn "kept $SRC_DIR — it is not the clone this script manages."
+    fi
+    if [ -d "$PREFIX/bin" ]; then
+      rm -f "$PREFIX/bin/sand" "$PREFIX/bin/sand.prev" "$PREFIX/bin/sand.new" "$PROTON_BIN"
+      rmdir "$PREFIX/bin" 2>/dev/null || warn "kept $PREFIX/bin — it still holds files this script did not put there."
+    fi
+    rm -rf "${CHECKOUT_DIR:?}" "${BUN_DIR:?}" "${PROTON_SDK_DIR:?}" "${BUILD_HOME:?}"
+    rm -f "$BUN_LOG" "$PROTON_FETCH_LOG" "$PROTON_BUILD_LOG" "$PROTON_STAMP" "$PREFIX_MARK" "$QUICKSTART_LOG"
     if rmdir "$PREFIX" 2>/dev/null; then
       ok "removed $PREFIX"
     else
@@ -389,8 +582,20 @@ if [ "$UNINSTALL" = 1 ]; then
 fi
 
 # Executed from inside a checkout (sudo ./scripts/quickstart.sh), build that
-# checkout in place; piped from curl, deploy $SAND_REF like any other install.
-# Release mode never builds, so it ignores the surrounding checkout entirely.
+# checkout as it stands; piped from curl, deploy $SAND_REF like any other
+# install. Release mode never builds, so it ignores the surrounding checkout
+# entirely.
+#
+# "As it stands" means copied, not built in place. The checkout is somebody's
+# working copy, and building in it meant `chown -R sand` over the whole tree,
+# .git included — the next `git status` in it failed with "dubious ownership"
+# and every file needed chowning back — and a unit whose ExecStart and
+# WorkingDirectory pointed into /home/<user>, which ProtectHome=true in that
+# very unit makes an empty directory to the service, so it could not start at
+# all. The checkout's history and working tree are instead copied to
+# $PREFIX/checkout (see sync_checkout), and that copy is what is built, owned
+# by the service user and run — the same arrangement as the managed clone,
+# one directory over. Nothing under the checkout is written to.
 #
 # Which of the two is happening has to be read off BASH_SOURCE, not $0. Piped,
 # bash sets $0 to "bash" and leaves BASH_SOURCE unset, so the old
@@ -408,7 +613,7 @@ if [ "$INSTALL_MODE" = source ] && [ -f "$SELF_FILE" ]; then
      && [ -f "$top/go.mod" ] \
      && grep -q 'module github.com/chinmay28/sand-vault' "$top/go.mod" 2>/dev/null; then
     LOCAL_CHECKOUT="$top"
-    SRC_DIR="$top"   # build & serve from where the user already cloned
+    SRC_DIR="$CHECKOUT_DIR"   # a copy of the checkout, built and served from here
   fi
 fi
 
@@ -424,6 +629,16 @@ fi
 PREV_BIN="${SERVER_BIN}.prev"
 STAGED_BIN="${SERVER_BIN}.new"
 
+# The unit sets ProtectHome=true (write_unit), which makes /home, /root and
+# /run/user empty directories to the service. A prefix under one of them is a
+# service that cannot find its own binary — systemd reports 203/EXEC, the
+# health check fails, and an upgrade rolls back. Said here, with the cause,
+# rather than there.
+case "$WORK_DIR" in
+  /home | /home/* | /root | /root/* | /run/user | /run/user/*)
+    die "SAND_PREFIX=$PREFIX is under a directory the service cannot see: the unit sets ProtectHome=true, which hides /home, /root and /run/user from it. Use a prefix outside them — /opt/sand, the default, or /srv/sand." ;;
+esac
+
 log "SAND Vault quick start"
 printf '  %-10s %s\n' "install"  "$INSTALL_MODE$( [ "$INSTALL_MODE" = release ] && echo " ($RELEASE_TAG)" )"
 if [ "$INSTALL_MODE" = release ]; then
@@ -434,7 +649,7 @@ else
   # changed after a deploy" is a much harder thing to sit and wonder about
   # than a line saying which commit the deploy was made from.
   if [ -n "$LOCAL_CHECKOUT" ]; then
-    printf '  %-10s %s\n' "ref"    "this checkout, built as it stands (not updated)"
+    printf '  %-10s %s\n' "ref"    "$LOCAL_CHECKOUT, copied and built as it stands (not updated)"
   else
     printf '  %-10s %s\n' "ref"    "origin/$SAND_REF"
   fi
@@ -581,34 +796,79 @@ release_arch() {
 
 # git in someone else's checkout, run as root. Without this, git refuses to
 # touch a tree it does not own and every read below fails identically to "no
-# repository here", which is the one answer that must not be guessed at.
-src_git() { git -C "$SRC_DIR" -c safe.directory="$SRC_DIR" "$@"; }
+# repository here", which is the one answer that must not be guessed at. Only
+# ever used to READ the checkout.
+checkout_git() { git -C "$LOCAL_CHECKOUT" -c safe.directory="$LOCAL_CHECKOUT" "$@"; }
+# git in the copy of it under $PREFIX, which the service user owns and root
+# writes to here, hence the same allowance.
+copy_git() { git -C "$SRC_DIR" -c safe.directory="$SRC_DIR" -c safe.directory="$LOCAL_CHECKOUT" "$@"; }
 
 # What the build is about to be made from, appended to the line announcing it.
 describe_head() {
-  [ -d "$SRC_DIR/.git" ] || return 0
-  sha="$(src_git rev-parse --short HEAD 2>/dev/null)" || return 0
+  sha="$(checkout_git rev-parse --short HEAD 2>/dev/null)" || return 0
   printf ' (%s)' "$sha"
 }
 
-# Building a checkout in place is the whole point of this mode — it is how you
-# deploy something you are still working on. But it also means a tree that was
-# cloned once and never pulled rebuilds the same commit forever, and the only
-# outward sign is a version number that will not move: the deploy succeeds, the
-# service restarts, and nothing whatsoever changes. Say it out loud instead.
+# Building a checkout as it stands is the whole point of this mode — it is how
+# you deploy something you are still working on. But it also means a tree that
+# was cloned once and never pulled rebuilds the same commit forever, and the
+# only outward sign is a version number that will not move: the deploy
+# succeeds, the service restarts, and nothing whatsoever changes. Say it out
+# loud instead.
 warn_if_behind() {
-  [ -d "$SRC_DIR/.git" ] || return 0
   # Offline, or a repo with no origin — nothing to compare against, so this
   # tells us nothing either way and stays quiet.
-  src_git fetch --quiet --prune origin 2>/dev/null || return 0
-  src_git rev-parse --verify --quiet "origin/$SAND_REF" >/dev/null 2>&1 || return 0
+  checkout_git fetch --quiet --prune origin 2>/dev/null || return 0
+  checkout_git rev-parse --verify --quiet "origin/$SAND_REF" >/dev/null 2>&1 || return 0
 
-  behind="$(src_git rev-list --count "HEAD..origin/$SAND_REF" 2>/dev/null || echo 0)"
+  behind="$(checkout_git rev-list --count "HEAD..origin/$SAND_REF" 2>/dev/null || echo 0)"
   [ "${behind:-0}" -gt 0 ] || return 0
 
   warn "this checkout is $behind commit(s) behind origin/$SAND_REF."
   warn "quickstart builds what is here, so none of them will be installed."
-  warn "to deploy them:  git -C '$SRC_DIR' pull --ff-only   (then re-run this)"
+  warn "to deploy them:  git -C '$LOCAL_CHECKOUT' pull --ff-only   (then re-run this)"
+}
+
+# sync_checkout makes $SRC_DIR ($PREFIX/checkout) a copy of the checkout as it
+# stands: its history, then its working tree over the top. Run as root,
+# because the checkout is the user's (a home directory is 0750 on a current
+# Ubuntu, so the service user cannot read it) and the copy is the service
+# user's; the copy is chowned to them at the end, which is the only chown in
+# this mode.
+#
+# The history comes along, not just the files, because the version number is
+# the commit count and the web build asks git for it: a copy without .git
+# would build something calling itself v2026.10.0. A fetch from the checkout's
+# path into a repository of our own carries only what is new on a re-run, and
+# `git init` on a repository that already exists is a no-op, so the one path
+# serves the first run and every later one.
+#
+# The working tree is what the person is about to deploy: every tracked file
+# as it is right now, committed or not, plus untracked files that are not
+# ignored (a new source file not yet added), minus files deleted in the
+# checkout. Ignored files — node_modules, a binary built there — stay out.
+sync_checkout() {
+  install -d -o "$SVC_USER" -g "$SVC_USER" -m 755 "$PREFIX" "$SRC_DIR"
+  copy_git init -q
+  copy_git fetch -q --no-tags "$LOCAL_CHECKOUT" HEAD
+  copy_git reset -q --hard FETCH_HEAD
+  # Whatever the last copy or the last build left that HEAD does not have: an
+  # untracked file since removed from the checkout, stale hashed assets in
+  # internal/server/dist (go:embed would ship them). The running binary, the
+  # staged one and the rollback copy live here too and are kept; so is
+  # anything ignored, which the build clears for itself.
+  copy_git clean -qfd -e /sand -e /sand.prev -e /sand.new
+
+  checkout_git diff --name-only -z --diff-filter=D HEAD | while IFS= read -r -d '' f; do
+    rm -rf "${SRC_DIR:?}/$f"
+  done
+  checkout_git ls-files -z --cached --others --exclude-standard | while IFS= read -r -d '' f; do
+    if [ -e "$LOCAL_CHECKOUT/$f" ] || [ -L "$LOCAL_CHECKOUT/$f" ]; then
+      printf '%s\0' "$f"
+    fi
+  done | tar -C "$LOCAL_CHECKOUT" --null -T - -cf - | tar -C "$SRC_DIR" -xf -
+
+  chown -R "$SVC_USER":"$SVC_USER" "$SRC_DIR"
 }
 
 # Move the managed clone onto a commit, whatever the last build left lying in
@@ -684,8 +944,9 @@ if [ "$INSTALL_MODE" = release ]; then
   ok "staged $RELEASE_VERSION → $STAGED_BIN"
 else
   if [ -n "$LOCAL_CHECKOUT" ]; then
-    ok "building the checkout at $SRC_DIR$(describe_head)"
-    [ -d "$SRC_DIR/.git" ] && PREV_SHA="$(src_git rev-parse HEAD 2>/dev/null || true)"
+    log "copying the checkout at $LOCAL_CHECKOUT$(describe_head) to $SRC_DIR…"
+    sync_checkout
+    ok "copied; the checkout itself is not touched"
     warn_if_behind
   elif [ -d "$SRC_DIR/.git" ]; then
     PREV_SHA="$(as_svc git -C "$SRC_DIR" rev-parse HEAD)"
@@ -735,6 +996,8 @@ build_src() {
 }
 
 if [ "$INSTALL_MODE" = source ]; then
+  # $SRC_DIR is always a tree this script made — the managed clone, or the copy
+  # of a checkout — never the checkout itself, so this is safe to do blind.
   chown -R "$SVC_USER":"$SVC_USER" "$SRC_DIR" 2>/dev/null || true
   # The build runs while the OLD binary keeps serving. A failure here leaves
   # the running service completely untouched.
@@ -800,8 +1063,9 @@ install_staged
 # well-known roots, so the unit grants those outright: a "Local folder" account
 # on an external drive connects with no extra step, while /etc, /usr, /home and
 # everything else stay read-only. SAND_MOUNT_ROOTS overrides the list; set it
-# empty for a unit that grants nothing but $DATA_DIR.
-MOUNT_ROOTS="${SAND_MOUNT_ROOTS-/media:/run/media:/mnt:/srv}"
+# empty for a unit that grants nothing but $DATA_DIR. $MOUNT_ROOTS was settled
+# in the configuration section, from the variable, the installed unit, or the
+# default, in that order.
 mount_root_lines() {
   # The trailing ':' gives the last root a newline of its own, so `read` sees
   # it. The leading '-' lets the service start on a host where a root does not
@@ -865,6 +1129,12 @@ ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
 ReadWritePaths=$DATA_DIR
+# The mount roots this unit was written with, as SAND_MOUNT_ROOTS had them.
+# The next run of quickstart.sh reads this line back, so an upgrade keeps the
+# list — including an empty one, which the ReadWritePaths= lines alone could
+# not say. Edit the lines below rather than this one; they are what systemd
+# reads.
+# SAND_MOUNT_ROOTS=$MOUNT_ROOTS
 $MOUNT_ROOT_LINES
 
 [Install]
@@ -877,22 +1147,47 @@ write_unit
 # keeps every other path read-only, so a "Local folder" account outside those
 # roots cannot connect ("read-only file system") until its directory is granted
 # too. SAND_LOCAL_PATHS grants such paths here, colon-separated;
-# scripts/allow-local-path.sh does the same later. Both write this one drop-in,
-# and neither installer touches it on a re-run, so grants survive upgrades.
+# scripts/allow-local-path.sh does the same later. Both write this one drop-in.
+#
+# A re-run without SAND_LOCAL_PATHS leaves the drop-in alone, so grants survive
+# upgrades. A re-run WITH it adds to what is there rather than replacing it:
+# the drop-in is the one record of every path allow-local-path.sh has granted
+# since the install, and an installer that rewrote it from the variable alone
+# took those grants away — every Local folder account outside the mount roots
+# went read-only on the next upgrade that happened to name a path.
 DROPIN_DIR="${UNIT_PATH}.d"
+LOCAL_PATHS_DROPIN="$DROPIN_DIR/10-local-paths.conf"
+
+# What the drop-in should grant after this run: what it grants now, then the
+# paths SAND_LOCAL_PATHS names, each once, in that order.
+merged_local_paths() {
+  {
+    granted_paths "$LOCAL_PATHS_DROPIN"
+    printf '%s:' "$SAND_LOCAL_PATHS" | tr ':' '\n' | while IFS= read -r entry; do
+      [ -n "$entry" ] || continue
+      [ "$entry" != / ] && entry="${entry%/}"
+      printf '%s\n' "$entry"
+    done
+  } | awk '!seen[$0]++'
+}
+
 if [ -n "${SAND_LOCAL_PATHS:-}" ]; then
+  # Read before the redirect below opens the file: `> file` truncates it
+  # before the block runs, and what is being merged in is that file.
+  LOCAL_PATHS_FINAL="$(merged_local_paths)"
   mkdir -p "$DROPIN_DIR"
   {
     echo "# Paths a Local folder account may use. Also managed by"
     echo "# scripts/allow-local-path.sh. A leading '-' lets the service start"
     echo "# when the drive is not plugged in."
     echo "[Service]"
-    printf '%s:' "$SAND_LOCAL_PATHS" | tr ':' '\n' | while IFS= read -r entry; do
+    printf '%s\n' "$LOCAL_PATHS_FINAL" | while IFS= read -r entry; do
       [ -n "$entry" ] || continue
-      printf 'ReadWritePaths=-"%s"\n' "${entry%/}"
+      printf 'ReadWritePaths=-"%s"\n' "$entry"
     done
-  } > "$DROPIN_DIR/10-local-paths.conf"
-  ok "local paths granted → $DROPIN_DIR/10-local-paths.conf"
+  } > "$LOCAL_PATHS_DROPIN"
+  ok "local paths granted → $LOCAL_PATHS_DROPIN"
+  granted_paths "$LOCAL_PATHS_DROPIN" | sed 's/^/       /'
 fi
 
 systemctl daemon-reload
@@ -904,7 +1199,25 @@ ok "service enabled and started"
 # 7. Health check (with rollback on a failed upgrade)
 # ---------------------------------------------------------------------------
 step "[7/8] Health check"
-health_url="http://127.0.0.1:$PORT/api/health"
+
+# The address to probe is the one the unit binds, not loopback. The probe used
+# to go to 127.0.0.1 regardless of HOST, which was right for the default
+# (0.0.0.0 answers on loopback too) and wrong for every other address: an
+# install bound to a LAN or Tailscale address — the one thing the warning in
+# the header asks for — failed this check on every run, a fresh install died
+# "unhealthy", and an upgrade rolled a working service back to the previous
+# commit and the pre-upgrade vault. A wildcard still maps to loopback, since a
+# wildcard is not an address curl can connect to, and an IPv6 address goes in
+# brackets, which is how a URL spells one.
+probe_host() {
+  case "$1" in
+    "" | 0.0.0.0 | :: | "[::]") printf '127.0.0.1' ;;
+    "["*"]") printf '%s' "$1" ;;
+    *:*) printf '[%s]' "$1" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+health_url="http://$(probe_host "$HOST"):$PORT/api/health"
 check_health() {
   for _ in $(seq 1 30); do
     curl -fsS "$health_url" >/dev/null 2>&1 && return 0
