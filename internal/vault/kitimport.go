@@ -734,6 +734,16 @@ func (v *Vault) installKitIndex(snapshot *Snapshot) error {
 	manifest.MovieFolders = snapshot.Manifest.MovieFolders
 	manifest.Movies = snapshot.Manifest.Movies
 	manifest.FolderArt = snapshot.Manifest.FolderArt
+	// A kit import keeps every account's id, so everything the index says
+	// comes across as it stands — including the two things a recovery has to
+	// leave behind: the replication policy, which names accounts, and the
+	// replicas on the entries themselves. Automations and tracked repositories
+	// name folders and files, which survive either way.
+	manifest.Automations = snapshot.Manifest.Automations
+	manifest.Repos = snapshot.Manifest.Repos
+	manifest.Replication = snapshot.Manifest.Replication
+	manifest.ReplicatedFolders = snapshot.Manifest.ReplicatedFolders
+	manifest.Rekey = snapshot.Manifest.Rekey
 	manifest.SubVaults = append([]*SubVaultMeta(nil), snapshot.Manifest.SubVaults...)
 	// Deliberately not carried across: the ids are preserved by a kit import,
 	// so there is nothing to translate. A remap left over from the snapshot's

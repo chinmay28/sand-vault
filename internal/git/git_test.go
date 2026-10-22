@@ -2,6 +2,8 @@ package git
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -370,5 +372,52 @@ func TestRunHonoursACancelledContext(t *testing.T) {
 
 	if _, err := Version(ctx); err == nil {
 		t.Fatal("a cancelled context still ran git")
+	}
+}
+
+// The verdict a prune acts on. A phrase that reads as the network is never
+// "gone", whatever else the line says; a context error is never "gone" either.
+func TestRepositoryGoneReadsTheRemoteNotTheNetwork(t *testing.T) {
+	gone := []string{
+		"git ls-remote: fatal: repository 'https://github.com/x/y.git/' not found",
+		"git ls-remote: remote: Repository not found.",
+		"git ls-remote: fatal: '/srv/git/old.git' does not appear to be a git repository",
+		"git ls-remote: fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+		"git ls-remote: git@github.com: Permission denied (publickey).",
+		"git ls-remote: fatal: Authentication failed for 'https://example.com/x.git/'",
+		"git ls-remote: fatal: unable to access 'https://example.com/x.git/': The requested URL returned error: 403",
+		"git ls-remote: remote: The project you were looking for could not be found or you don't have permission to view it.",
+	}
+	for _, msg := range gone {
+		if !RepositoryGone(errors.New(msg)) {
+			t.Errorf("not read as gone: %s", msg)
+		}
+	}
+
+	transient := []string{
+		"git ls-remote: fatal: unable to access 'https://example.com/x.git/': Could not resolve host: example.com",
+		"git ls-remote: ssh: connect to host example.com port 22: Connection refused",
+		"git ls-remote: fatal: unable to access 'https://example.com/x.git/': Failed to connect to example.com port 443: Connection timed out",
+		"git ls-remote: fatal: unable to access 'https://example.com/x.git/': The requested URL returned error: 502",
+		"git ls-remote: fatal: unable to access 'https://example.com/x.git/': OpenSSL SSL_read: Connection reset by peer",
+		"git ls-remote: fatal: the remote end hung up unexpectedly",
+		"git ls-remote: error: RPC failed; HTTP 500 curl 22 The requested URL returned error: 500",
+		"something nobody has seen before",
+		"",
+	}
+	for _, msg := range transient {
+		if RepositoryGone(errors.New(msg)) {
+			t.Errorf("read as gone: %q", msg)
+		}
+	}
+
+	if RepositoryGone(nil) {
+		t.Error("nil is gone")
+	}
+	for _, err := range []error{context.Canceled, context.DeadlineExceeded} {
+		wrapped := fmt.Errorf("git ls-remote: repository not found: %w", err)
+		if RepositoryGone(wrapped) {
+			t.Errorf("a context error read as gone: %v", wrapped)
+		}
 	}
 }

@@ -750,6 +750,10 @@ func TestKitZipLeaksNothing(t *testing.T) {
 		accountName   = "zzz-account-with-a-memorable-name"
 		secretFileTag = "an-unmistakable-filename"
 	)
+	// A local folder is created inside a parent that already exists.
+	if err := os.MkdirAll(filepath.Join(dir, "cloud"), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
 	for i := 0; i < 3; i++ {
 		root := filepath.Join(dir, "cloud", string(rune('a'+i)))
 		_, err := v.AddProvider(ctx, provider.Config{

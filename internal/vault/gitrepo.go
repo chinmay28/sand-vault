@@ -116,7 +116,23 @@ type GitSource struct {
 	// moment it answers again.
 	Gone   bool   `json:"gone,omitempty"`
 	Reason string `json:"reason,omitempty"`
+
+	// GoneRuns counts the consecutive sweeps on which the remote said, in so
+	// many words, that there is no repository there — see git.RepositoryGone.
+	// A sweep that could not reach the remote at all leaves it where it is: a
+	// timeout is not evidence either way. Reset by any sweep the remote
+	// answers. A prune waits for gitGoneThreshold of these, because one
+	// "not found" is also what an expired token, a renamed project and a
+	// provider having a bad afternoon look like.
+	GoneRuns int `json:"gone_runs,omitempty"`
 }
+
+// gitGoneThreshold is how many separate sweeps have to hear a definitive
+// "no such repository" before a policy that prunes may act on it. Three, at a
+// daily cadence, is three days for a token to be renewed or a rename to be
+// noticed — and a repository that has truly gone is still gone on the third
+// morning.
+const gitGoneThreshold = 3
 
 // TrackedRepo is one stored repository as anything outside this package sees
 // it: where the file is, and what is known about the repository inside it.
@@ -604,7 +620,7 @@ func (m *Manifest) forgetRepos(ids ...string) {
 // repository and the whole point of the design; fetching is the expensive half,
 // and a policy that says "at most five a night" means five fetches, not five
 // questions.
-func (v *Vault) sweepGit(ctx context.Context, scope Scope, policy *Automation, entries []*Entry, run *AutomationRun, seen map[string]bool) {
+func (v *Vault) sweepGit(ctx context.Context, scope Scope, policy *Automation, entries []*Entry, run *AutomationRun, seen seenSet) {
 	res := &GitResult{}
 	run.Git = res
 
@@ -650,13 +666,11 @@ func (v *Vault) sweepGit(ctx context.Context, scope Scope, policy *Automation, e
 			run.Error = fmt.Sprintf("stopped part way: %v", err)
 			return
 		}
-		// A repository an inner folder's own policy already dealt with this
-		// tick is not asked about twice.
-		if seen != nil {
-			if seen[repo.ID] {
-				continue
-			}
-			seen[repo.ID] = true
+		// A repository an inner folder's own git policy already dealt with
+		// this tick is not asked about twice. Its shards policy, if it has
+		// one, is a different question and does not count.
+		if !seen.claim(TaskGit, repo.ID) {
+			continue
 		}
 		res.Checked++
 
@@ -686,17 +700,34 @@ func (v *Vault) sweepOneRepo(
 	advertised, err := git.LsRemote(ctx, remote)
 	if err != nil {
 		res.Gone++
-		run.Warnings = append(run.Warnings, fmt.Sprintf(
-			"%s: %s did not answer — %v", repo.Path, repo.URL, err))
 
+		// Two different failures, and only one of them is about the
+		// repository. The remote saying "not found" is evidence it has gone;
+		// the network saying nothing at all — this sweep's own deadline, a
+		// closed tab, DNS down, a token the provider's gateway rejected with
+		// a 5xx — is not, and must never be what a prune acts on. The count
+		// moves only on the first kind, so a week of outages neither builds
+		// towards a prune nor undoes the evidence already gathered.
 		source := repo.GitSource
 		source.CheckedAt = time.Now().UTC()
 		source.Gone, source.Reason = true, err.Error()
+		definitive := ctx.Err() == nil && git.RepositoryGone(err)
+		if definitive {
+			source.GoneRuns++
+			run.Warnings = append(run.Warnings, fmt.Sprintf(
+				"%s: %s says there is no repository there (%d of %d sweeps in a row) — %v",
+				repo.Path, repo.URL, source.GoneRuns, gitGoneThreshold, err))
+		} else {
+			run.Warnings = append(run.Warnings, fmt.Sprintf(
+				"%s: %s did not answer — %v", repo.Path, repo.URL, err))
+		}
 		if setErr := v.setGitSource(scope, repo.ID, &source); setErr != nil {
 			run.Error = setErr.Error()
 			return
 		}
-		v.pruneGone(ctx, scope, cfg, repo, res, run)
+		if definitive && source.GoneRuns >= gitGoneThreshold {
+			v.pruneGone(ctx, scope, cfg, repo, res, run)
+		}
 		return
 	}
 
@@ -704,7 +735,7 @@ func (v *Vault) sweepOneRepo(
 		res.Current++
 		source := repo.GitSource
 		source.CheckedAt = time.Now().UTC()
-		source.Gone, source.Reason = false, ""
+		source.Gone, source.Reason, source.GoneRuns = false, "", 0
 		if err := v.setGitSource(scope, repo.ID, &source); err != nil {
 			run.Error = err.Error()
 		}
@@ -761,6 +792,13 @@ func (v *Vault) sweepOneRepo(
 // somebody's repository.
 func (v *Vault) pruneGone(ctx context.Context, scope Scope, cfg GitPolicy, repo TrackedRepo, res *GitResult, run *AutomationRun) {
 	if !cfg.Prune {
+		return
+	}
+	// A sweep that is being stopped has no verdict to act on: whatever the
+	// remote was in the middle of saying, the caller's deadline is what cut
+	// it short. Checked here as well as by the caller, so that no path into
+	// a delete depends on the other check being there.
+	if ctx.Err() != nil {
 		return
 	}
 	warnings, err := v.Delete(ctx, repo.ID)

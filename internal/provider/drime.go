@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -163,15 +164,22 @@ func (p *drimeProvider) doRetried(ctx context.Context, op string, req *http.Requ
 	}
 	if !isSuccess(resp.StatusCode) {
 		defer drainAndClose(resp)
-		return nil, retried, &drimeError{status: resp.StatusCode, err: httpError(op, resp)}
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, retried, &drimeError{
+			status: resp.StatusCode,
+			body:   string(snippet),
+			err:    httpErrorWith(op, resp.Status, snippet),
+		}
 	}
 	return resp, retried, nil
 }
 
-// drimeError carries the status code of a failed request alongside the
-// message, so a caller can tell "gone" from "broken" without parsing text.
+// drimeError carries the status code of a failed request, and the start of
+// its body, alongside the message — so a caller can tell "gone" from
+// "broken" without parsing the message text.
 type drimeError struct {
 	status int
+	body   string
 	err    error
 }
 
@@ -186,6 +194,47 @@ func drimeStatus(err error) int {
 		return de.status
 	}
 	return 0
+}
+
+// drimeEntryUnknown reports whether a delete failed because Drime no longer
+// has the entry — which is what a delete wanted anyway.
+//
+// Drime says so with a 422, but a 422 is Laravel's answer to any request
+// that fails validation, and this one validates more than the ID: a missing
+// workspace, a malformed body, a flag it does not know all come back the
+// same status. Reading every 422 as "already gone" would have Delete report
+// success over a file still on the account — which the orphan scan then
+// counts as removed. So the body is read too, and only the validation
+// message about the entry IDs themselves — "The selected entryIds.0 is
+// invalid." from the API's own rule, keyed under "entryIds.0" in errors — is
+// taken as gone. A 404 is gone as well, whatever it says.
+func drimeEntryUnknown(err error) bool {
+	var de *drimeError
+	if !errors.As(err, &de) {
+		return false
+	}
+	switch de.status {
+	case http.StatusNotFound:
+		return true
+	case http.StatusUnprocessableEntity:
+	default:
+		return false
+	}
+
+	var body struct {
+		Message string                     `json:"message"`
+		Errors  map[string]json.RawMessage `json:"errors"`
+	}
+	if json.Unmarshal([]byte(de.body), &body) != nil {
+		return false
+	}
+	for field := range body.Errors {
+		if strings.HasPrefix(strings.ToLower(field), "entryids") {
+			return true
+		}
+	}
+	message := strings.ToLower(body.Message)
+	return strings.Contains(message, "selected entry") && strings.Contains(message, "invalid")
 }
 
 // postJSON sends a JSON body and decodes a JSON answer into out, when out is
@@ -706,10 +755,8 @@ func (p *drimeProvider) deleteEntry(ctx context.Context, id string) error {
 	}
 	err := p.postJSON(ctx, "drime delete", p.endpoint("/file-entries/delete", nil),
 		map[string]any{"entryIds": []string{id}, "deleteForever": true}, &result)
-	switch drimeStatus(err) {
-	case http.StatusNotFound, http.StatusUnprocessableEntity:
-		// Drime answers 422 for an ID it no longer has: the file is gone,
-		// which is what a delete is for.
+	if drimeEntryUnknown(err) {
+		// The file is gone, which is what a delete is for.
 		return nil
 	}
 	if err != nil {

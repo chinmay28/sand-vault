@@ -92,6 +92,14 @@ func TestOpenAtTheReplicasRoleWritesBesideTheParts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Neither root exists yet, and a local folder's Put does not create one:
+	// each root is connected — Pinged — before it takes anything, as the
+	// vault does for both of an account's roots.
+	for _, p := range []Provider{parts, replicas} {
+		if err := p.Ping(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := parts.Put(ctx, "x-p1.sand", []byte("part")); err != nil {
 		t.Fatal(err)
 	}

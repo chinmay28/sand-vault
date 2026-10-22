@@ -5,10 +5,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/chinmay28/sand-vault/internal/archive"
+	"github.com/chinmay28/sand-vault/internal/provider"
 )
 
 // dailyAt is the policy most of these tests are about: check this folder every
@@ -452,6 +454,59 @@ func TestRebalanceRebuildsOntoTheCloudsThatAnswer(t *testing.T) {
 	}
 }
 
+// A repair rebuilds the file — migrateFile, pointed at the clouds that answer
+// — and so it runs in the re-encryption slot. A sweep that finds the slot
+// taken by the paced step leaves the file for the next sweep rather than
+// gathering and scattering it alongside, and does not count it as failed.
+func TestARepairWaitsForTheReEncryptionSlot(t *testing.T) {
+	v, roots := newTestVault(t, 4)
+
+	payload := []byte("a file short a cloud while a password change is moving things\n")
+	entry, _, err := v.Upload(context.Background(), MainScope, "/", "notes.txt", payload, UploadOptions{})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	held := map[string]bool{}
+	for _, s := range entry.Shards {
+		held[s.ProviderID] = true
+	}
+	providers, err := v.Providers()
+	if err != nil {
+		t.Fatalf("Providers: %v", err)
+	}
+	for i, cfg := range providers {
+		if held[cfg.ID] {
+			darken(t, roots[i])
+			break
+		}
+	}
+	if _, err := v.SetAutomation(MainScope, "/", dailyAt("10:00", ActionRebalance)); err != nil {
+		t.Fatalf("SetAutomation: %v", err)
+	}
+
+	// Stand in for a paced step that is mid-file.
+	v.migrateMu.Lock()
+	run, err := v.RunAutomation(context.Background(), MainScope, "/")
+	v.migrateMu.Unlock()
+	if err != nil {
+		t.Fatalf("RunAutomation while the slot is busy: %v", err)
+	}
+	if run.Shards.Deferred != 1 || run.Shards.Failed != 0 || run.Shards.Repaired != 0 {
+		t.Fatalf("run while the slot is busy = %+v, want the file deferred, not failed", run.Shards)
+	}
+	if untouched := v.manifest.ByID(entry.ID); untouched.ArchiveID != entry.ArchiveID {
+		t.Error("the file was rebuilt while the slot was busy")
+	}
+
+	again, err := v.RunAutomation(context.Background(), MainScope, "/")
+	if err != nil {
+		t.Fatalf("RunAutomation once the slot is free: %v", err)
+	}
+	if again.Shards.Repaired != 1 || again.Shards.Failed != 0 {
+		t.Fatalf("run once the slot is free = %+v, want the file rebuilt", again.Shards)
+	}
+}
+
 func TestRebalanceLeavesAFilePastTheRebuildCeiling(t *testing.T) {
 	v, roots := newTestVault(t, 4)
 
@@ -538,6 +593,90 @@ func TestARunIsWrittenIntoTheFoldersHistory(t *testing.T) {
 	}
 }
 
+// A run whose result could not be written down must not look like a run that
+// never happened. With the disk refusing the vault file, the old code reverted
+// the stamp and the policy was due again on the next tick — every minute,
+// rebuilds and all, until the disk was fixed.
+func TestAFailedStampStillHoldsThePolicyUntilItsNextSlot(t *testing.T) {
+	v, _ := newTestVault(t, 3)
+	policy := Automation{Enabled: true, Cadence: CadenceHourly, Action: ActionCheck}
+	if _, err := v.SetAutomation(MainScope, "/", policy); err != nil {
+		t.Fatalf("SetAutomation: %v", err)
+	}
+	// Made two hours ago, so it is due now.
+	v.mu.Lock()
+	v.manifest.Automations["/"].CreatedAt = time.Now().Add(-2 * time.Hour)
+	goodPath := v.path
+	v.mu.Unlock()
+
+	now := time.Now()
+	if due, _ := v.DueAutomations(now); len(due) != 1 {
+		t.Fatalf("due = %d policies before the run, want 1", len(due))
+	}
+
+	// The disk stops taking the vault file: a regular file where its
+	// directory should be is the one refusal that works for root as well.
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	v.mu.Lock()
+	v.path = filepath.Join(blocker, "vault.sand")
+	v.mu.Unlock()
+
+	runs, err := v.RunDueAutomations(context.Background(), now)
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("RunDueAutomations = %d runs, %v; want 1", len(runs), err)
+	}
+	complained := false
+	for _, w := range runs[0].Warnings {
+		if strings.Contains(w, "could not be written down") {
+			complained = true
+		}
+	}
+	if !complained {
+		t.Fatalf("warnings = %v, want the failed write reported", runs[0].Warnings)
+	}
+	auto, err := v.AutomationFor(MainScope, "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !auto.LastRunAt.IsZero() || len(auto.History) != 0 {
+		t.Errorf("memory claims a history the file does not hold: last %v, %d run(s)", auto.LastRunAt, len(auto.History))
+	}
+
+	// Not due a minute later; due again an hour after the attempt.
+	if due, _ := v.DueAutomations(now.Add(time.Minute)); len(due) != 0 {
+		t.Errorf("due = %d policies a minute after a run the disk refused, want 0", len(due))
+	}
+	if due, _ := v.DueAutomations(now.Add(61 * time.Minute)); len(due) != 1 {
+		t.Errorf("due = %d policies an hour after the attempt, want 1", len(due))
+	}
+
+	// The disk comes back. The next run is written down, and from then on the
+	// file's stamp is the one that counts.
+	v.mu.Lock()
+	v.path = goodPath
+	v.mu.Unlock()
+	runs, err = v.RunDueAutomations(context.Background(), now.Add(61*time.Minute))
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("RunDueAutomations after the disk came back = %d runs, %v; want 1", len(runs), err)
+	}
+	auto, err = v.AutomationFor(MainScope, "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auto.LastRunAt.IsZero() || len(auto.History) != 1 {
+		t.Errorf("the written run was not stamped: last %v, %d run(s)", auto.LastRunAt, len(auto.History))
+	}
+	if !v.lastAttempt(MainScope, "/").IsZero() {
+		t.Error("the failed-attempt record outlived a successful write")
+	}
+	if due, _ := v.DueAutomations(auto.LastRunAt.Add(time.Minute)); len(due) != 0 {
+		t.Errorf("due = %d policies a minute after a written run, want 0", len(due))
+	}
+}
+
 func TestRunningOneFolderIsRefusedWhenThereIsNoPolicy(t *testing.T) {
 	v, _ := newTestVault(t, 3)
 
@@ -618,6 +757,44 @@ func TestASweepChecksEachFileOnceAcrossOverlappingPolicies(t *testing.T) {
 	}
 }
 
+// Two tasks are two questions. A shards policy on the inner folder checking a
+// repository's bundle must not stop the git policy on the outer folder asking
+// its upstream whether it has moved — and the other way round.
+func TestOverlappingPoliciesOfDifferentTasksDoNotSkipEachOthersFiles(t *testing.T) {
+	v, _ := newTestVault(t, 3)
+	remote := newRemoteRepo(t)
+	if err := v.Mkdir(MainScope, "/code/x"); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	if _, _, err := v.TrackRepo(context.Background(), MainScope, "/code/x", remote.URL, UploadOptions{}); err != nil {
+		t.Fatalf("TrackRepo: %v", err)
+	}
+
+	if _, err := v.SetAutomation(MainScope, "/code/x", dailyAt("10:00", ActionCheck)); err != nil {
+		t.Fatalf("SetAutomation shards: %v", err)
+	}
+	gitPolicy := dailyAt("10:00", ActionCheck)
+	gitPolicy.Task = TaskGit
+	if _, err := v.SetAutomation(MainScope, "/code", gitPolicy); err != nil {
+		t.Fatalf("SetAutomation git: %v", err)
+	}
+
+	runs, err := v.RunDueAutomations(context.Background(), time.Now().Add(48*time.Hour))
+	if err != nil {
+		t.Fatalf("RunDueAutomations: %v", err)
+	}
+	if len(runs) != 2 {
+		t.Fatalf("ran %d policies, want 2", len(runs))
+	}
+	inner, outer := runs[0], runs[1]
+	if inner.Folder != "/code/x" || inner.Shards == nil || inner.Shards.Checked != 1 {
+		t.Errorf("inner run = %+v, want the bundle's parts checked", inner)
+	}
+	if outer.Folder != "/code" || outer.Git == nil || outer.Git.Checked != 1 || outer.Git.Current != 1 {
+		t.Errorf("outer run = %+v, want the repository asked about despite the inner shards policy", outer)
+	}
+}
+
 func TestASweepSaysSoWhenNoCloudAnswers(t *testing.T) {
 	v, roots := newTestVault(t, 3)
 	if _, err := v.SetAutomation(MainScope, "/", dailyAt("10:00", ActionRebalance)); err != nil {
@@ -684,6 +861,97 @@ func TestAutomationNeedsAnUnlockedVault(t *testing.T) {
 // is simply not holding what the index says it is. Nothing about the index
 // betrays that, so a repair that trusted the index would decide the file was
 // already where it should be and do nothing at all.
+// busyProvider is an account whose metadata requests fail with something that
+// is not "not found": a rate limit, say. Everything else about it works, which
+// is what makes it dangerous — it passes the probe and then will not say
+// whether a part is there.
+type busyProvider struct {
+	provider.Provider
+	err error
+}
+
+func (p busyProvider) Stat(ctx context.Context, key string) (provider.ObjectInfo, error) {
+	return provider.ObjectInfo{}, p.err
+}
+
+// A part an account would not answer about is not a part that is missing. A
+// rebalance that read it so would rebuild the file elsewhere and erase the
+// original, on the strength of a rate limit.
+func TestASweepLeavesAloneAFileAnAccountWouldNotAnswerAbout(t *testing.T) {
+	v, roots := newTestVault(t, 3)
+
+	payload := []byte("every part of this file is exactly where it should be\n")
+	entry, _, err := v.Upload(context.Background(), MainScope, "/", "notes.txt", payload, UploadOptions{})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	before := append([]Shard(nil), entry.Shards...)
+
+	// One account starts rate-limiting its metadata requests. The live cache
+	// is what every call goes through, so the wrapper goes in there.
+	busyID := providerHolding(t, v, roots[1])
+	v.liveMu.Lock()
+	real, ok := v.live[busyID]
+	if !ok {
+		v.liveMu.Unlock()
+		t.Fatalf("no live backend for %s", busyID)
+	}
+	v.live[busyID] = busyProvider{Provider: real, err: errors.New("429 too many requests")}
+	v.liveMu.Unlock()
+	v.AwaitBackupSync()
+	held := len(objectsOn(t, roots[1]))
+
+	if _, err := v.SetAutomation(MainScope, "/", dailyAt("10:00", ActionRebalance)); err != nil {
+		t.Fatalf("SetAutomation: %v", err)
+	}
+	run, err := v.RunAutomation(context.Background(), MainScope, "/")
+	if err != nil {
+		t.Fatalf("RunAutomation: %v", err)
+	}
+	if len(run.Offline) != 0 {
+		t.Errorf("offline = %v, want none — the account answered the probe", run.Offline)
+	}
+	if run.Shards.Deferred != 1 || run.Shards.Short != 0 || run.Shards.Whole != 0 || run.Shards.AtRisk != 0 {
+		t.Errorf("run = %+v, want the file deferred and neither short nor whole", run.Shards)
+	}
+	if run.Shards.Repaired != 0 || run.Shards.PartsWritten != 0 || run.Shards.Bytes != 0 {
+		t.Errorf("a file nobody could check was rebuilt: %+v", run.Shards)
+	}
+	named := false
+	for _, w := range run.Warnings {
+		if strings.Contains(w, "could not be checked") && strings.Contains(w, "cloud-b") && strings.Contains(w, "429") {
+			named = true
+		}
+	}
+	if !named {
+		t.Errorf("warnings = %v, want the account and its error named", run.Warnings)
+	}
+
+	after := v.manifest.ByID(entry.ID)
+	if len(after.Shards) != len(before) {
+		t.Fatalf("shards = %d, want the %d it started with", len(after.Shards), len(before))
+	}
+	for i := range before {
+		if after.Shards[i] != before[i] {
+			t.Errorf("shard %d changed: %+v -> %+v", i, before[i], after.Shards[i])
+		}
+	}
+	v.AwaitBackupSync()
+	if got := len(objectsOn(t, roots[1])); got != held {
+		t.Errorf("the busy account holds %d object(s), want the %d it had — nothing should have been erased", got, held)
+	}
+}
+
+// objectsOn lists what a local-folder account is holding, by name.
+func objectsOn(t *testing.T, root string) []string {
+	t.Helper()
+	names, err := filepath.Glob(filepath.Join(root, "*"))
+	if err != nil {
+		t.Fatalf("listing %s: %v", root, err)
+	}
+	return names
+}
+
 func TestRebalancePutsBackAPartLostFromACloudThatIsAnswering(t *testing.T) {
 	v, roots := newTestVault(t, 3)
 

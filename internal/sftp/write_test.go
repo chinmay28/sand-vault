@@ -174,6 +174,89 @@ func TestRenameOverReplaces(t *testing.T) {
 	}
 }
 
+// The fallback for a server without posix-rename never leaves the name empty.
+// Remove-then-rename would: a connection dropped between the two leaves a key
+// with nothing under it, which the vault reads as a lost part. Rename-aside
+// holds the old file under a side name until the new one is in place.
+func TestRenameAsideReplacesAndTidies(t *testing.T) {
+	client, root, _ := browseFixture(t)
+	write(t, filepath.Join(root, "from.txt"), "new")
+	write(t, filepath.Join(root, "to.txt"), "old")
+
+	err := renameAside(client.SFTP(), filepath.ToSlash(filepath.Join(root, "from.txt")),
+		filepath.ToSlash(filepath.Join(root, "to.txt")))
+	if err != nil {
+		t.Fatalf("renameAside: %v", err)
+	}
+	got, _ := os.ReadFile(filepath.Join(root, "to.txt"))
+	if string(got) != "new" {
+		t.Errorf("to.txt holds %q, want new", got)
+	}
+	if _, err := os.Stat(filepath.Join(root, "from.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Error("the source of the rename is still there")
+	}
+	entries, _ := os.ReadDir(root)
+	for _, e := range entries {
+		if IsAsideName(e.Name()) {
+			t.Errorf("the previous copy was left aside: %s", e.Name())
+		}
+	}
+
+	// With nothing under the name, the plain rename is the whole job.
+	write(t, filepath.Join(root, "fresh.txt"), "fresh")
+	if err := renameAside(client.SFTP(), filepath.ToSlash(filepath.Join(root, "fresh.txt")),
+		filepath.ToSlash(filepath.Join(root, "landed.txt"))); err != nil {
+		t.Fatalf("renameAside onto an empty name: %v", err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(root, "landed.txt")); string(got) != "fresh" {
+		t.Errorf("landed.txt holds %q, want fresh", got)
+	}
+}
+
+// A rename that fails after the old file has been set aside puts it back, so
+// the name holds the old file rather than nothing.
+func TestRenameAsidePutsTheOldFileBackOnFailure(t *testing.T) {
+	client, root, _ := browseFixture(t)
+	write(t, filepath.Join(root, "to.txt"), "old")
+
+	// A source that is not there is the simplest rename that fails after
+	// the aside step has succeeded.
+	err := renameAside(client.SFTP(), filepath.ToSlash(filepath.Join(root, "missing.txt")),
+		filepath.ToSlash(filepath.Join(root, "to.txt")))
+	if err == nil {
+		t.Fatal("renaming a missing file into place reported success")
+	}
+	got, readErr := os.ReadFile(filepath.Join(root, "to.txt"))
+	if readErr != nil || string(got) != "old" {
+		t.Errorf("after a failed replace, to.txt = %q, %v; want the old file back", got, readErr)
+	}
+	entries, _ := os.ReadDir(root)
+	for _, e := range entries {
+		if IsAsideName(e.Name()) {
+			t.Errorf("the previous copy was left aside: %s", e.Name())
+		}
+	}
+}
+
+func TestAsideNames(t *testing.T) {
+	a, b := asideName("/srv/x.sand"), asideName("/srv/x.sand")
+	if a == b {
+		t.Error("two aside names collided")
+	}
+	if !strings.HasPrefix(a, "/srv/x.sand"+asideInfix) {
+		t.Errorf("aside name %q is not beside the file it was", a)
+	}
+	if !IsAsideName(filepath.Base(a)) || !IsScratchName(filepath.Base(a)) {
+		t.Errorf("%q is not recognised as an aside name", a)
+	}
+	if IsAsideName("x.sand") || IsScratchName("x.sand") {
+		t.Error("an ordinary name was taken for an aside one")
+	}
+	if !IsScratchName(filepath.Base(TempName("/srv"))) {
+		t.Error("a temporary name is not recognised as scratch")
+	}
+}
+
 func TestTempNames(t *testing.T) {
 	a, b := TempName("/srv"), TempName("/srv")
 	if a == b {

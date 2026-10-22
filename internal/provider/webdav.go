@@ -171,6 +171,9 @@ func (p *webdavProvider) mkcolAll(ctx context.Context, key string) error {
 }
 
 func (p *webdavProvider) Put(ctx context.Context, key string, data []byte) error {
+	if err := ValidateKey(key); err != nil {
+		return err
+	}
 	if err := p.mkcolAll(ctx, key); err != nil {
 		return err
 	}
@@ -187,6 +190,9 @@ func (p *webdavProvider) Put(ctx context.Context, key string, data []byte) error
 }
 
 func (p *webdavProvider) Get(ctx context.Context, key string) ([]byte, error) {
+	if err := ValidateKey(key); err != nil {
+		return nil, err
+	}
 	resp, err := p.request(ctx, http.MethodGet, p.objectURL(key), nil)
 	if err != nil {
 		return nil, fmt.Errorf("webdav get: %w", err)
@@ -202,6 +208,9 @@ func (p *webdavProvider) Get(ctx context.Context, key string) ([]byte, error) {
 }
 
 func (p *webdavProvider) Stat(ctx context.Context, key string) (ObjectInfo, error) {
+	if err := ValidateKey(key); err != nil {
+		return ObjectInfo{}, err
+	}
 	resp, err := p.request(ctx, http.MethodHead, p.objectURL(key), nil)
 	if err != nil {
 		return ObjectInfo{}, fmt.Errorf("webdav stat: %w", err)
@@ -217,6 +226,11 @@ func (p *webdavProvider) Stat(ctx context.Context, key string) (ObjectInfo, erro
 }
 
 func (p *webdavProvider) Delete(ctx context.Context, key string) error {
+	// Without this, the empty key is the prefix collection, and a DELETE of
+	// a collection takes everything in it.
+	if err := ValidateKey(key); err != nil {
+		return err
+	}
 	resp, err := p.request(ctx, http.MethodDelete, p.objectURL(key), nil)
 	if err != nil {
 		return fmt.Errorf("webdav delete: %w", err)
@@ -233,17 +247,110 @@ func (p *webdavProvider) Delete(ctx context.Context, key string) error {
 
 // davMultistatus is the subset of a PROPFIND response SAND reads.
 type davMultistatus struct {
-	Responses []struct {
-		Href     string `xml:"href"`
-		Propstat []struct {
-			Prop struct {
-				ContentLength int64 `xml:"getcontentlength"`
-				ResourceType  struct {
-					Collection *struct{} `xml:"collection"`
-				} `xml:"resourcetype"`
-			} `xml:"prop"`
-		} `xml:"propstat"`
-	} `xml:"response"`
+	Responses []davResponse `xml:"response"`
+}
+
+type davResponse struct {
+	Href     string        `xml:"href"`
+	Propstat []davPropstat `xml:"propstat"`
+}
+
+// davPropstat is one group of properties with the status they were answered
+// with. A server that could not supply a property SAND asked for answers it
+// in a 404 group of its own, and RFC 4918 puts no order on the groups — so
+// the properties that were found are in whichever group says 200, not in the
+// first.
+type davPropstat struct {
+	Status string  `xml:"status"`
+	Prop   davProp `xml:"prop"`
+}
+
+type davProp struct {
+	ContentLength int64 `xml:"getcontentlength"`
+	ResourceType  struct {
+		Collection *struct{} `xml:"collection"`
+	} `xml:"resourcetype"`
+}
+
+// found returns the properties the server answered 200 for. A group with no
+// status at all is taken as found, since a server that omits the status has
+// nothing else to put there; a response whose every group is some other
+// status has no properties to read.
+func (r davResponse) found() (davProp, bool) {
+	for _, ps := range r.Propstat {
+		if strings.Contains(" "+ps.Status+" ", " 200 ") {
+			return ps.Prop, true
+		}
+	}
+	for _, ps := range r.Propstat {
+		if strings.TrimSpace(ps.Status) == "" {
+			return ps.Prop, true
+		}
+	}
+	return davProp{}, false
+}
+
+// davPath reduces an href to the decoded path it names. Servers answer with
+// an absolute path or a full URL, percent-encoded either way.
+func davPath(href string) string {
+	href = strings.TrimSpace(href)
+	if strings.Contains(href, "://") {
+		if u, err := url.Parse(href); err == nil {
+			return u.Path
+		}
+	}
+	if decoded, err := url.PathUnescape(href); err == nil {
+		return decoded
+	}
+	return href
+}
+
+// hasPrefixFold is strings.HasPrefix without regard to case.
+func hasPrefixFold(s, prefix string) bool {
+	return len(s) >= len(prefix) && strings.EqualFold(s[:len(prefix)], prefix)
+}
+
+// listedBase is the path the server spells the listed collection with.
+//
+// The hrefs in a listing are the server's, not the client's, and the two
+// differ more often than they agree: Nextcloud answers with the account's
+// canonical user id where the URL had a display name, a proxy in front of a
+// server strips or adds a path segment, and a case-insensitive server shows
+// a folder in whatever casing it was made with. Trimming the configured path
+// off such an href trims nothing, and every key came back as a whole href
+// that no prefix matched — an account listed as empty, with no error to say
+// so, which the orphan scan reads as "nothing to keep".
+//
+// The listing itself says what the base is: a PROPFIND answers for the
+// collection it was made on, and that response is the shortest collection in
+// it. It is taken as the base when it is named what the configured path is
+// named, case aside — a sub-collection cannot pass that test. Failing that
+// the configured path is the base, matched without regard to case.
+func listedBase(responses []davResponse, configured string) string {
+	var best string
+	for _, r := range responses {
+		prop, ok := r.found()
+		if !ok || prop.ResourceType.Collection == nil {
+			continue
+		}
+		path := davPath(r.Href)
+		if !strings.HasSuffix(path, "/") {
+			path += "/"
+		}
+		if best == "" || len(path) < len(best) {
+			best = path
+		}
+	}
+	if best == "" || !strings.EqualFold(lastSegment(best), lastSegment(configured)) {
+		return configured
+	}
+	return best
+}
+
+// lastSegment is the name of the folder a collection path ends in.
+func lastSegment(path string) string {
+	trimmed := strings.TrimSuffix(path, "/")
+	return trimmed[strings.LastIndex(trimmed, "/")+1:]
 }
 
 func (p *webdavProvider) List(ctx context.Context, prefix string) ([]ObjectInfo, error) {
@@ -283,27 +390,28 @@ func (p *webdavProvider) List(ctx context.Context, prefix string) ([]ObjectInfo,
 		return nil, fmt.Errorf("webdav propfind: parsing response: %w", err)
 	}
 
-	basePath := strings.TrimSuffix(p.root.Path, "/") + "/" + p.prefix
+	configured := strings.TrimSuffix(p.root.Path, "/") + "/" + p.prefix
+	base := listedBase(ms.Responses, configured)
+
 	var out []ObjectInfo
 	for _, r := range ms.Responses {
-		if len(r.Propstat) == 0 {
+		prop, ok := r.found()
+		if !ok || prop.ResourceType.Collection != nil {
 			continue
 		}
-		prop := r.Propstat[0].Prop
-		if prop.ResourceType.Collection != nil {
-			continue
+		path := davPath(r.Href)
+		var key string
+		switch {
+		case hasPrefixFold(path, base):
+			key = path[len(base):]
+		case hasPrefixFold(path, configured):
+			key = path[len(configured):]
+		default:
+			// A listing is complete or it is an error. An entry that cannot
+			// be related to the folder is not one to drop quietly: dropped,
+			// it is a part the orphan scan would take for gone.
+			return nil, fmt.Errorf("webdav propfind: %s is not under %s", path, base)
 		}
-		href, err := url.PathUnescape(r.Href)
-		if err != nil {
-			href = r.Href
-		}
-		// Servers return either an absolute path or a full URL.
-		if idx := strings.Index(href, "://"); idx >= 0 {
-			if hu, err := url.Parse(href); err == nil {
-				href = hu.Path
-			}
-		}
-		key := strings.TrimPrefix(href, basePath)
 		if key == "" || !strings.HasPrefix(key, prefix) {
 			continue
 		}

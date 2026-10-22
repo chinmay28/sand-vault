@@ -188,6 +188,11 @@ func TestSFTPList(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "parts", "one", ".sand-tmp-abcd"), []byte("half"), 0600); err != nil {
 		t.Fatalf("planting a temp file: %v", err)
 	}
+	// Nor is the previous copy an interrupted overwrite set aside and did
+	// not get to remove — see sftp.RenameOver.
+	if err := os.WriteFile(filepath.Join(root, "parts", "one", "a.shard.sand-old-abcd"), []byte("old"), 0600); err != nil {
+		t.Fatalf("planting an aside file: %v", err)
+	}
 	after, err := p.List(ctx, "")
 	if err != nil {
 		t.Fatalf("list after planting a temp file: %v", err)
@@ -196,6 +201,12 @@ func TestSFTPList(t *testing.T) {
 		if strings.Contains(o.Key, ".sand-tmp-") {
 			t.Errorf("list returned a half-written shard: %s", o.Key)
 		}
+		if strings.Contains(o.Key, ".sand-old-") {
+			t.Errorf("list returned a previous copy set aside: %s", o.Key)
+		}
+	}
+	if len(after) != len(keys) {
+		t.Errorf("list returned %d objects after planting scratch files, want %d", len(after), len(keys))
 	}
 }
 

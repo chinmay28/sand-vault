@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/crypto"
 	"github.com/chinmay28/sand-vault/internal/movie"
 	"github.com/chinmay28/sand-vault/internal/provider"
 	"github.com/google/uuid"
@@ -201,37 +200,56 @@ func (v *Vault) manifestsLocked() map[Scope]*Manifest {
 // Persisting
 // ---------------------------------------------------------------------------
 
-// resealSubVaultsLocked writes every open sub vault back into the store file
-// and refreshes the metadata the main vault keeps about it.
+// resealSubVaultsLocked writes every open sub vault's record into staged —
+// the copy of the store persistLocked is about to write — and refreshes the
+// metadata the main vault keeps about it. It returns, per sub vault, the
+// retired keys the reseal left out, which persistLocked wipes once the write
+// has landed or puts back if it has not (see keyPrune).
 //
 // Locked sub vaults are the interesting case: their records are simply left
 // where they are. That is the whole mechanism by which a sub vault survives a
 // main password change, a file being uploaded next to it, or a year of the main
 // vault being used without it ever being opened.
-func (v *Vault) resealSubVaultsLocked(now time.Time) error {
+func (v *Vault) resealSubVaultsLocked(now time.Time, staged *storeFile) (map[*subVault]map[string][]byte, error) {
 	if len(v.subs) == 0 {
-		return nil
+		return nil, nil
 	}
 
+	// A copy, so that a write that fails leaves v.store's records as they were.
+	staged.SubVaults = append([]subVaultRecord(nil), v.store.SubVaults...)
+
+	// A generation some transfer is still writing parts under is in use
+	// whichever vault it belongs to — see holdDataKeyLocked.
+	inFlight := v.keysInFlightLocked()
+	var pruned map[*subVault]map[string][]byte
 	for id, sub := range v.subs {
 		sub.manifest.UpdatedAt = now
-		sub.pruneRetiredKeys(v.keyIDsNamedOutsideLocked(Scope(id)))
+		lent := v.keyIDsNamedOutsideLocked(Scope(id))
+		for keyID := range inFlight {
+			lent[keyID] = true
+		}
+		if dropped := sub.pruneRetiredKeys(lent); dropped != nil {
+			if pruned == nil {
+				pruned = map[*subVault]map[string][]byte{}
+			}
+			pruned[sub] = dropped
+		}
 
 		rec, err := sub.record()
 		if err != nil {
-			return fmt.Errorf("sealing the sub vault %s: %w", v.subVaultLabelLocked(id), err)
+			return pruned, fmt.Errorf("sealing the sub vault %s: %w", v.subVaultLabelLocked(id), err)
 		}
 
 		replaced := false
-		for i := range v.store.SubVaults {
-			if v.store.SubVaults[i].ID == id {
-				v.store.SubVaults[i] = rec
+		for i := range staged.SubVaults {
+			if staged.SubVaults[i].ID == id {
+				staged.SubVaults[i] = rec
 				replaced = true
 				break
 			}
 		}
 		if !replaced {
-			v.store.SubVaults = append(v.store.SubVaults, rec)
+			staged.SubVaults = append(staged.SubVaults, rec)
 		}
 
 		if meta := v.manifest.SubVaultByID(id); meta != nil {
@@ -239,7 +257,7 @@ func (v *Vault) resealSubVaultsLocked(now time.Time) error {
 			meta.BorrowedKeys = sub.borrowedKeyIDs()
 		}
 	}
-	return nil
+	return pruned, nil
 }
 
 // borrowedKeyIDs lists the key generations this sub vault's index names that
@@ -325,19 +343,22 @@ func (v *Vault) keyIDsNamedOutsideLocked(scope Scope) map[string]bool {
 	return named
 }
 
-// pruneRetiredKeys drops the sub vault's own key generations that nothing in
-// its index names any more. It mirrors the main vault's pruning and is scoped
-// the same way: only an open sub vault's keys are considered, because only an
-// open sub vault can be asked what it still refers to.
+// pruneRetiredKeys takes the sub vault's own key generations that nothing in
+// its index names any more out of the retired map and returns them, unwiped:
+// the caller zeroes them once the write that leaves them out has landed, and
+// puts them back if it has not — see keyPrune. It mirrors the main vault's
+// pruning and is scoped the same way: only an open sub vault's keys are
+// considered, because only an open sub vault can be asked what it still
+// refers to.
 //
 // lent is what the other vaults still point at — see keyIDsNamedOutsideLocked.
 // A file assigned out of this sub vault keeps its generation until the
 // re-encryption behind the move finishes, and this record holds the only copy
 // of that key, so pruning it on the strength of this index alone would erase
 // a file the main vault still lists.
-func (s *subVault) pruneRetiredKeys(lent map[string]bool) {
+func (s *subVault) pruneRetiredKeys(lent map[string]bool) map[string][]byte {
 	if len(s.retired) == 0 {
-		return
+		return nil
 	}
 	inUse := make(map[string]bool, len(s.manifest.Entries))
 	for _, e := range s.manifest.Entries {
@@ -348,12 +369,17 @@ func (s *subVault) pruneRetiredKeys(lent map[string]bool) {
 			inUse[pack.KeyID] = true
 		}
 	}
+	var dropped map[string][]byte
 	for id, key := range s.retired {
 		if !inUse[id] && !lent[id] {
-			crypto.ZeroBytes(key)
+			if dropped == nil {
+				dropped = map[string][]byte{}
+			}
+			dropped[id] = key
 			delete(s.retired, id)
 		}
 	}
+	return dropped
 }
 
 // ---------------------------------------------------------------------------
@@ -1048,7 +1074,12 @@ func (v *Vault) ChangeSubVaultPassword(ctx context.Context, id, oldPassword, new
 	// holds, and nothing in this index names it any more. It is carried across
 	// the password change all the same — dropping it here would erase the only
 	// copy of the key while the main vault still lists the file.
+	// And so is a generation an upload into this sub vault copied out and is
+	// still sealing parts under: the commit will name it — see holdDataKeyLocked.
 	lent := v.keyIDsNamedOutsideLocked(Scope(id))
+	for keyID := range v.keysInFlightLocked() {
+		lent[keyID] = true
+	}
 	carry := func(keyID string, key []byte) {
 		if _, done := next.retired[keyID]; done {
 			return

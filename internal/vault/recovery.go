@@ -400,6 +400,30 @@ func (v *Vault) Recover(ctx context.Context, snapshot *Snapshot, dryRun bool) (*
 	// records they describe. Without them the recovered vault would hold the
 	// ciphertext and have nothing to call it.
 	recovered.SubVaults = append([]*SubVaultMeta(nil), snapshot.Manifest.SubVaults...)
+	// The rest of what the index says about its files and folders comes back
+	// too. Every one of these is keyed by a path or a file ID, and both
+	// survive a recovery unchanged — it is the account IDs that do not. Left
+	// out, a recovered vault would forget which folders hold films, what the
+	// films are, which files mirror a repository, the pictures folders wear,
+	// the standing instructions folders were given, and which folders were to
+	// be replicated — silently, and with nothing to say they were ever set.
+	recovered.Movies = snapshot.Manifest.Movies
+	recovered.MovieFolders = snapshot.Manifest.MovieFolders
+	recovered.Automations = snapshot.Manifest.Automations
+	recovered.Repos = snapshot.Manifest.Repos
+	recovered.FolderArt = snapshot.Manifest.FolderArt
+	recovered.ReplicatedFolders = snapshot.Manifest.ReplicatedFolders
+	// Not the replication policy, though: it names the accounts replicas go
+	// to by the IDs of the vault that was lost, and the reconnected ones do
+	// not carry them. It is set again by hand, like Entry.Replica — dropped
+	// below for the same reason — is re-made by the worker. The re-encryption
+	// plan is carried: it names folders, and the files it was moving are
+	// still on the keys it was moving them off (persistLocked drops it the
+	// moment nothing is).
+	recovered.Rekey = snapshot.Manifest.Rekey
+	// Thumbnail packs are not: their parts would need the same remapping the
+	// entries get, and a thumbnail is a picture the browser draws again from
+	// a file that is itself recovered.
 	report := &RecoveryReport{Warnings: warnings}
 	absent := newAbsentAccounts(snapshot)
 
@@ -802,18 +826,60 @@ func (a *absentAccounts) list() []MissingAccount {
 }
 
 // snapshotRetiredKeys decodes the generations a snapshot carries beyond its
-// current one, keeping only those its own manifest still points at.
+// current one, keeping every one that something in it still points at.
+//
+// A main entry is the obvious pointer, and the only one that is demanded: a
+// snapshot that describes a file under a key it does not carry is a snapshot
+// nothing can recover that file from, and saying so beats baking it in. The
+// others are kept when the snapshot has them and let go when it does not. A
+// sub vault's borrowed-key list names the main generation a file assigned
+// into it is still sealed under, and that list is the only thing outside
+// the sealed section that knows: a recovery that dropped the key would hand
+// back a sub vault whose file opens for nobody, and would do it without a
+// word, because the index that names the file cannot be read here. A
+// thumbnail pack and a replica name the generation of the day they were
+// made, and are derived data when the key is gone.
+//
+// A key a sealed sub vault record advertises is that sub vault's, sealed
+// under its own password; a main entry naming one was assigned out of it and
+// not yet re-encrypted, and the record carries the key across exactly as it
+// is. Such an entry is not demanded of the snapshot's own keys — the same
+// allowance retainedKeys makes when the password changes.
 func snapshotRetiredKeys(snapshot *Snapshot) (map[string][]byte, error) {
+	elsewhere := map[string]bool{}
+	for _, rec := range snapshot.SubVaults {
+		for _, id := range rec.keyIDs() {
+			elsewhere[id] = true
+		}
+	}
+
 	needed := map[string]bool{}
+	wanted := map[string]bool{}
 	for _, e := range snapshot.Manifest.Entries {
-		if e.KeyID != snapshot.KeyID {
+		if e.KeyID != snapshot.KeyID && !elsewhere[e.KeyID] {
 			needed[e.KeyID] = true
+		}
+		if e.Replica != nil {
+			wanted[e.Replica.KeyID] = true
+		}
+	}
+	for _, pack := range snapshot.Manifest.Thumbs {
+		if pack != nil {
+			wanted[pack.KeyID] = true
+		}
+	}
+	for _, meta := range snapshot.Manifest.SubVaults {
+		if meta == nil {
+			continue
+		}
+		for _, id := range meta.BorrowedKeys {
+			wanted[id] = true
 		}
 	}
 
 	retired := map[string][]byte{}
 	for _, k := range snapshot.Keys {
-		if !needed[k.ID] {
+		if k.ID == snapshot.KeyID || (!needed[k.ID] && !wanted[k.ID]) {
 			continue
 		}
 		key, err := base64.StdEncoding.DecodeString(k.Key)

@@ -211,6 +211,19 @@ func (v *Vault) importSnapshot(ctx context.Context, snapshot *Snapshot, provider
 		}
 	}
 
+	// What the index says about its files and folders beyond the files
+	// themselves comes along: which folders hold films and what the films
+	// are, the folders' pictures, the standing instructions, the mirrored
+	// repositories. All keyed by path or file ID, which an import keeps. The
+	// vault's sub-vault list, its replication policy and its re-encryption
+	// plan are the main vault's alone and have no place inside a sub vault;
+	// the sub vaults it held become siblings below.
+	imported.Movies = snapshot.Manifest.Movies
+	imported.MovieFolders = snapshot.Manifest.MovieFolders
+	imported.Automations = snapshot.Manifest.Automations
+	imported.Repos = snapshot.Manifest.Repos
+	imported.FolderArt = snapshot.Manifest.FolderArt
+
 	folders := map[string]bool{}
 	for _, f := range imported.Folders {
 		folders[f] = true
@@ -254,10 +267,23 @@ func (v *Vault) importSnapshot(ctx context.Context, snapshot *Snapshot, provider
 	v.manifest.SubVaults = append(v.manifest.SubVaults, meta)
 	v.subs[id] = sub
 
+	// A vault can itself have held sub vaults, and their sealed records travel
+	// in the snapshot. They cannot be nested inside the one just made — nothing
+	// here can open them, so there is nowhere to put them — so they land as
+	// siblings, named after where they came from. Dropping them instead would
+	// lose, silently, exactly the files the person had been most careful with.
+	//
+	// In the same write as the import, not one of their own afterwards. The
+	// write prunes the imported sub vault's retired keys down to what is
+	// still named, and a key one of these lent a file to is named only by
+	// its borrowed-key list — which has to be in the index before the first
+	// write, or the key is gone by the time it arrives.
+	nested, nestedWarnings := v.stageNestedSubVaultsLocked(snapshot, label)
+
 	err = v.persistLocked()
 	if err != nil {
-		v.store.SubVaults = v.store.SubVaults[:len(v.store.SubVaults)-1]
-		v.manifest.SubVaults = v.manifest.SubVaults[:len(v.manifest.SubVaults)-1]
+		v.store.SubVaults = v.store.SubVaults[:len(v.store.SubVaults)-1-nested]
+		v.manifest.SubVaults = v.manifest.SubVaults[:len(v.manifest.SubVaults)-1-nested]
 		delete(v.subs, id)
 		sub.zero()
 	}
@@ -268,13 +294,12 @@ func (v *Vault) importSnapshot(ctx context.Context, snapshot *Snapshot, provider
 
 	report.SubVault = SubVaultInfo{ID: id, Label: label, CreatedAt: meta.CreatedAt, Unlocked: true}
 	report.SubVault.Files = report.Files
-
-	// A vault can itself have held sub vaults, and their sealed records travel
-	// in the snapshot. They cannot be nested inside the one just made — nothing
-	// here can open them, so there is nowhere to put them — so they land as
-	// siblings, named after where they came from. Dropping them instead would
-	// lose, silently, exactly the files the person had been most careful with.
-	report.Warnings = append(report.Warnings, v.adoptNestedSubVaults(snapshot, label)...)
+	report.Warnings = append(report.Warnings, nestedWarnings...)
+	if nested > 0 {
+		report.Warnings = append(report.Warnings, fmt.Sprintf(
+			"%s held %d sub vault(s) of its own; they were brought in beside it and still answer to "+
+				"their own passwords", label, nested))
+	}
 
 	if opts.AdoptBackup {
 		// The account holds a backup this vault has now taken responsibility
@@ -382,16 +407,19 @@ func (v *Vault) DiscardFoundVault(ctx context.Context, providerID string) (*Disc
 	return &DiscardReport{Account: cfg.Name, Claimed: v.BackupEnabled()}, nil
 }
 
-// adoptNestedSubVaults brings the sub vaults of an imported vault in as sub
-// vaults of this one, since they cannot be nested inside the one just created.
+// stageNestedSubVaultsLocked brings the sub vaults of an imported vault in as
+// sub vaults of this one, since they cannot be nested inside the one just
+// created. It appends their records and metadata and returns how many it
+// added, for the caller to write — or to truncate off again if the write
+// fails. The caller must hold the write lock.
 //
 // Their records are adopted exactly as they sit — this vault cannot open them
 // and does not need to. Each keeps its own password, which is the one it always
 // had, and each is named for the vault it arrived with so a list of six does not
 // read as six strangers.
-func (v *Vault) adoptNestedSubVaults(snapshot *Snapshot, parentLabel string) []string {
+func (v *Vault) stageNestedSubVaultsLocked(snapshot *Snapshot, parentLabel string) (int, []string) {
 	if len(snapshot.SubVaults) == 0 {
-		return nil
+		return 0, nil
 	}
 
 	labels := map[string]string{}
@@ -404,12 +432,6 @@ func (v *Vault) adoptNestedSubVaults(snapshot *Snapshot, parentLabel string) []s
 	}
 
 	var warnings []string
-
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	if v.dataKey == nil {
-		return []string{"the vault was locked before the imported vault's own sub vaults could be brought in"}
-	}
 
 	taken := map[string]bool{}
 	for _, meta := range v.manifest.SubVaults {
@@ -443,23 +465,17 @@ func (v *Vault) adoptNestedSubVaults(snapshot *Snapshot, parentLabel string) []s
 			if original := snapshot.Manifest.SubVaultByID(rec.ID); original != nil {
 				meta.CreatedAt = original.CreatedAt
 				meta.Inventory = original.Inventory
+				// The generations of the vault that is being imported that
+				// this sub vault's files are still sealed under. The imported
+				// vault's keys are now the new sub vault's retired keys, and
+				// this list is what stops it pruning them while a shut sibling
+				// still needs one.
+				meta.BorrowedKeys = append([]string(nil), original.BorrowedKeys...)
 			}
 		}
 		v.store.SubVaults = append(v.store.SubVaults, rec)
 		v.manifest.SubVaults = append(v.manifest.SubVaults, meta)
 		added++
 	}
-
-	if added == 0 {
-		return warnings
-	}
-	if err := v.persistLocked(); err != nil {
-		v.store.SubVaults = v.store.SubVaults[:len(v.store.SubVaults)-added]
-		v.manifest.SubVaults = v.manifest.SubVaults[:len(v.manifest.SubVaults)-added]
-		return append(warnings, fmt.Sprintf(
-			"the sub vaults inside %s could not be brought in: %v", parentLabel, err))
-	}
-	return append(warnings, fmt.Sprintf(
-		"%s held %d sub vault(s) of its own; they were brought in beside it and still answer to "+
-			"their own passwords", parentLabel, added))
+	return added, warnings
 }

@@ -210,6 +210,18 @@ type RekeyStatus struct {
 	// Deferred lists the pending files that have been left for last.
 	Deferred []RekeyFile `json:"deferred,omitempty"`
 
+	// Held counts the pending files the plan is leaving where they are
+	// because an account holding a part of them did not answer its last
+	// health check, and HeldOn names those accounts. A re-encryption writes
+	// a file back to every account it is on and refuses to commit one that
+	// came out a part short (migrateFile), so trying such a file is a
+	// download and an upload spent to be told no; the plan waits for the
+	// account instead, and this is how the wait is explained. Both empty
+	// when nothing is held, so a status from before they existed reads the
+	// same.
+	Held   int      `json:"held,omitempty"`
+	HeldOn []string `json:"held_on,omitempty"`
+
 	// Warnings are the files the plan could not move lately, with why. They
 	// are retried after a while; this is so the reason is visible meanwhile.
 	Warnings []string `json:"warnings,omitempty"`
@@ -413,6 +425,8 @@ func (v *Vault) pruneRekeyPlanLocked() {
 // RekeyStatus reports where the main vault's re-encryption stands.
 func (v *Vault) RekeyStatus() (*RekeyStatus, error) {
 	now := time.Now().UTC()
+	// Before the index lock, never under it: see unreachableAccounts.
+	down := v.unreachableAccounts()
 
 	v.mu.RLock()
 	defer v.mu.RUnlock()
@@ -456,8 +470,17 @@ func (v *Vault) RekeyStatus() (*RekeyStatus, error) {
 			if eta := meter.ETA(now, allowed); eta > 0 {
 				status.ETASeconds = int64(eta.Seconds() + 0.5)
 			}
-			_, idle := v.nextRekeyLocked(now)
+			_, idle := v.nextRekeyLocked(now, down)
 			status.Idle = idle
+			for id, files := range v.heldByUnreachableLocked(down) {
+				status.Held += files
+				name := id
+				if cfg, ok := v.configForLocked(id); ok {
+					name = cfg.Name
+				}
+				status.HeldOn = append(status.HeldOn, name)
+			}
+			sort.Strings(status.HeldOn)
 		}
 	}
 
@@ -480,7 +503,46 @@ func (v *Vault) RekeyStatus() (*RekeyStatus, error) {
 	status.Running = v.rekey.current != ""
 	status.Warnings = append([]string(nil), v.rekey.warnings...)
 	v.rekeyMu.Unlock()
+
+	// Said in Warnings as well as in its own fields, so that whatever shows
+	// the warnings today shows why nothing is moving without being taught
+	// the new fields first.
+	if status.Held > 0 {
+		noun := "files are"
+		if status.Held == 1 {
+			noun = "file is"
+		}
+		status.Warnings = append(status.Warnings, fmt.Sprintf(
+			"%d %s waiting for %s, which did not answer the last health check — "+
+				"a re-encryption has to write a file back to every account it is on",
+			status.Held, noun, strings.Join(status.HeldOn, ", ")))
+	}
 	return status, nil
+}
+
+// unreachableAccounts is the set of connected accounts whose last health check
+// failed, by ID. An account nothing has asked yet is not in it: "we have not
+// looked" is not a reason to hold a file back.
+//
+// It takes healthMu on its own and must be called before the index lock, not
+// under it — healthMu is a leaf the ping paths write to, and the rule that
+// keeps it from deadlocking against the index is that nothing holds mu while
+// asking for it. The answer is a snapshot, which is all a decision about
+// which file to move next needs.
+func (v *Vault) unreachableAccounts() map[string]bool {
+	v.healthMu.Lock()
+	defer v.healthMu.Unlock()
+
+	var down map[string]bool
+	for id, one := range v.healthSeen {
+		if one.Checked && !one.Healthy {
+			if down == nil {
+				down = map[string]bool{}
+			}
+			down[id] = true
+		}
+	}
+	return down
 }
 
 // moveTracked moves one file with the move on record — which file, how far
@@ -689,9 +751,21 @@ func (v *Vault) rekeyFoldersLocked() []RekeyFolder {
 //
 // idle is true when nothing the plan allows is left, which with files still
 // pending means the plan stopped at its folders. Files the plan has lately
-// failed on are passed over until their time comes round. The caller holds at
-// least the read lock.
-func (v *Vault) nextRekeyLocked(now time.Time) (entry *Entry, idle bool) {
+// failed on are passed over until their time comes round.
+//
+// down is the accounts whose last health check failed (unreachableAccounts,
+// taken before the lock). A file with a part on one of them is passed over
+// too: re-encrypting writes a file back to every account it is on and refuses
+// to commit one that came out a part short (migrateFile), so trying such a
+// file while the account is down is a download and an upload spent on a
+// refusal — and, worse, an hour's skip per file, which on a vault of thousands
+// meant a drive unplugged for the afternoon left the plan nibbling at one
+// failure a minute for days. The files wait for the account instead, and move
+// the moment a check finds it back. An account nobody has checked is not held
+// against a file. heldByUnreachableLocked counts what is waiting this way.
+//
+// The caller holds at least the read lock.
+func (v *Vault) nextRekeyLocked(now time.Time, down map[string]bool) (entry *Entry, idle bool) {
 	plan := v.manifest.Rekey
 	if plan == nil {
 		return nil, true
@@ -720,7 +794,7 @@ func (v *Vault) nextRekeyLocked(now time.Time) (entry *Entry, idle bool) {
 				continue
 			}
 			any = true
-			if skip[e.ID] {
+			if skip[e.ID] || heldBy(e, down) != "" {
 				continue
 			}
 			if best == nil || e.Size < best.Size || (e.Size == best.Size && e.Path() < best.Path()) {
@@ -749,6 +823,43 @@ func (v *Vault) nextRekeyLocked(now time.Time) (entry *Entry, idle bool) {
 		waiting = waiting || any
 	}
 	return nil, !waiting
+}
+
+// heldBy is the first of the unreachable accounts a file has a part on, or ""
+// when every account holding it answered its last check.
+func heldBy(e *Entry, down map[string]bool) string {
+	if len(down) == 0 {
+		return ""
+	}
+	for _, s := range e.Shards {
+		if down[s.ProviderID] {
+			return s.ProviderID
+		}
+	}
+	return ""
+}
+
+// heldByUnreachableLocked counts the pending files nextRekeyLocked is holding
+// back for an account that did not answer, by account ID — each file once,
+// under the first such account it is on, so the counts sum to files rather
+// than parts. The caller holds at least the read lock.
+func (v *Vault) heldByUnreachableLocked(down map[string]bool) map[string]int {
+	if len(down) == 0 || v.manifest.Rekey == nil {
+		return nil
+	}
+	var held map[string]int
+	for _, e := range v.manifest.Entries {
+		if e.KeyID == v.dataKeyID {
+			continue
+		}
+		if id := heldBy(e, down); id != "" {
+			if held == nil {
+				held = map[string]int{}
+			}
+			held[id]++
+		}
+	}
+	return held
 }
 
 // RekeyStep is what one paced step came to.
@@ -789,6 +900,9 @@ func (v *Vault) RekeyStep(ctx context.Context, now time.Time) (RekeyStep, error)
 	}
 	defer v.migrateMu.Unlock()
 
+	// Before the index lock, never under it: see unreachableAccounts.
+	down := v.unreachableAccounts()
+
 	v.mu.Lock()
 	if v.dataKey == nil {
 		v.mu.Unlock()
@@ -799,15 +913,22 @@ func (v *Vault) RekeyStep(ctx context.Context, now time.Time) (RekeyStep, error)
 		v.mu.Unlock()
 		return RekeyStep{Idle: true}, nil
 	}
-	entry, idle := v.nextRekeyLocked(now)
+	entry, idle := v.nextRekeyLocked(now, down)
 	if idle {
 		v.mu.Unlock()
 		return RekeyStep{Idle: true}, nil
 	}
 	if entry == nil {
-		// Everything left is being left alone for now.
+		// Everything left is being left alone for now. A file waiting on an
+		// account that did not answer is picked up by the health check that
+		// finds the account back, which runs at least every MinHealthInterval,
+		// so that is the longest worth waiting between looks.
+		wait := rekeyRetryAfter / 4
+		if len(v.heldByUnreachableLocked(down)) > 0 {
+			wait = MinHealthInterval
+		}
 		v.mu.Unlock()
-		return RekeyStep{Wait: rekeyRetryAfter / 4}, nil
+		return RekeyStep{Wait: wait}, nil
 	}
 	meter := plan.pacer()
 	ready, wait := meter.Ready(now)

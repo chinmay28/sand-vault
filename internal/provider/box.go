@@ -237,27 +237,40 @@ func (p *boxProvider) folderByConflict(resp *http.Response) (string, error) {
 	return id, nil
 }
 
-// listFolder returns every item in a folder, following Box's offset paging.
+// listFolder returns every item in a folder, following Box's marker paging.
+//
+// Marker paging rather than offset paging, because Box refuses an offset
+// past 10,000 — and a folder of parts passes that at a few hundred files of
+// a few dozen parts each. With offsets, every operation on such an account
+// failed at the eleventh page: the key lookup behind Get, Stat and Delete
+// is a folder listing, so nothing worked. A marker is the service's own
+// cursor and has no ceiling.
 func (p *boxProvider) listFolder(ctx context.Context, folderID string) ([]boxItem, error) {
 	var out []boxItem
-	offset := 0
+	marker := ""
 
 	for {
 		var page struct {
 			Entries    []boxItem `json:"entries"`
-			TotalCount int       `json:"total_count"`
+			NextMarker string    `json:"next_marker"`
 		}
-		addr := fmt.Sprintf("%s/folders/%s/items?fields=name,size,type&limit=1000&offset=%d",
-			boxAPI, url.PathEscape(folderID), offset)
+		params := url.Values{}
+		params.Set("fields", "name,size,type")
+		params.Set("limit", "1000")
+		params.Set("usemarker", "true")
+		if marker != "" {
+			params.Set("marker", marker)
+		}
+		addr := fmt.Sprintf("%s/folders/%s/items?%s", boxAPI, url.PathEscape(folderID), params.Encode())
 		if err := p.getJSON(ctx, "box list", addr, &page); err != nil {
 			return nil, err
 		}
 		out = append(out, page.Entries...)
 
-		offset += len(page.Entries)
-		if len(page.Entries) == 0 || offset >= page.TotalCount {
+		if page.NextMarker == "" || len(page.Entries) == 0 {
 			return out, nil
 		}
+		marker = page.NextMarker
 	}
 }
 

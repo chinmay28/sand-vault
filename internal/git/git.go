@@ -293,6 +293,84 @@ func ParseRemote(raw string) (Remote, error) {
 // to a branch that is already in the list — keeping it would make every stored
 // repository differ from its own upstream for ever, and turn the cheap weekly
 // check into a full fetch every time.
+// RepositoryGone reports whether err is the remote saying, in so many words,
+// that there is no repository to be had at that address for this caller: it
+// does not exist, it has been renamed or deleted, or the credentials this
+// machine holds are no longer good enough to see it.
+//
+// It is the question a prune has to ask before it may act, and it is answered
+// from git's own wording because that is all there is: git folds every outcome
+// of ls-remote into one exit status. The phrases are the ones git, GitHub,
+// GitLab and the smart-HTTP and ssh transports have used for years; a line that
+// matches none of them is not treated as gone, because the cost of the two
+// mistakes is nothing alike. Reading "gone" too readily deletes the last copy
+// of somebody's repository; reading it too rarely keeps a bundle a while
+// longer.
+//
+// A context error is never gone, however it is worded: it is the caller's own
+// deadline or cancellation, and says nothing about the remote. Nor is anything
+// that reads as the network rather than the remote — a name that would not
+// resolve, a connection refused or reset, a timeout, a server error.
+func RepositoryGone(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, phrase := range transientPhrases {
+		if strings.Contains(msg, phrase) {
+			return false
+		}
+	}
+	for _, phrase := range gonePhrases {
+		if strings.Contains(msg, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+// gonePhrases are the remote's ways of saying there is nothing here for you.
+// Lower case, matched as substrings of the last line git printed.
+var gonePhrases = []string{
+	"not found",          // "fatal: repository 'https://…' not found", "remote: Repository not found."
+	"does not exist",     // GitLab: "The project you were looking for could not be found or you don't have permission"; Gitea
+	"could not be found", // GitLab
+	"does not appear to be a git repository",
+	"could not read username", // smart HTTP wanting credentials this build will never prompt for
+	"could not read password",
+	"authentication failed",
+	"permission denied", // "Permission denied (publickey)", ssh
+	"access denied",
+	"returned error: 401",
+	"returned error: 403",
+	"returned error: 404",
+	"returned error: 410",
+}
+
+// transientPhrases are the network's ways of failing, checked first because a
+// line can carry both — "unable to access '…': Could not resolve host" names
+// the URL git could not reach, and the URL is not the verdict.
+var transientPhrases = []string{
+	"could not resolve host",
+	"could not resolve hostname",
+	"connection refused",
+	"connection reset",
+	"connection timed out",
+	"timed out",
+	"operation timed out",
+	"network is unreachable",
+	"no route to host",
+	"temporary failure",
+	"returned error: 5",
+	"remote end hung up",
+	"early eof",
+	"rpc failed",
+	"ssl",
+	"tls",
+	"context deadline exceeded",
+	"context canceled",
+}
+
 func LsRemote(ctx context.Context, remote Remote) ([]Ref, error) {
 	out, err := run(ctx, "", "ls-remote", "--quiet", "--", remote.url)
 	if err != nil {

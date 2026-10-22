@@ -211,14 +211,26 @@ func (v *Vault) scanForStaleVersions(ctx context.Context) (*VersionScan, map[str
 		return nil, nil, ErrLocked
 	}
 	owned := v.ownedArchivesLocked()
+	// Under the same lock, for the reason scanForOrphans gives: an archive
+	// being written is owned by somebody, whichever of the two reads sees it.
+	v.noteInFlight(owned)
 	configs := append([]provider.Config(nil), v.providers...)
 	vaultKey := append([]byte(nil), v.vaultKey...)
 	v.mu.RUnlock()
 	defer crypto.ZeroBytes(vaultKey)
 
-	owns := func(archiveID string) bool {
-		_, ok := owned[archiveID]
-		return ok
+	// An archive being written (see inflight.go) is in owned with no accounts,
+	// so it reads as owned elsewhere: not abandoned, and nothing held on a
+	// guess about where its parts will land.
+	owns := func(archiveID, providerID string) ownership {
+		row, ok := owned[archiveID]
+		switch {
+		case !ok:
+			return ownsNowhere
+		case row.accounts[providerID]:
+			return ownsHere
+		}
+		return ownsElsewhere
 	}
 
 	scan := &VersionScan{Accounts: []VersionAccount{}, Items: []VersionKey{}}
@@ -284,7 +296,7 @@ func (v *Vault) scanForStaleVersions(ctx context.Context) (*VersionScan, map[str
 func (v *Vault) scanAccountForStaleVersions(
 	ctx context.Context,
 	cfg provider.Config,
-	owns func(archiveID string) bool,
+	owns func(archiveID, providerID string) ownership,
 	vaultKey []byte,
 ) (VersionAccount, []VersionKey, doomedVersions) {
 	account := VersionAccount{
@@ -322,6 +334,23 @@ func (v *Vault) scanAccountForStaleVersions(
 	return account, rows, doomed
 }
 
+// ownership is what the index says about one archive on one account.
+type ownership int
+
+const (
+	// ownsNowhere: no index, open or locked, and nothing in flight, names the
+	// archive. Its parts belong to a deleted file.
+	ownsNowhere ownership = iota
+	// ownsElsewhere: the index names the archive, but records none of its
+	// parts on this account. A relocation moved them, or they were never
+	// here, or they are being written and nothing is recorded yet.
+	ownsElsewhere
+	// ownsHere: the index records a part of the archive on this account, so a
+	// current version that is a delete marker means the only copies are the
+	// versions underneath.
+	ownsHere
+)
+
 // classifyVersions sorts one account's versions into current, stale and
 // somebody else's, fills in the account's counts, and says which of the stale
 // ones may go. It is the whole of the decision, kept free of I/O so it can be
@@ -329,10 +358,17 @@ func (v *Vault) scanAccountForStaleVersions(
 //
 // hold, when set, is why nothing on this account may be erased; every row is
 // still reported, with that reason attached.
+//
+// owns answers for one archive on one account — this one — because the hold
+// on a marker-topped part is only right when the index records that part
+// here. A part SAND itself moved off this account during a relocation leaves
+// a marker over its old versions too, and the index still owns the archive,
+// on the accounts it moved to; holding those versions "because the index
+// points at this part" would hold them forever.
 func classifyVersions(
 	account *VersionAccount,
 	versions []provider.ObjectVersion,
-	owns func(archiveID string) bool,
+	owns func(archiveID, providerID string) ownership,
 	hold string,
 ) ([]VersionKey, doomedVersions) {
 	byKey := map[string][]provider.ObjectVersion{}
@@ -400,16 +436,22 @@ func classifyVersions(
 		}
 
 		deleted := latest != nil && latest.DeleteMarker
+		owner := ownsNowhere
+		if part {
+			owner = owns(archiveID, account.ProviderID)
+		}
 		switch {
 		case key == BackupKey:
 			row.What = "the index backup"
 		case latest == nil:
 			row.What = "a part"
-		case deleted && owns(archiveID):
+		case deleted && owner == ownsHere:
 			row.What = "a part of a stored file, deleted by something other than SAND"
+		case deleted && owner == ownsElsewhere:
+			row.What = "a part of a stored file, moved off this account"
 		case deleted:
 			row.What = "a part of a deleted file"
-		case owns(archiveID):
+		case owner != ownsNowhere:
 			row.What = "a part of a stored file"
 		default:
 			row.What = "a part no file points at"
@@ -424,10 +466,18 @@ func classifyVersions(
 			// and a guess is not what this is for.
 			row.Deletable, row.Reason = false,
 				fmt.Sprintf("%s did not say which version of it is current", account.Name)
-		case deleted && part && owns(archiveID):
+		case deleted && owner == ownsHere:
 			row.Deletable, row.Reason = false,
 				"the index still points at this part and its current version is a delete marker, "+
 					"so the versions beneath it are the only copies left"
+		case deleted && key == BackupKey:
+			// The same hold for the index itself. A marker over the backup
+			// means something other than SAND deleted this vault's copy of
+			// its own index from the account, and the versions beneath are
+			// the only copies of it here — the thing a recovery reads.
+			row.Deletable, row.Reason = false,
+				"the current version of the index backup is a delete marker, so the versions "+
+					"beneath it are the only copies of this vault's index on the account"
 		}
 
 		account.Stale += row.Versions + row.Markers
@@ -614,7 +664,14 @@ func (v *Vault) eraseVersions(
 		return 0, 0, 0, []string{fmt.Sprintf("%s stopped keeping versions mid-sweep", cfg.Name)}
 	}
 
+	// failed is every key one of whose data versions would not go. The marker
+	// pass has to know, because erasing the marker on top of a version that
+	// is still there does not tidy anything: it brings the version back as
+	// the current object, and a part SAND deleted is live again, counted
+	// against the quota and — on an account another vault shares — visible
+	// as an orphan to be deleted a second time.
 	var mu sync.Mutex
+	failed := map[string]bool{}
 	erase := func(batch []provider.ObjectVersion) {
 		var wg sync.WaitGroup
 		window := make(chan struct{}, versionEraseWindow)
@@ -633,6 +690,7 @@ func (v *Vault) eraseVersions(
 					advance()
 				}
 				if err != nil {
+					failed[ver.Key] = true
 					warnings = append(warnings,
 						fmt.Sprintf("could not erase version %s of %s from %s: %v", ver.VersionID, ver.Key, cfg.Name, err))
 					return
@@ -648,6 +706,24 @@ func (v *Vault) eraseVersions(
 	}
 
 	erase(doomed.data)
-	erase(doomed.markers)
+
+	// Markers only over keys whose data all went. A key with a version left
+	// behind keeps its marker, and is said so: the next sweep will find the
+	// version still stale and try again.
+	safe := make([]provider.ObjectVersion, 0, len(doomed.markers))
+	for _, ver := range doomed.markers {
+		if failed[ver.Key] {
+			if advance != nil {
+				advance()
+			}
+			warnings = append(warnings, fmt.Sprintf(
+				"left the delete marker on %s on %s in place, since a version beneath it could not be erased "+
+					"and removing the marker would bring that version back as the live object",
+				ver.Key, cfg.Name))
+			continue
+		}
+		safe = append(safe, ver)
+	}
+	erase(safe)
 	return deleted, markers, bytes, warnings
 }

@@ -147,6 +147,7 @@ func TestReadStatsCountsFailuresApartFromLosses(t *testing.T) {
 	// that has stopped answering looks like from here. Under the strict policy
 	// every account holds a shard of every file, so the first one will do.
 	broken := v.providers[0].ID
+	v.AwaitBackupSync() // or the wipe races the backup still being written into it
 	if err := os.RemoveAll(roots[0]); err != nil {
 		t.Fatalf("breaking an account: %v", err)
 	}
@@ -183,6 +184,7 @@ func TestReadStatsCountsShortfalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
+	v.AwaitBackupSync() // or the wipe races the backup still being written into it
 	for _, root := range roots[:2] {
 		if err := os.RemoveAll(root); err != nil {
 			t.Fatalf("breaking an account: %v", err)
