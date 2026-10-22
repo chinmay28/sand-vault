@@ -471,9 +471,16 @@ Notes on the backend that are not obvious from the interface:
   which is common, rather than a crash, which is not. The rename prefers
   `posix-rename@openssh.com`, which is atomic and overwrites; SFTP v3's own
   rename leaves overwriting up to the server and OpenSSH refuses it. Servers
-  without the extension fall back to remove-then-rename.
-- **`List` hides `.sand-tmp-*`.** A half-written shard is not an object, and
-  listing it would have the recovery scan try to read it as one.
+  without the extension fall back to rename-aside: the old file is renamed to
+  `<name>.sand-old-<random>`, the new one renamed into place, and the aside
+  copy removed — never remove-then-rename, which has a moment where nothing
+  is under the name, and a connection dropped in that moment leaves a key
+  the vault reads as a lost part. A failure after the aside step puts the old
+  file back.
+- **`List` hides `.sand-tmp-*` and `*.sand-old-*`.** A half-written shard is
+  not an object, and listing it would have the recovery scan try to read it
+  as one; a previous copy left aside by an interrupted overwrite belongs to a
+  key that is listed under its own name.
 - **Temp names are random, not counted.** Two SAND instances may share a folder
   — a laptop and a Pi pointed at the same box — and a collision would have one
   renaming the other's half-written file into place.
