@@ -140,7 +140,14 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet, r.Method == http.MethodHead:
 		data, ok := s.get(bucket, key)
 		if !ok {
+			// As the service does: a GET of a missing key carries the error
+			// document that says so, a HEAD carries nothing. The backend reads
+			// the code, since a missing bucket is a 404 too.
 			w.WriteHeader(http.StatusNotFound)
+			if r.Method == http.MethodGet {
+				w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?><Error><Code>NoSuchKey</Code>` +
+					`<Message>The specified key does not exist.</Message></Error>`))
+			}
 			return
 		}
 		w.Header().Set("Content-Length", strconv.Itoa(len(data)))

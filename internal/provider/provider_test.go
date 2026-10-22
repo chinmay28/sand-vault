@@ -209,6 +209,7 @@ func TestS3SigV4AgainstStubEndpoint(t *testing.T) {
 			body, ok := stored[r.URL.Path]
 			if !ok {
 				w.WriteHeader(http.StatusNotFound)
+				w.Write([]byte(`<Error><Code>NoSuchKey</Code><Message>The specified key does not exist.</Message></Error>`))
 				return
 			}
 			w.Write(body)
