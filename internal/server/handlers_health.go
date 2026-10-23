@@ -59,12 +59,13 @@ func (s *Server) handleCloudHealthCheck(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"health": report})
 }
 
-// healthScheduleRequest is the setting as the browser sends it. Enabled is a
-// pointer so that a request changing only the interval leaves the switch alone,
-// and one flicking the switch leaves the interval alone.
+// healthScheduleRequest is the setting as the browser sends it. Enabled and
+// Smart are pointers so that a request changing one thing leaves the others
+// alone — flicking the disk check must not touch the interval, and vice versa.
 type healthScheduleRequest struct {
 	Enabled *bool `json:"enabled"`
 	Minutes int   `json:"interval_minutes"`
+	Smart   *bool `json:"smart_enabled"`
 }
 
 func (s *Server) handleCloudHealthSchedule(w http.ResponseWriter, r *http.Request) {
@@ -78,6 +79,9 @@ func (s *Server) handleCloudHealthSchedule(w http.ResponseWriter, r *http.Reques
 	schedule := v.HealthSchedule()
 	if req.Enabled != nil {
 		schedule.Enabled = *req.Enabled
+	}
+	if req.Smart != nil {
+		schedule.Smart = *req.Smart
 	}
 	// Zero means "leave it", which is what the vault reads it as too — see
 	// SetHealthSchedule.
@@ -156,9 +160,21 @@ func (s *Server) healthLoop() {
 // this one runs on every install by default.
 func logHealthChanges(report vault.HealthReport, was map[string]bool) map[string]bool {
 	now := map[string]bool{}
-	var broke, mended []string
+	var broke, mended, disks []string
 
 	for _, cloud := range report.Clouds {
+		// Disk warnings get the same said-once treatment, under a key of
+		// their own so a disk going bad and the account going dark are each
+		// their own line. This is the only place a headless install hears
+		// about a disk at all, which is most of why it is logged.
+		if cloud.DiskWarning != "" {
+			key := cloud.ID + "/disk"
+			now[key] = true
+			if !was[key] {
+				disks = append(disks, cloud.Name+" ("+cloud.DiskWarning+")")
+			}
+		}
+
 		if !cloud.Checked {
 			continue
 		}
@@ -175,6 +191,11 @@ func logHealthChanges(report vault.HealthReport, was map[string]bool) map[string
 		if was[cloud.ID] {
 			mended = append(mended, cloud.Name)
 		}
+	}
+
+	sort.Strings(disks)
+	if len(disks) > 0 {
+		log.Printf("disk health: %s", strings.Join(disks, "; "))
 	}
 
 	sort.Strings(broke)

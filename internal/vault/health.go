@@ -3,6 +3,7 @@ package vault
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -108,6 +109,19 @@ type CloudHealth struct {
 	// different problem from "unreachable just now", and only one of them is
 	// worth getting out of bed for.
 	FailingSince time.Time `json:"failing_since,omitzero"`
+
+	// Disk is the SMART standing of the physical disk under a local folder
+	// account, and DiskWarning the sentence worth saying about it — "32
+	// sectors pending reallocation", or that the report the figures should
+	// come from is missing or stale. Both empty on every account that is not
+	// a local folder on a physical disk, and on every vault that has not
+	// switched the disk check on.
+	//
+	// Not recorded with the ping results: the disk report is itself a file a
+	// scanner keeps fresh, so these are read live when a report is built —
+	// which is also what makes switching the check off hide them at once.
+	Disk        *provider.DiskSmart `json:"disk,omitempty"`
+	DiskWarning string              `json:"disk_warning,omitempty"`
 }
 
 // HealthSchedule is how often the check comes round, and whether it does.
@@ -118,6 +132,13 @@ type HealthSchedule struct {
 	// this crosses to a browser, where a Go duration is an unreadable count of
 	// nanoseconds, and because a minute is finer than anybody sets this.
 	Minutes int `json:"interval_minutes"`
+
+	// Smart folds the disks under local folder accounts into the check, from
+	// the report a root-run scanner keeps (see internal/provider/disksmart.go).
+	// Off by default: the scanner has to be installed outside the vault, and a
+	// switch that defaults on above a scanner that is not there would open
+	// every install with a warning.
+	Smart bool `json:"smart_enabled"`
 }
 
 // Interval is the schedule as a duration, with the default filled in for a
@@ -142,11 +163,15 @@ type HealthReport struct {
 
 	// The counts the sentence is made of. Accounts is every connected one;
 	// Unchecked are the ones nothing has asked yet, which are neither healthy
-	// nor unhealthy and must not be counted as either.
+	// nor unhealthy and must not be counted as either. Warnings counts the
+	// accounts whose disk has something to say — they stay healthy (the
+	// account answers; reachability is a separate fact), but the sentence must
+	// not read all-clear over them.
 	Accounts  int `json:"accounts"`
 	Healthy   int `json:"healthy"`
 	Unhealthy int `json:"unhealthy"`
 	Unchecked int `json:"unchecked"`
+	Warnings  int `json:"warnings,omitempty"`
 
 	// CheckedAt is when the last sweep of *every* account finished — the "as
 	// of" on the figure. A single account tested on its own updates that
@@ -182,6 +207,7 @@ func (v *Vault) healthScheduleLocked() HealthSchedule {
 		// vault with the check switched on.
 		Enabled: !v.store.HealthCheckOff,
 		Minutes: v.healthMinutesLocked(),
+		Smart:   v.store.SmartCheckOn,
 	}
 }
 
@@ -214,6 +240,7 @@ func (v *Vault) SetHealthSchedule(s HealthSchedule) (HealthSchedule, error) {
 	}
 
 	v.store.HealthCheckOff = !s.Enabled
+	v.store.SmartCheckOn = s.Smart
 	if s.Minutes != 0 {
 		v.store.HealthCheckMinutes = s.Minutes
 	}
@@ -424,6 +451,17 @@ func (v *Vault) reportFor(configs []provider.Config, schedule HealthSchedule) He
 		// the panel beside it is showing.
 		one.Name, one.Kind = cfg.Name, cfg.Kind
 
+		// The disk under a local folder, read live from the scanner's report
+		// rather than from what a ping recorded: the report is a file on disk
+		// that a timer keeps fresh, so the latest one is always the one worth
+		// showing, and a toggle switched off hides the column at once.
+		if schedule.Smart && cfg.Kind == provider.KindLocal {
+			one.Disk, one.DiskWarning = provider.DiskHealthFor(localRoot(cfg))
+			if one.DiskWarning != "" {
+				report.Warnings++
+			}
+		}
+
 		switch {
 		case !one.Checked:
 			report.Unchecked++
@@ -452,11 +490,27 @@ func healthRank(c CloudHealth) int {
 	switch {
 	case c.Checked && !c.Healthy:
 		return 0
-	case !c.Checked:
+	case c.DiskWarning != "":
+		// Reachable, but sitting on a disk with something to say — a smaller
+		// worry than an account that is down, a bigger one than an account
+		// nobody has asked.
 		return 1
-	default:
+	case !c.Checked:
 		return 2
+	default:
+		return 3
 	}
+}
+
+// localRoot is the folder a local account stores into, resolved the way the
+// backend itself resolves it (newLocalProvider), so the mount-table join sees
+// the same absolute path a mount point would be compared against.
+func localRoot(cfg provider.Config) string {
+	root := provider.ExpandHome(cfg.Option("path"))
+	if abs, err := filepath.Abs(root); err == nil {
+		return abs
+	}
+	return root
 }
 
 // healthFromStatuses turns the sidebar's own ping of every account into check

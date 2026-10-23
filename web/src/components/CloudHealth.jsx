@@ -104,6 +104,15 @@ export function healthSummary(health) {
   if (health.unhealthy > 0) {
     return { tone: COLORS.error, line: `${health.unhealthy} of ${health.accounts} unhealthy` }
   }
+  // A disk warning outranks "healthy": the account answers, which is what
+  // healthy claims, but the disk under it is saying something that will stop
+  // being true of the account soon enough.
+  if (health.warnings > 0) {
+    return {
+      tone: COLORS.warn,
+      line: health.warnings === 1 ? '1 disk warning' : `${health.warnings} disk warnings`,
+    }
+  }
   if (health.checked_at) {
     return {
       tone: COLORS.success,
@@ -335,6 +344,55 @@ export default function CloudHealth({ health, zIndex, onClose, onChanged }) {
           not lost, and comes round as soon as it is opened again.
         </p>
       </div>
+
+      {/* The disk under a local folder, which answers pings long after it has
+          started to die. Opt-in, because it needs a root-run scanner installed
+          outside the vault — a switch that defaulted on would open every
+          install with a warning about a scanner that is not there. */}
+      <div style={{ marginTop: '18px', paddingTop: '14px', borderTop: `1px solid ${COLORS.border}` }}>
+        <div style={{
+          fontFamily: FONT.mono,
+          fontSize: '10px',
+          fontWeight: 700,
+          letterSpacing: '1.2px',
+          textTransform: 'uppercase',
+          color: COLORS.textMuted,
+          marginBottom: '10px',
+        }}>Disk health</div>
+
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+          <Choice
+            label="On"
+            on={!!schedule.smart_enabled}
+            disabled={saving}
+            onClick={() => setSchedule({ smart: true })}
+          />
+          <Choice
+            label="Off"
+            on={!schedule.smart_enabled}
+            disabled={saving}
+            tone={COLORS.textMuted}
+            onClick={() => setSchedule({ smart: false })}
+          />
+        </div>
+
+        <p style={{
+          margin: '10px 0 0',
+          fontFamily: FONT.sans,
+          fontSize: '11px',
+          lineHeight: 1.6,
+          color: COLORS.textMuted,
+        }}>
+          A Local folder account answers pings for as long as its filesystem
+          does — which is long after the disk under it has started to go. With
+          this on, the check also reads each disk&rsquo;s own SMART counters and
+          warns while the damage is still ahead of the files: sectors pending
+          reallocation, a failed self-test, a drive that has tripped its own
+          thresholds. It needs a small root-run scanner installed once, outside
+          the vault: <code style={{ fontFamily: FONT.mono, fontSize: '10px' }}>
+          sudo scripts/enable-disk-health.sh</code>.
+        </p>
+      </div>
     </Modal>
   )
 }
@@ -342,7 +400,9 @@ export default function CloudHealth({ health, zIndex, onClose, onChanged }) {
 /* One cloud's standing. The account's own colour down the edge, because that
    is how an account is identified everywhere else in the app. */
 function CloudRow({ cloud }) {
-  const tone = !cloud.checked ? COLORS.textMuted : cloud.healthy ? COLORS.success : COLORS.error
+  const tone = !cloud.checked ? COLORS.textMuted
+    : !cloud.healthy ? COLORS.error
+      : cloud.disk_warning ? COLORS.warn : COLORS.success
   const took = cloud.took_ms > 0 ? `${cloud.took_ms < 1000
     ? `${cloud.took_ms}ms`
     : `${(cloud.took_ms / 1000).toFixed(1)}s`}` : null
@@ -404,6 +464,35 @@ function CloudRow({ cloud }) {
             wordBreak: 'break-word',
             lineHeight: 1.5,
           }}>{cloud.error}</div>
+        )}
+
+        {/* What the disk under a local folder says about itself, when the disk
+            check is on. The warning is the whole point; the quiet line under a
+            clean disk is what makes the warning's absence mean something. */}
+        {cloud.disk_warning && (
+          <div style={{
+            marginTop: '4px',
+            fontFamily: FONT.mono,
+            fontSize: '9.5px',
+            color: COLORS.warn,
+            wordBreak: 'break-word',
+            lineHeight: 1.5,
+          }}>disk {cloud.disk ? cloud.disk.device : ''}: {cloud.disk_warning}</div>
+        )}
+        {cloud.disk && !cloud.disk_warning && (
+          <div style={{
+            marginTop: '4px',
+            fontFamily: FONT.mono,
+            fontSize: '9.5px',
+            color: COLORS.textMuted,
+            lineHeight: 1.5,
+          }}>
+            {cloud.disk.unsupported
+              ? `disk ${cloud.disk.device}: no SMART data from this enclosure`
+              : [`disk ${cloud.disk.device}`, cloud.disk.model, 'SMART clean',
+                cloud.disk.temperature_c ? `${cloud.disk.temperature_c}°C` : null]
+                .filter(Boolean).join(' · ')}
+          </div>
         )}
       </div>
 
