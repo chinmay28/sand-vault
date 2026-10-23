@@ -17,6 +17,8 @@ import { Banner, Button, ConfirmDialog, Modal, Spinner } from './ui'
      PaceChooser      the budget, chosen in the password dialog
      FolderQueue      which folders go first, and whether the rest follows
      RekeyProgress    the panel: progress, pace, folders, pause, finish now
+                      — which is the plan run at full speed, by the server,
+                      so the phone that asked can go back in the pocket
      RekeyCard        the sidebar's summary, with the two buttons that matter
      RekeyStripEntry  the "Previous key" entry at the top of the vault
 
@@ -40,8 +42,20 @@ export const DEFAULT_PACE = 10 * GB
 
 /* How long the panel leaves between asking the server where the plan has got
    to. The server moves files on its own clock; this is only how fresh the
-   figures on screen are. */
+   figures on screen are. A plan at full speed is a progress bar somebody is
+   watching, so it is asked after more often. */
 const POLL_MS = 15_000
+const FULL_SPEED_POLL_MS = 4_000
+
+/* How long typing in the custom pace field may pause before the number is
+   taken as meant. Long enough that "25" is not saved as 2 and then as 25. */
+const CUSTOM_SETTLE_MS = 600
+
+/* Whether the plan is moving files as fast as the clouds take it. */
+function atFullSpeed(status) {
+  const plan = status?.plan
+  return !!(plan?.full_speed && !plan.paused && status.pending > 0)
+}
 
 /* A duration the way a person says one: "about 31 days", "2h 10m", "40 min". */
 export function humanDuration(seconds) {
@@ -85,12 +99,13 @@ export function useRekeyStatus(active, interval = POLL_MS) {
     }
   }, [])
 
+  const every = atFullSpeed(status) ? Math.min(interval, FULL_SPEED_POLL_MS) : interval
   useEffect(() => {
     if (!active) return undefined
     refresh()
-    const timer = setInterval(refresh, interval)
+    const timer = setInterval(refresh, every)
     return () => clearInterval(timer)
-  }, [active, interval, refresh])
+  }, [active, every, refresh])
 
   return { status, error, refresh, setStatus }
 }
@@ -143,13 +158,38 @@ function presetIndex(perDay) {
   return best
 }
 
+/* The custom field's text for a budget: empty when a chip says it. */
+function customText(value) {
+  return value <= 0 || PACE_PRESETS.some((p) => p * GB === value) ? '' : String(Math.round(value / GB))
+}
+
 /* Chips for the budget and a field for anything the chips do not say. `value`
-   is bytes a day. */
+   is bytes a day.
+
+   The field commits when typing pauses, on Enter, or on blur — not on every
+   keystroke, which in the panel was a save to the server per digit, with the
+   first digit of "25" saved as a budget of its own. And it is never disabled
+   while it has focus: the parent disables the chips while that save is in
+   flight, and a disabled input loses focus, which on a phone takes the keyboard
+   away after each digit. */
 export function PaceChips({ value, onChange, disabled }) {
-  const [custom, setCustom] = useState(() => (
-    value <= 0 || PACE_PRESETS.some((p) => p * GB === value) ? '' : String(Math.round(value / GB))
-  ))
+  const [custom, setCustom] = useState(() => customText(value))
+  const [focused, setFocused] = useState(false)
+  const settle = useRef(null)
   const chosen = PACE_PRESETS.find((p) => p * GB === value)
+
+  // A budget set elsewhere — a chip, the slider, another tab — shows in the
+  // field, or clears it, unless somebody is typing in it.
+  useEffect(() => {
+    if (!focused) setCustom(customText(value))
+  }, [value, focused])
+  useEffect(() => () => clearTimeout(settle.current), [])
+
+  const commit = (text) => {
+    clearTimeout(settle.current)
+    const n = Number(text)
+    if (n > 0 && Math.round(n * GB) !== value) onChange(Math.round(n * GB))
+  }
 
   return (
     <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px' }} role="radiogroup" aria-label="How much to re-encrypt a day">
@@ -162,7 +202,7 @@ export function PaceChips({ value, onChange, disabled }) {
             role="radio"
             aria-checked={on}
             disabled={disabled}
-            onClick={() => { setCustom(''); onChange(p * GB) }}
+            onClick={() => { clearTimeout(settle.current); setCustom(''); onChange(p * GB) }}
             style={{
               ...chip,
               borderColor: on ? COLORS.accent : COLORS.borderBright,
@@ -182,11 +222,18 @@ export function PaceChips({ value, onChange, disabled }) {
           aria-label="A budget of your own, in gigabytes a day"
           placeholder="custom"
           value={custom}
-          disabled={disabled}
+          disabled={disabled && !focused}
+          onFocus={() => setFocused(true)}
+          onBlur={() => { setFocused(false); commit(custom) }}
+          onKeyDown={(e) => {
+            // Enter means "this number", not "submit the form around me".
+            if (e.key === 'Enter') { e.preventDefault(); commit(custom) }
+          }}
           onChange={(e) => {
-            setCustom(e.target.value)
-            const n = Number(e.target.value)
-            if (n > 0) onChange(Math.round(n * GB))
+            const text = e.target.value
+            setCustom(text)
+            clearTimeout(settle.current)
+            settle.current = setTimeout(() => commit(text), CUSTOM_SETTLE_MS)
           }}
           style={{
             width: '58px', background: 'transparent', border: 'none', outline: 'none',
@@ -211,20 +258,31 @@ const chip = {
   minHeight: 0,
 }
 
-/* All at once, or so much a day. `value` is { paced, perDay }. */
+/* All at once, or so much a day. `value` is { paced, perDay }.
+
+   Each option is a div with the radio role rather than a button: the chips
+   and the custom field live inside the chosen option, and an input inside a
+   button is not HTML — browsers differ on which of the two a tap focuses and
+   where a keystroke goes, which on a phone is a keyboard that comes up for the
+   field and goes away again. */
 export function PaceChooser({ bytes, files, value, onChange, disabled }) {
   const option = (paced, title, body) => {
     const on = value.paced === paced
+    const choose = () => { if (!disabled) onChange({ ...value, paced }) }
     return (
-      <button
-        type="button"
+      <div
         role="radio"
         aria-checked={on}
-        disabled={disabled}
-        onClick={() => onChange({ ...value, paced })}
+        aria-disabled={disabled || undefined}
+        tabIndex={disabled ? -1 : 0}
+        onClick={choose}
+        onKeyDown={(e) => {
+          if (e.target !== e.currentTarget) return
+          if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); choose() }
+        }}
         style={{
           display: 'flex', gap: '10px', alignItems: 'flex-start', width: '100%', textAlign: 'left',
-          padding: '10px 12px', marginBottom: '8px', borderRadius: '6px',
+          padding: '10px 12px', marginBottom: '8px', borderRadius: '6px', boxSizing: 'border-box',
           border: `1px solid ${on ? COLORS.accent : COLORS.border}`,
           background: on ? '#15181f' : COLORS.bg,
           color: COLORS.text, cursor: disabled ? 'not-allowed' : 'pointer', minHeight: 0,
@@ -251,7 +309,7 @@ export function PaceChooser({ bytes, files, value, onChange, disabled }) {
             </span>
           )}
         </span>
-      </button>
+      </div>
     )
   }
 
@@ -260,7 +318,7 @@ export function PaceChooser({ bytes, files, value, onChange, disabled }) {
     <div role="radiogroup" aria-label="How to re-encrypt the files">
       <div style={sectionTitle}>Re-encrypt the files · {count}</div>
       {option(false, 'All at once',
-        'Every file is gathered, re-encrypted and scattered again now, as fast as your clouds take it. Keep this tab open.')}
+        'Every file is gathered, re-encrypted and scattered again now, as fast as your clouds take it. The server does the work, so this tab can close.')}
       {option(true, 'Gently, so much a day',
         'The password changes now. Files move in the background while the vault is open, smallest first, never more than this per day.')}
     </div>
@@ -417,9 +475,11 @@ export function StatePill({ status }) {
   const plan = status?.plan
   let tone = COLORS.textMuted
   let text = 'not planned'
+  const active = plan && (plan.full_speed || plan.bytes_per_day > 0)
   if (plan?.paused) { tone = COLORS.warn; text = 'paused' }
-  else if (plan?.bytes_per_day > 0 && status.idle) { tone = COLORS.info; text = 'idle' }
-  else if (plan?.bytes_per_day > 0) { tone = COLORS.success; text = status.running ? 'moving' : 'running' }
+  else if (active && status.idle) { tone = COLORS.info; text = 'idle' }
+  else if (plan?.full_speed) { tone = COLORS.success; text = 'full speed' }
+  else if (active) { tone = COLORS.success; text = status.running ? 'moving' : 'running' }
   return (
     <span style={{
       display: 'inline-flex', alignItems: 'center', gap: '5px', fontFamily: FONT.mono, fontSize: '9.5px',
@@ -438,6 +498,7 @@ function settingsOf(status) {
   const plan = status?.plan || {}
   return {
     bytes_per_day: plan.bytes_per_day || 0,
+    full_speed: !!plan.full_speed,
     folders: plan.folders || [],
     only_folders: !!plan.only_folders,
     paused: !!plan.paused,
@@ -445,12 +506,20 @@ function settingsOf(status) {
   }
 }
 
+/* "Finish now", as the plan to send: the one in force, at full speed and not
+   paused. The server works through the files on its own from there, so the
+   request answers at once and the tab that sent it can close — a request held
+   open until the last file had moved was a phone that locked its screen and
+   came back to "failed to fetch". */
+export function fullSpeedSettings(status) {
+  return { ...settingsOf(status), full_speed: true, paused: false }
+}
+
 /* The panel. Everything the plan knows and every control it has. */
 export default function RekeyProgress({ onClose, onChanged, zIndex = 120 }) {
   const mobile = useIsMobile()
-  const { status, error, refresh, setStatus } = useRekeyStatus(true)
+  const { status, error, setStatus } = useRekeyStatus(true)
   const [saving, setSaving] = useState(false)
-  const [finishing, setFinishing] = useState(false)
   const [confirmFinish, setConfirmFinish] = useState(false)
   const [problem, setProblem] = useState(null)
   const changed = useRef(false)
@@ -471,18 +540,7 @@ export default function RekeyProgress({ onClose, onChanged, zIndex = 120 }) {
 
   const finishNow = async () => {
     setConfirmFinish(false)
-    setFinishing(true)
-    setProblem(null)
-    try {
-      const report = await api.migrate()
-      if (report.warnings?.length) setProblem(report.warnings.join('\n'))
-      changed.current = true
-      await refresh()
-    } catch (err) {
-      setProblem(err.message)
-    } finally {
-      setFinishing(false)
-    }
+    await apply(fullSpeedSettings(status))
   }
 
   const close = () => {
@@ -494,7 +552,11 @@ export default function RekeyProgress({ onClose, onChanged, zIndex = 120 }) {
   const settings = settingsOf(status)
   const done = status && status.pending === 0
   const perDay = plan?.bytes_per_day || 0
+  const fullSpeed = !!plan?.full_speed
+  const active = fullSpeed || perDay > 0
   const since = status?.since ? new Date(status.since) : null
+  // A pace chosen here is a pace: it takes the plan off full speed too.
+  const setPace = (bytes) => apply({ ...settings, bytes_per_day: bytes, full_speed: false, paused: false })
 
   return (
     <Modal
@@ -502,7 +564,7 @@ export default function RekeyProgress({ onClose, onChanged, zIndex = 120 }) {
       subtitle={since
         ? `Moving files off the key your previous password protected. Changed ${since.toLocaleDateString(undefined, { day: 'numeric', month: 'long' })}.`
         : 'Moving files off the key your previous password protected.'}
-      onClose={finishing ? undefined : close}
+      onClose={close}
       zIndex={zIndex}
       width={540}
     >
@@ -527,8 +589,8 @@ export default function RekeyProgress({ onClose, onChanged, zIndex = 120 }) {
             <Figure value={status.pending} label="files left" />
             <Figure value={formatBytes(status.pending_bytes)} label={`left of ${formatBytes(status.total_bytes)}`} />
             <Figure
-              value={perDay > 0 && !plan?.paused ? humanDuration(status.eta_seconds) : '—'}
-              label={perDay > 0 ? `at ${formatBytes(perDay)} a day` : 'no pace set'}
+              value={fullSpeed ? 'full speed' : perDay > 0 && !plan?.paused ? humanDuration(status.eta_seconds) : '—'}
+              label={fullSpeed ? 'as fast as the clouds take it' : perDay > 0 ? `at ${formatBytes(perDay)} a day` : 'no pace set'}
             />
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontFamily: FONT.mono, fontSize: '11px', color: COLORS.textDim, marginTop: '10px', minWidth: 0 }}>
@@ -547,8 +609,9 @@ export default function RekeyProgress({ onClose, onChanged, zIndex = 120 }) {
               )
                 : status.next_in_seconds > 0 ? `next file in ${humanDuration(status.next_in_seconds)}`
                   : plan?.paused ? 'paused by you'
-                    : status.idle && perDay > 0 ? 'the plan has done everything it was allowed to'
-                      : perDay > 0 ? 'waiting for the next tick' : 'nothing moves until a pace is set'}
+                    : status.idle && active ? 'the plan has done everything it was allowed to'
+                      : fullSpeed ? 'taking the next file'
+                        : perDay > 0 ? 'waiting for the next tick' : 'nothing moves until a pace is set'}
             </span>
             {/* The file being moved can be left for last: the move stops where
                 it is, the file stays readable on the previous key, and it is
@@ -558,7 +621,7 @@ export default function RekeyProgress({ onClose, onChanged, zIndex = 120 }) {
               <Button
                 size="sm"
                 variant="ghost"
-                disabled={saving || finishing}
+                disabled={saving}
                 title="Stop moving this file and leave it for last; it stays readable on the previous key"
                 onClick={async () => {
                   setSaving(true)
@@ -585,10 +648,10 @@ export default function RekeyProgress({ onClose, onChanged, zIndex = 120 }) {
               min={0}
               max={PACE_PRESETS.length - 1}
               step={1}
-              value={perDay > 0 ? presetIndex(perDay) : 0}
-              disabled={saving || finishing}
+              value={perDay > 0 && !fullSpeed ? presetIndex(perDay) : 0}
+              disabled={saving}
               aria-label="Gigabytes a day"
-              onChange={(e) => apply({ ...settings, bytes_per_day: PACE_PRESETS[Number(e.target.value)] * GB, paused: false })}
+              onChange={(e) => setPace(PACE_PRESETS[Number(e.target.value)] * GB)}
               style={{ width: '100%', accentColor: COLORS.accent, margin: '6px 0 2px' }}
             />
             <div style={{ display: 'flex', justifyContent: 'space-between', fontFamily: FONT.mono, fontSize: '9px', color: COLORS.textMuted }}>
@@ -596,12 +659,17 @@ export default function RekeyProgress({ onClose, onChanged, zIndex = 120 }) {
             </div>
             <div style={{ marginTop: '10px' }}>
               <PaceChips
-                value={perDay}
-                disabled={saving || finishing}
-                onChange={(bytes) => apply({ ...settings, bytes_per_day: bytes, paused: false })}
+                value={fullSpeed ? 0 : perDay}
+                disabled={saving}
+                onChange={setPace}
               />
             </div>
-            {perDay > 0 && !plan?.paused && (
+            {fullSpeed && (
+              <div style={help}>
+                Running at full speed on the server. Pick a pace to slow it down; the files keep moving, so much a day from then on.
+              </div>
+            )}
+            {!fullSpeed && perDay > 0 && !plan?.paused && (
               <div style={{ ...help, fontFamily: FONT.mono, fontSize: '10px' }}>
                 {describePace(status.pending_bytes, perDay)}
               </div>
@@ -616,7 +684,7 @@ export default function RekeyProgress({ onClose, onChanged, zIndex = 120 }) {
               folders={status.folders}
               queued={settings.folders}
               rest={!settings.only_folders}
-              disabled={saving || finishing}
+              disabled={saving}
               onToggle={(path, on) => {
                 const folders = on
                   ? [...settings.folders.filter((p) => p !== path), path]
@@ -646,7 +714,7 @@ export default function RekeyProgress({ onClose, onChanged, zIndex = 120 }) {
                       <Button
                         size="sm"
                         variant="ghost"
-                        disabled={saving || finishing}
+                        disabled={saving}
                         title="Put this file back in its turn"
                         onClick={async () => {
                           setSaving(true)
@@ -673,7 +741,7 @@ export default function RekeyProgress({ onClose, onChanged, zIndex = 120 }) {
             <div style={sectionTitle}>While it runs</div>
             <KeepUnlockedTick
               checked={settings.keep_unlocked}
-              disabled={saving || finishing || perDay === 0}
+              disabled={saving || !active}
               onChange={(on) => apply({ ...settings, keep_unlocked: on })}
             />
             {status.warnings?.length > 0 && (
@@ -692,25 +760,27 @@ export default function RekeyProgress({ onClose, onChanged, zIndex = 120 }) {
       <div style={{ display: 'flex', flexDirection: mobile ? 'column' : 'row', justifyContent: 'flex-end', gap: '8px', marginTop: '16px' }}>
         {status && !done && (
           <>
-            <Button
-              variant="danger"
-              disabled={saving || finishing}
-              onClick={() => setConfirmFinish(true)}
-              style={{ marginRight: mobile ? 0 : 'auto', justifyContent: 'center' }}
-            >
-              {finishing ? <Spinner size={11} color={COLORS.error} /> : null}
-              {finishing ? 'Finishing…' : `Finish now · ${formatBytes(status.pending_bytes)} at full speed`}
-            </Button>
-            {perDay > 0 && (
+            {/* The one that is first sits apart from Done, at the far side. */}
+            {!fullSpeed && (
               <Button
-                disabled={saving || finishing}
+                variant="danger"
+                disabled={saving}
+                onClick={() => setConfirmFinish(true)}
+                style={{ marginRight: mobile ? 0 : 'auto', justifyContent: 'center' }}
+              >
+                {`Finish now · ${formatBytes(status.pending_bytes)} at full speed`}
+              </Button>
+            )}
+            {active && (
+              <Button
+                disabled={saving}
                 onClick={() => apply({ ...settings, paused: !settings.paused })}
-                style={{ justifyContent: 'center' }}
+                style={{ marginRight: fullSpeed && !mobile ? 'auto' : 0, justifyContent: 'center' }}
               >{settings.paused ? 'Resume' : 'Pause'}</Button>
             )}
           </>
         )}
-        <Button variant="primary" onClick={close} disabled={finishing} style={{ justifyContent: 'center' }}>Done</Button>
+        <Button variant="primary" onClick={close} style={{ justifyContent: 'center' }}>Done</Button>
       </div>
 
       {confirmFinish && (
@@ -722,8 +792,9 @@ export default function RekeyProgress({ onClose, onChanged, zIndex = 120 }) {
           zIndex={zIndex + 10}
         >
           {formatBytes(status?.pending_bytes || 0)} in {status?.pending} file{status?.pending === 1 ? '' : 's'} will be gathered,
-          re-encrypted and scattered again as fast as your clouds take it. Keep this tab open while it runs;
-          every file is committed as it moves, so closing it only leaves the rest for later.
+          re-encrypted and scattered again as fast as your clouds take it — a saturated upload on every account until it is done.
+          The server does the work: this tab can close and your screen can lock, and this panel shows where it has got to.
+          Every file is committed as it moves.
         </ConfirmDialog>
       )}
     </Modal>
@@ -758,6 +829,7 @@ export function RekeyCard({ stats, onChanged }) {
 
   const plan = status?.plan
   const perDay = plan?.bytes_per_day || 0
+  const running = !!plan?.full_speed || perDay > 0
   const toggle = async () => {
     setBusy(true)
     try {
@@ -785,18 +857,19 @@ export function RekeyCard({ stats, onChanged }) {
             {Math.round(fraction(status) * 100)}% · {formatBytes(status.pending_bytes)} left on the previous key
             <br />
             {plan?.paused ? 'Paused by you'
-              : perDay > 0 ? `${formatBytes(perDay)} a day${status.eta_seconds ? ` · ${humanDuration(status.eta_seconds)}` : ''}`
-                : 'No pace set — nothing moves until you choose one'}
+              : plan?.full_speed ? 'Full speed · as fast as the clouds take it'
+                : perDay > 0 ? `${formatBytes(perDay)} a day${status.eta_seconds ? ` · ${humanDuration(status.eta_seconds)}` : ''}`
+                  : 'No pace set — nothing moves until you choose one'}
           </>
         ) : `${stats.pending_migration} file${stats.pending_migration === 1 ? '' : 's'} on the previous key`}
       </div>
       <div style={{ display: 'flex', gap: '6px', marginTop: '9px' }}>
-        {perDay > 0 && (
+        {running && (
           <Button size="sm" disabled={busy} onClick={toggle} style={{ flex: 1, justifyContent: 'center' }}>
             {plan?.paused ? 'Resume' : 'Pause'}
           </Button>
         )}
-        <Button size="sm" variant={perDay > 0 ? 'ghost' : 'default'} onClick={() => setOpen(true)} style={{ flex: 1, justifyContent: 'center' }}>
+        <Button size="sm" variant={running ? 'ghost' : 'default'} onClick={() => setOpen(true)} style={{ flex: 1, justifyContent: 'center' }}>
           Details ›
         </Button>
       </div>

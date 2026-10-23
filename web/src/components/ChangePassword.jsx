@@ -5,7 +5,7 @@ import { useIsMobile } from '../hooks'
 import { Banner, Button, Modal, PasswordInput, Spinner } from './ui'
 import RekeyProgress, {
   DEFAULT_PACE, FolderQueue, GB, KeepUnlockedTick, PaceChooser, StatePill,
-  humanDuration, useRekeyStatus, useTopFolders,
+  fullSpeedSettings, humanDuration, useRekeyStatus, useTopFolders,
 } from './Rekey'
 
 /* Changing the password is not a metadata edit. The parts sitting on your cloud
@@ -18,8 +18,12 @@ import RekeyProgress, {
 
    On a large vault that time is the problem rather than the inconvenience: a
    terabyte moved as fast as the clouds take it is a day of saturated upload on
-   every account. So the dialog asks how fast, and a paced change leaves the
-   files to a plan the server works through while the vault is open. See
+   every account. So the dialog asks how fast, and either answer is a plan the
+   server works through on its own while the vault is open — all at once is the
+   plan at full speed. The request comes back as soon as the password has
+   changed, and the files move whether or not this tab is still there to
+   watch; a request held open until the last file had moved was a phone whose
+   screen locked and a change that came back "failed to fetch" half done. See
    Rekey.jsx for the plan and everything that watches it.
 
    And it asks one change at a time. While files are still on the key the last
@@ -68,12 +72,18 @@ export default function ChangePassword({ stats, onClose, onChanged, zIndex }) {
       return
     }
 
-    const plan = pace.paced && files > 0 ? {
-      bytes_per_day: pace.perDay,
-      folders: queued,
-      only_folders: queued.length > 0 && !rest,
-      keep_unlocked: keepUnlocked,
-    } : null
+    // Both answers are plans; the server does the moving either way.
+    let plan = null
+    if (files > 0 && pace.paced) {
+      plan = {
+        bytes_per_day: pace.perDay,
+        folders: queued,
+        only_folders: queued.length > 0 && !rest,
+        keep_unlocked: keepUnlocked,
+      }
+    } else if (files > 0) {
+      plan = { full_speed: true }
+    }
 
     setBusy(true)
     try {
@@ -109,7 +119,14 @@ export default function ChangePassword({ stats, onClose, onChanged, zIndex }) {
           Your vault now opens with the new password, and the old one opens nothing.
         </Banner>
 
-        {plan ? (
+        {plan?.full_speed ? (
+          <p style={paragraph}>
+            {report.remaining} file{report.remaining === 1 ? '' : 's'} ({formatBytes(bytes)}) are being
+            re-encrypted now, as fast as your clouds take it. The server does the work, so this tab can
+            close; the progress panel shows where it has got to. Until a file has moved it stays
+            readable, and marked, on the previous key.
+          </p>
+        ) : plan ? (
           <p style={paragraph}>
             {report.remaining} file{report.remaining === 1 ? '' : 's'} ({formatBytes(bytes)}) will be
             re-encrypted at {formatBytes(plan.bytes_per_day)} a day while the vault is open,
@@ -216,19 +233,10 @@ export default function ChangePassword({ stats, onClose, onChanged, zIndex }) {
         <div style={{ display: 'flex', flexDirection: mobile ? 'column' : 'row', justifyContent: 'flex-end', gap: '8px', marginTop: '16px' }}>
           <Button type="submit" variant="primary" disabled={busy || !current || !next} style={{ justifyContent: 'center' }}>
             {busy ? <Spinner size={12} color={COLORS.bg} /> : null}
-            {busy
-              ? (pace.paced || files === 0 ? 'Changing…' : 'Re-encrypting…')
-              : 'Change password'}
+            {busy ? 'Changing…' : 'Change password'}
           </Button>
           <Button type="button" variant="ghost" onClick={onClose} disabled={busy} style={{ justifyContent: 'center' }}>Cancel</Button>
         </div>
-
-        {busy && !pace.paced && files > 0 && (
-          <p style={{ ...paragraph, marginBottom: 0, marginTop: '14px' }}>
-            Every file is committed as it moves, so closing this tab cannot leave one
-            half-encrypted — it only leaves the rest for later.
-          </p>
-        )}
       </form>
     </Modal>
   )
@@ -249,13 +257,14 @@ function Blocked({ stats, zIndex, onClose, onChanged }) {
   const plan = status?.plan
   const perDay = plan?.bytes_per_day || 0
 
+  // Full speed, as a plan the server runs; the panel opens to show it going.
   const finishNow = async () => {
     setFinishing(true)
     setProblem(null)
     try {
-      const report = await api.migrate()
-      if (report.warnings?.length) setProblem(report.warnings.join('\n'))
+      await api.setRekeyPlan(fullSpeedSettings(status))
       onChanged()
+      setProgress(true)
     } catch (err) {
       setProblem(err.message)
     } finally {
@@ -302,7 +311,7 @@ function Blocked({ stats, zIndex, onClose, onChanged }) {
       )}
 
       <p style={{ ...paragraph, marginTop: '12px' }}>
-        Finishing now moves what is left at full speed and holds this tab open while it does.
+        Finishing now moves what is left at full speed, on the server, so this tab need not stay open.
         Adjusting the pace keeps the plan and changes how fast it runs.
       </p>
 
@@ -311,7 +320,7 @@ function Blocked({ stats, zIndex, onClose, onChanged }) {
         <Button onClick={() => setProgress(true)} disabled={finishing}>Adjust the pace</Button>
         <Button variant="primary" onClick={finishNow} disabled={finishing}>
           {finishing ? <Spinner size={12} color={COLORS.bg} /> : null}
-          {finishing ? 'Re-encrypting…' : 'Finish now'}
+          {finishing ? 'Starting…' : 'Finish now'}
         </Button>
       </div>
       {progress && <RekeyProgress onClose={() => setProgress(false)} onChanged={onChanged} zIndex={(zIndex || 100) + 10} />}

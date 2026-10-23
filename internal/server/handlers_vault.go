@@ -222,6 +222,10 @@ func (s *Server) handleVaultPassword(w http.ResponseWriter, r *http.Request) {
 		vaultErrorResponse(w, err)
 		return
 	}
+	if req.Plan != nil {
+		// The files are the loop's now; have it start on them.
+		s.wakeRekey()
+	}
 	writeJSON(w, http.StatusOK, report)
 }
 

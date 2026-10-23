@@ -112,6 +112,11 @@ type Server struct {
 	externalMu       sync.Mutex
 	externalActivity time.Time
 
+	// rekeyWake has the re-encryption loop look at its plan now rather than
+	// on its next tick; see handlers_rekey.go.
+	rekeyWakeOnce sync.Once
+	rekeyWake     chan struct{}
+
 	// dav is the share, when one is served. It is asked whether a request is
 	// still running before the vault is locked for being idle.
 	dav *davfs.Endpoint

@@ -120,6 +120,78 @@ func TestAPlannedPasswordChangeIsPacedAndReported(t *testing.T) {
 	}
 }
 
+// Finishing now is a plan at full speed, worked through by the server's own
+// loop — not a request held open until the last file has moved, which a phone
+// that locks its screen turns into "failed to fetch" with the files half done.
+func TestFinishingNowIsAPlanTheServerRunsOnItsOwn(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("pw", 3)
+	c.json(http.MethodPost, "/api/folders", map[string]any{"path": "/Photos"})
+	c.upload("holiday.jpg", "/Photos", []byte(strings.Repeat("p", 2000)))
+	c.upload("notes.txt", "/", []byte(strings.Repeat("n", 300)))
+
+	drainWake := func() bool {
+		select {
+		case <-c.server.rekeyWakeCh():
+			return true
+		default:
+			return false
+		}
+	}
+
+	// A change that leaves its files to the loop wakes it.
+	w, body := c.json(http.MethodPost, "/api/vault/password", map[string]any{
+		"old_password": "pw",
+		"new_password": "in the background",
+		"plan":         map[string]any{"full_speed": true},
+	})
+	if w.Code != http.StatusOK || body["remaining"] != float64(2) {
+		t.Fatalf("change password: %d %v, want both files left for the plan", w.Code, body)
+	}
+	if !drainWake() {
+		t.Error("a change with a plan did not wake the loop")
+	}
+
+	// Setting the plan answers at once with the plan, not after the files.
+	w, status := c.json(http.MethodPut, "/api/vault/rekey", map[string]any{"full_speed": true, "paused": true})
+	if w.Code != http.StatusOK {
+		t.Fatalf("set plan: %d %s", w.Code, w.Body.String())
+	}
+	plan := status["plan"].(map[string]any)
+	if plan["full_speed"] != true || plan["paused"] != true || status["pending"] != float64(2) {
+		t.Fatalf("status = %v, want a paused full-speed plan with both files pending", status)
+	}
+	if !drainWake() {
+		t.Error("setting the plan did not wake the loop")
+	}
+
+	// Paused holds a full-speed plan like any other.
+	v, _ := c.server.Vault()
+	if step, err := c.server.rekeyRound(v); err != nil || !step.Idle {
+		t.Fatalf("round while paused = %+v, %v; want idle", step, err)
+	}
+	if w, _ := c.json(http.MethodGet, "/api/vault/rekey", nil); w.Code != http.StatusOK {
+		t.Fatalf("status: %d", w.Code)
+	}
+
+	// Resumed, one round of the loop takes both files back to back and the
+	// plan goes with the last one.
+	c.json(http.MethodPut, "/api/vault/rekey", map[string]any{"full_speed": true})
+	step, err := c.server.rekeyRound(v)
+	if err != nil || !step.Idle {
+		t.Fatalf("round = %+v, %v; want everything moved and the plan gone", step, err)
+	}
+	w, rekey := c.json(http.MethodGet, "/api/vault/rekey", nil)
+	if w.Code != http.StatusOK || rekey["pending"] != float64(0) || rekey["plan"] != nil {
+		t.Errorf("rekey after the round = %v, want nothing pending and no plan", rekey)
+	}
+	if w, _ := c.json(http.MethodPost, "/api/vault/password", map[string]any{
+		"old_password": "in the background", "new_password": "and done",
+	}); w.Code != http.StatusOK {
+		t.Errorf("change after finishing: %d %s", w.Code, w.Body.String())
+	}
+}
+
 func TestAPlanNeedsSomethingOnThePreviousKey(t *testing.T) {
 	c := newTestClient(t)
 	c.setup("pw", 3)

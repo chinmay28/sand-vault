@@ -12,6 +12,33 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### Finishing a re-encryption now runs on the server, not in the tab
+
+*Finish now* in the re-encryption panel, and *all at once* in the password
+dialog, used to be one request held open until the last file had moved. On a
+phone that is a screen that locks a minute in and a dialog that comes back
+"failed to fetch" with the files half done — nothing lost, since every file is
+committed as it moves, but nothing finished either. Both now set the plan the
+server already works through to **full speed**: the request answers at once,
+the files move as fast as the clouds take them whether or not the tab is still
+there, and the panel shows where it has got to, polling more often while it
+runs. Pause, the folder order and *leave for last* all still apply; picking a
+pace slows it down again. The server takes the next file as soon as one has
+moved rather than at its next tick, and starts on a changed plan at once.
+`sand vault rekey --full-speed` sets the same from the command line;
+`sand vault migrate` still finishes in the foreground.
+
+### The custom pace field keeps the keyboard
+
+Typing a budget of your own into the re-encryption panel saved to the server
+on every keystroke, and the save disabled the field while it ran — which took
+the focus, and on a phone the keyboard, after each digit, and saved the first
+digit of "25" as a budget of its own. The field now commits when typing
+pauses, on Enter or when it loses focus, and is never disabled while it has
+focus. The two options in the password dialog are no longer buttons wrapped
+around that field, which is not HTML and left browsers to decide which of the
+two a tap was for.
+
 ### Files missing a part can be looked for on a cloud you name
 
 A file short of a part is short for one of two reasons, and until now the

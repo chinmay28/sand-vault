@@ -179,6 +179,74 @@ func TestAPlannedPasswordChangeMovesFilesOnTheMeter(t *testing.T) {
 	}
 }
 
+func TestAFullSpeedPlanMovesEverythingWithoutAMeter(t *testing.T) {
+	v, _ := newTestVault(t, 3)
+	ctx := context.Background()
+	uploadSized(t, v, "/Photos", "big.jpg", 3000)
+	uploadSized(t, v, "/", "notes.txt", 200)
+
+	// A budget too small to move a byte a day: the fresh meter lets the first
+	// file start, and the charge for it puts the second out of reach.
+	if _, err := v.ChangePasswordWithPlan(ctx, testPassword, "fast", &RekeySettings{BytesPerDay: 1}); err != nil {
+		t.Fatalf("ChangePasswordWithPlan: %v", err)
+	}
+	now := time.Now()
+	step, err := v.RekeyStep(ctx, now)
+	if err != nil || !step.Moved || step.Path != "/notes.txt" {
+		t.Fatalf("first step = %+v, %v; want the smallest file moved", step, err)
+	}
+	step, err = v.RekeyStep(ctx, now)
+	if err != nil || step.Moved || step.Idle || step.Wait <= 0 {
+		t.Fatalf("second step = %+v, %v; want a wait on the meter", step, err)
+	}
+
+	// Finish now, as a plan: full speed over the same budget. The meter is
+	// out of the way, and the status says so without a wait or an ETA.
+	status, err := v.SetRekeyPlan(RekeySettings{BytesPerDay: 1, FullSpeed: true})
+	if err != nil {
+		t.Fatalf("SetRekeyPlan: %v", err)
+	}
+	if !status.Plan.FullSpeed || !status.Plan.Active() || status.NextInSeconds != 0 || status.ETASeconds != 0 || status.Idle {
+		t.Fatalf("status at full speed = %+v, plan %+v; want active, nothing to wait for", status, status.Plan)
+	}
+
+	// A budget is a pace, and takes the plan off full speed; the debt the
+	// meter was carrying is still there, so the file waits again.
+	if _, err := v.SetRekeyPlan(RekeySettings{BytesPerDay: 1}); err != nil {
+		t.Fatalf("SetRekeyPlan(paced): %v", err)
+	}
+	step, err = v.RekeyStep(ctx, now)
+	if err != nil || step.Moved || step.Idle || step.Wait <= 0 {
+		t.Fatalf("paced step = %+v, %v; want a wait on the meter", step, err)
+	}
+
+	// At full speed it moves at once, debt or no debt, and the plan and the
+	// previous key go with the last file.
+	if _, err := v.SetRekeyPlan(RekeySettings{BytesPerDay: 1, FullSpeed: true}); err != nil {
+		t.Fatalf("SetRekeyPlan(full speed): %v", err)
+	}
+	step, err = v.RekeyStep(ctx, now)
+	if err != nil || !step.Moved || step.Path != "/Photos/big.jpg" || step.Wait != 0 {
+		t.Fatalf("full-speed step = %+v, %v; want big.jpg moved at once", step, err)
+	}
+	if step, err := v.RekeyStep(ctx, now); err != nil || !step.Idle {
+		t.Fatalf("step after the last file = %+v, %v; want idle", step, err)
+	}
+	if v.PendingMigration() != 0 || retiredCount(v) != 0 {
+		t.Errorf("%d file(s) pending, %d retired key(s); want none", v.PendingMigration(), retiredCount(v))
+	}
+	if status, _ := v.RekeyStatus(); status.Plan != nil || !status.Done() {
+		t.Errorf("status after finishing = %+v, want no plan and nothing pending", status)
+	}
+
+	fresh := reopenAs(t, v, "fast")
+	for _, e := range fresh.manifest.Entries {
+		if _, _, err := fresh.Fetch(ctx, e.ID); err != nil {
+			t.Errorf("Fetch %s: %v", e.Path(), err)
+		}
+	}
+}
+
 func TestRekeyStepWaitsForTheMeter(t *testing.T) {
 	v, _ := newTestVault(t, 3)
 	ctx := context.Background()
