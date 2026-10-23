@@ -53,20 +53,29 @@ export const api = {
   setDefaultAccounts: (accounts, scheme = '') =>
     request('/api/vault/defaults', { method: 'POST', body: { accounts, scheme } }),
   /* Changing the password rotates the key the stored parts are encrypted
-     under, so unless the migration is deferred this call only comes back once
-     every file has been rebuilt onto the new key — minutes, on a full vault.
-     Deferring leaves the files readable and finishable with migrate(). */
+     under, and every file has to be rebuilt onto the new one. With a plan —
+     so many bytes a day, or full_speed — the call comes back as soon as the
+     password has changed and the server moves the files on its own, which is
+     what the browser always sends: a request held open until the last file had
+     moved was a locked phone screen turned into "failed to fetch". Without a
+     plan and with migrate, the call holds until every file has moved; migrate
+     false leaves them readable on the previous key for migrate() or a plan. */
   changePassword: (oldPassword, newPassword, { migrate = true, plan = null } = {}) =>
     request('/api/vault/password', {
       method: 'POST',
       body: { old_password: oldPassword, new_password: newPassword, migrate, ...(plan ? { plan } : {}) },
     }),
+  /* Finishes the re-encryption here and now, holding the request open until
+     the last file has moved. The browser's "finish now" is setRekeyPlan with
+     full_speed instead, so it survives the tab closing; this is kept for the
+     CLI's sake and for anything that wants the report. */
   migrate: () => request('/api/vault/migrate', { method: 'POST' }),
   /* Where the re-encryption behind a password change has got to — how much is
      still on the previous key, folder by folder — and the plan it follows: so
-     many bytes a day, these folders first, paused or not. The whole settings
-     object goes each time; a plan is one thing, not a bag of patches. The
-     server moves the files on its own clock while the vault is open. */
+     many bytes a day or full_speed, these folders first, paused or not. The
+     whole settings object goes each time; a plan is one thing, not a bag of
+     patches. The server moves the files on its own clock while the vault is
+     open, and starts on a changed plan at once. */
   rekeyStatus: () => request('/api/vault/rekey'),
   setRekeyPlan: (settings) => request('/api/vault/rekey', { method: 'PUT', body: settings }),
   /* Leaves one file for last — the one being moved right now when no id is

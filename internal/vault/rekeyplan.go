@@ -71,6 +71,15 @@ type RekeySettings struct {
 	// files wait for MigrateFiles — "finish now" — or for a budget.
 	BytesPerDay int64 `json:"bytes_per_day"`
 
+	// FullSpeed moves everything as fast as the clouds take it, with no
+	// meter, while BytesPerDay is kept for the pace to fall back to. It is
+	// "finish now" as a plan rather than as a request held open: the server
+	// works through the files on its own (RekeyStep, back to back), so the
+	// browser that asked can be closed, locked or put in a pocket, and the
+	// status says where it has got to. Folders, OnlyFolders, Paused and the
+	// deferred list mean what they mean at any pace.
+	FullSpeed bool `json:"full_speed,omitempty"`
+
 	// Folders are re-encrypted first, in this order, before anything else.
 	// Vault paths; "/" names the root's own files and everything under it.
 	Folders []string `json:"folders,omitempty"`
@@ -136,11 +145,19 @@ func (p *RekeyPlan) isDeferred(id string) bool {
 	return false
 }
 
-// Active reports whether the plan wants files moved on its own.
-func (p *RekeyPlan) Active() bool { return p != nil && p.BytesPerDay > 0 && !p.Paused }
+// Active reports whether the plan wants files moved on its own: at full
+// speed, or on a budget, and not paused.
+func (p *RekeyPlan) Active() bool {
+	return p != nil && (p.FullSpeed || p.BytesPerDay > 0) && !p.Paused
+}
 
 // pacer builds the meter from the plan's stored state. adopt writes it back.
+// A plan at full speed gets an unmetered pacer, which leaves Level and LevelAt
+// as they were, so a plan slowed down again takes up the pace it had banked.
 func (p *RekeyPlan) pacer() *Pacer {
+	if p.FullSpeed {
+		return &Pacer{Level: p.Level, At: p.LevelAt}
+	}
 	return &Pacer{Rate: p.BytesPerDay, Level: p.Level, At: p.LevelAt}
 }
 

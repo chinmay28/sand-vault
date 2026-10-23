@@ -116,6 +116,7 @@ cannot forget it. A file that would not move is refunded.
 ```json
 "rekey": {
   "bytes_per_day": 10737418240,
+  "full_speed": false,
   "folders": ["/Taxes", "/Photos/2024"],
   "only_folders": false,
   "paused": false,
@@ -143,6 +144,23 @@ allowed to move, and the status says so.
 is the same hold under another name: nothing moves until a pace is set, and
 `sand vault migrate` finishes the lot at any time.
 
+**Full speed** is "finish now" as a plan. With `full_speed` set the meter is
+out of the way — `Ready` always answers yes, nothing is charged — and the
+files move one after another as fast as the clouds take them, by the same
+loop, with the same folder order, the same deferred list, the same pause. The
+budget is kept beside it as the pace to fall back to: choosing a pace again
+clears `full_speed`, and the level the meter had banked is still there.
+
+It exists because the browser's "finish now" used to be `POST
+/api/vault/migrate`, a request held open until the last file had moved. On a
+phone that is a screen that locks a minute in, a browser that drops the
+connection, and a dialog that comes back "failed to fetch" with the files half
+done — correct, since every file is committed as it moves, but not what anyone
+asked for. The work belongs on the server, which is where the plan already
+was; so the browser now sets the plan to full speed and polls, and the request
+answers at once. The password dialog's *all at once* is the same plan, started
+by the change itself.
+
 **Keep unlocked.** The server moves files only while the vault is open, and
 the idle timer closes it. By default the plan holds the timer off *during* a
 move, so a file is never cut off, and otherwise leaves it alone — a plan must
@@ -153,10 +171,19 @@ warned opt-in that does.
 
 `Vault.RekeyStep(ctx, now)` moves at most one file: pick the next the plan
 allows, ask the meter, charge, move, or refund and remember why. The server
-calls it on a twenty-second tick (`rekeyLoop`); `sand vault rekey --run` calls
-it in a foreground loop for a machine with no server. A file that cannot be
-read — an account offline, too few parts — is left alone for an hour, its
-reason kept for the status, and the files behind it are not held up.
+calls it from `rekeyLoop`; `sand vault rekey --run` calls it in a foreground
+loop for a machine with no server. A file that cannot be read — an account
+offline, too few parts — is left alone for an hour, its reason kept for the
+status, and the files behind it are not held up.
+
+The server's loop asks on a twenty-second tick whether anything is due, and
+once a file has moved takes the next straight away (`rekeyRound`) rather than
+at the next tick: the meter is what spaces files out, and a plan at full
+speed has no meter. A plan set or changed over HTTP wakes the loop at once,
+so a change takes effect now rather than within twenty seconds. Each move
+attempted counts as use of the vault for the idle timer, so a plan taking
+files one after another is not locked out from under; between rounds the
+timer is left alone, as before.
 
 The paced step and the finish-now pass share one slot (`migrateMu`), so they
 never gather and scatter the same file at once. The loser does not wait: the
@@ -245,8 +272,8 @@ for the file in flight, how far through it is, and the cancel the skip pulls.
 |---|---|
 | `POST /api/vault/password` with `plan` | Changes the password now and leaves the files to the plan. `plan` is a `RekeySettings`; giving one means not migrating now, whatever `migrate` says. |
 | `GET /api/vault/rekey` | `RekeyStatus`: pending files and bytes, totals the plan began over, the plan, when the password changed, next-file and ETA seconds, idle, the per-folder breakdown (queued folders first in their order, then every top-level folder with files left), what is moving now, and the recent failures. |
-| `PUT /api/vault/rekey` | Sets the plan from a whole `RekeySettings`. Starts one if none exists; refused when nothing is on the previous key. |
-| `POST /api/vault/migrate` | Unchanged: finish now. `409 MIGRATION_BUSY` while a step holds the slot. |
+| `PUT /api/vault/rekey` | Sets the plan from a whole `RekeySettings`. Starts one if none exists; refused when nothing is on the previous key. With `full_speed`, this is how the browser finishes now: the server works through the files on its own and the call answers at once. |
+| `POST /api/vault/migrate` | Finish now in the foreground, holding the request open until the last file has moved. `409 MIGRATION_BUSY` while a step holds the slot. The CLI's `sand vault migrate`; the browser no longer calls it. |
 | `POST /api/vault/rekey/skip` | `{id, undo}`: leave a file for last (the one being moved when `id` is empty, stopping that move), or put it back in its turn. Answers with the status. |
 | `GET /api/vault` | `stats.key_id` names the current generation; `sub_vaults[].key_id` likewise while open. |
 | `GET /api/files` | `previous_key` maps each subfolder to how many files under it are still on the previous key. Each file already carries `key_id`. |
@@ -257,6 +284,7 @@ for the file in flight, how far through it is, and the cancel the skip pulls.
 sand vault passwd --per-day 10G --folder /Taxes --folder /Photos/2024 [--only-folders] [--keep-unlocked]
 sand vault rekey                      # where it stands
 sand vault rekey --per-day 25G --all  # faster, forget the folder order
+sand vault rekey --full-speed         # finish now, in the background under 'sand serve'
 sand vault rekey --pause | --resume
 sand vault rekey --skip /Films/Heat.1995.mkv   # leave it for last; '.' is the file moving now
 sand vault rekey --unskip /Films/Heat.1995.mkv
@@ -274,6 +302,14 @@ progress panel carries pace, folders, pause, finish-now and the recent
 failures; the accounts drawer carries a card; the top of the vault carries the
 *Previous key* entry; a file row on the previous key wears a quiet dashed
 `prev key` pill beside its parts, and a folder row the count under it.
+Finish-now, and *all at once*, set the plan to full speed and leave the moving
+to the server; the panel polls more often while it runs.
+
+The pace chips' custom field commits when typing pauses, on Enter or on blur,
+not on every keystroke, and is never disabled while it has focus. Each
+keystroke used to be a save to the server, and the save disabled the field
+while it ran; a disabled field loses focus, and on a phone that is a keyboard
+that goes away after every digit.
 
 ---
 
@@ -286,6 +322,7 @@ failures; the accounts drawer carries a card; the top of the vault carries the
 | A cloud is offline | Its files fail, are refunded, listed with the reason, and retried after an hour. Others move. |
 | A file is deleted while chosen | `migrateFile` finds no entry and writes nothing; the charge is refunded. |
 | Finish-now runs while the loop ticks | One slot. The loop's step comes back asking to be tried again shortly. |
+| The browser that asked for full speed goes away | Nothing: the plan is the server's. The panel shows where it has got to when it is next opened. |
 | The budget is raised | The loop trusts a wait for at most five minutes, so the new pace is felt within that. |
 | `only_folders` and the folders are done | The plan is idle, says so, and the rest waits for `--all` or a wider plan. |
 | Nothing pending, plan requested | Refused: a plan needs something to be a plan about. |
@@ -304,10 +341,13 @@ backwards clock, refunds, ETA, unmetered.
 open and locked and allowed once finished; the same for a sub vault; a planned
 change moving files in folder order then smallest first and dropping the plan
 and the key with the last file; a step waiting on the meter and the debt
-surviving a reopen; a plan going idle at its folders and widening; pause and a
+surviving a reopen; full speed moving a file the meter would hold, a budget
+taking the plan off full speed with the debt still owed; a plan going idle at its folders and widening; pause and a
 zero budget; folder validation and the nothing-pending refusal; an unreadable
 file left alone for an hour and then moved; one pass at a time; `Stats.KeyID`.
 
 `internal/server/rekey_api_test.go` covers the HTTP surface end to end,
 including the `409`, the plan adjusted in flight, one server-side step moving
-the queued folder's file first, and finish-now clearing the plan.
+the queued folder's file first, finish-now clearing the plan, and a plan at
+full speed: the change and the plan waking the loop, pause holding it, and one
+round of the loop taking every file and the plan with it.

@@ -31,6 +31,14 @@ import (
 // Second, the slot. A finish-now pass (POST /api/vault/migrate) and this loop
 // share one, inside the vault, so the loop never has to know whether one is
 // running: the step comes back asking to be tried again shortly.
+//
+// The tick is only how often the loop asks whether anything is due. Once a
+// file has moved the next is taken straight away (rekeyRound): the meter is
+// what spaces files out on a paced plan, and a plan at full speed has no
+// meter, so waiting a tick between files would make "as fast as the clouds
+// take it" mean three files a minute. A plan set or changed over HTTP wakes
+// the loop at once, too, so "finish now" starts now rather than within the
+// next twenty seconds.
 
 // rekeyTick is how often the loop asks whether a file may move. Short enough
 // that a budget raised in the panel takes effect within a minute, cheap enough
@@ -47,12 +55,35 @@ const rekeyStepTimeout = 12 * time.Hour
 // end of the wait it was told under the old budget.
 const rekeyMaxSleep = 5 * time.Minute
 
+// rekeyWakeCh is the channel a plan change pokes to have the loop look now.
+// Made on first use, because a Server is a struct literal with no constructor.
+func (s *Server) rekeyWakeCh() chan struct{} {
+	s.rekeyWakeOnce.Do(func() { s.rekeyWake = make(chan struct{}, 1) })
+	return s.rekeyWake
+}
+
+// wakeRekey asks the loop to look at the plan now rather than on its next
+// tick. Never blocks: a wake already waiting is as good as two.
+func (s *Server) wakeRekey() {
+	select {
+	case s.rekeyWakeCh() <- struct{}{}:
+	default:
+	}
+}
+
 func (s *Server) rekeyLoop() {
 	ticker := time.NewTicker(rekeyTick)
 	defer ticker.Stop()
 
 	var notBefore time.Time
-	for range ticker.C {
+	for {
+		woken := false
+		select {
+		case <-ticker.C:
+		case <-s.rekeyWakeCh():
+			woken = true
+		}
+
 		v, err := s.Vault()
 		if err != nil || !v.Unlocked() {
 			continue
@@ -61,16 +92,49 @@ func (s *Server) rekeyLoop() {
 		if v.RekeyKeepsUnlocked() {
 			s.noteExternalActivity()
 		}
-		if now.Before(notBefore) {
+		// A wake is a changed plan, and a wait the old plan was told under
+		// does not bind the new one.
+		if now.Before(notBefore) && !woken {
 			continue
 		}
 
-		step, err := s.rekeyStep(v, now)
-		switch {
-		case errors.Is(err, vault.ErrLocked):
-			// Locked between the check and the step, which is ordinary.
-		case err != nil:
+		step, err := s.rekeyRound(v)
+		if err != nil && !errors.Is(err, vault.ErrLocked) {
+			// Locked between the check and the step is ordinary; anything
+			// else is worth a line.
 			log.Printf("re-encryption: %v", err)
+		}
+		now = time.Now()
+		switch {
+		case step.Idle:
+			notBefore = now.Add(time.Minute)
+		case step.Wait > rekeyMaxSleep:
+			notBefore = now.Add(rekeyMaxSleep)
+		case step.Wait > 0:
+			notBefore = now.Add(step.Wait)
+		default:
+			notBefore = time.Time{}
+		}
+	}
+}
+
+// rekeyRound takes steps back to back for as long as files move — or are
+// skipped, which is a move the person stopped — and returns the first step
+// that did not: the one that says how long to wait, or that the plan is idle.
+// A file that would not move ends the round too, so a cloud that is down costs
+// one try a tick rather than a tight loop of refusals.
+//
+// Every move attempted counts as use of the vault, the way a request does:
+// the idle timer is for a vault nobody is touching, and a plan taking files one
+// after another is touching it. Between rounds the timer is left alone, so a
+// plan that is waiting on its meter does not keep the vault open.
+func (s *Server) rekeyRound(v *vault.Vault) (vault.RekeyStep, error) {
+	for {
+		step, err := s.rekeyStep(v, time.Now())
+		if err != nil {
+			return step, err
+		}
+		switch {
 		case step.Moved:
 			log.Printf("re-encrypted %s (%s) under the current key", step.Path, formatBytes(step.Bytes))
 			if step.Warning != "" {
@@ -81,14 +145,14 @@ func (s *Server) rekeyLoop() {
 		case step.Warning != "":
 			log.Printf("re-encryption: %s", step.Warning)
 		}
-
-		switch {
-		case step.Idle:
-			notBefore = now.Add(time.Minute)
-		case step.Wait > rekeyMaxSleep:
-			notBefore = now.Add(rekeyMaxSleep)
-		case step.Wait > 0:
-			notBefore = now.Add(step.Wait)
+		if step.Moved || step.Skipped || step.Warning != "" {
+			s.noteExternalActivity()
+		}
+		if !step.Moved && !step.Skipped {
+			return step, nil
+		}
+		if !v.Unlocked() {
+			return vault.RekeyStep{}, vault.ErrLocked
 		}
 	}
 }
@@ -180,5 +244,8 @@ func (s *Server) handleRekeyPlan(w http.ResponseWriter, r *http.Request) {
 		vaultErrorResponse(w, err)
 		return
 	}
+	// Felt now, not at the next tick: a plan set to full speed is somebody
+	// watching a progress bar.
+	s.wakeRekey()
 	writeJSON(w, http.StatusOK, status)
 }

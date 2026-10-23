@@ -18,6 +18,7 @@ import (
 // rekey', which adjusts the one in flight.
 type rekeyFlags struct {
 	perDay       string
+	fullSpeed    bool
 	folders      []string
 	onlyFolders  bool
 	keepUnlocked bool
@@ -27,8 +28,11 @@ func (f *rekeyFlags) bind(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&f.perDay, "per-day", "",
 		"re-encrypt this much a day rather than everything at once — 10G, 500M — "+
 			"while the vault is open under 'sand serve' or 'sand vault rekey --run'")
+	cmd.Flags().BoolVar(&f.fullSpeed, "full-speed", false,
+		"re-encrypt everything as fast as the clouds take it, in the background under "+
+			"'sand serve' or 'sand vault rekey --run', rather than on a daily budget")
 	cmd.Flags().StringArrayVar(&f.folders, "folder", nil,
-		"re-encrypt this folder first (repeatable, in order); needs --per-day")
+		"re-encrypt this folder first (repeatable, in order); needs --per-day or --full-speed")
 	cmd.Flags().BoolVar(&f.onlyFolders, "only-folders", false,
 		"stop after the --folder folders and leave the rest on the previous key for now")
 	cmd.Flags().BoolVar(&f.keepUnlocked, "keep-unlocked", false,
@@ -37,19 +41,26 @@ func (f *rekeyFlags) bind(cmd *cobra.Command) {
 
 // set reports whether any of the plan flags was given.
 func (f *rekeyFlags) set() bool {
-	return f.perDay != "" || len(f.folders) > 0 || f.onlyFolders || f.keepUnlocked
+	return f.perDay != "" || f.fullSpeed || len(f.folders) > 0 || f.onlyFolders || f.keepUnlocked
 }
 
 // settings turns the flags into a plan, over base — the plan already in force,
 // or nothing.
 func (f *rekeyFlags) settings(base vault.RekeySettings) (vault.RekeySettings, error) {
 	out := base
+	if f.perDay != "" && f.fullSpeed {
+		return out, fmt.Errorf("--per-day and --full-speed are two answers to the same question; give one")
+	}
 	if f.perDay != "" {
 		n, err := parseDailyBudget(f.perDay)
 		if err != nil {
 			return out, err
 		}
-		out.BytesPerDay = n
+		// A budget is a pace, so it takes a plan off full speed.
+		out.BytesPerDay, out.FullSpeed = n, false
+	}
+	if f.fullSpeed {
+		out.FullSpeed = true
 	}
 	if len(f.folders) > 0 {
 		out.Folders = f.folders
@@ -60,9 +71,9 @@ func (f *rekeyFlags) settings(base vault.RekeySettings) (vault.RekeySettings, er
 	if f.keepUnlocked {
 		out.KeepUnlocked = true
 	}
-	if out.BytesPerDay == 0 && (len(out.Folders) > 0 || out.OnlyFolders || out.KeepUnlocked) {
-		return out, fmt.Errorf("--folder, --only-folders and --keep-unlocked describe a paced " +
-			"re-encryption, so they need --per-day")
+	if out.BytesPerDay == 0 && !out.FullSpeed && (len(out.Folders) > 0 || out.OnlyFolders || out.KeepUnlocked) {
+		return out, fmt.Errorf("--folder, --only-folders and --keep-unlocked describe a background " +
+			"re-encryption, so they need --per-day or --full-speed")
 	}
 	return out, nil
 }
@@ -103,7 +114,8 @@ has to be rebuilt onto the new one. Done all at once that is a day of saturated
 upload on every account; 'sand vault passwd --per-day 10G' spreads it out
 instead, and this command adjusts the pace, the order and the holds while it
 runs. The files move while the vault is open under 'sand serve', or in the
-foreground here with --run. 'sand vault migrate' moves everything now.
+foreground here with --run. 'sand vault migrate' moves everything now and
+holds the terminal; --full-speed has the server do the same in the background.
 
 Until a file has moved, it is readable by anyone holding your previous password
 and an old copy of the vault file or of a manifest backup — which is what the
@@ -268,11 +280,15 @@ func printRekeyStatus(s *vault.RekeyStatus) {
 
 	plan := s.Plan
 	switch {
-	case plan == nil || plan.BytesPerDay == 0:
+	case plan == nil || (plan.BytesPerDay == 0 && !plan.FullSpeed):
 		fmt.Println("Pace:             not planned — 'sand vault migrate' moves everything now, or give")
 		fmt.Println("                  'sand vault rekey --per-day 10G' a budget")
+	case plan.Paused && plan.FullSpeed:
+		fmt.Println("Pace:             paused at full speed — 'sand vault rekey --resume'")
 	case plan.Paused:
 		fmt.Printf("Pace:             paused at %s a day — 'sand vault rekey --resume'\n", formatBytes(plan.BytesPerDay))
+	case plan.FullSpeed:
+		fmt.Println("Pace:             full speed — as fast as the clouds take it, in the background")
 	default:
 		line := fmt.Sprintf("Pace:             %s a day", formatBytes(plan.BytesPerDay))
 		if s.ETASeconds > 0 {
