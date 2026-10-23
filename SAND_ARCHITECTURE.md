@@ -1121,14 +1121,16 @@ That is the repair for a part that was never written. The dialog also offers
 the one for a part that *was*, and sits on a cloud with nothing pointing at it
 (§3.7.2) — because from this list the two look the same, and the second is
 put right without moving a byte. **Look for the missing parts on** names one
-connected cloud and asks `GET /api/vault/orphans/strays?provider=` of it
-alone, with time to answer; parts of these files found there open the same
+connected cloud — or every one — and asks `GET /api/vault/orphans/strays` of
+it, with time to answer; parts of these files found there open the same
 reattach panel the reconnect banner opens, pointed at that account
 (`provider_id` on the `POST`), and the list is read again when it closes. The
 other two answers are said rather than left blank, since they lead to
 different places: a cloud that would not be listed is reported as such, and a
 cloud whose every part already has a record sends somebody back to the
-**Clouds** button knowing the part was never there.
+**Clouds** button knowing the part was never there. The same card opens the
+**Stray parts** panel of §3.7.1 over the list, so the sweep that the same
+listing makes possible is a press away rather than under another menu.
 
 ---
 

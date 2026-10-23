@@ -26,13 +26,15 @@ set of connected accounts changes, but that look lists every cloud at once on
 a short budget and says nothing when it cannot finish — which on a vault with
 tens of thousands of short files is the usual outcome.
 
-The list now has *Look for the missing parts on*, with a cloud to pick. It
-lists that one cloud, with time to answer, and any parts of the short files it
-finds there are recorded again from the same panel the reconnect notice
-opens — no data moves for it. The other two answers are said out loud rather
-than left as a blank list: a cloud that could not be listed is reported as
-such, and a cloud whose every part already has a record means the part was
-never there, and the *Clouds* button is the way back.
+The list now has *Look for the missing parts on*, with a cloud to pick, or
+every cloud at once. It lists what was picked, with time to answer, and any
+parts of the short files it finds there are recorded again from the same
+panel the reconnect notice opens — no data moves for it. The other two
+answers are said out loud rather than left as a blank list: a cloud that could
+not be listed is reported as such, and a cloud whose every part already has a
+record means the part was never there, and the *Clouds* button is the way
+back. *Stray parts*, which used to live only under Vault settings, opens from
+the same card.
 
 `GET /api/vault/orphans/strays?provider=` is the scan of one account, and
 `provider_id` on `POST /api/vault/orphans/reattach` points the repair at it.
