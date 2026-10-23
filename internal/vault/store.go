@@ -188,12 +188,15 @@ type storeFile struct {
 	HealthCheckMinutes int  `json:"health_check_minutes,omitempty"`
 	HealthCheckOff     bool `json:"health_check_off,omitempty"`
 
-	// SmartCheckOn folds each local account's disk SMART report into the
-	// health check. Stored as the positive, unlike the two above, because this
-	// one is opt-in: it needs a root-run scanner installed outside the vault
-	// (scripts/enable-disk-health.sh), so a vault that has never chosen it
-	// must read as off. See internal/provider/disksmart.go.
-	SmartCheckOn bool `json:"smart_check_on,omitempty"`
+	// SmartCheckOff leaves each local account's disk SMART report out of the
+	// health check. Stored as the negative, like HealthCheckOff, so a vault
+	// that has never chosen reads as on: the quickstart installs the root-run
+	// scanner the check reads, and a vault without one hears about it once,
+	// and only while some account sits on a disk the scanner would have read
+	// (internal/provider/disksmart.go). Vaults from the release that stored
+	// the positive, smart_check_on, come out on either way, which is what
+	// they had chosen.
+	SmartCheckOff bool `json:"smart_check_off,omitempty"`
 
 	// ManifestBackupDisabled turns off replicating the manifest to the
 	// connected accounts. Stored as the negative so that the absence of the

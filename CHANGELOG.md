@@ -12,6 +12,25 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### The disk under a Local folder account is checked without being asked
+
+A Local folder answers the health check's ping for as long as its filesystem
+does, which is long after the disk under it has started to go; the disk's own
+SMART counters move weeks earlier. The service cannot read them itself (it
+runs with no `/dev`, and rightly so), so a small root-run scanner reads every
+disk hourly and leaves a report the health check joins to each account. That
+scanner is now installed, and run once, by the quickstart along with the
+service, and the check is on by default — it used to be a switch over a
+scanner you were told to go and install. An install made another way gets the
+scanner from `scripts/enable-disk-health.sh`.
+
+A report that is missing or stale is said once, in the *Disk health* section
+of the cloud health panel, instead of as a warning on every account sitting
+on a disk — five accounts under one missing report were five warnings — and
+only while some account is on a disk the scanner would have read, so a vault
+of network shares, or a machine with no scanner and nothing for it to look
+at, says nothing.
+
 ### Finishing a re-encryption now runs on the server, not in the tab
 
 *Finish now* in the re-encryption panel, and *all at once* in the password

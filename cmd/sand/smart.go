@@ -21,9 +21,10 @@ import (
 // disk in the machine would be trading the vault's hardening for a feature.
 // So the reading is a separate, tiny, root-run job with a fixed task: ask
 // smartctl about every physical disk, distill the answer, write one small JSON
-// file where the service can read it. scripts/enable-disk-health.sh installs
-// it as a systemd timer; the service's health check does the joining and the
-// warning (see internal/provider/disksmart.go).
+// file where the service can read it. scripts/quickstart.sh installs it as a
+// systemd timer with the service (scripts/enable-disk-health.sh does the same
+// on an install made another way); the service's health check does the
+// joining and the warning (see internal/provider/disksmart.go).
 
 // smartctlTimeout bounds one disk's answer. SMART reads are milliseconds on a
 // healthy drive; a drive that takes longer than this is usually one hanging on
@@ -46,9 +47,10 @@ reporting trouble — pending sectors, failed self-tests, a drive that has
 tripped its own failure thresholds.
 
 Needs root (SMART is a raw device read) and smartmontools installed. Meant to
-be run by the sand-smart systemd timer that scripts/enable-disk-health.sh
-installs, not by hand — though running it by hand works and is how to check
-what it sees.
+be run by the sand-smart systemd timer the quickstart installs with the
+service (scripts/enable-disk-health.sh does the same on an install made
+another way), not by hand — though running it by hand works and is how to
+check what it sees.
 
 The report carries facts, not history: each run replaces the last. Disks that
 keep no SMART data — SD cards, most USB sticks — are recorded as unsupported

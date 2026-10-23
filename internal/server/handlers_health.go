@@ -193,6 +193,15 @@ func logHealthChanges(report vault.HealthReport, was map[string]bool) map[string
 		}
 	}
 
+	// And the scanner itself, once, the same way: a report that is missing
+	// or has gone stale is one line when it starts and silence after.
+	if report.DiskScanner != "" {
+		now["disk-scanner"] = true
+		if !was["disk-scanner"] {
+			disks = append(disks, "scanner ("+report.DiskScanner+")")
+		}
+	}
+
 	sort.Strings(disks)
 	if len(disks) > 0 {
 		log.Printf("disk health: %s", strings.Join(disks, "; "))

@@ -24,22 +24,25 @@ import (
 // PrivateDevices=true, so there is no /dev to open — and that is the right
 // trade: a network-facing service holding cloud credentials has no business
 // with raw disk access. So the reading happens outside: a root-run one-shot
-// (sand smart-scan, installed as a systemd timer by
-// scripts/enable-disk-health.sh) asks smartctl about every physical disk and
-// writes what it found to a small JSON file in the data directory. What this
-// file implements is the sandboxed half: reading that report back and joining
-// it to a local account's folder through the mount table, so the health panel
-// can put "32 sectors pending reallocation" next to the account sitting on
-// them.
+// (sand smart-scan, installed as a systemd timer by scripts/quickstart.sh, or
+// by scripts/enable-disk-health.sh on an install made some other way) asks
+// smartctl about every physical disk and writes what it found to a small JSON
+// file in the data directory. What this file implements is the sandboxed
+// half: reading that report back and joining it to a local account's folder
+// through the mount table, so the health panel can put "32 sectors pending
+// reallocation" next to the account sitting on them.
 //
 // The join is deliberately loose about what it does not know. A folder on a
 // network share, a tmpfs, or under a device-mapper volume has no single
 // physical disk to speak for, and answers with nothing rather than a warning
 // — SMART not applying is not a problem to fix. A report that is missing or
 // stale, on the other hand, is a problem with a repair (install the scanner;
-// check the timer), and the warning says so, because a toggle switched on
-// above a scanner that was never installed would otherwise read as a clean
-// bill of health.
+// check the timer), and it is said — once, about the scanner, rather than
+// once per account sitting on a disk: five accounts on five disks under one
+// missing report are one missing report. And it is said only when some
+// account is on a physical disk at all, because a scanner that nothing would
+// read is not news; that is what keeps a vault of network shares, or an
+// install made without the scanner, from opening on a warning.
 
 // DefaultDiskReportPath is where the scanner writes and the service reads when
 // nobody says otherwise: the data directory the systemd unit grants, so the
@@ -278,28 +281,52 @@ func ReadDiskReport(path string) (DiskReport, error) {
 	return report, nil
 }
 
-// DiskHealthFor joins a local folder to the disk under it and answers with
-// that disk's standing: the disk's own report when there is one, and a warning
-// when there is something to say — about the disk, or about the report itself.
+// DiskHealth is the scanner's report as one health report reads it: once,
+// with the mount table beside it, and then asked about each local folder in
+// turn. Reading it per account would cost a file and a mount-table walk per
+// account for the same answer, and would have nowhere to say the one thing
+// about the report itself.
+type DiskHealth struct {
+	path   string
+	report DiskReport
+	err    error
+	table  string
+	now    time.Time
+
+	// applies is set once For has met a folder on a physical disk: the
+	// condition under which the scanner is anybody's business.
+	applies bool
+}
+
+// ReadDiskHealth reads the report and the mount table for a health report
+// about to be built.
+func ReadDiskHealth() *DiskHealth {
+	table, _ := os.ReadFile("/proc/self/mounts")
+	path := DiskReportPath()
+	report, err := ReadDiskReport(path)
+	return newDiskHealth(string(table), path, report, err, time.Now())
+}
+
+// newDiskHealth is ReadDiskHealth against inputs already in hand, which is the
+// form the tests exercise.
+func newDiskHealth(table, path string, report DiskReport, err error, now time.Time) *DiskHealth {
+	return &DiskHealth{path: path, report: report, err: err, table: table, now: now}
+}
+
+// For joins a local folder to the disk under it and answers with that disk's
+// standing: the disk's own report when the scanner has one, and a warning when
+// the disk has something to say. What there is to say about the report itself
+// — missing, stale — is ScannerProblem's, said once.
 //
 // Both answers empty means SMART simply does not apply here: a network share,
-// a tmpfs, a mapped volume. That is a fact, not a finding, and it must not
-// colour anything amber.
-func DiskHealthFor(root string) (*DiskSmart, string) {
-	table, err := os.ReadFile("/proc/self/mounts")
-	if err != nil {
+// a tmpfs, a mapped volume, or a machine with no mount table to read. That is
+// a fact, not a finding, and it must not colour anything amber.
+func (h *DiskHealth) For(root string) (*DiskSmart, string) {
+	if h.table == "" {
 		// Not Linux, or no proc. The same non-answer as a network share.
 		return nil, ""
 	}
-	path := DiskReportPath()
-	report, reportErr := ReadDiskReport(path)
-	return diskHealthIn(root, string(table), path, report, reportErr, time.Now())
-}
-
-// diskHealthIn is DiskHealthFor against inputs already in hand, which is the
-// form the tests exercise.
-func diskHealthIn(root, table, path string, report DiskReport, reportErr error, now time.Time) (*DiskSmart, string) {
-	source := mountSourceFor(table, root)
+	source := mountSourceFor(h.table, root)
 	if !strings.HasPrefix(source, "/dev/") {
 		// tmpfs, NFS, cifs — no physical disk of its own to ask after.
 		return nil, ""
@@ -311,31 +338,48 @@ func diskHealthIn(root, table, path string, report DiskReport, reportErr error, 
 		// the stack through /sys is a job for a future that needs it.
 		return nil, ""
 	}
+	h.applies = true
 
-	if reportErr != nil {
-		return nil, "no disk report at " + path +
-			" — the SMART scanner is not installed or has never run." +
-			" Install it: sudo scripts/enable-disk-health.sh"
+	if h.err != nil {
+		// No report to join to. ScannerProblem says so, once.
+		return nil, ""
 	}
 
-	stale := ""
-	if age := now.Sub(report.TakenAt); age > DiskReportMaxAge {
-		stale = fmt.Sprintf("the disk report is %s old — the sand-smart timer does not seem to be running. ",
-			age.Round(time.Hour))
-	}
-
-	for _, disk := range report.Disks {
+	for _, disk := range h.report.Disks {
 		if disk.Device != name && !contains(disk.Partitions, name) {
 			continue
 		}
 		found := disk
 		if found.Error != "" {
-			return &found, stale + "smartctl could not read " + found.Device + ": " + found.Error
+			return &found, "smartctl could not read " + found.Device + ": " + found.Error
 		}
-		return &found, strings.TrimSpace(stale + found.Problem())
+		return &found, found.Problem()
 	}
-	return nil, stale + "the disk report has no entry for " + name +
+	return nil, "the disk report has no entry for " + name +
 		" — taken before the drive was plugged in? The next scan will include it."
+}
+
+// ScannerProblem is the sentence about the report itself, when there is one
+// to say and somebody to say it to: a report that is missing is a scanner that
+// was never installed or has never run, and one that is stale is a timer that
+// has stopped. Empty when the report is fine, and empty when no folder For
+// was asked about sits on a physical disk — a scanner nothing would read is
+// not a problem.
+func (h *DiskHealth) ScannerProblem() string {
+	if !h.applies {
+		return ""
+	}
+	if h.err != nil {
+		return "no disk report at " + h.path +
+			" — the SMART scanner is not installed or has never run." +
+			" The quickstart installs it: re-run the install one-liner, or on an install made" +
+			" another way, sudo scripts/enable-disk-health.sh"
+	}
+	if age := h.now.Sub(h.report.TakenAt); age > DiskReportMaxAge {
+		return fmt.Sprintf("the disk report is %s old — the sand-smart timer does not seem to be running"+
+			" (systemctl status sand-smart.timer)", age.Round(time.Hour))
+	}
+	return ""
 }
 
 func contains(list []string, want string) bool {

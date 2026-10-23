@@ -346,9 +346,9 @@ export default function CloudHealth({ health, zIndex, onClose, onChanged }) {
       </div>
 
       {/* The disk under a local folder, which answers pings long after it has
-          started to die. Opt-in, because it needs a root-run scanner installed
-          outside the vault — a switch that defaulted on would open every
-          install with a warning about a scanner that is not there. */}
+          started to die. On by default: the quickstart installs the root-run
+          scanner it reads, and an install without one is told so here, once,
+          rather than with a warning on every account. */}
       <div style={{ marginTop: '18px', paddingTop: '14px', borderTop: `1px solid ${COLORS.border}` }}>
         <div style={{
           fontFamily: FONT.mono,
@@ -376,6 +376,22 @@ export default function CloudHealth({ health, zIndex, onClose, onChanged }) {
           />
         </div>
 
+        {/* The scanner itself — its report missing, or stale — said once here,
+            where the switch is, and not against every account on a disk. */}
+        {health?.disk_scanner && (
+          <div style={{
+            marginTop: '10px',
+            padding: '8px 10px',
+            border: `1px solid ${COLORS.warn}55`,
+            borderRadius: '6px',
+            fontFamily: FONT.mono,
+            fontSize: '10.5px',
+            lineHeight: 1.6,
+            color: COLORS.warn,
+            overflowWrap: 'anywhere',
+          }}>{health.disk_scanner}</div>
+        )}
+
         <p style={{
           margin: '10px 0 0',
           fontFamily: FONT.sans,
@@ -388,8 +404,9 @@ export default function CloudHealth({ health, zIndex, onClose, onChanged }) {
           this on, the check also reads each disk&rsquo;s own SMART counters and
           warns while the damage is still ahead of the files: sectors pending
           reallocation, a failed self-test, a drive that has tripped its own
-          thresholds. It needs a small root-run scanner installed once, outside
-          the vault: <code style={{ fontFamily: FONT.mono, fontSize: '10px' }}>
+          thresholds. The counters come from a small root-run scanner the
+          quickstart installs with the service; an install made another way
+          gets it from <code style={{ fontFamily: FONT.mono, fontSize: '10px' }}>
           sudo scripts/enable-disk-health.sh</code>.
         </p>
       </div>

@@ -9,10 +9,12 @@
 # root-run one-shot — `sand smart-scan` — that writes a small JSON report to
 # the data directory, where the service picks it up.
 #
-# This script installs that one-shot as a systemd service + hourly timer, and
-# runs it once so the first report exists before the first health check asks
-# for it. Then switch the check on in the app: accounts drawer → cloud health
-# → "Disk health".
+# scripts/quickstart.sh installs that one-shot with the service, so an install
+# made with it needs nothing from here. This script writes the same systemd
+# service + hourly timer for an install made another way (scripts/deploy-linux.sh,
+# a unit of your own), and runs it once so the first report exists before the
+# first health check asks for it. The check is on by default in the app
+# (accounts drawer → cloud health → "Disk health").
 #
 # Usage (run as root or with sudo):
 #   sudo ./scripts/enable-disk-health.sh
@@ -96,4 +98,4 @@ systemctl start "${SCAN_NAME}.service"
 
 echo
 echo "Installed. The scan runs hourly; the latest report is ${REPORT}."
-echo "Now switch it on in the app: accounts drawer → cloud health → Disk health."
+echo "The disk check is on by default in the app: accounts drawer → cloud health → Disk health."

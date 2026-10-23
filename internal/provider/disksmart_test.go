@@ -128,7 +128,7 @@ func TestMountSourceFor(t *testing.T) {
 	}
 }
 
-func TestDiskHealthIn(t *testing.T) {
+func TestDiskHealthFor(t *testing.T) {
 	table := "/dev/root / ext4 rw 0 0\n" +
 		"tmpfs /tmp tmpfs rw 0 0\n" +
 		"/dev/mapper/vg-data /data ext4 rw 0 0\n" +
@@ -140,56 +140,79 @@ func TestDiskHealthIn(t *testing.T) {
 			{Device: "sda", Partitions: []string{"sda1"}, Passed: true, PendingSectors: 32},
 		},
 	}
+	onDisk := "/media/user/Drive/SANDVault"
 
 	// A folder on a physical disk joins to it through its partition, and the
-	// disk's problem is the warning.
-	disk, warn := diskHealthIn("/media/user/Drive/SANDVault", table, "r.json", report, nil, now)
+	// disk's problem is the warning. A fresh report has nothing to say about
+	// itself.
+	h := newDiskHealth(table, "r.json", report, nil, now)
+	disk, warn := h.For(onDisk)
 	if disk == nil || disk.Device != "sda" {
 		t.Fatalf("no join to sda: disk=%v", disk)
 	}
 	if !strings.Contains(warn, "32 sectors pending") {
 		t.Errorf("warning = %q, want the pending sectors in it", warn)
 	}
+	if p := h.ScannerProblem(); p != "" {
+		t.Errorf("a fresh report complains about itself: %q", p)
+	}
 
-	// Not on a physical disk: not a warning, not anything.
+	// Not on a physical disk: not a warning, not anything — and a scanner
+	// that nothing would read is not a problem either, report or no report.
 	for _, path := range []string{"/tmp/sand", "/data/sand"} {
-		if disk, warn := diskHealthIn(path, table, "r.json", report, nil, now); disk != nil || warn != "" {
-			t.Errorf("diskHealthIn(%q) = %v, %q — SMART does not apply there", path, disk, warn)
+		h := newDiskHealth(table, "r.json", DiskReport{}, errors.New("no such file"), now)
+		if disk, warn := h.For(path); disk != nil || warn != "" {
+			t.Errorf("For(%q) = %v, %q — SMART does not apply there", path, disk, warn)
+		}
+		if p := h.ScannerProblem(); p != "" {
+			t.Errorf("missing report complained with nothing on a disk: %q", p)
 		}
 	}
-
-	// A missing report is a scanner that was never installed, and the warning
-	// carries the repair.
-	_, warn = diskHealthIn("/media/user/Drive/SANDVault", table, "r.json", DiskReport{}, errors.New("no such file"), now)
-	if !strings.Contains(warn, "enable-disk-health.sh") {
-		t.Errorf("missing report warns %q, want the install step in it", warn)
+	// No mount table at all — not Linux — is the same non-answer.
+	h = newDiskHealth("", "r.json", DiskReport{}, errors.New("no such file"), now)
+	if disk, warn := h.For(onDisk); disk != nil || warn != "" || h.ScannerProblem() != "" {
+		t.Errorf("no mount table: disk=%v warn=%q problem=%q, want silence", disk, warn, h.ScannerProblem())
 	}
 
-	// A stale report is a scanner that has stopped.
+	// A missing report is a scanner that was never installed: said once,
+	// about the scanner, with the repair — and not against the account.
+	h = newDiskHealth(table, "r.json", DiskReport{}, errors.New("no such file"), now)
+	if disk, warn := h.For(onDisk); disk != nil || warn != "" {
+		t.Errorf("missing report warned on the account: disk=%v warn=%q", disk, warn)
+	}
+	if p := h.ScannerProblem(); !strings.Contains(p, "quickstart") || !strings.Contains(p, "enable-disk-health.sh") {
+		t.Errorf("missing report says %q, want both install routes in it", p)
+	}
+
+	// A stale report is a scanner that has stopped — said once, while the
+	// disks it names are still joined and still speak for themselves.
 	old := report
 	old.TakenAt = now.Add(-3 * 24 * time.Hour)
-	_, warn = diskHealthIn("/media/user/Drive/SANDVault", table, "r.json", old, nil, now)
-	if !strings.Contains(warn, "timer") {
-		t.Errorf("stale report warns %q, want the timer named", warn)
+	h = newDiskHealth(table, "r.json", old, nil, now)
+	if disk, warn := h.For(onDisk); disk == nil || !strings.Contains(warn, "32 sectors pending") {
+		t.Errorf("stale report: disk=%v warn=%q, want the disk still joined", disk, warn)
+	}
+	if p := h.ScannerProblem(); !strings.Contains(p, "timer") {
+		t.Errorf("stale report says %q, want the timer named", p)
 	}
 
 	// A disk the report has never seen — plugged in since the last scan.
 	fresh := DiskReport{TakenAt: now, Disks: []DiskSmart{{Device: "sdb", Partitions: []string{"sdb1"}, Passed: true}}}
-	_, warn = diskHealthIn("/media/user/Drive/SANDVault", table, "r.json", fresh, nil, now)
+	_, warn = newDiskHealth(table, "r.json", fresh, nil, now).For(onDisk)
 	if !strings.Contains(warn, "no entry for sda1") {
 		t.Errorf("unknown disk warns %q, want it named", warn)
 	}
 
 	// A disk smartctl could not read at all.
 	broken := DiskReport{TakenAt: now, Disks: []DiskSmart{{Device: "sda", Partitions: []string{"sda1"}, Error: "device timed out"}}}
-	_, warn = diskHealthIn("/media/user/Drive/SANDVault", table, "r.json", broken, nil, now)
+	_, warn = newDiskHealth(table, "r.json", broken, nil, now).For(onDisk)
 	if !strings.Contains(warn, "device timed out") {
 		t.Errorf("unreadable disk warns %q, want the reason in it", warn)
 	}
 
 	// A clean disk: joined, shown, and no warning to raise.
 	clean := DiskReport{TakenAt: now, Disks: []DiskSmart{{Device: "sda", Partitions: []string{"sda1"}, Passed: true, TemperatureC: 34}}}
-	disk, warn = diskHealthIn("/media/user/Drive/SANDVault", table, "r.json", clean, nil, now)
+	disk, warn = newDiskHealth(table, "r.json", clean, nil, now).For(onDisk)
 	if disk == nil || warn != "" {
 		t.Errorf("clean disk: disk=%v warn=%q, want the disk and silence", disk, warn)
 	}
