@@ -2,6 +2,7 @@ package vault
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -702,7 +703,7 @@ func TestReattachPutsTheShardBackWithoutMovingAByte(t *testing.T) {
 
 	before := storedObjects(t, roots)
 
-	preview, err := v.ReattachShards(ctx, true)
+	preview, err := v.ReattachShards(ctx, ReattachOptions{DryRun: true})
 	if err != nil {
 		t.Fatalf("ReattachShards dry run: %v", err)
 	}
@@ -713,7 +714,7 @@ func TestReattachPutsTheShardBackWithoutMovingAByte(t *testing.T) {
 		t.Fatalf("a dry run changed the index: %d shard(s)", got)
 	}
 
-	report, err := v.ReattachShards(ctx, false)
+	report, err := v.ReattachShards(ctx, ReattachOptions{})
 	if err != nil {
 		t.Fatalf("ReattachShards: %v", err)
 	}
@@ -768,7 +769,7 @@ func TestReattachPutsTheShardBackWithoutMovingAByte(t *testing.T) {
 	}
 
 	// And a second run has nothing left to do.
-	again, err := v.ReattachShards(ctx, false)
+	again, err := v.ReattachShards(ctx, ReattachOptions{})
 	if err != nil {
 		t.Fatalf("ReattachShards again: %v", err)
 	}
@@ -871,7 +872,7 @@ func TestReattachRefusesAShardStrictPlacementWouldNotHaveMade(t *testing.T) {
 		t.Errorf("the shard on the account that has room was refused: %s", roomy.Reason)
 	}
 
-	report, err := v.ReattachShards(ctx, false)
+	report, err := v.ReattachShards(ctx, ReattachOptions{})
 	if err != nil {
 		t.Fatalf("ReattachShards: %v", err)
 	}
@@ -933,7 +934,7 @@ func TestReattachLeavesAThumbnailPackAlone(t *testing.T) {
 		}
 	}
 
-	if report, err := v.ReattachShards(ctx, false); err != nil {
+	if report, err := v.ReattachShards(ctx, ReattachOptions{}); err != nil {
 		t.Fatalf("ReattachShards: %v", err)
 	} else if report.Shards != 0 {
 		t.Errorf("it reattached %d pack shard(s)", report.Shards)
@@ -1007,7 +1008,7 @@ func TestReattachSkipsAChunkedShardThatIsOnlyPartlyThere(t *testing.T) {
 	if !strings.Contains(scan.Strays[0].Reason, "chunks") {
 		t.Errorf("the refusal does not say why: %q", scan.Strays[0].Reason)
 	}
-	if report, err := v.ReattachShards(ctx, false); err != nil {
+	if report, err := v.ReattachShards(ctx, ReattachOptions{}); err != nil {
 		t.Fatalf("ReattachShards: %v", err)
 	} else if report.Shards != 0 {
 		t.Errorf("it was reattached anyway: %+v", report)
@@ -1043,7 +1044,7 @@ func TestAChunkedShardComesBackWholeWithTheRightKeyAndSize(t *testing.T) {
 	}
 	v.mu.Unlock()
 
-	report, err := v.ReattachShards(ctx, false)
+	report, err := v.ReattachShards(ctx, ReattachOptions{})
 	if err != nil {
 		t.Fatalf("ReattachShards: %v", err)
 	}
@@ -1145,7 +1146,7 @@ func TestReattachTakesOneCopyOfAShardAndSaysSoAboutTheOther(t *testing.T) {
 			"redundancy: %+v", scan.Reattachable, scan.Strays)
 	}
 
-	report, err := v.ReattachShards(ctx, false)
+	report, err := v.ReattachShards(ctx, ReattachOptions{})
 	if err != nil {
 		t.Fatalf("ReattachShards: %v", err)
 	}
@@ -1245,7 +1246,7 @@ func TestTwoDisconnectsLeaveEveryFileUnreadableAndReattachBringsThemBack(t *test
 		t.Errorf("blamed %d file(s), want 5", scan.StrayFiles)
 	}
 
-	report, err := v.ReattachShards(ctx, false)
+	report, err := v.ReattachShards(ctx, ReattachOptions{})
 	if err != nil {
 		t.Fatalf("ReattachShards: %v", err)
 	}
@@ -1270,5 +1271,238 @@ func TestTwoDisconnectsLeaveEveryFileUnreadableAndReattachBringsThemBack(t *test
 		if string(got) != string(payloads[name]) {
 			t.Errorf("%s came back changed", name)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Asking one cloud
+// ---------------------------------------------------------------------------
+
+func TestScanForStraysAsksOneAccountAlone(t *testing.T) {
+	ctx := context.Background()
+	v, roots := newTestVault(t, 3)
+	entry, _, _, back := degradedByDisconnect(t, v, roots, []byte("the file that lost a spare"))
+
+	// The account the part came back on, by itself: one row for the account,
+	// one for the shard, and the same verdict the full scan gives.
+	scan, err := v.ScanForStrays(ctx, back)
+	if err != nil {
+		t.Fatalf("ScanForStrays(%s): %v", back, err)
+	}
+	if len(scan.Accounts) != 1 || scan.Accounts[0].ProviderID != back {
+		t.Fatalf("listed %+v, want the one account asked for", scan.Accounts)
+	}
+	if scan.Accounts[0].Error != "" {
+		t.Fatalf("the account would not answer: %s", scan.Accounts[0].Error)
+	}
+	if len(scan.Strays) != 1 || scan.Reattachable != 1 || scan.StrayFiles != 1 || scan.StrayBytes == 0 {
+		t.Fatalf("found %d stray(s), %d reattachable, %d file(s), %d byte(s) — want 1, 1, 1 and some",
+			len(scan.Strays), scan.Reattachable, scan.StrayFiles, scan.StrayBytes)
+	}
+	stray := scan.Strays[0]
+	switch {
+	case stray.ProviderID != back:
+		t.Errorf("blamed account %s, want %s", stray.ProviderID, back)
+	case stray.FileID != entry.ID:
+		t.Errorf("pointed at file %s, want %s", stray.FileID, entry.ID)
+	case !stray.Reattachable:
+		t.Errorf("the shard is not offered for reattachment: %s", stray.Reason)
+	}
+
+	// Another account holds this file's other shards and has lost nothing: it
+	// is listed — its objects are counted, which is how "nothing mislaid" is
+	// told apart from "did not look" — and no row comes of it.
+	other := ""
+	accounts, err := v.Providers()
+	if err != nil {
+		t.Fatalf("Providers: %v", err)
+	}
+	for _, cfg := range accounts {
+		if cfg.ID != back {
+			other = cfg.ID
+			break
+		}
+	}
+	scan, err = v.ScanForStrays(ctx, other)
+	if err != nil {
+		t.Fatalf("ScanForStrays(%s): %v", other, err)
+	}
+	if len(scan.Accounts) != 1 || scan.Accounts[0].ProviderID != other {
+		t.Fatalf("listed %+v, want only %s", scan.Accounts, other)
+	}
+	if scan.Accounts[0].Objects == 0 {
+		t.Error("the account's own parts were not counted")
+	}
+	if len(scan.Strays) != 0 || scan.Reattachable != 0 || scan.StrayFiles != 0 {
+		t.Errorf("an account that lost nothing reported %+v", scan.Strays)
+	}
+
+	// No account named is every account, and the same answer the full scan
+	// gives.
+	scan, err = v.ScanForStrays(ctx, "")
+	if err != nil {
+		t.Fatalf("ScanForStrays(every account): %v", err)
+	}
+	if len(scan.Accounts) != 3 || len(scan.Strays) != 1 || scan.Reattachable != 1 {
+		t.Errorf("over every account: %d listed, %d stray(s), %d reattachable — want 3, 1 and 1",
+			len(scan.Accounts), len(scan.Strays), scan.Reattachable)
+	}
+
+	// An ID nothing is connected under is an error, not "that cloud holds
+	// nothing of yours".
+	if _, err := v.ScanForStrays(ctx, "no-such-account"); !errors.Is(err, ErrNoAccount) {
+		t.Errorf("an unknown account answered with %v, want ErrNoAccount", err)
+	}
+}
+
+func TestScanForStraysSaysWhenTheAccountWouldNotAnswer(t *testing.T) {
+	ctx := context.Background()
+	v, roots := newTestVault(t, 3)
+	degradedByDisconnect(t, v, roots, []byte("the file that lost a spare"))
+
+	// A cloud that is offline or whose token has expired, standing in for the
+	// account somebody is sure the parts are on.
+	v.mu.Lock()
+	v.providers = append(v.providers, provider.Config{
+		ID:   "offline-account",
+		Kind: provider.Kind("a-backend-this-build-does-not-have"),
+		Name: "unreachable-cloud",
+	})
+	v.mu.Unlock()
+
+	scan, err := v.ScanForStrays(ctx, "offline-account")
+	if err != nil {
+		t.Fatalf("ScanForStrays: %v", err)
+	}
+	// Not an empty answer: an empty answer would read as "nothing there".
+	if len(scan.Accounts) != 1 || scan.Accounts[0].Error == "" {
+		t.Fatalf("the silent account was not reported as silent: %+v", scan.Accounts)
+	}
+	if len(scan.Warnings) == 0 {
+		t.Error("nothing warned that the account could not be listed")
+	}
+	if len(scan.Strays) != 0 || scan.Reattachable != 0 {
+		t.Errorf("rows were invented for an account that never answered: %+v", scan.Strays)
+	}
+}
+
+func TestReattachScopedToOneAccountLeavesTheOthersMislaid(t *testing.T) {
+	ctx := context.Background()
+	v, _ := newTestVault(t, 3)
+
+	// Five files over three clouds, two of which go away and come back — each
+	// disconnect takes one record from every file with it, and the two
+	// accounts come back under IDs of their own.
+	payloads := map[string][]byte{}
+	ids := map[string]string{}
+	for _, name := range []string{"one.txt", "two.txt", "three.txt", "four.txt", "five.txt"} {
+		body := []byte("the contents of " + name)
+		entry, _, err := v.Upload(ctx, MainScope, "/", name, body, UploadOptions{})
+		if err != nil {
+			t.Fatalf("Upload %s: %v", name, err)
+		}
+		payloads[name] = body
+		ids[name] = entry.ID
+	}
+	cycle := func(label string) string {
+		t.Helper()
+		accounts, err := v.Providers()
+		if err != nil {
+			t.Fatalf("Providers: %v", err)
+		}
+		victim := accounts[0]
+		if err := v.RemoveProvider(victim.ID, true); err != nil {
+			t.Fatalf("RemoveProvider: %v", err)
+		}
+		added, err := v.AddProvider(ctx, provider.Config{
+			Kind:    provider.KindLocal,
+			Name:    label,
+			Options: victim.Options,
+		})
+		if err != nil {
+			t.Fatalf("AddProvider: %v", err)
+		}
+		return added.ID
+	}
+	first := cycle("first-cloud-again")
+	second := cycle("second-cloud-again")
+
+	for name, id := range ids {
+		if got := v.entryByID(t, id).Redundancy(); got != 1 {
+			t.Fatalf("%s has %d shard(s) recorded before the repair, want 1", name, got)
+		}
+	}
+
+	// A dry run over one account promises that account's shards and no more.
+	preview, err := v.ReattachShards(ctx, ReattachOptions{ProviderID: first, DryRun: true})
+	if err != nil {
+		t.Fatalf("ReattachShards dry run: %v", err)
+	}
+	if preview.Shards != 5 || preview.Files != 5 {
+		t.Fatalf("the dry run promised %d shard(s) across %d file(s), want 5 and 5", preview.Shards, preview.Files)
+	}
+	for name, id := range ids {
+		if got := v.entryByID(t, id).Redundancy(); got != 1 {
+			t.Fatalf("a dry run changed %s: %d shard(s)", name, got)
+		}
+	}
+
+	// The first account alone: every file gets its shard from there back,
+	// which makes it readable again — two of three — without reaching full
+	// spread, so nothing is reported restored.
+	report, err := v.ReattachShards(ctx, ReattachOptions{ProviderID: first})
+	if err != nil {
+		t.Fatalf("ReattachShards(%s): %v", first, err)
+	}
+	if report.Shards != 5 || report.Files != 5 {
+		t.Fatalf("recorded %d shard(s) across %d file(s), want 5 and 5: %+v", report.Shards, report.Files, report)
+	}
+	if len(report.Restored) != 0 {
+		t.Errorf("reported %v back to full spread on two of three shards", report.Restored)
+	}
+	for name, id := range ids {
+		if got := v.entryByID(t, id).Redundancy(); got != 2 {
+			t.Errorf("%s has %d shard(s), want 2", name, got)
+		}
+		got, _, err := v.Fetch(ctx, id)
+		if err != nil {
+			t.Fatalf("Fetch %s after the first repair: %v", name, err)
+		}
+		if string(got) != string(payloads[name]) {
+			t.Errorf("%s came back changed", name)
+		}
+	}
+
+	// The pass did not reach past the account it was pointed at: the second
+	// account's shards are still mislaid, and the first has none left.
+	if scan, err := v.ScanForStrays(ctx, second); err != nil {
+		t.Fatalf("ScanForStrays(%s): %v", second, err)
+	} else if scan.Reattachable != 5 {
+		t.Errorf("%d shard(s) still waiting on the other account, want 5", scan.Reattachable)
+	}
+	if scan, err := v.ScanForStrays(ctx, first); err != nil {
+		t.Fatalf("ScanForStrays(%s): %v", first, err)
+	} else if scan.Reattachable != 0 {
+		t.Errorf("%d shard(s) still waiting on the repaired account, want 0", scan.Reattachable)
+	}
+
+	// And the second account finishes the job.
+	report, err = v.ReattachShards(ctx, ReattachOptions{ProviderID: second})
+	if err != nil {
+		t.Fatalf("ReattachShards(%s): %v", second, err)
+	}
+	if report.Shards != 5 || len(report.Restored) != 5 {
+		t.Fatalf("recorded %d shard(s), %d file(s) restored — want 5 and 5: %+v", report.Shards, len(report.Restored), report)
+	}
+	for name, id := range ids {
+		if got := v.entryByID(t, id).Redundancy(); got != 3 {
+			t.Errorf("%s has %d shard(s), want 3", name, got)
+		}
+	}
+
+	// An account nothing is connected under is refused rather than reported
+	// as holding nothing — on a dry run as much as a real one.
+	if _, err := v.ReattachShards(ctx, ReattachOptions{ProviderID: "no-such-account", DryRun: true}); !errors.Is(err, ErrNoAccount) {
+		t.Errorf("an unknown account answered with %v, want ErrNoAccount", err)
 	}
 }

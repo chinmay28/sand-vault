@@ -307,9 +307,82 @@ func (s *OrphanScan) trimPreview() {
 	}
 }
 
+// StrayScan is the reattach half of a listing on its own: the shards of files
+// still in the tree that an account holds with no record pointing at them.
+//
+// It exists so that the question can be asked of one cloud. The full scan
+// lists every account at once, which is the right cost when the set of
+// connected accounts has just changed and the wrong one when somebody is
+// looking at a list of thirty thousand short files and has a fair idea which
+// cloud the parts are on. Nothing about the sweep is in here — no orphan
+// figures, no Blocked — because a scan of one account cannot say anything safe
+// about what is abandoned, and must not look as though it could.
+type StrayScan struct {
+	// Accounts are the roots that were listed: the one asked for, or every
+	// connected account's parts folder. An account that would not answer has
+	// its Error set, and is the only way "no strays" can be told apart from
+	// "could not look".
+	Accounts []OrphanAccount `json:"accounts"`
+
+	// Strays are the rows, capped the way the full scan caps them, with the
+	// same per-row verdicts; Reattachable, StrayFiles and StrayBytes describe
+	// every row found rather than the ones that fit.
+	Strays          []StrayShard `json:"strays"`
+	StraysTruncated int          `json:"strays_truncated,omitempty"`
+	Reattachable    int          `json:"reattachable"`
+	StrayFiles      int          `json:"stray_files"`
+	StrayBytes      int64        `json:"stray_bytes"`
+
+	Warnings []string `json:"warnings,omitempty"`
+}
+
+// ScanForStrays lists one connected account — or every one, when providerID
+// is empty — for shards of files still in the tree that the index has no
+// record of, and says which of them ReattachShards would write back.
+//
+// One listing for the account named, and nothing is written. The verdict per
+// row is exactly the one the full scan gives, from the same index; see
+// scanForOrphansOn for what a scan of one account can and cannot see. An ID no
+// connected account carries is ErrNoAccount.
+func (v *Vault) ScanForStrays(ctx context.Context, providerID string) (*StrayScan, error) {
+	scan, err := v.scanForOrphansOn(ctx, providerID)
+	if err != nil {
+		return nil, err
+	}
+	scan.trimPreview()
+	return &StrayScan{
+		Accounts:        scan.Accounts,
+		Strays:          scan.Strays,
+		StraysTruncated: scan.StraysTruncated,
+		Reattachable:    scan.Reattachable,
+		StrayFiles:      scan.StrayFiles,
+		StrayBytes:      scan.StrayBytes,
+		Warnings:        scan.Warnings,
+	}, nil
+}
+
 // scanForOrphans is ScanForOrphans with every row it found, however many that
 // is.
 func (v *Vault) scanForOrphans(ctx context.Context) (*OrphanScan, error) {
+	return v.scanForOrphansOn(ctx, "")
+}
+
+// scanForOrphansOn is the scan over one connected account's parts folder when
+// providerID names one, and over every root when it is empty.
+//
+// The owned set is the same either way — it comes from the index, not from
+// the other accounts — so a shard judged mislaid on one account is judged
+// exactly as a full scan would judge it. What a scoped scan cannot see is a
+// second copy of the same shard on another account, and it does not need to:
+// a copy the index already has a record for is "accounted for" whichever
+// account it sits on, and one it does not is found the next time that account
+// is listed. A replica folder is not listed in a scoped scan, since nothing in
+// one is ever reattached (see ownedReplicaArchivesLocked).
+//
+// An ID no connected account carries is ErrNoAccount rather than an empty
+// answer, because an empty answer here reads as "that cloud holds nothing of
+// yours", which is not what happened.
+func (v *Vault) scanForOrphansOn(ctx context.Context, providerID string) (*OrphanScan, error) {
 	v.mu.RLock()
 	if v.dataKey == nil {
 		v.mu.RUnlock()
@@ -321,6 +394,14 @@ func (v *Vault) scanForOrphans(ctx context.Context) (*OrphanScan, error) {
 	// index already names it, or the registry still does.
 	v.noteInFlight(owned)
 	listings := v.orphanListingsLocked(owned)
+	if providerID != "" {
+		cfg, ok := v.configForLocked(providerID)
+		if !ok {
+			v.mu.RUnlock()
+			return nil, fmt.Errorf("%w: %s", ErrNoAccount, providerID)
+		}
+		listings = []orphanListing{{cfg: cfg, owned: owned}}
+	}
 	policy := v.store.Policy
 	vaultKey := append([]byte(nil), v.vaultKey...)
 	v.mu.RUnlock()
@@ -1199,6 +1280,18 @@ type ReattachReport struct {
 	Warnings []string `json:"warnings,omitempty"`
 }
 
+// ReattachOptions says how far a reattach looks and whether it writes.
+type ReattachOptions struct {
+	// ProviderID names one connected account to list. Empty lists every one,
+	// which is what a reconnect calls for; one is what somebody with a long
+	// list of short files and a good idea of where the parts are calls for.
+	// An ID no connected account carries is ErrNoAccount.
+	ProviderID string
+
+	// DryRun asks what would be written back without the index being touched.
+	DryRun bool
+}
+
 // ReattachShards writes back the index records for shards that are sitting on a
 // connected account with nothing pointing at them.
 //
@@ -1227,8 +1320,13 @@ type ReattachReport struct {
 // the same reason: an object key is derived from a random 128-bit archive ID,
 // so a name that matches is that archive's. A shard that is present but corrupt
 // is what the health check is for, and it was equally corrupt before this ran.
-func (v *Vault) ReattachShards(ctx context.Context, dryRun bool) (*ReattachReport, error) {
-	scan, err := v.scanForOrphans(ctx)
+//
+// Scoped to one account by opts.ProviderID, it lists that account alone and
+// records what it finds there; the other accounts' mislaid shards stay mislaid
+// until they are asked. Nothing else changes: the verdict per shard comes from
+// the index, and the write is the same write.
+func (v *Vault) ReattachShards(ctx context.Context, opts ReattachOptions) (*ReattachReport, error) {
+	scan, err := v.scanForOrphansOn(ctx, opts.ProviderID)
 	if err != nil {
 		return nil, err
 	}
@@ -1247,7 +1345,7 @@ func (v *Vault) ReattachShards(ctx context.Context, dryRun bool) (*ReattachRepor
 			wanted = append(wanted, stray)
 		}
 	}
-	if dryRun || len(wanted) == 0 {
+	if opts.DryRun || len(wanted) == 0 {
 		files := map[string]bool{}
 		for _, stray := range wanted {
 			report.Shards++

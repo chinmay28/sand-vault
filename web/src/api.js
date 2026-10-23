@@ -151,9 +151,28 @@ export const api = {
      This records them again. Not a byte moves — a part's object key is derived
      from the archive id and the shard number, so the object is already exactly
      where the record says it is. Purely additive: nothing is erased, and a file
-     can only come out of it with more shards than it went in with. */
-  reattachShards: ({ dryRun = false } = {}) =>
-    request('/api/vault/orphans/reattach', { method: 'POST', body: { dry_run: dryRun } }),
+     can only come out of it with more shards than it went in with.
+
+     `providerId` points it at one cloud: that account alone is listed and
+     recorded from, and the others are left for another ask. */
+  reattachShards: ({ dryRun = false, providerId = '' } = {}) =>
+    request('/api/vault/orphans/reattach', {
+      method: 'POST',
+      body: { dry_run: dryRun, ...(providerId ? { provider_id: providerId } : {}) },
+    }),
+  /* The reattach half of orphanScan() on its own, asked of one cloud.
+
+     The full scan lists every account at once, which is right when the set of
+     accounts has just changed and wrong when somebody is looking at a long list
+     of short files and knows which cloud the parts are on — a vault that size
+     can take longer to list across every cloud than the scan is given. This
+     lists the one account named (every account, when none is) and says which
+     of its objects belong to a file that is short, with the same verdict per
+     row the full scan gives. The answer carries nothing about the sweep: one
+     account's listing can say nothing safe about what is abandoned. An id no
+     connected account carries is a 404, not an empty answer. */
+  strayScan: ({ providerId = '' } = {}) =>
+    request(`/api/vault/orphans/strays${providerId ? `?provider=${encodeURIComponent(providerId)}` : ''}`),
   /* The third thing the same scan turns up, and the only one that is not about
      a cloud at all.
 

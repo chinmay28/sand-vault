@@ -321,6 +321,10 @@ func TestOrphanEndpointsNeedASession(t *testing.T) {
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("GET /api/vault/orphans/erasing without a session: %d, want 401", w.Code)
 	}
+	w, _ = c.json(http.MethodGet, "/api/vault/orphans/strays", nil)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("GET /api/vault/orphans/strays without a session: %d, want 401", w.Code)
+	}
 }
 
 func TestOrphanScanIgnoresWhatSandDidNotWrite(t *testing.T) {
@@ -532,5 +536,91 @@ func TestOrphanReattachNeedsASession(t *testing.T) {
 	w, _ := c.json(http.MethodPost, "/api/vault/orphans/reattach", map[string]any{"dry_run": true})
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("POST /api/vault/orphans/reattach without a session: %d, want 401", w.Code)
+	}
+}
+
+func TestStrayScanOfOneAccountFindsWhatTheDisconnectMislaidThere(t *testing.T) {
+	c := newTestClient(t)
+	roots := c.setup("the vault password", 3)
+
+	file := c.upload("important.txt", "/", []byte("the file that lost a spare"))
+	back := c.degradeByDisconnect(file, roots, "drive-personal-again")
+
+	other := ""
+	_, providers := c.json(http.MethodGet, "/api/providers", nil)
+	for _, raw := range providers["providers"].([]any) {
+		if id := raw.(map[string]any)["id"].(string); id != back {
+			other = id
+			break
+		}
+	}
+
+	// The account the part is on: one account row, one stray, offered.
+	w, body := c.json(http.MethodGet, "/api/vault/orphans/strays?provider="+back, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("stray scan: %d %s", w.Code, w.Body.String())
+	}
+	accounts, _ := body["accounts"].([]any)
+	if len(accounts) != 1 || accounts[0].(map[string]any)["provider_id"] != back {
+		t.Fatalf("listed %v, want only %s", accounts, back)
+	}
+	strays, _ := body["strays"].([]any)
+	if len(strays) != 1 {
+		t.Fatalf("found %d stray(s), want 1: %v", len(strays), strays)
+	}
+	stray := strays[0].(map[string]any)
+	if stray["provider_id"] != back || stray["file_id"] != file["id"] {
+		t.Errorf("the row blames %v for %v, want %s and %v", stray["provider_id"], stray["file_id"], back, file["id"])
+	}
+	if ok, _ := stray["reattachable"].(bool); !ok {
+		t.Errorf("the shard is not offered for reattachment: %v", stray["reason"])
+	}
+	if n, _ := body["reattachable"].(float64); n != 1 {
+		t.Errorf("the totals say %v reattachable, want 1", body["reattachable"])
+	}
+	// A listing of one account says nothing about what is abandoned, and the
+	// answer must not look as though it could.
+	for _, key := range []string{"found", "blocked", "items", "deletable"} {
+		if _, has := body[key]; has {
+			t.Errorf("the stray scan carries the sweep's %q", key)
+		}
+	}
+
+	// An account that lost nothing: listed, and nothing to put back.
+	w, body = c.json(http.MethodGet, "/api/vault/orphans/strays?provider="+other, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("stray scan of %s: %d %s", other, w.Code, w.Body.String())
+	}
+	accounts, _ = body["accounts"].([]any)
+	if len(accounts) != 1 || accounts[0].(map[string]any)["provider_id"] != other {
+		t.Errorf("listed %v, want only %s", accounts, other)
+	}
+	if strays, _ := body["strays"].([]any); len(strays) != 0 {
+		t.Errorf("an account that lost nothing reported %v", strays)
+	}
+
+	// An account nothing is connected under is 404, not an empty answer.
+	w, body = c.json(http.MethodGet, "/api/vault/orphans/strays?provider=nobody", nil)
+	if w.Code != http.StatusNotFound || body["code"] != "NOT_FOUND" {
+		t.Errorf("an unknown account answered %d %v, want 404 NOT_FOUND", w.Code, body)
+	}
+	w, body = c.json(http.MethodPost, "/api/vault/orphans/reattach", map[string]any{"provider_id": "nobody", "dry_run": true})
+	if w.Code != http.StatusNotFound || body["code"] != "NOT_FOUND" {
+		t.Errorf("a reattach on an unknown account answered %d %v, want 404 NOT_FOUND", w.Code, body)
+	}
+
+	// The repair, pointed at that one account, puts the record back.
+	if c.degraded() != 1 {
+		t.Fatalf("the vault reports %d degraded file(s) before the repair, want 1", c.degraded())
+	}
+	w, report := c.json(http.MethodPost, "/api/vault/orphans/reattach", map[string]any{"provider_id": back})
+	if w.Code != http.StatusOK {
+		t.Fatalf("reattach: %d %s", w.Code, w.Body.String())
+	}
+	if shards, _ := report["shards"].(float64); shards != 1 {
+		t.Errorf("recorded %v shard(s), want 1: %v", report["shards"], report)
+	}
+	if c.degraded() != 0 {
+		t.Errorf("the vault still reports %d degraded file(s) after the repair", c.degraded())
 	}
 }
