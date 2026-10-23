@@ -315,12 +315,13 @@ export const api = {
   /* How often that happens, or never. Omitting either half leaves it alone —
      switching the check off keeps the interval, so switching it back on
      returns to the schedule that was chosen rather than to the default. */
-  setCloudHealthSchedule: ({ enabled, minutes } = {}) =>
+  setCloudHealthSchedule: ({ enabled, minutes, smart } = {}) =>
     request('/api/providers/health/schedule', {
       method: 'POST',
       body: {
         ...(enabled === undefined ? null : { enabled }),
         ...(minutes === undefined ? null : { interval_minutes: minutes }),
+        ...(smart === undefined ? null : { smart_enabled: smart }),
       },
     }),
   /* One account taken apart: its quota against what SAND actually put there,
