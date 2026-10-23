@@ -143,57 +143,42 @@ func TestDiskHealthFor(t *testing.T) {
 	onDisk := "/media/user/Drive/SANDVault"
 
 	// A folder on a physical disk joins to it through its partition, and the
-	// disk's problem is the warning. A fresh report has nothing to say about
-	// itself.
-	h := newDiskHealth(table, "r.json", report, nil, now)
-	disk, warn := h.For(onDisk)
+	// disk's problem is the warning.
+	disk, warn := newDiskHealth(table, "r.json", report, nil, now).For(onDisk)
 	if disk == nil || disk.Device != "sda" {
 		t.Fatalf("no join to sda: disk=%v", disk)
 	}
 	if !strings.Contains(warn, "32 sectors pending") {
 		t.Errorf("warning = %q, want the pending sectors in it", warn)
 	}
-	if p := h.ScannerProblem(); p != "" {
-		t.Errorf("a fresh report complains about itself: %q", p)
-	}
 
-	// Not on a physical disk: not a warning, not anything — and a scanner
-	// that nothing would read is not a problem either, report or no report.
+	// Not on a physical disk: not a warning, not anything, report or no
+	// report — a scanner that nothing would read is not news there.
 	for _, path := range []string{"/tmp/sand", "/data/sand"} {
 		h := newDiskHealth(table, "r.json", DiskReport{}, errors.New("no such file"), now)
 		if disk, warn := h.For(path); disk != nil || warn != "" {
 			t.Errorf("For(%q) = %v, %q — SMART does not apply there", path, disk, warn)
 		}
-		if p := h.ScannerProblem(); p != "" {
-			t.Errorf("missing report complained with nothing on a disk: %q", p)
-		}
 	}
 	// No mount table at all — not Linux — is the same non-answer.
-	h = newDiskHealth("", "r.json", DiskReport{}, errors.New("no such file"), now)
-	if disk, warn := h.For(onDisk); disk != nil || warn != "" || h.ScannerProblem() != "" {
-		t.Errorf("no mount table: disk=%v warn=%q problem=%q, want silence", disk, warn, h.ScannerProblem())
+	if disk, warn := newDiskHealth("", "r.json", DiskReport{}, errors.New("no such file"), now).For(onDisk); disk != nil || warn != "" {
+		t.Errorf("no mount table: disk=%v warn=%q, want silence", disk, warn)
 	}
 
-	// A missing report is a scanner that was never installed: said once,
-	// about the scanner, with the repair — and not against the account.
-	h = newDiskHealth(table, "r.json", DiskReport{}, errors.New("no such file"), now)
-	if disk, warn := h.For(onDisk); disk != nil || warn != "" {
-		t.Errorf("missing report warned on the account: disk=%v warn=%q", disk, warn)
-	}
-	if p := h.ScannerProblem(); !strings.Contains(p, "quickstart") || !strings.Contains(p, "enable-disk-health.sh") {
-		t.Errorf("missing report says %q, want both install routes in it", p)
+	// A missing report is a scanner that was never installed, and the
+	// warning on the account carries both ways of installing it.
+	_, warn = newDiskHealth(table, "r.json", DiskReport{}, errors.New("no such file"), now).For(onDisk)
+	if !strings.Contains(warn, "quickstart") || !strings.Contains(warn, "enable-disk-health.sh") {
+		t.Errorf("missing report warns %q, want both install routes in it", warn)
 	}
 
-	// A stale report is a scanner that has stopped — said once, while the
-	// disks it names are still joined and still speak for themselves.
+	// A stale report is a scanner that has stopped — said on the account,
+	// with what the disk it names still says for itself.
 	old := report
 	old.TakenAt = now.Add(-3 * 24 * time.Hour)
-	h = newDiskHealth(table, "r.json", old, nil, now)
-	if disk, warn := h.For(onDisk); disk == nil || !strings.Contains(warn, "32 sectors pending") {
-		t.Errorf("stale report: disk=%v warn=%q, want the disk still joined", disk, warn)
-	}
-	if p := h.ScannerProblem(); !strings.Contains(p, "timer") {
-		t.Errorf("stale report says %q, want the timer named", p)
+	disk, warn = newDiskHealth(table, "r.json", old, nil, now).For(onDisk)
+	if disk == nil || !strings.Contains(warn, "timer") || !strings.Contains(warn, "32 sectors pending") {
+		t.Errorf("stale report: disk=%v warn=%q, want the timer named and the disk still joined", disk, warn)
 	}
 
 	// A disk the report has never seen — plugged in since the last scan.

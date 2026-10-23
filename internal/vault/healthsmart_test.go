@@ -14,8 +14,7 @@ import (
 func TestHealthScheduleSmartIsOnUnlessSwitchedOff(t *testing.T) {
 	v, _ := newTestVault(t, 1)
 
-	// On by default: the quickstart installs the scanner, and a vault
-	// without one is told so once rather than warned on every account.
+	// On by default: the quickstart installs the scanner.
 	if !v.HealthSchedule().Smart {
 		t.Fatal("a fresh vault has the disk check off")
 	}
@@ -36,42 +35,38 @@ func TestHealthScheduleSmartIsOnUnlessSwitchedOff(t *testing.T) {
 	}
 }
 
-// A scanner that was never installed is one line about the scanner, not a
-// warning on every account — and no line at all when nothing sits on a disk
-// it would have read.
-func TestAMissingDiskReportIsSaidOnce(t *testing.T) {
+// A scanner that was never installed is said on each local account sitting
+// on a disk it would have read — and on nothing else.
+func TestAMissingDiskReportWarnsOnEachLocalAccount(t *testing.T) {
 	v, roots := newTestVault(t, 2)
 	t.Setenv("SAND_SMART_REPORT", filepath.Join(t.TempDir(), "never-written.json"))
+
+	device := deviceUnder(t, roots[0])
+	onDisk := strings.HasPrefix(device, "/dev/") &&
+		!strings.HasPrefix(device, "/dev/dm-") && !strings.HasPrefix(device, "/dev/mapper/")
 
 	health, err := v.CloudHealth()
 	if err != nil {
 		t.Fatalf("CloudHealth: %v", err)
 	}
 	for _, cloud := range health.Clouds {
-		if cloud.Disk != nil || cloud.DiskWarning != "" {
-			t.Errorf("%s carries a disk warning for a missing report: %+v", cloud.Name, cloud)
+		switch {
+		case onDisk && !strings.Contains(cloud.DiskWarning, "not installed"):
+			t.Errorf("%s: DiskWarning = %q, want the missing scanner named", cloud.Name, cloud.DiskWarning)
+		case !onDisk && cloud.DiskWarning != "":
+			t.Errorf("%s: DiskWarning = %q on %s, where SMART does not apply", cloud.Name, cloud.DiskWarning, device)
 		}
 	}
-	if health.Warnings != 0 {
-		t.Errorf("Warnings = %d, want none for a missing report", health.Warnings)
-	}
-
-	device := deviceUnder(t, roots[0])
-	onDisk := strings.HasPrefix(device, "/dev/") &&
-		!strings.HasPrefix(device, "/dev/dm-") && !strings.HasPrefix(device, "/dev/mapper/")
-	switch {
-	case onDisk && !strings.Contains(health.DiskScanner, "not installed"):
-		t.Errorf("DiskScanner = %q, want the missing scanner named once", health.DiskScanner)
-	case !onDisk && health.DiskScanner != "":
-		t.Errorf("DiskScanner = %q on %s, where SMART does not apply", health.DiskScanner, device)
+	if want := map[bool]int{true: 2, false: 0}[onDisk]; health.Warnings != want {
+		t.Errorf("Warnings = %d, want %d", health.Warnings, want)
 	}
 
 	// Switched off, there is nothing to say either way.
 	if _, err := v.SetHealthSchedule(HealthSchedule{Enabled: true}); err != nil {
 		t.Fatalf("SetHealthSchedule: %v", err)
 	}
-	if health, _ = v.CloudHealth(); health.DiskScanner != "" {
-		t.Errorf("DiskScanner = %q with the check off", health.DiskScanner)
+	if health, _ = v.CloudHealth(); health.Warnings != 0 {
+		t.Errorf("Warnings = %d with the check off", health.Warnings)
 	}
 }
 
@@ -119,8 +114,8 @@ func TestReportWarnsOnTheDiskUnderTheAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CloudHealth: %v", err)
 	}
-	if health.Clouds[0].Disk != nil || health.Clouds[0].DiskWarning != "" || health.Warnings != 0 || health.DiskScanner != "" {
-		t.Fatalf("disk facts shown with the check off: %+v %q", health.Clouds[0], health.DiskScanner)
+	if health.Clouds[0].Disk != nil || health.Clouds[0].DiskWarning != "" || health.Warnings != 0 {
+		t.Fatalf("disk facts shown with the check off: %+v", health.Clouds[0])
 	}
 
 	if _, err := v.SetHealthSchedule(HealthSchedule{Enabled: true, Smart: true}); err != nil {
@@ -139,9 +134,6 @@ func TestReportWarnsOnTheDiskUnderTheAccount(t *testing.T) {
 	}
 	if health.Warnings != 1 {
 		t.Errorf("Warnings = %d, want 1", health.Warnings)
-	}
-	if health.DiskScanner != "" {
-		t.Errorf("DiskScanner = %q, want nothing said about a fresh report", health.DiskScanner)
 	}
 }
 

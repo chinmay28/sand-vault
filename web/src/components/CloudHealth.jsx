@@ -347,8 +347,7 @@ export default function CloudHealth({ health, zIndex, onClose, onChanged }) {
 
       {/* The disk under a local folder, which answers pings long after it has
           started to die. On by default: the quickstart installs the root-run
-          scanner it reads, and an install without one is told so here, once,
-          rather than with a warning on every account. */}
+          scanner it reads, and an account on a disk without a report says so. */}
       <div style={{ marginTop: '18px', paddingTop: '14px', borderTop: `1px solid ${COLORS.border}` }}>
         <div style={{
           fontFamily: FONT.mono,
@@ -375,22 +374,6 @@ export default function CloudHealth({ health, zIndex, onClose, onChanged }) {
             onClick={() => setSchedule({ smart: false })}
           />
         </div>
-
-        {/* The scanner itself — its report missing, or stale — said once here,
-            where the switch is, and not against every account on a disk. */}
-        {health?.disk_scanner && (
-          <div style={{
-            marginTop: '10px',
-            padding: '8px 10px',
-            border: `1px solid ${COLORS.warn}55`,
-            borderRadius: '6px',
-            fontFamily: FONT.mono,
-            fontSize: '10.5px',
-            lineHeight: 1.6,
-            color: COLORS.warn,
-            overflowWrap: 'anywhere',
-          }}>{health.disk_scanner}</div>
-        )}
 
         <p style={{
           margin: '10px 0 0',

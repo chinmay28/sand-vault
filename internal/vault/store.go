@@ -191,9 +191,8 @@ type storeFile struct {
 	// SmartCheckOff leaves each local account's disk SMART report out of the
 	// health check. Stored as the negative, like HealthCheckOff, so a vault
 	// that has never chosen reads as on: the quickstart installs the root-run
-	// scanner the check reads, and a vault without one hears about it once,
-	// and only while some account sits on a disk the scanner would have read
-	// (internal/provider/disksmart.go). Vaults from the release that stored
+	// scanner the check reads, and an account on a disk without a report says
+	// so (internal/provider/disksmart.go). Vaults from the release that stored
 	// the positive, smart_check_on, come out on either way, which is what
 	// they had chosen.
 	SmartCheckOff bool `json:"smart_check_off,omitempty"`
