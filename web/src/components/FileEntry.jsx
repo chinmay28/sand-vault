@@ -170,7 +170,11 @@ export function useFileActions({
               key: 'stream',
               glyph: '▶',
               label: 'Stream in VLC',
-              hint: dead ? 'Too few parts remain to rebuild this file' : 'Open it in VLC and start playing',
+              hint: dead
+                ? 'Too few parts remain to rebuild this file'
+                : file.replica
+                  ? 'Pick which copy to play from, then open it in VLC'
+                  : 'Open it in VLC and start playing',
               disabled: dead,
               onSelect: () => setStreaming('play'),
             },

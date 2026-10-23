@@ -12,6 +12,18 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### Stream in VLC asks which copy first, when there is a choice
+
+On a phone — and on the vault added to a home screen most of all — *Stream in
+VLC* handed the file's address to the player the moment the link was made, and
+the dialog's *Read from* chooser was drawn underneath a handoff already gone:
+by the time the player had the film, the page it left was as often as not
+reloaded on the way back, chooser and all. A file with a replica now opens
+that dialog sitting still, with the chooser and a line saying why, and the
+button hands off once a copy is picked. A file with one placement plays at once
+as before, and the preview — which asks the same question before anything is
+opened from it — still hands off with the answer it was given.
+
 ### The disk under a Local folder account is checked without being asked
 
 A Local folder answers the health check's ping for as long as its filesystem

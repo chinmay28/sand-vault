@@ -1274,6 +1274,89 @@ class TestStreamingToAPlayer:
 
         app.keyboard.press("Escape")
 
+    def test_a_file_with_a_replica_asks_which_copy_before_handing_off(self, app, tmp_path):
+        """On a phone, "Stream in VLC" hands the address to the player the moment
+        the link arrives — and a home-screen app coming back from VLC is as
+        often as not reloaded, so anything the dialog drew under that handoff
+        was never seen.  A file with a replica has a choice to make first, so
+        the dialog opens sitting still, with the Read from chooser, and only
+        the button hands off.
+
+        The replica is the listing's own answer with one field added: making a
+        real one is the worker's minute, and what is under test is what the
+        dialog does with a file that has one, not how the file came to.
+        """
+        name = "twice.mp4"
+        source = tmp_path / name
+        source.write_bytes(b"a film that has a second copy")
+        upload_and_settle(app, source)
+
+        def with_replica(route):
+            resp = route.fetch()
+            body = resp.json()
+            for entry in body.get("files", []):
+                if entry["name"] == name:
+                    entry["replica"] = {
+                        "archive_id": "replica-of-twice",
+                        "shards": [dict(shard) for shard in entry["shards"]],
+                        "data_shards": entry.get("data_shards", 2),
+                        "total_shards": entry.get("total_shards", 3),
+                        "chunk_size": entry.get("chunk_size", 0),
+                        "chunk_count": entry.get("chunk_count", 0),
+                        "hash": entry.get("hash", ""),
+                        "created_at": "2026-01-01T00:00:00Z",
+                    }
+            route.fulfill(response=resp, json=body)
+
+        app.route("**/api/files?*", with_replica)
+
+        # The server, asked for a link to a replica that is not there, rightly
+        # says so; the link it mints for the parts stands in, with the
+        # placement in its address the way a real one carries it.
+        def replica_link(route):
+            resp = route.fetch(url=route.request.url.replace("?from=replica", ""))
+            body = resp.json()
+            body["url"] = body["url"] + "?from=replica"
+            route.fulfill(response=resp, json=body)
+
+        app.route("**/api/files/*/stream?from=replica", replica_link)
+        # A phone, as far as the page can tell: only there is the handoff a
+        # deep link the dialog would follow on its own.
+        app.add_init_script(
+            "Object.defineProperty(navigator, 'userAgent', {get: () => "
+            "'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36'})"
+        )
+        app.set_viewport_size(PHONE)
+        app.reload()
+        app.wait_for_selector(f'button[aria-label="Actions for {name}"]', timeout=20000)
+        app.locator(f'button[aria-label="Actions for {name}"]').click()
+        app.get_by_role("button", name=re.compile("Stream in VLC")).click()
+
+        app.get_by_role("heading", name="Stream to a player").wait_for(timeout=20000)
+        address = app.get_by_label("Stream address")
+        address.wait_for(timeout=20000)
+        # The question is on the page, and the handoff did not go ahead of it.
+        expect(app.get_by_role("radiogroup", name="Read from")).to_be_visible()
+        expect(app.get_by_text("Pick which copy to play from")).to_be_visible()
+        app.wait_for_timeout(2000)
+        assert app.get_by_text("Opening VLC…").count() == 0
+        assert app.get_by_text("Handed to VLC.").count() == 0
+        assert app.get_by_text("VLC did not answer").count() == 0
+        assert "from=" not in address.input_value()
+
+        # Choosing the replica mints an address that says so.
+        app.get_by_role("radio", name="Replica").click()
+        expect(address).to_have_value(re.compile(r"from=replica"), timeout=20000)
+        expect(app.get_by_role("radio", name="Replica")).to_have_attribute("aria-checked", "true")
+
+        app.keyboard.press("Escape")
+        app.unroute("**/api/files?*")
+        app.unroute("**/api/files/*/stream?from=replica")
+        app.set_viewport_size({"width": 1280, "height": 900})
+        app.reload()
+        app.wait_for_selector("text=" + name, timeout=20000)
+
     def test_the_address_copies_without_the_clipboard_api(self, app, tmp_path):
         """The other half of the ask: getting the path onto the clipboard
         without transcribing it.  SAND is usually reached over plain HTTP,

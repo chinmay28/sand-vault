@@ -16,14 +16,26 @@ import { ReadFromChoice } from './Replication'
    thing you would have gone looking for.
 
    `autoplay` is the difference between the two ways in. "Stream in VLC" opens
-   this already reaching for the player; "Copy link" opens it sitting still. */
-export default function StreamLink({ file, autoplay, from = 'parts', zIndex, onClose }) {
+   this already reaching for the player; "Copy link" opens it sitting still.
+
+   `from` is the placement a caller already chose — the preview asks its Read
+   from question before this opens and passes the answer on. Left unset, nobody
+   has chosen, and for a file with a replica that is a question still to ask:
+   see `undecided`. */
+export default function StreamLink({ file, autoplay, from = null, zIndex, onClose }) {
   const mobile = useIsMobile()
   const [link, setLink] = useState(null)
   const [error, setError] = useState(null)
+  /* A file with a replica, opened by something that did not say which copy to
+     play. On a phone the handoff leaves this page for VLC the moment the link
+     arrives, and a home-screen app coming back from another app is as often
+     as not reloaded — so a choice drawn under an automatic handoff is a choice
+     nobody ever sees. The dialog opens sitting still instead, whatever
+     `autoplay` says, and the button hands off once the copy is picked. */
+  const undecided = !!file.replica && from == null
   /* Which placement the link plays from. It rides in the link's own ticket,
      so changing it here mints a fresh address. */
-  const [source, setSource] = useState(file.replica ? from : 'parts')
+  const [source, setSource] = useState(file.replica ? (from || 'parts') : 'parts')
   /* idle · handing (waiting to see whether an app took it) · gone (one did,
      as far as anything here can tell) · no-app (nothing answered). */
   const [state, setState] = useState('idle')
@@ -61,8 +73,9 @@ export default function StreamLink({ file, autoplay, from = 'parts', zIndex, onC
 
   // Once, on the first link to arrive, and never again for the life of the
   // dialog: re-running this on a re-render would fire VLC at the file twice.
+  // Not at all while there is a copy still to choose — see `undecided`.
   useEffect(() => {
-    if (!autoplay || !handoff || started.current) return
+    if (!autoplay || undecided || !handoff || started.current) return
     if (handoff.kind !== 'deeplink') return
     started.current = true
     play()
@@ -103,6 +116,20 @@ export default function StreamLink({ file, autoplay, from = 'parts', zIndex, onC
           {file.replica && (
             <div style={{ marginBottom: '14px' }}>
               <ReadFromChoice file={file} value={source} onChange={setSource} compact={mobile} />
+              {/* Said only where the handoff was held back for the question —
+                  the same dialog opened by Copy the address was never going
+                  to play anything on its own. */}
+              {autoplay && undecided && state === 'idle' && (
+                <p style={{
+                  margin: '8px 0 0',
+                  fontFamily: FONT.sans,
+                  fontSize: '11.5px',
+                  lineHeight: 1.6,
+                  color: COLORS.textMuted,
+                }}>
+                  This file has a replica. Pick which copy to play from, then open it in VLC.
+                </p>
+              )}
             </div>
           )}
 
