@@ -24,12 +24,9 @@ service, and the check is on by default — it used to be a switch over a
 scanner you were told to go and install. An install made another way gets the
 scanner from `scripts/enable-disk-health.sh`.
 
-A report that is missing or stale is said once, in the *Disk health* section
-of the cloud health panel, instead of as a warning on every account sitting
-on a disk — five accounts under one missing report were five warnings — and
-only while some account is on a disk the scanner would have read, so a vault
-of network shares, or a machine with no scanner and nothing for it to look
-at, says nothing.
+An account on a disk the scanner has no report for says so on its own row,
+with the way to install the scanner; accounts on network shares, where SMART
+does not apply, say nothing either way.
 
 ### Finishing a re-encryption now runs on the server, not in the tab
 

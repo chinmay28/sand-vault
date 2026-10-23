@@ -135,9 +135,8 @@ type HealthSchedule struct {
 
 	// Smart folds the disks under local folder accounts into the check, from
 	// the report a root-run scanner keeps (see internal/provider/disksmart.go).
-	// On by default: the quickstart installs the scanner, and a vault without
-	// one is told so once, in the report's DiskScanner line, rather than with
-	// a warning on every account.
+	// On by default: the quickstart installs the scanner, and an account on a
+	// disk the scanner has not reported on says so.
 	Smart bool `json:"smart_enabled"`
 }
 
@@ -172,13 +171,6 @@ type HealthReport struct {
 	Unhealthy int `json:"unhealthy"`
 	Unchecked int `json:"unchecked"`
 	Warnings  int `json:"warnings,omitempty"`
-
-	// DiskScanner is what there is to say about the disk scanner itself —
-	// its report missing, or stale — said once here rather than against
-	// every local account, and only while some account sits on a disk the
-	// scanner would have read. Empty when the check is off, when the report
-	// is fresh, and when nothing here is on a physical disk.
-	DiskScanner string `json:"disk_scanner,omitempty"`
 
 	// CheckedAt is when the last sweep of *every* account finished — the "as
 	// of" on the figure. A single account tested on its own updates that
@@ -484,10 +476,6 @@ func (v *Vault) reportFor(configs []provider.Config, schedule HealthSchedule) He
 			report.Unhealthy++
 		}
 		report.Clouds = append(report.Clouds, one)
-	}
-
-	if disks != nil {
-		report.DiskScanner = disks.ScannerProblem()
 	}
 
 	// Worst first: the reason to open this list is to see what is wrong with
