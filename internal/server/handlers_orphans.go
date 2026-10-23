@@ -18,12 +18,13 @@ import (
 // internal/vault/orphans.go for how the gap opens and why the scan refuses to
 // act on its own in the cases it refuses.
 //
-// One GET and three POSTs, for the same reason recovery is three: looking is
+// Two GETs and three POSTs, for the same reason recovery is three: looking is
 // safe and acting is not, so looking is a GET that anything may call on a
 // schedule and each of the three things that can be done about what it found —
 // erase the abandoned parts, record the mislaid ones back, erase the working
 // files left in the vault's own directory — is a POST naming exactly what it
-// agreed to.
+// agreed to. The second GET is the mislaid half asked of one cloud, for the
+// list of short files to send somebody who has a fair idea where the parts are.
 
 // handleOrphanScan reports the abandoned parts on every connected account.
 //
@@ -36,6 +37,35 @@ func (s *Server) handleOrphanScan(w http.ResponseWriter, r *http.Request) {
 
 	v, _ := s.Vault()
 	scan, err := v.ScanForOrphans(ctx)
+	if err != nil {
+		vaultErrorResponse(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, scan)
+}
+
+// strayScanTimeout bounds a listing of one account, and the reattach that
+// re-lists it. A full scan gets two minutes across every account at once; one
+// account is given longer on its own, because the cloud somebody picks out of
+// the list is as likely as not the biggest one they have, and a listing that
+// is cut off reads as "nothing there", which is the one wrong answer.
+const strayScanTimeout = 10 * time.Minute
+
+// handleStrayScan reports the shards of files still in the tree that one
+// connected account — `?provider=`, or every account without it — is holding
+// with no record pointing at them.
+//
+// The reattach half of the scan above, on its own and askable of one cloud.
+// Nothing about the sweep is in the answer: a listing of one account can say
+// nothing safe about what is abandoned. An account ID nothing is connected
+// under is 404 rather than an empty answer, since an empty answer here reads
+// as "that cloud holds nothing of yours". See ScanForStrays.
+func (s *Server) handleStrayScan(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := contextWithTimeout(r, strayScanTimeout)
+	defer cancel()
+
+	v, _ := s.Vault()
+	scan, err := v.ScanForStrays(ctx, r.URL.Query().Get("provider"))
 	if err != nil {
 		vaultErrorResponse(w, err)
 		return
@@ -59,6 +89,11 @@ type orphanSweepRequest struct {
 
 // reattachRequest asks for the mislaid shards to be written back.
 type reattachRequest struct {
+	// ProviderID names one connected account to list and record from. Empty
+	// is every account, which is what the reconnect banner sends; the list of
+	// short files sends the one somebody chose.
+	ProviderID string `json:"provider_id"`
+
 	// DryRun asks how many would go back without the index being touched.
 	DryRun bool `json:"dry_run"`
 }
@@ -78,13 +113,18 @@ func (s *Server) handleOrphanReattach(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A listing of every account plus one index write. Long enough for the
-	// first on a slow cloud; the write itself is local.
-	ctx, cancel := contextWithTimeout(r, 5*time.Minute)
+	// A listing of every account — or of the one named — plus one index
+	// write. Long enough for the listing on a slow cloud, and no shorter than
+	// the scan the browser ran first, so a cloud that could be scanned can be
+	// repaired; the write itself is local.
+	ctx, cancel := contextWithTimeout(r, strayScanTimeout)
 	defer cancel()
 
 	v, _ := s.Vault()
-	report, err := v.ReattachShards(ctx, req.DryRun)
+	report, err := v.ReattachShards(ctx, vault.ReattachOptions{
+		ProviderID: req.ProviderID,
+		DryRun:     req.DryRun,
+	})
 	if err != nil {
 		vaultErrorResponse(w, err)
 		return

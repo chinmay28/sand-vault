@@ -541,6 +541,27 @@ file still exists, still carries that archive, and is still short of that shard
 — the scan ran without the lock, and an upload, a relocation or a sub vault
 being shut in between each makes a row stale.
 
+**Asking one cloud.** Both doors in §3.7.1 list every account at once, which
+is the right cost when the set of connected accounts has just changed and the
+wrong one when somebody is looking at thirty thousand short files and has a
+fair idea which cloud the parts are on: a vault that size on a slow cloud can
+take longer to list across every account than the app's own scan is given, and
+a listing cut short reads as "nothing there". `Vault.ScanForStrays(ctx,
+providerID)` is the reattach half on its own, askable of one account — its
+parts folder alone is listed, against the same owned set, so each row gets
+exactly the verdict a full scan would give it — and `ReattachOptions.ProviderID`
+points the repair at the same one account. The answer (`StrayScan`) carries
+nothing of the sweep's: a listing of one account can say nothing safe about
+what is abandoned, and must not look as though it could. What a scoped scan
+cannot see is a second copy of the same shard on another account, and it does
+not need to: a copy the index has a record for is accounted for whichever
+account it sits on, and one it does not is found when that account is listed.
+An ID no connected account carries is `ErrNoAccount` rather than an empty
+answer, since an empty answer here means "that cloud holds nothing of yours",
+which is not what happened; and an account that would not answer is reported
+as silent for the same reason. It is reached from the list of short files
+(§3.14), and from `sand vault reattach --cloud`.
+
 ### 3.7.3 Working files left in the vault's own directory
 
 The two sections above ask what the *clouds* are holding that no file wants.
@@ -1095,6 +1116,21 @@ accounts the file is on now — and a file that is short takes relocation's
 rebuild branch (§5.6), which is what actually puts the missing shard back. A
 file below its threshold is listed and marked, with nothing offered: no
 arrangement of clouds recreates a shard that was never written.
+
+That is the repair for a part that was never written. The dialog also offers
+the one for a part that *was*, and sits on a cloud with nothing pointing at it
+(§3.7.2) — because from this list the two look the same, and the second is
+put right without moving a byte. **Look for the missing parts on** names one
+connected cloud — or every one — and asks `GET /api/vault/orphans/strays` of
+it, with time to answer; parts of these files found there open the same
+reattach panel the reconnect banner opens, pointed at that account
+(`provider_id` on the `POST`), and the list is read again when it closes. The
+other two answers are said rather than left blank, since they lead to
+different places: a cloud that would not be listed is reported as such, and a
+cloud whose every part already has a record sends somebody back to the
+**Clouds** button knowing the part was never there. The same card opens the
+**Stray parts** panel of §3.7.1 over the list, so the sweep that the same
+listing makes possible is a press away rather than under another menu.
 
 ---
 
@@ -2449,7 +2485,8 @@ reveals only whether a vault exists.
 | POST | `/api/vault/reclaim` | Fresh data key under this password, every file rebuilt onto it, onto `accounts` (§3.7) |
 | GET | `/api/vault/orphans` | What the accounts hold that no index points at, per account and per archive (§3.7.1) |
 | POST | `/api/vault/orphans` | Erase it (`targets` — `{provider_id, archive_id}` pairs, empty for all; `dry_run`). Re-scans before deleting |
-| POST | `/api/vault/orphans/reattach` | Record back the shards a disconnect mislaid (`dry_run`). Moves no bytes (§3.7.2) |
+| POST | `/api/vault/orphans/reattach` | Record back the shards a disconnect mislaid (`dry_run`; `provider_id` to list and record from one account alone). Moves no bytes (§3.7.2) |
+| GET | `/api/vault/orphans/strays?provider=` | The mislaid half of the scan on its own, asked of one account (`provider`; every account without it): its listing, the rows and the same per-row verdicts, and nothing about the sweep. An unknown `provider` is 404 (§3.7.2) |
 | POST | `/api/vault/orphans/leftovers` | Erase the working files left in the vault's own directory (`names`, empty for all; `dry_run`). The scan of them rides on the `GET` above (§3.7.3) |
 | GET | `/api/vault/versions` | What the buckets that keep every version are storing beneath the objects they show: superseded index backups and deleted parts, per account and per key, with what is held back and why (§3.7.4) |
 | POST | `/api/vault/versions` | Erase it (`accounts` — IDs, empty for all; `dry_run`). Re-scans before deleting; the current version of every object stays |

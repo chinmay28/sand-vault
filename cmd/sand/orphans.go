@@ -140,7 +140,10 @@ another window is never taken out from under it.`,
 }
 
 func vaultReattachCmd() *cobra.Command {
-	var yes bool
+	var (
+		yes   bool
+		cloud string
+	)
 
 	cmd := &cobra.Command{
 		Use:   "reattach",
@@ -165,6 +168,10 @@ Purely additive — nothing is erased and no key is touched, and a file can only
 come out of it with more shards than it went in with. Nothing is written without
 --yes.
 
+By default every connected account is listed. --cloud names one, by name or
+ID, and lists that one alone — the thing to reach for when the parts are on a
+cloud you can point at and listing all of them is slow or will not finish.
+
 It does not check the contents, any more than a recovery does. Run
 'sand vault check' afterwards to have the accounts asked whether the parts are
 really there.`,
@@ -175,7 +182,19 @@ really there.`,
 			}
 			defer closeVault(v)
 
-			preview, err := v.ReattachShards(cmd.Context(), true)
+			opts := vault.ReattachOptions{}
+			where := "your accounts"
+			if cloud != "" {
+				cfg, err := findProvider(v, cloud)
+				if err != nil {
+					return err
+				}
+				opts.ProviderID = cfg.ID
+				where = cfg.Name
+			}
+
+			opts.DryRun = true
+			preview, err := v.ReattachShards(cmd.Context(), opts)
 			if err != nil {
 				return err
 			}
@@ -183,11 +202,11 @@ really there.`,
 			printWarnings(preview.Skipped)
 
 			if preview.Shards == 0 {
-				fmt.Println("Every shard on your accounts already has a record pointing at it.")
+				fmt.Printf("Every shard on %s already has a record pointing at it.\n", where)
 				return nil
 			}
-			fmt.Printf("%d shard(s) of %d file(s) (%s) are on your clouds with nothing pointing at them.\n",
-				preview.Shards, preview.Files, formatBytes(preview.Bytes))
+			fmt.Printf("%d shard(s) of %d file(s) (%s) are on %s with nothing pointing at them.\n",
+				preview.Shards, preview.Files, formatBytes(preview.Bytes), where)
 
 			if !yes {
 				fmt.Println()
@@ -195,7 +214,8 @@ really there.`,
 				return nil
 			}
 
-			report, err := v.ReattachShards(cmd.Context(), false)
+			opts.DryRun = false
+			report, err := v.ReattachShards(cmd.Context(), opts)
 			if report != nil {
 				printWarnings(report.Skipped)
 				fmt.Printf("Recorded %d shard(s) across %d file(s). No data was transferred.\n",
@@ -210,6 +230,7 @@ really there.`,
 	}
 
 	cmd.Flags().BoolVar(&yes, "yes", false, "write the records back rather than only listing them")
+	cmd.Flags().StringVar(&cloud, "cloud", "", "list one connected account, by name or ID, instead of all of them")
 	return cmd
 }
 

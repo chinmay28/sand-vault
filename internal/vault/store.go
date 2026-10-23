@@ -64,6 +64,11 @@ var ErrWrongPassword = errors.New("wrong password")
 // ErrNotInitialized is returned when no vault exists at the configured path.
 var ErrNotInitialized = errors.New("vault has not been created yet")
 
+// ErrNoAccount is returned when an operation names a connected account by ID
+// and no connected account has it. Wrapped with the ID that was asked for, so
+// a caller can both test for it and say which account was meant.
+var ErrNoAccount = errors.New("no such connected account")
+
 // sealed is one AES-256-GCM ciphertext with its nonce, base64 encoded for JSON.
 type sealed struct {
 	Nonce      string `json:"nonce"`

@@ -12,6 +12,34 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### Files missing a part can be looked for on a cloud you name
+
+A file short of a part is short for one of two reasons, and until now the
+*Files missing a part* list treated them as one. Either the part was never
+written — the cloud was not answering when the file was scattered — and the
+only way back is to gather the file and cut it again, which is what choosing
+clouds for a row does. Or the part was written and is still there: a cloud
+that was disconnected and connected back arrives as a new account, with no
+way of knowing it is the one the dropped records pointed at, and the part
+sits on it with nothing naming it. SAND looks for that on its own when the
+set of connected accounts changes, but that look lists every cloud at once on
+a short budget and says nothing when it cannot finish — which on a vault with
+tens of thousands of short files is the usual outcome.
+
+The list now has *Look for the missing parts on*, with a cloud to pick, or
+every cloud at once. It lists what was picked, with time to answer, and any
+parts of the short files it finds there are recorded again from the same
+panel the reconnect notice opens — no data moves for it. The other two
+answers are said out loud rather than left as a blank list: a cloud that could
+not be listed is reported as such, and a cloud whose every part already has a
+record means the part was never there, and the *Clouds* button is the way
+back. *Stray parts*, which used to live only under Vault settings, opens from
+the same card.
+
+`GET /api/vault/orphans/strays?provider=` is the scan of one account, and
+`provider_id` on `POST /api/vault/orphans/reattach` points the repair at it.
+`sand vault reattach --cloud NAME` does the same from the command line.
+
 ### Replication: a second copy of chosen folders, on clouds you already have
 
 A folder — or one file — can be given a *replica*: a second, independent

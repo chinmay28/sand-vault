@@ -326,6 +326,7 @@ func (s *Server) Handler() (http.Handler, error) {
 		// somebody has been deleting films answers only after minutes.
 		"GET /api/vault/orphans/erasing":   s.handleOrphanErasing,
 		"POST /api/vault/orphans/reattach": s.handleOrphanReattach,
+		"GET /api/vault/orphans/strays":    s.handleStrayScan,
 		// The same question asked of the one disk SAND writes to itself. An
 		// interrupted upload leaves its spool in the vault's own directory at
 		// the full size of the file it was sending, and nothing goes back for
@@ -947,6 +948,8 @@ func vaultErrorResponse(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, err.Error(), "MIGRATION_BUSY")
 	case errors.Is(err, vault.ErrNoReplica):
 		writeError(w, http.StatusNotFound, err.Error(), "NO_REPLICA")
+	case errors.Is(err, vault.ErrNoAccount):
+		writeError(w, http.StatusNotFound, err.Error(), "NOT_FOUND")
 	case errors.Is(err, vault.ErrNeedsConversion):
 		// 409 rather than 400: nothing about the request is wrong, the file is
 		// simply in a state that has to change before it can be answered for.

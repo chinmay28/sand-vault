@@ -1,9 +1,11 @@
-import React, { useCallback, useEffect, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { COLORS, FONT, accountColor, fileIcon, formatBytes } from '../theme'
 import { api } from '../api'
 import { useIsMobile } from '../hooks'
 import { Banner, Button, Empty, Modal, Spinner } from './ui'
 import { RelocateClouds, schemeName } from './CloudSelect'
+import ReattachShards from './ReattachShards'
+import { StrayParts } from './CleanOrphans'
 
 /* The files behind "4 files missing a spare part".
 
@@ -25,7 +27,13 @@ import { RelocateClouds, schemeName } from './CloudSelect'
 
    Paged, because the cause is not one file at a time. An account down for an
    afternoon leaves every file uploaded that afternoon short, so this list is
-   normally zero rows or a great many, and rarely three. */
+   normally zero rows or a great many, and rarely three.
+
+   There is a second way a part goes missing, with a far cheaper way back, and
+   the dialog offers that too — see LookOnCloud. */
+
+/* The dialog this opens over the list, and the one that opens over that. */
+const CHILD_Z = 110
 
 /* How many rows a page holds. Each carries its file's whole placement, and the
    page is read out of the index rather than from any account, so this is about
@@ -106,6 +114,10 @@ export default function MissingParts({ providers, onClose, onChanged }) {
           few parts were ever written. No arrangement of clouds brings one of those back,
           so they are listed and marked and nothing is offered for them.
         </Banner>
+      )}
+
+      {page && total > 0 && providers.length > 0 && (
+        <LookOnCloud providers={providers} onRepaired={repaired} />
       )}
 
       {loading && !page && (
@@ -190,6 +202,262 @@ export default function MissingParts({ providers, onClose, onChanged }) {
         />
       )}
     </Modal>
+  )
+}
+
+/* The other way a part goes missing, and the way back that moves nothing.
+
+   The paragraph at the top of the dialog is about a part that was never
+   written. A part can also be sitting on a cloud with no record pointing at
+   it: disconnecting an account drops the records naming it — an index that
+   still claimed them would be lying about what can be reached — and the same
+   storage connected back arrives as a new account, with no way of knowing it
+   is the one those records meant. Recording such a part again moves no data
+   at all, which makes it the repair to try before gathering and re-cutting
+   thirty thousand files.
+
+   The app does look for this on its own, when the set of connected accounts
+   changes: one listing of every cloud at once, on a short budget, raising a
+   banner that can be dismissed and saying nothing if the listing fails. On a
+   vault this list is long for, that is exactly the scan that does not finish.
+   So this asks the question of one cloud, chosen, with time to answer — the
+   account alone is listed, and the parts of these files found there are put
+   back from the same dialog the banner opens. Every cloud at once is in the
+   same picker, for the vault where the listing does finish. The result is
+   said either way, because "nothing there" is the answer that sends somebody
+   back to the Clouds button with a clear conscience, and it has to be told
+   apart from "could not look".
+
+   Vault settings has a panel for the same listing — Stray parts, which also
+   offers the sweep of abandoned parts and of this machine's working files —
+   and it opens from here too, over the list, so that nobody has to know it
+   lives under a different menu. */
+
+/* The choice that lists every connected cloud. An empty id is what the scan
+   and the repair both read as "no account named", and the name is what the
+   picker and the result sentences call it. */
+const EVERY_CLOUD = { id: '', name: 'every connected cloud' }
+
+function LookOnCloud({ providers, onRepaired }) {
+  const [cloud, setCloud] = useState(providers[0]?.id || '')
+  const [busy, setBusy] = useState(false)
+  const [answer, setAnswer] = useState(null)
+  const [error, setError] = useState(null)
+  const [reattaching, setReattaching] = useState(false)
+  const [strayOpen, setStrayOpen] = useState(false)
+
+  /* Whether the dialog over this card wrote anything. Its report is worth
+     reading, and the list under this card reloading to nothing would take the
+     card — and the report with it — away mid-sentence; so the list is read
+     again when the dialog closes, not the moment the repair lands. */
+  const acted = useRef(false)
+
+  /* An account that has gone while the dialog is open leaves the select on
+     nothing; fall to the first that is still there. */
+  const chosen = cloud === EVERY_CLOUD.id
+    ? EVERY_CLOUD
+    : (providers.find((p) => p.id === cloud) || providers[0])
+
+  const look = async () => {
+    setError(null)
+    setAnswer(null)
+    setBusy(true)
+    try {
+      const scan = await api.strayScan({ providerId: chosen.id })
+      setAnswer({ scan, cloud: chosen })
+      if (scan.reattachable > 0) setReattaching(true)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /* The scan is stale the moment the repair has run, whichever way the dialog
+     over it was closed; the next look lists the cloud again. */
+  const closeRepair = () => {
+    setReattaching(false)
+    setAnswer(null)
+    if (!acted.current) return
+    acted.current = false
+    onRepaired()
+  }
+
+  /* The Stray parts panel runs its own listing and keeps its own children;
+     all this needs to know is whether anything was written while it was up,
+     which it says through onChanged. A look taken before it opened is stale
+     once it has acted, so it goes too. */
+  const closeStray = () => {
+    setStrayOpen(false)
+    if (!acted.current) return
+    acted.current = false
+    setAnswer(null)
+    onRepaired()
+  }
+
+  return (
+    <div style={{
+      padding: '10px 12px',
+      marginBottom: '12px',
+      background: COLORS.surface,
+      border: `1px solid ${COLORS.border}`,
+      borderRadius: '6px',
+    }}>
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        flexWrap: 'wrap',
+        fontFamily: FONT.mono,
+        fontSize: '11px',
+        color: COLORS.textDim,
+      }}>
+        <span style={{ flexShrink: 0 }}>Look for the missing parts on</span>
+        <select
+          value={chosen?.id || ''}
+          onChange={(e) => { setCloud(e.target.value); setAnswer(null); setError(null) }}
+          disabled={busy}
+          style={{
+            flex: 1,
+            minWidth: '120px',
+            fontFamily: FONT.mono,
+            fontSize: '11px',
+            padding: '4px 6px',
+            background: COLORS.bg,
+            color: COLORS.text,
+            border: `1px solid ${COLORS.border}`,
+            borderRadius: '4px',
+          }}
+        >
+          {providers.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}{p.online === false ? ' (not answering)' : ''}
+            </option>
+          ))}
+          <option value={EVERY_CLOUD.id}>{EVERY_CLOUD.name}</option>
+        </select>
+        <Button
+          size="sm"
+          onClick={look}
+          disabled={busy || !chosen}
+          title={chosen.id
+            ? 'List this cloud for parts of these files that the index has no record of'
+            : 'List every connected cloud for parts of these files that the index has no record of'}
+          style={{ flexShrink: 0 }}
+        >
+          {busy ? <Spinner size={11} /> : null}
+          {busy ? 'Listing…' : 'Scan'}
+        </Button>
+      </div>
+
+      <div style={{
+        display: 'flex',
+        alignItems: 'flex-end',
+        gap: '10px',
+        flexWrap: 'wrap',
+        marginTop: '6px',
+      }}>
+        <div style={{
+          flex: 1,
+          minWidth: '220px',
+          fontFamily: FONT.sans,
+          fontSize: '11px',
+          lineHeight: 1.5,
+          color: COLORS.textMuted,
+        }}>
+          A part that was on a cloud when it was disconnected is still there, with nothing
+          pointing at it. Listing that cloud finds such parts and records them again without
+          moving any data. The same listing also turns up parts no file needs any more; those
+          are dealt with in Stray parts, which opens here.
+        </div>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => setStrayOpen(true)}
+          disabled={busy}
+          title="Every cloud and this machine: parts to put back, parts to erase, working files to tidy"
+          style={{ flexShrink: 0 }}
+        >🧹 Stray parts</Button>
+      </div>
+
+      {error && (
+        <div style={{ marginTop: '10px' }}>
+          <Banner tone="error" onDismiss={() => setError(null)}>{error}</Banner>
+        </div>
+      )}
+
+      {answer && !reattaching && (
+        <div style={{ marginTop: '10px' }}>
+          <LookResult answer={answer} />
+        </div>
+      )}
+
+      {reattaching && answer && (
+        <ReattachShards
+          scan={answer.scan}
+          providerId={answer.cloud.id}
+          cloud={answer.cloud.id ? answer.cloud.name : ''}
+          zIndex={CHILD_Z}
+          onClose={closeRepair}
+          onDone={() => { acted.current = true }}
+        />
+      )}
+
+      {strayOpen && (
+        <StrayParts
+          zIndex={CHILD_Z}
+          onClose={closeStray}
+          onChanged={() => { acted.current = true }}
+        />
+      )}
+    </div>
+  )
+}
+
+/* What one look turned up, when it is not a repair: the account would not
+   answer, or it answered and held nothing of these files', or it held parts
+   none of which can be recorded. Three different next steps, so three
+   different sentences — and over every cloud, the clouds that did not answer
+   are named beside what the rest said, since one silent cloud is exactly
+   where the part might be. */
+function LookResult({ answer }) {
+  const { scan, cloud } = answer
+  const listed = scan.accounts || []
+  const silent = listed.filter((a) => a.error)
+  const answered = listed.filter((a) => !a.error)
+  const strays = scan.strays || []
+  const where = cloud.id ? cloud.name : 'your clouds'
+  const unheard = silent.map((a) => `${a.name} — ${a.error}`).join('; ')
+
+  if (answered.length === 0) {
+    return (
+      <Banner tone="error">
+        {cloud.id ? cloud.name : 'No cloud'} could not be listed, so nothing can be said about
+        what {cloud.id ? 'it holds' : 'they hold'}: {unheard}
+      </Banner>
+    )
+  }
+
+  if (strays.length > 0) {
+    const reasons = [...new Set(strays.map((row) => row.reason).filter(Boolean))]
+    return (
+      <Banner tone="warn">
+        {strays.length} part{strays.length === 1 ? '' : 's'} of {scan.stray_files} file
+        {scan.stray_files === 1 ? '' : 's'} {strays.length === 1 ? 'is' : 'are'} on {where} with
+        no record, but none can be recorded{reasons.length > 0 ? `: ${reasons.join('; ')}` : '.'}
+        {silent.length > 0 ? ` Not listed: ${unheard}` : ''}
+      </Banner>
+    )
+  }
+
+  const objects = answered.reduce((sum, a) => sum + (a.objects || 0), 0)
+  return (
+    <Banner tone={silent.length > 0 ? 'warn' : 'info'}>
+      Nothing on {where} belongs to a file that is short a part — every part there ({objects})
+      already has a record. The parts these files are missing were never written there, so
+      choosing clouds for a row is what puts one back.
+      {silent.length > 0 ? ` Except that some clouds could not be listed, and the part may be on one of them: ${unheard}` : ''}
+    </Banner>
   )
 }
 

@@ -19,8 +19,12 @@ import { Banner, Button, Modal, Spinner } from './ui'
    saying loudest: a part's object key is derived from the archive id and the
    shard number, so the object is already exactly where the record says it is.
    That is why this has no per-row opt-out the way the sweep does — there is
-   nothing to weigh up. It can only make files more recoverable than they are. */
-export default function ReattachShards({ scan, zIndex = 100, onClose, onDone }) {
+   nothing to weigh up. It can only make files more recoverable than they are.
+
+   `providerId` and `cloud` arrive together when the scan was of one cloud (see
+   MissingParts): the repair is then pointed at that account alone, and the
+   dialog says whose parts it is talking about. */
+export default function ReattachShards({ scan, providerId = '', cloud = '', zIndex = 100, onClose, onDone }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const [report, setReport] = useState(null)
@@ -33,7 +37,7 @@ export default function ReattachShards({ scan, zIndex = 100, onClose, onDone }) 
     setError(null)
     setBusy(true)
     try {
-      setReport(await api.reattachShards())
+      setReport(await api.reattachShards({ providerId }))
       onDone?.()
     } catch (err) {
       setError(err.message)
@@ -83,7 +87,7 @@ export default function ReattachShards({ scan, zIndex = 100, onClose, onDone }) 
   return (
     <Modal
       title="Parts your files have lost track of"
-      subtitle="Still on your clouds, still readable — the index just stopped naming them."
+      subtitle={`Still on ${cloud || 'your clouds'}, still readable — the index just stopped naming them.`}
       onClose={busy ? undefined : onClose}
       width={600}
       zIndex={zIndex}
