@@ -135,9 +135,9 @@ type HealthSchedule struct {
 
 	// Smart folds the disks under local folder accounts into the check, from
 	// the report a root-run scanner keeps (see internal/provider/disksmart.go).
-	// Off by default: the scanner has to be installed outside the vault, and a
-	// switch that defaults on above a scanner that is not there would open
-	// every install with a warning.
+	// On by default: the quickstart installs the scanner, and a vault without
+	// one is told so once, in the report's DiskScanner line, rather than with
+	// a warning on every account.
 	Smart bool `json:"smart_enabled"`
 }
 
@@ -173,6 +173,13 @@ type HealthReport struct {
 	Unchecked int `json:"unchecked"`
 	Warnings  int `json:"warnings,omitempty"`
 
+	// DiskScanner is what there is to say about the disk scanner itself —
+	// its report missing, or stale — said once here rather than against
+	// every local account, and only while some account sits on a disk the
+	// scanner would have read. Empty when the check is off, when the report
+	// is fresh, and when nothing here is on a physical disk.
+	DiskScanner string `json:"disk_scanner,omitempty"`
+
 	// CheckedAt is when the last sweep of *every* account finished — the "as
 	// of" on the figure. A single account tested on its own updates that
 	// account's own CheckedAt and deliberately not this one.
@@ -207,7 +214,7 @@ func (v *Vault) healthScheduleLocked() HealthSchedule {
 		// vault with the check switched on.
 		Enabled: !v.store.HealthCheckOff,
 		Minutes: v.healthMinutesLocked(),
-		Smart:   v.store.SmartCheckOn,
+		Smart:   !v.store.SmartCheckOff,
 	}
 }
 
@@ -240,7 +247,7 @@ func (v *Vault) SetHealthSchedule(s HealthSchedule) (HealthSchedule, error) {
 	}
 
 	v.store.HealthCheckOff = !s.Enabled
-	v.store.SmartCheckOn = s.Smart
+	v.store.SmartCheckOff = !s.Smart
 	if s.Minutes != 0 {
 		v.store.HealthCheckMinutes = s.Minutes
 	}
@@ -439,6 +446,12 @@ func (v *Vault) reportFor(configs []provider.Config, schedule HealthSchedule) He
 		report.NextCheckAt = swept.Add(schedule.Interval())
 	}
 
+	// The scanner's report, read once for every local account below.
+	var disks *provider.DiskHealth
+	if schedule.Smart {
+		disks = provider.ReadDiskHealth()
+	}
+
 	for _, cfg := range configs {
 		one, ok := seen[cfg.ID]
 		if !ok {
@@ -455,8 +468,8 @@ func (v *Vault) reportFor(configs []provider.Config, schedule HealthSchedule) He
 		// rather than from what a ping recorded: the report is a file on disk
 		// that a timer keeps fresh, so the latest one is always the one worth
 		// showing, and a toggle switched off hides the column at once.
-		if schedule.Smart && cfg.Kind == provider.KindLocal {
-			one.Disk, one.DiskWarning = provider.DiskHealthFor(localRoot(cfg))
+		if disks != nil && cfg.Kind == provider.KindLocal {
+			one.Disk, one.DiskWarning = disks.For(localRoot(cfg))
 			if one.DiskWarning != "" {
 				report.Warnings++
 			}
@@ -471,6 +484,10 @@ func (v *Vault) reportFor(configs []provider.Config, schedule HealthSchedule) He
 			report.Unhealthy++
 		}
 		report.Clouds = append(report.Clouds, one)
+	}
+
+	if disks != nil {
+		report.DiskScanner = disks.ScannerProblem()
 	}
 
 	// Worst first: the reason to open this list is to see what is wrong with

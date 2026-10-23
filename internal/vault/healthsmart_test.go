@@ -11,28 +11,67 @@ import (
 	"github.com/chinmay28/sand-vault/internal/provider"
 )
 
-func TestHealthScheduleSmartIsOptIn(t *testing.T) {
+func TestHealthScheduleSmartIsOnUnlessSwitchedOff(t *testing.T) {
 	v, _ := newTestVault(t, 1)
 
-	// Opt-in: a vault that has never chosen it has it off, because the switch
-	// sits above a scanner that has to be installed outside the vault.
-	if v.HealthSchedule().Smart {
-		t.Fatal("a fresh vault has the disk check on")
+	// On by default: the quickstart installs the scanner, and a vault
+	// without one is told so once rather than warned on every account.
+	if !v.HealthSchedule().Smart {
+		t.Fatal("a fresh vault has the disk check off")
 	}
 
-	saved, err := v.SetHealthSchedule(HealthSchedule{Enabled: true, Smart: true})
+	saved, err := v.SetHealthSchedule(HealthSchedule{Enabled: true})
 	if err != nil {
 		t.Fatalf("SetHealthSchedule: %v", err)
 	}
-	if !saved.Smart || !v.HealthSchedule().Smart {
-		t.Error("switching the disk check on did not stick")
+	if saved.Smart || v.HealthSchedule().Smart {
+		t.Error("switching the disk check off did not stick")
 	}
 
-	if saved, err = v.SetHealthSchedule(HealthSchedule{Enabled: true}); err != nil {
+	if saved, err = v.SetHealthSchedule(HealthSchedule{Enabled: true, Smart: true}); err != nil {
 		t.Fatalf("SetHealthSchedule: %v", err)
 	}
-	if saved.Smart {
-		t.Error("switching the disk check off did not stick")
+	if !saved.Smart {
+		t.Error("switching the disk check back on did not stick")
+	}
+}
+
+// A scanner that was never installed is one line about the scanner, not a
+// warning on every account — and no line at all when nothing sits on a disk
+// it would have read.
+func TestAMissingDiskReportIsSaidOnce(t *testing.T) {
+	v, roots := newTestVault(t, 2)
+	t.Setenv("SAND_SMART_REPORT", filepath.Join(t.TempDir(), "never-written.json"))
+
+	health, err := v.CloudHealth()
+	if err != nil {
+		t.Fatalf("CloudHealth: %v", err)
+	}
+	for _, cloud := range health.Clouds {
+		if cloud.Disk != nil || cloud.DiskWarning != "" {
+			t.Errorf("%s carries a disk warning for a missing report: %+v", cloud.Name, cloud)
+		}
+	}
+	if health.Warnings != 0 {
+		t.Errorf("Warnings = %d, want none for a missing report", health.Warnings)
+	}
+
+	device := deviceUnder(t, roots[0])
+	onDisk := strings.HasPrefix(device, "/dev/") &&
+		!strings.HasPrefix(device, "/dev/dm-") && !strings.HasPrefix(device, "/dev/mapper/")
+	switch {
+	case onDisk && !strings.Contains(health.DiskScanner, "not installed"):
+		t.Errorf("DiskScanner = %q, want the missing scanner named once", health.DiskScanner)
+	case !onDisk && health.DiskScanner != "":
+		t.Errorf("DiskScanner = %q on %s, where SMART does not apply", health.DiskScanner, device)
+	}
+
+	// Switched off, there is nothing to say either way.
+	if _, err := v.SetHealthSchedule(HealthSchedule{Enabled: true}); err != nil {
+		t.Fatalf("SetHealthSchedule: %v", err)
+	}
+	if health, _ = v.CloudHealth(); health.DiskScanner != "" {
+		t.Errorf("DiskScanner = %q with the check off", health.DiskScanner)
 	}
 }
 
@@ -73,12 +112,15 @@ func TestReportWarnsOnTheDiskUnderTheAccount(t *testing.T) {
 
 	// Off: the report exists, the disk is bad, and nothing says so — the
 	// toggle is the user's, not the scanner's.
+	if _, err := v.SetHealthSchedule(HealthSchedule{Enabled: true}); err != nil {
+		t.Fatalf("SetHealthSchedule: %v", err)
+	}
 	health, err := v.CloudHealth()
 	if err != nil {
 		t.Fatalf("CloudHealth: %v", err)
 	}
-	if health.Clouds[0].Disk != nil || health.Clouds[0].DiskWarning != "" || health.Warnings != 0 {
-		t.Fatalf("disk facts shown with the check off: %+v", health.Clouds[0])
+	if health.Clouds[0].Disk != nil || health.Clouds[0].DiskWarning != "" || health.Warnings != 0 || health.DiskScanner != "" {
+		t.Fatalf("disk facts shown with the check off: %+v %q", health.Clouds[0], health.DiskScanner)
 	}
 
 	if _, err := v.SetHealthSchedule(HealthSchedule{Enabled: true, Smart: true}); err != nil {
@@ -97,6 +139,9 @@ func TestReportWarnsOnTheDiskUnderTheAccount(t *testing.T) {
 	}
 	if health.Warnings != 1 {
 		t.Errorf("Warnings = %d, want 1", health.Warnings)
+	}
+	if health.DiskScanner != "" {
+		t.Errorf("DiskScanner = %q, want nothing said about a fresh report", health.DiskScanner)
 	}
 }
 

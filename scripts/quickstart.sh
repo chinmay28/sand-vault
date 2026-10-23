@@ -201,6 +201,9 @@ SAND_REF="${SAND_REF:-main}"
 RELEASE_TAG="${SAND_RELEASE:-latest}"
 SERVICE_NAME="sand"
 UNIT_PATH="/etc/systemd/system/${SERVICE_NAME}.service"
+# The disk SMART scanner that runs beside the service (see install_smart_scan).
+SMART_UNIT_PATH="/etc/systemd/system/${SERVICE_NAME}-smart.service"
+SMART_TIMER_PATH="/etc/systemd/system/${SERVICE_NAME}-smart.timer"
 DEFAULT_MOUNT_ROOTS="/media:/run/media:/mnt:/srv"
 
 # How the service is already running, if it is. The unit is rewritten from
@@ -318,6 +321,7 @@ SVC_USER="${SAND_USER:-${PRIOR_USER:-sand}}"
 PREFIX="${SAND_PREFIX:-$(prior_prefix)}"
 PREFIX="${PREFIX:-/opt/sand}"
 DATA_DIR="${SAND_DATA_DIR:-${PRIOR_DATA_DIR:-/var/lib/sand}}"
+SMART_REPORT="$DATA_DIR/smart.json"
 [ -n "${SAND_USER:-}" ]     && check_against_unit SAND_USER     "$SVC_USER" "$PRIOR_USER"
 [ -n "${SAND_PREFIX:-}" ]   && check_against_unit SAND_PREFIX   "$PREFIX"   "$(prior_prefix)"
 [ -n "${SAND_DATA_DIR:-}" ] && check_against_unit SAND_DATA_DIR "$DATA_DIR" "$PRIOR_DATA_DIR"
@@ -519,8 +523,12 @@ if [ "$UNINSTALL" = 1 ]; then
 
   if command -v systemctl >/dev/null 2>&1; then
     systemctl disable --now "${SERVICE_NAME}.service" >/dev/null 2>&1 || true
+    systemctl disable --now "${SERVICE_NAME}-smart.timer" >/dev/null 2>&1 || true
   fi
   rm -f "$UNIT_PATH"
+  # The disk scanner's units go with the service's; its report is not vault
+  # data, so it goes too, while $DATA_DIR itself stays.
+  rm -f "$SMART_UNIT_PATH" "$SMART_TIMER_PATH" "$SMART_REPORT"
   # The drop-in directory holds the Local folder grants (SAND_LOCAL_PATHS,
   # scripts/allow-local-path.sh) and anything `systemctl edit sand` wrote. All
   # of it configures a unit that no longer exists.
@@ -1098,6 +1106,9 @@ Environment=SAND_VAULT=$VAULT_PATH
 # ProtectSystem=strict leaves read-only — and a client that cannot write its
 # cache cannot run at all.
 Environment=SAND_PROTON_STATE_DIR=$PROTON_STATE_DIR
+# Where the disk SMART scanner (${SERVICE_NAME}-smart.timer, below) leaves its
+# report, and where the health check reads it.
+Environment=SAND_SMART_REPORT=$SMART_REPORT
 Restart=on-failure
 RestartSec=3
 
@@ -1194,6 +1205,74 @@ systemctl daemon-reload
 systemctl enable "${SERVICE_NAME}.service" >/dev/null 2>&1 || true
 start_service
 ok "service enabled and started"
+
+# The disk health scanner. A Local folder account answers the health check's
+# ping for as long as its filesystem does, which is long after the disk under
+# it has started to go; the disk's own SMART counters move weeks earlier. The
+# service cannot read them — PrivateDevices=true, and rightly so — so a
+# root-run one-shot, 'sand smart-scan', reads every disk hourly and leaves a
+# small JSON report in $DATA_DIR for the health check to join to each account.
+# Installed here, with the service, because an install that asked the person
+# to go and install it by hand was an install that warned about a scanner
+# nobody had run. scripts/enable-disk-health.sh writes the same two units for
+# an install made without this script.
+#
+# Best effort: a box with no apt, or no smartmontools to be had, keeps its
+# service and loses only this. The health panel says, once, when the report
+# is missing, and only while some account sits on a disk it would have read.
+install_smart_scan() {
+  if ! command -v smartctl >/dev/null 2>&1; then
+    if [ "$APT" -eq 1 ]; then
+      log "installing smartmontools (for the disk health check)…"
+      DEBIAN_FRONTEND=noninteractive apt-get install -y smartmontools >/dev/null 2>&1 \
+        || { warn "smartmontools could not be installed; the disk health check will say so until it is"; return 0; }
+    else
+      warn "smartctl not found and no apt-get; install smartmontools and re-run for the disk health check"
+      return 0
+    fi
+  fi
+
+  cat > "$SMART_UNIT_PATH" <<UNIT
+# Written by scripts/quickstart.sh. Reads every disk's SMART health and writes
+# $SMART_REPORT for the ${SERVICE_NAME} service's health check.
+[Unit]
+Description=SAND disk SMART scan
+
+[Service]
+Type=oneshot
+ExecStart=$SERVER_BIN smart-scan --out $SMART_REPORT
+UNIT
+
+  cat > "$SMART_TIMER_PATH" <<TIMER
+# Written by scripts/quickstart.sh.
+[Unit]
+Description=SAND disk SMART scan, hourly
+
+[Timer]
+# Soon after boot, so a machine that is only ever up for a while still gets a
+# report; then hourly, which is the freshness the service's staleness window
+# (internal/provider/disksmart.go) is sized against.
+OnBootSec=5min
+OnUnitActiveSec=1h
+RandomizedDelaySec=2min
+
+[Install]
+WantedBy=timers.target
+TIMER
+
+  systemctl daemon-reload
+  systemctl enable --now "${SERVICE_NAME}-smart.timer" >/dev/null 2>&1 \
+    || { warn "could not enable ${SERVICE_NAME}-smart.timer"; return 0; }
+  # The first report now, so the first health check finds one rather than
+  # saying the scanner has never run. A disk that hangs on bad sectors can
+  # make this slow, which is a finding in itself; the scan bounds each disk.
+  if systemctl start "${SERVICE_NAME}-smart.service" >/dev/null 2>&1; then
+    ok "disk health scanner installed (hourly; report at $SMART_REPORT)"
+  else
+    warn "disk health scanner installed, but its first run failed — journalctl -u ${SERVICE_NAME}-smart"
+  fi
+}
+install_smart_scan
 
 # ---------------------------------------------------------------------------
 # 7. Health check (with rollback on a failed upgrade)
