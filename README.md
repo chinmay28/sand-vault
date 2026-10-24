@@ -236,8 +236,9 @@ they always did.
 | `dropbox` | Dropbox | **Sign in** |
 | `box` | Box | **Sign in** |
 | `s3` | Amazon S3, Cloudflare R2, Backblaze B2, Wasabi, MinIO | Bucket, keys, endpoint for non-AWS |
-| `webdav` | Nextcloud, ownCloud, pCloud, Koofr, Fastmail, anything behind `rclone serve webdav` | URL, username, app password |
+| `webdav` | Nextcloud, ownCloud, pCloud, Koofr, Fastmail, FileJump, FolderFort, LifetimeCloud, Scramble Cloud, anything behind `rclone serve webdav` | URL, username, app password |
 | `drime` | Drime, through its API | An access token from the Drime web app |
+| `filejump` | FileJump, through its API | An access token from your FileJump account settings, and which of its servers the account is on |
 | `filen` | Filen, through its end-to-end encrypted API | Email and password, unlocked on this machine |
 | `internxt` | Internxt Drive, through its end-to-end encrypted API | Email and password, unlocked on this machine |
 | `sftp` | Any machine you have an SSH login on — a VPS, a NAS, rsync.net, a Hetzner Storage Box | Host, username, **a key SAND generates** or your own |

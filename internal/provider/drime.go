@@ -213,7 +213,15 @@ func drimeEntryUnknown(err error) bool {
 	if !errors.As(err, &de) {
 		return false
 	}
-	switch de.status {
+	return laravelEntryMissing(de.status, de.body)
+}
+
+// laravelEntryMissing reads a refused delete the way drimeEntryUnknown
+// describes, for every service built on the same software: Drime and
+// FileJump are both BeDrive deployments and refuse an unknown entry ID with
+// the same status and the same validation message.
+func laravelEntryMissing(status int, body string) bool {
+	switch status {
 	case http.StatusNotFound:
 		return true
 	case http.StatusUnprocessableEntity:
@@ -221,19 +229,19 @@ func drimeEntryUnknown(err error) bool {
 		return false
 	}
 
-	var body struct {
+	var parsed struct {
 		Message string                     `json:"message"`
 		Errors  map[string]json.RawMessage `json:"errors"`
 	}
-	if json.Unmarshal([]byte(de.body), &body) != nil {
+	if json.Unmarshal([]byte(body), &parsed) != nil {
 		return false
 	}
-	for field := range body.Errors {
+	for field := range parsed.Errors {
 		if strings.HasPrefix(strings.ToLower(field), "entryids") {
 			return true
 		}
 	}
-	message := strings.ToLower(body.Message)
+	message := strings.ToLower(parsed.Message)
 	return strings.Contains(message, "selected entry") && strings.Contains(message, "invalid")
 }
 

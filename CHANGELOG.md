@@ -12,6 +12,24 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### Parts on FileJump, and the other lifetime clouds by WebDAV
+
+**FileJump** is a backend of its own: paste an access token from the account
+settings, say which of its three servers the account is on, and parts land in
+a folder by ID the way they do on Drime — the two run the same software, so
+the folder cache, the permanent deletes and the quota report are shared. The
+servers differ in how a file goes up, and the backend speaks both: a signed
+URL on the object store for `drive.` and `app.filejump.com`, and the tus
+resumable protocol in 4 MiB pieces on `eu.filejump.com`, where a piece whose
+answer was lost is resumed from the offset the server reports rather than
+failing the file.
+
+The WebDAV connect dialog grew a button each for **FileJump**, **FolderFort**,
+**LifetimeCloud** and **Scramble Cloud** — the clouds sold as lifetime plans
+that speak nothing but WebDAV — filling in the URL and saying where the
+credentials come from. Scramble's is its desktop app on this machine, so that
+account answers only while the app runs.
+
 ### A re-encryption no longer waits for a cloud that is not answering
 
 Changing the password re-encrypts every file, and a file with a part on a

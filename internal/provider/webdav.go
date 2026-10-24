@@ -14,8 +14,9 @@ func init() {
 	Register(Spec{
 		Kind:  KindWebDAV,
 		Label: "WebDAV / Nextcloud",
-		Description: "Nextcloud, ownCloud, pCloud, Koofr, Fastmail Files, Mega via rclone, or " +
-			"any other WebDAV server. Use an app password where the provider offers one.",
+		Description: "Nextcloud, ownCloud, pCloud, Koofr, Fastmail Files, FileJump, FolderFort, " +
+			"LifetimeCloud, Scramble Cloud, Mega via rclone, or any other WebDAV server. Use an " +
+			"app password or access token where the provider offers one.",
 		DocsURL: "https://docs.nextcloud.com/server/latest/user_manual/en/files/access_webdav.html",
 		Order:   21,
 		// A WebDAV server is a WebDAV server; these are the ones people
@@ -31,6 +32,10 @@ func init() {
 			{Name: "Hetzner Storage Box", Hint: "https://<box>.your-storagebox.de"},
 			{Name: "Synology, QNAP and other NAS boxes", Hint: "the WebDAV address the box serves"},
 			{Name: "Infomaniak kDrive, OpenDrive, 4shared", Hint: "the WebDAV address the service shows"},
+			{Name: "FileJump", Hint: "https://uploads.filejump.com/dav — or the FileJump backend, which speaks its API"},
+			{Name: "FolderFort", Hint: "https://connect.<region>.folderfort.com/ — na, na2, na3, eu or eu2"},
+			{Name: "LifetimeCloud", Hint: "https://lifetimecloud.me/dav/<user>/"},
+			{Name: "Scramble Cloud", Hint: "http://127.0.0.1:1900, served by Scramble's desktop app on this machine"},
 			{Name: "MEGA, Jottacloud, anything rclone speaks", Hint: "`rclone serve webdav` on your own machine"},
 		},
 		Presets: []Preset{
@@ -57,6 +62,37 @@ func init() {
 				Label:  "Fastmail Files",
 				Help:   "Username is your Fastmail address; create an app password with Files access.",
 				Values: map[string]string{"url": "https://webdav.fastmail.com/"},
+			},
+			{
+				Key:   "filejump",
+				Label: "FileJump",
+				Help: "Username is your FileJump email. The password is a WebDAV token from the dashboard's " +
+					"WebDAV menu — your account password is refused. FileJump also has a backend of its " +
+					"own that speaks its API and reports quota.",
+				Values: map[string]string{"url": "https://uploads.filejump.com/dav"},
+			},
+			{
+				Key:   "folderfort",
+				Label: "FolderFort",
+				Help: "Swap in your region: na, na2, na3, eu or eu2, whichever FF Connect shows. Username is " +
+					"your account email; the password is your API token. FolderFort allows two connections " +
+					"per user, so expect uploads to pace themselves.",
+				Values: map[string]string{"url": "https://connect.na.folderfort.com/"},
+			},
+			{
+				Key:   "lifetimecloud",
+				Label: "LifetimeCloud",
+				Help: "Turn on WebDAV / rclone access in your profile settings, then swap in the username " +
+					"it shows and paste the token it generates as the password.",
+				Values: map[string]string{"url": "https://lifetimecloud.me/dav/alice/"},
+			},
+			{
+				Key:   "scramble",
+				Label: "Scramble Cloud",
+				Help: "Scramble has no cloud API: its desktop app serves WebDAV on this machine. Turn WebDAV " +
+					"on in the app and use the username and password it shows. The account answers only " +
+					"while the app is running.",
+				Values: map[string]string{"url": "http://127.0.0.1:1900"},
 			},
 			{
 				Key:    "rclone",

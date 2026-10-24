@@ -56,6 +56,17 @@ Contabo, Oracle OCI, Seagate Lyve.
 **WebDAV — worth presetting:** Seafile, Yandex Disk, Infomaniak kDrive, Hetzner
 Storage Box, Synology and QNAP NAS boxes, OpenDrive, Zoho WorkDrive.
 
+**WebDAV — preset, done:** the clouds sold as lifetime plans on StackSocial
+that speak nothing else. **FileJump** (`uploads.filejump.com/dav`, a WebDAV
+token from the dashboard rather than the account password — though it also
+has an API, and a tier-2 backend below), **FolderFort** (FF Connect, a
+regional `connect.<region>.folderfort.com` with the API token as the password;
+two connections per user, so it paces itself), **LifetimeCloud**
+(`lifetimecloud.me/dav/<user>/`, a token from the profile settings), and
+**Scramble Cloud**, which has no cloud API at all: its desktop app serves
+WebDAV on `127.0.0.1:1900`, so the account is a tier-1 arrangement wearing a
+WebDAV URL — live only while the app runs on the machine SAND runs on.
+
 A preset is for the services worth a button. Everything else the protocol
 reaches belongs in the backend's `Covers` list, which is what the browser's
 catalogue window is drawn from — one line per service with the shape of the
@@ -150,6 +161,7 @@ yet built: browsing a machine and importing files off it into a vault folder.
 |---|---|---|
 | **Azure Blob Storage** | The biggest real gap — the third hyperscaler, and the only one with no S3 face | SharedKey signing, same exercise as the SigV4 code in `s3.go` |
 | **Drime** — **done** | A European service with a token API and no OAuth | `drime.go`. Settings → Developer mints the token; parts land in one folder by ID, so the key-to-ID cache is Box's. Anything past 5 MiB goes through Drime's S3-style multipart flow — create, signed URL per part, complete, then an `/s3/entries` call to make it a file. Deletes are permanent, since a trash full of encrypted parts is quota spent on nothing |
+| **FileJump** — **done** | The cheapest big lifetime plan around, and a public REST API | `filejump.go`. Account settings → Developers mints the token. The API is Drime's — both run BeDrive — so the folder-by-ID cache, the permanent deletes and the Laravel reading of "already gone" are shared. What differs is the upload: the older servers (`drive.`, `app.filejump.com`) sign a URL on their object store and take the bytes there in one PUT, while `eu.filejump.com` takes them over tus in 4 MiB PATCHes and serves downloads by a hash of the ID. The server is a setting with a preset per server, since the generation cannot be told from the token |
 | **Backblaze B2 native** | — | Low value: the S3 preset already covers B2, and B2's own API reports no bucket size either — usage there is counted by listing and measured against a declared capacity (`UsageMeasurer`, `Config.Capacity`). B2's "keep all versions" default is handled through the S3 face too: `Versioner` lists and erases the versions a bucket keeps beneath what it shows (`sand vault prune`) |
 
 ---

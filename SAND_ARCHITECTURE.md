@@ -40,7 +40,7 @@ product.
 | Interface | Archive / Restore forms | A file browser with folders and previews |
 | State | None — every run standalone | An encrypted index of what is stored where |
 | Retrieval | Find the right zips, extract, restore | Click the file |
-| Providers | — | Google Drive, OneDrive, Dropbox, Box, Drime, Filen, Internxt Drive, S3-compatible, WebDAV, iCloud Drive, Proton Drive, MEGA, Jottacloud, Sync.com, Tresorit, Icedrive, local disk |
+| Providers | — | Google Drive, OneDrive, Dropbox, Box, Drime, FileJump, Filen, Internxt Drive, S3-compatible, WebDAV, SFTP, iCloud Drive, Proton Drive, MEGA, Jottacloud, Sync.com, Tresorit, Icedrive, local disk |
 | Failure handling | Manual | Reads route around an account that is down |
 
 ---
@@ -2222,12 +2222,13 @@ credentials change as they are used.
 |---|---|---|
 | `local` | Any directory: external disk, NAS mount, sync folder | Filesystem, atomic writes |
 | `s3` | Amazon S3, Cloudflare R2, Backblaze B2, Wasabi, MinIO | SigV4, hand-rolled on the stdlib |
-| `webdav` | Nextcloud, ownCloud, pCloud, Koofr, Fastmail, rclone | PUT/GET/HEAD/DELETE/MKCOL/PROPFIND |
+| `webdav` | Nextcloud, ownCloud, pCloud, Koofr, Fastmail, FileJump, FolderFort, LifetimeCloud, Scramble Cloud, rclone | PUT/GET/HEAD/DELETE/MKCOL/PROPFIND |
 | `gdrive` | Google Drive | Drive v3 REST, OAuth refresh grant |
 | `onedrive` | OneDrive, personal or work | Microsoft Graph, chunked upload sessions |
 | `dropbox` | Dropbox | API v2, OAuth refresh grant |
 | `box` | Box | API 2.0, OAuth with rotating refresh tokens |
 | `drime` | Drime | REST API v1 with a pasted access token, S3-style multipart uploads past 5 MiB |
+| `filejump` | FileJump | The same REST API as Drime (both are BeDrive deployments) with a pasted access token; uploads by signed URL on the older servers, over tus on `eu.filejump.com` |
 | `filen` | Filen | End-to-end encrypted: PBKDF2/Argon2 key derivation, AES-GCM metadata and 1 MiB chunks, all on the stdlib |
 | `internxt` | Internxt Drive | End-to-end encrypted: BIP-39 seed from the recovery phrase, per-file AES-CTR keys, RIPEMD-160 shard hashes |
 | `icloud` | iCloud Drive, via the folder macOS or iCloud for Windows syncs | Filesystem, plus `brctl` for an evicted part |
