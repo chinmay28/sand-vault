@@ -40,6 +40,19 @@ at once if the service has already died, and every failure prints the last
 lines of the service's journal, which is where a port that could not be bound
 or a vault that could not be read is explained.
 
+### The installer says when the old server cannot be replaced, instead of trying
+
+A server stuck inside the kernel on I/O that never completes — a mount that
+has stopped answering, a disk that is failing — survives systemd's stop and its
+SIGKILL, and the install used to carry on regardless: the new server started
+beside the ghost, could not take the port, and failed its health check seven
+minutes later with a journal full of "left-over process". Now the installer
+looks for anything still in the unit's control group after the stop, and if
+there is, says what it is and what it is waiting on, probes every mount with
+a three-second limit to name the one that has gone away, says what to do about
+it, and stops before replacing anything. The same explanation follows a failed
+health check.
+
 ### A re-encryption no longer waits for a cloud that is not answering
 
 Changing the password re-encrypts every file, and a file with a part on a
