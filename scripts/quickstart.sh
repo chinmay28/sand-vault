@@ -1297,12 +1297,52 @@ probe_host() {
   esac
 }
 health_url="http://$(probe_host "$HOST"):$PORT/api/health"
+
+# One probe, bounded. The probe used to be a bare curl, which waits as long as
+# the kernel does for a connection that gets no answer — a couple of minutes
+# per try, thirty tries — so an address that drops packets (a firewall, a
+# Tailscale IP with tailscaled not up yet, a LAN address the box cannot reach
+# itself on) left the installer sitting at this step for most of an hour with
+# nothing on the screen. Five seconds is longer than the server has ever
+# needed to answer this, which does not touch the vault or the network.
+probe() { curl -fsS --connect-timeout 2 --max-time 5 "$health_url" 2>/dev/null; }
+
+# Up to a minute of wall clock, however long each probe takes. The window
+# used to be thirty probes half a second apart, which is fifteen seconds when
+# the port refuses and most of an hour when it hangs. And it stops early if the
+# unit has already died, because waiting a minute on a service that exited at
+# once tells nobody anything the journal would not.
 check_health() {
-  for _ in $(seq 1 30); do
-    curl -fsS "$health_url" >/dev/null 2>&1 && return 0
-    sleep 0.5
+  local deadline=$(( $(date +%s) + 60 )) said=0
+  while :; do
+    if probe >/dev/null; then
+      [ "$said" -eq 1 ] && printf '\n'
+      return 0
+    fi
+    if ! systemctl is-active --quiet "${SERVICE_NAME}.service"; then
+      [ "$said" -eq 1 ] && printf '\n'
+      warn "${SERVICE_NAME}.service is not running ($(systemctl show -p SubState --value "${SERVICE_NAME}.service" 2>/dev/null || echo unknown))"
+      return 1
+    fi
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      printf '\n'
+      warn "no answer from $health_url after a minute, though the service is running"
+      return 1
+    fi
+    if [ "$said" -eq 0 ]; then
+      printf '      waiting for %s to answer' "$health_url"
+      said=1
+    fi
+    printf '.'
+    sleep 1
   done
-  return 1
+}
+
+# The last lines the service wrote, for the failure messages below: a service
+# that could not bind its port, or could not read its vault, says so there and
+# nowhere else.
+journal_tail() {
+  journalctl -u "${SERVICE_NAME}" -n 15 --no-pager 2>/dev/null | sed 's/^/      /'
 }
 
 # Restore the pre-upgrade vault snapshot, so the version we roll back to sees
@@ -1316,11 +1356,12 @@ restore_snapshot() {
 }
 
 if check_health; then
-  ok "healthy ($health_url) — $(curl -fsS "$health_url" 2>/dev/null | sed -n 's/.*"version" *: *"\([^"]*\)".*/\1/p')"
+  ok "healthy ($health_url) — $(probe | sed -n 's/.*"version" *: *"\([^"]*\)".*/\1/p')"
 elif [ "$INSTALL_MODE" = release ] && [ "$UPGRADE" -eq 1 ] && [ -f "$PREV_BIN" ]; then
   # Release-mode rollback: the previous binary is right there, so put it back
   # with the pre-upgrade vault and restart.
   warn "$RELEASE_VERSION failed its health check."
+  journal_tail
   warn "rolling back to the previous binary and restoring the pre-upgrade vault…"
   stop_service
   restore_snapshot
@@ -1333,6 +1374,7 @@ elif [ "$INSTALL_MODE" = release ] && [ "$UPGRADE" -eq 1 ] && [ -f "$PREV_BIN" ]
   die "Upgrade AND rollback both failed health checks. Your vault snapshot is safe at $SNAP. Inspect: journalctl -u ${SERVICE_NAME} -n 80"
 else
   warn "new version failed its health check."
+  journal_tail
   if [ "$UPGRADE" -eq 1 ] && [ -n "$PREV_SHA" ] && [ -z "$LOCAL_CHECKOUT" ]; then
     warn "rolling back to ${PREV_SHA:0:12} and restoring the pre-upgrade vault…"
     stop_service
