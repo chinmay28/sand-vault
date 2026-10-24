@@ -1725,7 +1725,13 @@ func (v *Vault) TestProvider(ctx context.Context, id string) error {
 	// it is — see rememberOne.
 	started := time.Now()
 	record := CloudHealth{ID: cfg.ID, Name: cfg.Name, Kind: cfg.Kind, Checked: true}
-	defer func() { v.rememberOne(record) }()
+	defer func() {
+		// Unless the caller stopped waiting, in which case nothing was found
+		// out about the account — see CheckClouds.
+		if ctx.Err() == nil {
+			v.rememberOne(record)
+		}
+	}()
 
 	p, err := v.buildProvider(cfg)
 	if err == nil {
