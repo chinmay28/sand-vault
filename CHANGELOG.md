@@ -12,6 +12,21 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### The accounts drawer is no longer paced by a cloud that has stopped answering
+
+Listing the accounts pings every one of them, and the drawer used to wait for
+the last ping before showing anything — so one cloud that had gone quiet, as a
+newly connected one can, meant twenty seconds of spinner on every refresh for
+as long as it stayed down. On a phone that is long enough for the screen to
+sleep on the request and lose it, after which the drawer said **"No accounts
+yet"** over a vault with twenty. Now the listing answers after eight seconds
+with the accounts that have replied, the quiet one's card says it is still
+being waited on rather than that it is down, and its ping runs on to the full
+twenty seconds in the background, where what it finally says goes into the
+health check. A listing that fails outright says so in the drawer, with a
+**Try again** button, and is asked for again when the drawer is next opened;
+the accounts that were listed before stay on their cards meanwhile.
+
 ### A re-encryption no longer waits for a cloud that is not answering
 
 Changing the password re-encrypts every file, and a file with a part on a

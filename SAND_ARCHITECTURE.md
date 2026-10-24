@@ -2473,6 +2473,19 @@ pinging seventeen clouds twice in a minute. `TestProvider` files one result
 through `rememberOne` and deliberately does not touch that clock: one account
 answering says nothing about the other sixteen.
 
+**The listing does not wait the full twenty seconds, but the ping does.**
+`ProviderStatuses` answers after `statusWait` (eight seconds) with whichever
+accounts have replied, and reports the rest as offline with an error that says
+they are still being waited on — not as unreachable, which is a finding the
+listing has not made. Before this, one cloud that had stopped replying set the
+pace of the whole drawer: twenty seconds of spinner on every refresh for as long
+as it stayed down, which is long enough for a phone to sleep on the request and
+lose it. The pings of the silent accounts run on to `healthPingTimeout` on a
+context detached from the request, and the sweep is recorded once the last of
+them has answered — synchronously when every account was in by `statusWait`,
+otherwise from the goroutine that waited, and not at all if the vault locked
+meanwhile.
+
 **The schedule** is `HealthCheckMinutes` / `HealthCheckOff` in the store's clear
 section, beside the placement policy and giving away less: how often this
 machine talks to storage it is already known to use. Stored as the negative so

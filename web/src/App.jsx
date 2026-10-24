@@ -54,6 +54,11 @@ export default function App() {
   const [health, setHealth] = useState(null)
   const [loadingList, setLoadingList] = useState(false)
   const [loadingProviders, setLoadingProviders] = useState(false)
+  /* Why the last listing of the accounts failed, if it did. The drawer draws
+     "No accounts yet" for an empty list, and a list that is empty because the
+     request died is not that — so the failure travels with the list rather
+     than only into the browser's banner, which on a phone the drawer covers. */
+  const [providersError, setProvidersError] = useState(null)
   const [error, setError] = useState(null)
   const [preview, setPreview] = useState(null)
   const [inspecting, setInspecting] = useState(null)
@@ -162,13 +167,17 @@ export default function App() {
     try {
       const resp = await api.providers()
       setProviders(resp.providers || [])
+      setProvidersError(null)
       // That listing pinged every account on its way here, which the server
       // files as a check — so read the standing back rather than leaving the
       // drawer showing what the last one found.
       refreshHealth()
     } catch (err) {
       if (err.code === 'LOCKED') setStatus((s) => ({ ...s, unlocked: false }))
-      else setError(err.message)
+      else {
+        setError(err.message)
+        setProvidersError(err.message)
+      }
     } finally {
       setLoadingProviders(false)
     }
@@ -335,6 +344,7 @@ export default function App() {
     setStatus((s) => ({ ...s, unlocked: false, stats: null }))
     setListing(null)
     setProviders([])
+    setProvidersError(null)
     setHealth(null)
     setPreview(null)
     setInspecting(null)
@@ -551,6 +561,7 @@ export default function App() {
           <AccountsPanel
             providers={providers}
             loading={loadingProviders}
+            loadError={providersError}
             status={status}
             stats={status.stats}
             webdav={status.webdav}
