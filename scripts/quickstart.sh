@@ -1030,11 +1030,72 @@ ok "data dir ready ($DATA_DIR, owned by $SVC_USER)"
 stop_service()  { systemctl stop  "${SERVICE_NAME}.service" 2>/dev/null || true; }
 start_service() { systemctl start "${SERVICE_NAME}.service"; }
 
+# The processes still in the unit's control group. After a stop there should
+# be none: systemd sends SIGTERM, waits, sends SIGKILL, and only a process
+# that cannot die survives that — one stuck inside the kernel waiting on I/O
+# that is not completing (state D in ps). The server does not catch SIGTERM,
+# so a server that is still here after a stop is exactly that.
+unit_leftovers() {
+  local cg
+  for cg in "/sys/fs/cgroup/system.slice/${SERVICE_NAME}.service/cgroup.procs" \
+            "/sys/fs/cgroup/systemd/system.slice/${SERVICE_NAME}.service/cgroup.procs"; do
+    [ -r "$cg" ] && cat "$cg" 2>/dev/null
+  done | sort -u
+}
+
+# Real filesystems that do not answer a stat within three seconds. A mount
+# that has gone away under a process is the usual thing a process is stuck
+# on, and a local disk that answers at all answers at once, so three seconds
+# tells them apart without waiting out an NFS timeout.
+hung_mounts() {
+  findmnt -rn --real -o TARGET,FSTYPE 2>/dev/null | while read -r target fstype; do
+    [ -n "$target" ] || continue
+    if ! timeout 3 stat -f -- "$target" >/dev/null 2>&1; then
+      printf '%s (%s)\n' "$target" "$fstype"
+    fi
+  done
+}
+
+# Why the service cannot be (re)started: the previous server is still here.
+# Says so, says what it is stuck on if a mount will not answer, and says what
+# to do, since nothing this script can do will move it. Returns 1, silently,
+# when there is no such process — the callers below use it as a test.
+explain_stuck_service() {
+  local pids p
+  pids="$(unit_leftovers)"
+  [ -n "$pids" ] || return 1
+  warn "the previous server is still running after systemd stopped the unit — and after its SIGKILL:"
+  for p in $pids; do
+    ps -o pid=,stat=,etimes=,wchan:24=,cmd= -p "$p" 2>/dev/null | sed 's/^/      /'
+  done
+  warn "a process that outlives SIGKILL is stuck inside the kernel (state D) waiting on I/O that"
+  warn "is not completing — usually a mount that has stopped answering, or a disk that is failing."
+  warn "it cannot be killed, and a new server cannot take port $PORT while it holds it."
+  local hung
+  hung="$(hung_mounts)"
+  if [ -n "$hung" ]; then
+    warn "mounts that did not answer within three seconds:"
+    printf '%s\n' "$hung" | sed 's/^/      /'
+    warn "bring the mount back, or detach it (umount -l <mount>); the stuck server then exits on its own. Then re-run."
+  else
+    warn "every mount answered, so look at the disk: journalctl -k -n 50, and the SMART report at $SMART_REPORT."
+  fi
+  warn "a reboot clears it when nothing else does."
+  return 0
+}
+
 SNAP=""
 if [ "$UPGRADE" -eq 1 ] && [ -f "$VAULT_PATH" ]; then
   # Quiesce first so the snapshot can't catch a half-written vault. The server
   # writes it atomically, but stopping costs nothing and removes the question.
   stop_service
+  # A server that is still here after that cannot be replaced: the new one
+  # would start beside it, fail to take the port, and fail the health check
+  # with a journal full of "left-over process" — which is how this used to
+  # end, seven minutes later. Say why now, and leave the install as it was.
+  if explain_stuck_service; then
+    die "Stopped before replacing anything; your vault and the installed server are as they were."
+  fi
   ts="$(date +%Y%m%d-%H%M%S)"
   SNAP="$BACKUP_DIR/vault-$ts.sand"
   cp "$VAULT_PATH" "$SNAP"
@@ -1322,11 +1383,13 @@ check_health() {
     if ! systemctl is-active --quiet "${SERVICE_NAME}.service"; then
       [ "$said" -eq 1 ] && printf '\n'
       warn "${SERVICE_NAME}.service is not running ($(systemctl show -p SubState --value "${SERVICE_NAME}.service" 2>/dev/null || echo unknown))"
+      explain_stuck_service || true
       return 1
     fi
     if [ "$(date +%s)" -ge "$deadline" ]; then
       printf '\n'
       warn "no answer from $health_url after a minute, though the service is running"
+      explain_stuck_service || true
       return 1
     fi
     if [ "$said" -eq 0 ]; then
