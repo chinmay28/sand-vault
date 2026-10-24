@@ -2252,6 +2252,23 @@ overrides the methods that touch a name on disk — asking the sync daemon for a
 evicted part on `Get`, reporting it present but unweighed on `Stat`, and
 mapping placeholder names back to keys in `List`.
 
+**Every filesystem call on a Local folder runs under the caller's deadline.**
+A read or write on a filesystem that has stopped answering — a failing drive,
+a pulled USB disk, an NFS or SMB mount whose server has gone — does not fail;
+it does not return, because the kernel holds the thread until the I/O
+completes, and nothing in `os` honours a context. So `local.go` makes each
+call on a goroutine of its own (`onDisk`) and waits for the answer or the
+deadline, whichever is first; past the deadline the caller gets
+`ErrDiskNotAnswering`, with the folder named and what to do about it, and
+goes on. The goroutine stays parked until the kernel lets it go, which is the
+one part no user-space code can change, but it is one goroutine rather than
+the server: without this, one such account parked the health sweep (§8.8,
+which waits for every ping), every transfer that touched it, and in the end
+the process itself, which cannot exit while a thread is held that way. A
+cancellation passes through as itself — "not answering" is a finding about
+the disk, and a user who pressed stop has not found anything. The synced-folder
+and iCloud backends sit on the same methods and get the same deadline.
+
 ### 8.3 Self-describing configuration
 
 Each backend registers a `Spec` listing the fields it needs, with labels, help

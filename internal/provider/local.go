@@ -103,6 +103,90 @@ type localProvider struct {
 	root string
 }
 
+// ErrDiskNotAnswering is what every call on a Local folder account returns
+// once its context has run out while the filesystem under it has not come
+// back: a disk that is failing, a USB drive that was pulled, an NFS or SMB
+// mount whose server has gone. Checked with errors.Is.
+var ErrDiskNotAnswering = errors.New("the disk is not answering")
+
+// onDisk makes one filesystem call under the caller's deadline.
+//
+// A read or write on a filesystem that has stopped answering does not fail;
+// it does not return. The kernel holds the thread in uninterruptible sleep
+// until the I/O completes, which on a dead disk or a vanished mount is never,
+// and a goroutine parked in that syscall takes the context it was given down
+// with it — nothing in os honours ctx. Left as it was, one such account hung
+// every ping of every account (the health sweep waits for all of them), every
+// upload and every read that touched it, and in the end the process itself,
+// which cannot exit while a thread is in that state.
+//
+// So the call runs on a goroutine of its own and the caller waits for
+// whichever comes first: the answer, or the deadline. Past the deadline the
+// caller gets ErrDiskNotAnswering, names the folder, and goes on; the
+// goroutine stays parked until the kernel lets it go, which is the one part
+// of this no user-space code can change. Each abandoned call costs a goroutine
+// and whatever it holds, which is bounded by how often callers ask — and they
+// stop asking once the health check has said the account is down.
+//
+// A cancellation is passed through as itself. "Not answering" is a finding
+// about the disk, and a user who pressed stop has not found anything.
+func onDisk[T any](ctx context.Context, root string, call func() (T, error)) (T, error) {
+	type answer struct {
+		value T
+		err   error
+	}
+	done := make(chan answer, 1)
+	go func() {
+		value, err := call()
+		done <- answer{value, err}
+	}()
+	select {
+	case a := <-done:
+		return a.value, a.err
+	case <-ctx.Done():
+		var zero T
+		if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return zero, ctx.Err()
+		}
+		return zero, fmt.Errorf("%s is not answering: the disk or mount under it has stopped "+
+			"completing reads and writes — bring it back, or detach it (umount -l) so SAND stops "+
+			"waiting on it: %w", root, ErrDiskNotAnswering)
+	}
+}
+
+// The Provider methods, each one filesystem call under the caller's deadline.
+
+func (p *localProvider) Put(ctx context.Context, key string, data []byte) error {
+	_, err := onDisk(ctx, p.root, func() (struct{}, error) { return struct{}{}, p.put(key, data) })
+	return err
+}
+
+func (p *localProvider) Get(ctx context.Context, key string) ([]byte, error) {
+	return onDisk(ctx, p.root, func() ([]byte, error) { return p.get(key) })
+}
+
+func (p *localProvider) Stat(ctx context.Context, key string) (ObjectInfo, error) {
+	return onDisk(ctx, p.root, func() (ObjectInfo, error) { return p.stat(key) })
+}
+
+func (p *localProvider) Delete(ctx context.Context, key string) error {
+	_, err := onDisk(ctx, p.root, func() (struct{}, error) { return struct{}{}, p.delete(key) })
+	return err
+}
+
+func (p *localProvider) List(ctx context.Context, prefix string) ([]ObjectInfo, error) {
+	return onDisk(ctx, p.root, func() ([]ObjectInfo, error) { return p.list(prefix) })
+}
+
+func (p *localProvider) Ping(ctx context.Context) error {
+	_, err := onDisk(ctx, p.root, func() (struct{}, error) { return struct{}{}, p.ping() })
+	return err
+}
+
+func (p *localProvider) Usage(ctx context.Context) (Usage, error) {
+	return onDisk(ctx, p.root, func() (Usage, error) { return p.usage() })
+}
+
 // resolve maps an object key onto a path inside the root, refusing any key
 // that would escape it and any key that names the root itself. The second
 // refusal matters as much as the first: "", "." and "/" all clean to the
@@ -137,7 +221,7 @@ func (p *localProvider) checkRoot() error {
 
 // Put stores a part as a file in the root. The root has to be there already:
 // Ping is what creates it, and a Put that finds it missing says so instead.
-func (p *localProvider) Put(ctx context.Context, key string, data []byte) error {
+func (p *localProvider) put(key string, data []byte) error {
 	full, err := p.resolve(key)
 	if err != nil {
 		return err
@@ -205,7 +289,7 @@ func syncDir(dir string) {
 	_ = d.Sync()
 }
 
-func (p *localProvider) Get(ctx context.Context, key string) ([]byte, error) {
+func (p *localProvider) get(key string) ([]byte, error) {
 	full, err := p.resolve(key)
 	if err != nil {
 		return nil, err
@@ -220,7 +304,7 @@ func (p *localProvider) Get(ctx context.Context, key string) ([]byte, error) {
 	return data, nil
 }
 
-func (p *localProvider) Stat(ctx context.Context, key string) (ObjectInfo, error) {
+func (p *localProvider) stat(key string) (ObjectInfo, error) {
 	full, err := p.resolve(key)
 	if err != nil {
 		return ObjectInfo{}, err
@@ -243,7 +327,7 @@ func (p *localProvider) Stat(ctx context.Context, key string) (ObjectInfo, error
 // The root is left alone whatever happens: an older version pruned the
 // object's parent directory, which with flat keys is the root, and that
 // removed a user's whole account folder when its last part went.
-func (p *localProvider) Delete(ctx context.Context, key string) error {
+func (p *localProvider) delete(key string) error {
 	full, err := p.resolve(key)
 	if err != nil {
 		return err
@@ -263,7 +347,7 @@ func (p *localProvider) Delete(ctx context.Context, key string) error {
 // List walks the root. A root that is not there is an error, not an empty
 // listing: an account that answers "nothing here" when its drive is unplugged
 // would have every one of its parts read as abandoned.
-func (p *localProvider) List(ctx context.Context, prefix string) ([]ObjectInfo, error) {
+func (p *localProvider) list(prefix string) ([]ObjectInfo, error) {
 	if err := p.checkRoot(); err != nil {
 		return nil, err
 	}
@@ -319,7 +403,7 @@ func (p *localProvider) List(ctx context.Context, prefix string) ([]ObjectInfo, 
 // what an unmounted drive looks like. MkdirAll would build the path through
 // the empty mount point, on the system disk, and the account would then
 // accept parts onto the wrong filesystem while reporting itself healthy.
-func (p *localProvider) Ping(ctx context.Context) error {
+func (p *localProvider) ping() error {
 	parent := filepath.Dir(p.root)
 	info, err := os.Stat(parent)
 	if err != nil {
@@ -358,7 +442,7 @@ var errNoDiskUsage = errors.New("disk usage unavailable on this platform")
 // A folder that is not there yet is answered for by the nearest parent that
 // is: the drive is the same drive either way, and Ping creates the folder on
 // the next refresh anyway.
-func (p *localProvider) Usage(ctx context.Context) (Usage, error) {
+func (p *localProvider) usage() (Usage, error) {
 	dir := p.root
 	for {
 		usage, err := diskUsage(dir)

@@ -82,7 +82,9 @@ const (
 // whether or not it eventually answers. The sidebar stops waiting for its
 // listing sooner than that (see statusWait), but the ping behind it runs on to
 // this deadline, and this is the answer that is recorded.
-const healthPingTimeout = 20 * time.Second
+//
+// A variable so that a test can hang an account for less than twenty seconds.
+var healthPingTimeout = 20 * time.Second
 
 // CloudHealth is one account's standing: whether it answered last time it was
 // asked, when that was, and what it said if it did not.
@@ -287,6 +289,16 @@ func (v *Vault) CheckClouds(ctx context.Context) (HealthReport, error) {
 	v.mu.RUnlock()
 
 	found := v.pingAll(ctx, configs)
+	// A sweep the caller cut short has found nothing out. Its pings came back
+	// with the caller's cancellation, not with an answer, and a backend that
+	// honours its context — every one does, the Local folder included now —
+	// reports exactly that. Written down, it would read as every account
+	// down at once, and the next re-encryption pass would refuse to write
+	// anywhere. So nothing is recorded and the clock is left where it was;
+	// the report says what is known, which is what was known before.
+	if ctx.Err() != nil {
+		return v.reportFor(configs, schedule), ctx.Err()
+	}
 	recovered := v.recordSweep(time.Now(), found)
 
 	// An account that was down and is answering again may be holding things

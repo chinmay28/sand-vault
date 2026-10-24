@@ -2,6 +2,7 @@ package vault
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -399,5 +400,38 @@ func TestListingAnswersBeforeASlowAccountDoes(t *testing.T) {
 	}
 	if v.HealthCheckDue(time.Now()) {
 		t.Error("the listing's ping of every account did not count as a check")
+	}
+}
+
+// A sweep that the caller stopped waiting on has not found anything out, and
+// must not be written down as every account down at once — which is what the
+// re-encryption pass, which runs a sweep first and then avoids every account
+// the sweep found down, would then act on.
+func TestASweepTheCallerCutShortRecordsNothing(t *testing.T) {
+	v, _ := newTestVault(t, 2)
+
+	stopped, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := v.CheckClouds(stopped); !errors.Is(err, context.Canceled) {
+		t.Fatalf("CheckClouds under a cancelled context: err = %v, want context.Canceled", err)
+	}
+
+	report, err := v.CloudHealth()
+	if err != nil {
+		t.Fatalf("CloudHealth: %v", err)
+	}
+	if report.Unhealthy != 0 {
+		t.Errorf("a cancelled sweep filed %d account(s) as unhealthy: %+v", report.Unhealthy, report.Clouds)
+	}
+	if !v.HealthCheckDue(time.Now()) {
+		t.Error("a cancelled sweep moved the clock the next check is measured from")
+	}
+
+	// The same for the Test button.
+	id := report.Clouds[0].ID
+	_ = v.TestProvider(stopped, id)
+	report, _ = v.CloudHealth()
+	if report.Unhealthy != 0 {
+		t.Errorf("a cancelled test filed an account as unhealthy: %+v", report.Clouds)
 	}
 }

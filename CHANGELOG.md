@@ -12,6 +12,32 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### A Local folder on a disk that has stopped answering no longer takes the server with it
+
+A read or write on a filesystem that has stopped answering — a failing drive,
+a USB disk that was pulled, an NFS or SMB mount whose server has gone — does
+not fail, it never returns: the kernel holds the thread until the I/O
+completes, which is never. Every call the Local folder backend made was such a
+call, with nothing bounding it. One such account parked the health sweep for
+good (it waits for every ping), parked every upload, read and re-encryption
+that touched it, and in the end parked the process itself, which cannot exit
+while a thread is held that way — which is what the installer found on a Pi:
+a server that survived SIGKILL and could not be replaced. Every call on a Local
+folder now runs under the caller's deadline and comes back at it with **"the
+disk is not answering"**, naming the folder and what to do about it; the health
+check reports the account that way at its twenty-second deadline, the
+re-encryption routes around it as it does any cloud that is down, and the
+other accounts are reported as what they are. The stuck call itself stays
+parked until the kernel lets it go — that part no user-space code can change —
+but it is one goroutine now, not the server.
+
+With backends that honour their deadline, a health sweep that its caller cut
+short — a re-encryption pass stopped before its first file, a browser that
+went away mid-check — came back with every ping cancelled and would have
+written that down as every account down at once. A sweep the caller stopped
+waiting on now records nothing, and neither does a Test the caller stopped
+waiting on.
+
 ### The accounts drawer is no longer paced by a cloud that has stopped answering
 
 Listing the accounts pings every one of them, and the drawer used to wait for
