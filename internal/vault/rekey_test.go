@@ -596,7 +596,34 @@ func TestMigrationProgressReportsEveryFile(t *testing.T) {
 // short, for good. A re-encryption must never commit a placement with fewer
 // parts than the file had: the file stays on the previous key, readable, until
 // the account is back.
-func TestMigrationRefusesToCommitAFileShortOfAPart(t *testing.T) {
+// darkenCloud makes one connected local folder unreachable the way a NAS that
+// has been switched off is, and returns where its contents were moved so the
+// test can look at them or put them back. The path is still configured and
+// there is nothing usable at the end of it.
+func darkenCloud(t *testing.T, root string) (kept string) {
+	t.Helper()
+	kept = filepath.Join(t.TempDir(), "away")
+	if err := os.Rename(root, kept); err != nil {
+		t.Fatalf("moving the account's folder away: %v", err)
+	}
+	if err := os.WriteFile(root, []byte("not a folder"), 0o600); err != nil {
+		t.Fatalf("blocking the account's folder: %v", err)
+	}
+	return kept
+}
+
+// restoreCloud undoes darkenCloud.
+func restoreCloud(t *testing.T, root, kept string) {
+	t.Helper()
+	if err := os.Remove(root); err != nil {
+		t.Fatalf("unblocking: %v", err)
+	}
+	if err := os.Rename(kept, root); err != nil {
+		t.Fatalf("restoring the account's folder: %v", err)
+	}
+}
+
+func TestMigrationRefusesToCommitAFileShortOfAPartWhenTheAccountAnswered(t *testing.T) {
 	v, roots := newTestVault(t, 3)
 	ctx := context.Background()
 
@@ -610,20 +637,20 @@ func TestMigrationRefusesToCommitAFileShortOfAPart(t *testing.T) {
 	before := placementOf(entry)
 	ids := accountIDs(t, v)
 
-	// The account holding part 2 goes dark, still connected.
+	// Every account answers the check — and then the one holding part 2 goes
+	// dark, still connected, before anything looks again. To the pass that
+	// follows the account is up, so a write there that fails is a dropped
+	// write and not an absent cloud: the file must not be committed short.
+	if report, err := v.CheckClouds(ctx); err != nil || report.Unhealthy != 0 {
+		t.Fatalf("CheckClouds = %+v, %v; want every account up", report, err)
+	}
 	var dead string
 	for i, id := range ids {
 		if id == before[2] {
 			dead = roots[i]
 		}
 	}
-	kept := filepath.Join(t.TempDir(), "away")
-	if err := os.Rename(dead, kept); err != nil {
-		t.Fatalf("moving the account's folder away: %v", err)
-	}
-	if err := os.WriteFile(dead, []byte("not a folder"), 0o600); err != nil {
-		t.Fatalf("blocking the account's folder: %v", err)
-	}
+	kept := darkenCloud(t, dead)
 
 	report, err := v.ChangePassword(ctx, testPassword, "changed with a cloud down", true)
 	if err != nil {
@@ -650,6 +677,9 @@ func TestMigrationRefusesToCommitAFileShortOfAPart(t *testing.T) {
 	if _, _, err := v.Fetch(ctx, entry.ID); err != nil {
 		t.Errorf("the file does not read with one account down: %v", err)
 	}
+	if stale, _ := v.StaleParts(); stale.Parts != 0 {
+		t.Errorf("a refused move left %d part(s) on record as strays: %+v", stale.Parts, stale)
+	}
 	// And the parts the refused attempt wrote are not left on the two accounts
 	// that took them.
 	for i, root := range roots {
@@ -662,12 +692,7 @@ func TestMigrationRefusesToCommitAFileShortOfAPart(t *testing.T) {
 	}
 
 	// With the account back, the file moves with all three parts.
-	if err := os.Remove(dead); err != nil {
-		t.Fatalf("unblocking: %v", err)
-	}
-	if err := os.Rename(kept, dead); err != nil {
-		t.Fatalf("restoring the account's folder: %v", err)
-	}
+	restoreCloud(t, dead, kept)
 	resumed, err := v.MigrateFiles(ctx, nil)
 	if err != nil {
 		t.Fatalf("MigrateFiles: %v", err)

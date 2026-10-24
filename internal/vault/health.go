@@ -285,8 +285,42 @@ func (v *Vault) CheckClouds(ctx context.Context) (HealthReport, error) {
 	v.mu.RUnlock()
 
 	found := v.pingAll(ctx, configs)
-	v.recordSweep(time.Now(), found)
+	recovered := v.recordSweep(time.Now(), found)
+
+	// An account that was down and is answering again may be holding things
+	// the vault owes it a write for — above all a copy of the index sealed
+	// under a password that has since changed, which every push since the
+	// change failed to replace there. The push is queued now rather than at
+	// the next index write, which on a quiet vault could be days away, and
+	// it forces the overwrite because the flag says so (SyncManifestBackup).
+	if recovered > 0 {
+		v.mu.RLock()
+		owed := v.store != nil && v.store.BackupNeedsForce && !v.store.ManifestBackupDisabled
+		v.mu.RUnlock()
+		if owed {
+			v.scheduleBackup(false)
+		}
+	}
 	return v.reportFor(configs, schedule), nil
+}
+
+// checkCloudsIfStale runs a check of every account unless one has run within
+// the last `within`, and says nothing about how it came out: what it is for
+// is the memory it leaves (unreachableAccounts), which a re-encryption pass
+// is about to act on. A pass that trusted a reading from before the vault was
+// opened, or none at all, would try to write a file back to an account that
+// is not there and be refused for its trouble, one file at a time. A locked
+// vault is not checked, and the schedule's switch does not apply: this is a
+// question asked once because an answer is needed now, not a sweep on a
+// timer.
+func (v *Vault) checkCloudsIfStale(ctx context.Context, within time.Duration) {
+	v.healthMu.Lock()
+	last := v.healthSweptAt
+	v.healthMu.Unlock()
+	if !last.IsZero() && time.Since(last) < within {
+		return
+	}
+	_, _ = v.CheckClouds(ctx)
 }
 
 // HealthCheckDue reports whether the scheduler should sweep now.
@@ -353,15 +387,20 @@ func (v *Vault) pingAll(ctx context.Context, configs []provider.Config) []CloudH
 }
 
 // recordSweep files what a check of every account found, and moves the clock
-// the next scheduled check is measured from.
-func (v *Vault) recordSweep(at time.Time, found []CloudHealth) {
+// the next scheduled check is measured from. It answers how many accounts
+// the previous check found down are answering again.
+func (v *Vault) recordSweep(at time.Time, found []CloudHealth) (recovered int) {
 	v.healthMu.Lock()
 	defer v.healthMu.Unlock()
 
 	for _, one := range found {
+		if was, ok := v.healthSeen[one.ID]; ok && was.Checked && !was.Healthy && one.Healthy {
+			recovered++
+		}
 		v.rememberLocked(one)
 	}
 	v.healthSweptAt = at
+	return recovered
 }
 
 // rememberOne files what a ping of a single account found — the Test button,

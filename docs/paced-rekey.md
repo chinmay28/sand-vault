@@ -172,9 +172,12 @@ warned opt-in that does.
 `Vault.RekeyStep(ctx, now)` moves at most one file: pick the next the plan
 allows, ask the meter, charge, move, or refund and remember why. The server
 calls it from `rekeyLoop`; `sand vault rekey --run` calls it in a foreground
-loop for a machine with no server. A file that cannot be read — an account
-offline, too few parts — is left alone for an hour, its reason kept for the
-status, and the files behind it are not held up.
+loop for a machine with no server. A file that cannot be read — too few parts
+left — is left alone for an hour, its reason kept for the status, and the
+files behind it are not held up. A file with a part on an account the health
+check found down is not tried when its other parts are too few to rebuild it:
+it waits for the account, counted and named in the status. When they are
+enough, it moves without that account — see §4.3.
 
 The server's loop asks on a twenty-second tick whether anything is due, and
 once a file has moved takes the next straight away (`rekeyRound`) rather than
@@ -264,6 +267,49 @@ and by a finish-now pass alike, and `UndeferRekeyFile` puts one back in its
 turn. Every move goes through `moveTracked`, which is what the status reads
 for the file in flight, how far through it is, and the cancel the skip pulls.
 
+## 4.3 A cloud that is not answering
+
+A re-encryption used to write a file back to every account it was on and
+refuse to commit one that came out a part short, so a file with a part on a
+cloud that was down waited for that cloud — every file on it, for as long as
+it was down. That is the right instinct for a cloud that merely dropped a
+write, and the wrong outcome for a NAS that is switched off for a month: the
+previous key, and the previous password, stay alive for that month.
+
+Now the health check's verdict is used. A file with a part on an account the
+last check found unreachable is re-encrypted from the parts on the accounts
+that answered, as long as those are enough to rebuild it, and written back
+to those accounts — topped up from any other connected account the spread
+allows, or a part short where there is none to top up from. The part on the
+silent account is neither read nor written nor erased. It is **written
+down**: the index records it (`manifest.stale_parts`) as a part under the
+previous key on that account, with the file it belonged to and when it was
+left, in the same write that moves the file. A part that an erase on an
+answering account could not remove is recorded the same way.
+
+The record is what makes the part a *stray* rather than a leak. The
+re-encryption status and the vault's stats count what is on record and name
+the accounts; the stray-parts scan (§3.7.1 of the architecture) flags each
+such object as *under the previous key*, with its file's path — the one kind
+of abandoned archive the index can say anything about — and the browser runs
+that scan when a cloud holding recorded parts comes back, not only when the
+set of accounts changes. Erasing them through the sweep is what finishes the
+password change; the record is dropped by the sweep that erases a part, by a
+scan whose listing shows it already gone, and by disconnecting the account,
+after which the part is an ordinary orphan there.
+
+A file that cannot be rebuilt without the silent account is still held, as
+before: nothing can read it, so trying would only cost an hour's skip. A write
+that fails on an account the health check found *up* is still a refusal: that
+is a dropped write, not an absent cloud, and the file stays whole on the
+previous key for the retry.
+
+`MigrateFiles` — the finish-now pass — runs a health check of its own before
+the first file when the last one is older than five minutes, so that a `sand
+vault migrate` on a machine with no server knows which accounts are down. The
+foreground `sand vault rekey --run` runs the check on the vault's schedule, as
+the server does.
+
 ## 5. Surfaces
 
 ### HTTP
@@ -271,11 +317,11 @@ for the file in flight, how far through it is, and the cancel the skip pulls.
 | Call | Does |
 |---|---|
 | `POST /api/vault/password` with `plan` | Changes the password now and leaves the files to the plan. `plan` is a `RekeySettings`; giving one means not migrating now, whatever `migrate` says. |
-| `GET /api/vault/rekey` | `RekeyStatus`: pending files and bytes, totals the plan began over, the plan, when the password changed, next-file and ETA seconds, idle, the per-folder breakdown (queued folders first in their order, then every top-level folder with files left), what is moving now, and the recent failures. |
+| `GET /api/vault/rekey` | `RekeyStatus`: pending files and bytes, totals the plan began over, the plan, when the password changed, next-file and ETA seconds, idle, the per-folder breakdown (queued folders first in their order, then every top-level folder with files left), what is moving now, the files held for a cloud that is not answering (`held`, `held_on`), the parts left under the previous key on clouds the moves could not reach (`stale_parts`: count, bytes, per-account rows with whether each answers now — §4.3), and the recent failures. |
 | `PUT /api/vault/rekey` | Sets the plan from a whole `RekeySettings`. Starts one if none exists; refused when nothing is on the previous key. With `full_speed`, this is how the browser finishes now: the server works through the files on its own and the call answers at once. |
 | `POST /api/vault/migrate` | Finish now in the foreground, holding the request open until the last file has moved. `409 MIGRATION_BUSY` while a step holds the slot. The CLI's `sand vault migrate`; the browser no longer calls it. |
 | `POST /api/vault/rekey/skip` | `{id, undo}`: leave a file for last (the one being moved when `id` is empty, stopping that move), or put it back in its turn. Answers with the status. |
-| `GET /api/vault` | `stats.key_id` names the current generation; `sub_vaults[].key_id` likewise while open. |
+| `GET /api/vault` | `stats.key_id` names the current generation; `sub_vaults[].key_id` likewise while open. `stats.stale_parts` and `stats.stale_bytes` count the parts left under the previous key (§4.3), which is what has the browser re-run the stray-parts scan when a cloud comes back. |
 | `GET /api/files` | `previous_key` maps each subfolder to how many files under it are still on the previous key. Each file already carries `key_id`. |
 
 ### CLI
@@ -319,7 +365,7 @@ that goes away after every digit.
 |---|---|
 | Server restarts mid-plan | The meter's level and clock are in the plan; the plan resumes at the pace it left, not with a fresh burst. |
 | Vault is locked | Nothing moves. The step returns `ErrLocked` and the loop waits for the next unlock. |
-| A cloud is offline | Its files fail, are refunded, listed with the reason, and retried after an hour. Others move. |
+| A cloud is offline | A file that can be rebuilt from its parts on the other clouds moves without it, and the part it leaves on the offline cloud is written down as a stray under the previous key (§4.3). A file that cannot is held for the cloud, named in the status, and moved when the health check finds it back. Others move. |
 | A file is deleted while chosen | `migrateFile` finds no entry and writes nothing; the charge is refunded. |
 | Finish-now runs while the loop ticks | One slot. The loop's step comes back asking to be tried again shortly. |
 | The browser that asked for full speed goes away | Nothing: the plan is the server's. The panel shows where it has got to when it is next opened. |

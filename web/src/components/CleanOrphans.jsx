@@ -163,6 +163,17 @@ export default function CleanOrphans({ scan: initialScan, zIndex = 100, onClose,
             each one was — the file name, its folder and its date all lived in the index that
             stopped mentioning it. Untick anything you would rather keep.
           </p>
+          {scan?.previous_key_archives > 0 && (
+            <Banner tone="warn">
+              {scan.previous_key} part{scan.previous_key === 1 ? '' : 's'} here{' '}
+              {scan.previous_key === 1 ? 'is' : 'are'} still under the <strong>previous key</strong>:
+              a re-encryption left {scan.previous_key === 1 ? 'it' : 'them'} behind when{' '}
+              {(scan.previous_key_on || []).join(', ')} could not be reached, and anyone holding the
+              previous password and an old copy of the vault file can still read{' '}
+              {scan.previous_key === 1 ? 'it' : 'them'}. Those rows name the file they belonged to.
+              Erasing them is what finishes that password change.
+            </Banner>
+          )}
           <div style={listStyle}>
             {offered.map((item) => (
               <ArchiveRow
@@ -558,6 +569,8 @@ function ArchiveRow({ item, checked, onToggle, disabled }) {
         <div style={{ fontFamily: FONT.mono, fontSize: '10px', color: COLORS.textMuted }}>
           {item.provider_name} · {item.objects} object{item.objects === 1 ? '' : 's'} ·{' '}
           {formatBytes(item.bytes)}
+          {item.previous_key ? ' · under the previous key' : ''}
+          {item.previous_key && item.path ? ` · was ${item.path}` : ''}
           {item.reason ? ` · ${item.reason}` : ''}
         </div>
       </div>

@@ -13,6 +13,7 @@ import (
 
 	"github.com/chinmay28/sand-vault/internal/archive"
 	"github.com/chinmay28/sand-vault/internal/crypto"
+	"github.com/chinmay28/sand-vault/internal/provider"
 )
 
 // Changing the vault password rotates the key that stored files are actually
@@ -241,8 +242,18 @@ func (v *Vault) rotate(oldPassword, newPassword string, plan *RekeySettings) err
 	sf.SubVaults = append([]subVaultRecord(nil), v.store.SubVaults...)
 	// Every copy on every account is now sealed under a password that no
 	// longer opens this vault, and carries a data key that is being retired.
-	// They have to be replaced, and the vault remembers that until they are.
+	// They have to be replaced, and the vault remembers that until they are
+	// — and remembers the salt they were sealed with, so that one still
+	// sitting on an account that was away through the change is known for
+	// this vault's own stale copy rather than taken for another vault's.
 	sf.BackupNeedsForce = !sf.ManifestBackupDisabled
+	if sf.BackupNeedsForce {
+		// Every salt a copy still out there may be sealed under: the one
+		// this change retires, and any an earlier change retired whose
+		// copies have not all been replaced yet either — an account can be
+		// away through two changes.
+		sf.PreviousBackupSalts = append(append([]string(nil), v.store.PreviousBackupSalts...), v.store.KDF.Salt)
+	}
 
 	// What a recovery kit made before today can no longer do: open the copies
 	// of manifest.sand on the accounts, which have just moved onto a vault key
@@ -532,6 +543,13 @@ func (v *Vault) MigrateFilesIn(ctx context.Context, scope Scope, accounts []stri
 	}
 	defer v.migrateMu.Unlock()
 
+	// Which accounts are there to be written to, asked once before the first
+	// file rather than learned from the first file's refusal. A file with a
+	// part on an account that does not answer is re-encrypted without it and
+	// the part written down (migrateFile), and that needs the account to be
+	// known to be down before the file is tried.
+	v.checkCloudsIfStale(ctx, MinHealthInterval)
+
 	v.mu.RLock()
 	m, err := v.manifestForLocked(scope)
 	if err != nil {
@@ -658,6 +676,19 @@ func (v *Vault) MigrateFilesIn(ctx context.Context, scope Scope, accounts []stri
 // resident memory under a unit with an 80% memory ceiling, and the kernel's
 // answer to that is to kill the service mid-move. See rescatter.
 func (v *Vault) migrateFile(ctx context.Context, scope Scope, id string, accounts []string, scheme archive.Scheme, progress func(done, size int64)) (path string, size int64, warnings []string, err error) {
+	// The accounts that did not answer the last health check, taken before
+	// the index lock and never under it (see unreachableAccounts). A part on
+	// one of them is left where it is: the file is read from the parts that
+	// answer, written back without that account, and the part it leaves is
+	// written down as a stray under the previous key (staleparts.go). Only
+	// when nobody named accounts — a named set is a deliberate placement
+	// that is followed exactly, and resolveAccounts has already said whether
+	// it can be.
+	var down map[string]bool
+	if len(accounts) == 0 {
+		down = v.unreachableAccounts()
+	}
+
 	v.mu.RLock()
 	m, err := v.manifestForLocked(scope)
 	if err != nil {
@@ -686,9 +717,10 @@ func (v *Vault) migrateFile(ctx context.Context, scope Scope, id string, account
 	// exactly, which is what both reclaiming a recovered vault and changing a
 	// file's scheme amount to.
 	current, exact := accounts, len(accounts) > 0
+	_, within := splitShardsOn(stale.Shards, down)
 	if !exact {
-		current = make([]string, 0, len(stale.Shards))
-		for _, s := range stale.Shards {
+		current = make([]string, 0, len(within))
+		for _, s := range within {
 			current = append(current, s.ProviderID)
 		}
 	}
@@ -706,7 +738,7 @@ func (v *Vault) migrateFile(ctx context.Context, scope Scope, id string, account
 	// the file is being read back and scattered again anyway, so changing
 	// format costs nothing beyond what the re-encryption was paying.
 	placed, err := v.rescatter(ctx, scope, &stale,
-		spread{preferred: current, exact: exact, scheme: scheme}, progress)
+		spread{preferred: current, exact: exact, scheme: scheme, avoid: down}, progress)
 	// Held until the new parts are in the index or erased — see holdDataKeyLocked.
 	defer v.releaseDataKey(placed.keyID)
 	warnings = placed.warnings
@@ -737,13 +769,23 @@ func (v *Vault) migrateFile(ctx context.Context, scope Scope, id string, account
 	// the file stays on the previous key exactly as it was, and the error
 	// leaves it to the paced step's retry to try again when the account is
 	// back.
-	if got, floor := distinctShards(placed.shards), min(stale.Redundancy(), placed.scheme.Total); got < floor {
+	//
+	// What the file had is counted on the accounts that answered the last
+	// health check. A part on an account that did not is not a spare the move
+	// could have kept — nothing can be written there — and holding the file
+	// to it would hold every file on that account to the day it comes back,
+	// which is the hold this used to be. The file goes on with the parts
+	// within reach, topped up from the accounts that answer where the spread
+	// allows, and the part left behind is written down below rather than
+	// forgotten. The scatter has already refused anything short of the parts
+	// a rebuild needs.
+	if got, floor := distinctShards(placed.shards), min(distinctShards(within), placed.scheme.Total); got < floor {
 		warnings = append(warnings, v.deleteEntryShards(context.WithoutCancel(ctx), fresh)...)
 		return path, 0, warnings, fmt.Errorf(
-			"%s was not re-encrypted: only %d of its %d parts could be written and it has %d now, "+
+			"%s was not re-encrypted: only %d of its %d parts could be written and it has %d within reach now, "+
 				"so re-encrypting it would have lost a part — the file is left on the previous key, "+
 				"and tried again once every account holding it is reachable: %s",
-			path, got, placed.scheme.Total, stale.Redundancy(), strings.Join(placed.warnings, "; "))
+			path, got, placed.scheme.Total, distinctShards(within), strings.Join(placed.warnings, "; "))
 	}
 
 	v.mu.Lock()
@@ -790,9 +832,28 @@ func (v *Vault) migrateFile(ctx context.Context, scope Scope, id string, account
 	e.TotalShards = placed.scheme.Total
 	// ModifiedAt is left alone: the file did not change, only the key that
 	// hides it did.
+	//
+	// The parts on the accounts that did not answer go on record in the same
+	// write that stops naming them, so there is no moment at which the index
+	// has forgotten them without having written down that it did. They are
+	// taken from the row as it stands at the commit, not as it stood when the
+	// read began, for the reason the erase below is: a relocation in between
+	// moves parts without touching the archive ID.
+	now := time.Now().UTC()
+	var unreachable []Shard
+	unreachable, within = splitShardsOn(previous.Shards, down)
+	var left []StalePart
+	for _, s := range unreachable {
+		left = append(left, stalePartsOf(scope, &previous, []Shard{s},
+			fmt.Sprintf("%s did not answer the last health check when the file was re-encrypted", s.ProviderName), now)...)
+	}
+	v.manifest.noteStaleParts(left)
 	err = v.persistLocked()
 	if err != nil {
 		*e = previous
+		v.manifest.forgetStaleParts(func(p *StalePart) bool {
+			return p.ArchiveID == previous.ArchiveID && p.LeftAt.Equal(now)
+		})
 	}
 	size = e.Size
 	v.mu.Unlock()
@@ -802,6 +863,12 @@ func (v *Vault) migrateFile(ctx context.Context, scope Scope, id string, account
 		return path, 0, warnings, fmt.Errorf("recording the re-encrypted %s: %w", path, err)
 	}
 
+	for _, s := range unreachable {
+		warnings = append(warnings, fmt.Sprintf(
+			"%s: part %d is still on %s under the previous key, which did not answer the last health check — "+
+				"it is recorded as a stray part, to be cleaned up when the account is back", path, s.Part, s.ProviderName))
+	}
+
 	// The old parts are unreferenced now, and they are the ones the old
 	// password could open, so getting rid of them is the point rather than
 	// housekeeping. A failure here is reported, not fatal: the index already
@@ -809,10 +876,46 @@ func (v *Vault) migrateFile(ctx context.Context, scope Scope, id string, account
 	// at the commit rather than where it said when the read began: a
 	// relocation in between moves parts without touching the archive ID,
 	// and its copies are what the index has just stopped naming.
-	for _, w := range v.deleteEntryShards(context.WithoutCancel(ctx), &previous) {
+	//
+	// Only the parts on accounts that answered are asked for. A delete on an
+	// account that is down is a timeout per object, and a chunked film is
+	// hundreds of objects; the parts there are already on record above.
+	// Whatever would not erase goes on record the same way, so that a part
+	// that stays behind for any reason is a part the vault knows it owes.
+	stillThere, eraseWarnings := v.deleteStoredShardsReport(context.WithoutCancel(ctx), provider.Parts,
+		previous.ArchiveID, previous.ChunkCount, within)
+	for _, w := range eraseWarnings {
 		warnings = append(warnings, fmt.Sprintf("%s: a part under the old key is still there — %s", path, w))
 	}
+	if len(stillThere) > 0 {
+		v.mu.Lock()
+		if v.dataKey != nil {
+			if err := v.noteStalePartsLocked(stalePartsOf(scope, &previous, stillThere,
+				"the erase after the file was re-encrypted did not finish", now)); err != nil {
+				warnings = append(warnings, fmt.Sprintf(
+					"%s: the parts left under the old key could not be written down as stray parts: %v", path, err))
+			}
+		}
+		v.mu.Unlock()
+		warnings = append(warnings, fmt.Sprintf(
+			"%s: %d part(s) under the previous key could not be erased and are recorded as stray parts to clean up",
+			path, len(stillThere)))
+	}
 	return path, size, warnings, nil
+}
+
+// splitShardsOn divides a file's parts into the ones on accounts in down and
+// the ones that are not. Nothing in down — nobody has looked, or every
+// account answered — puts every part within reach.
+func splitShardsOn(shards []Shard, down map[string]bool) (on, off []Shard) {
+	for _, s := range shards {
+		if down[s.ProviderID] {
+			on = append(on, s)
+		} else {
+			off = append(off, s)
+		}
+	}
+	return on, off
 }
 
 // rescatter reads one stored file back and writes it out again — under the

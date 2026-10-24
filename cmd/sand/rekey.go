@@ -219,6 +219,15 @@ reach zero.`,
 // between them. It is the loop 'sand serve' runs, for a machine with no server.
 func runPacedRekey(ctx context.Context, v *vault.Vault) error {
 	for {
+		// The server's health loop is what tells the step which accounts are
+		// not answering, and there is no server here; so the check runs on
+		// its schedule from this loop instead. A file on an account that is
+		// down is re-encrypted without it once the check has said so, and a
+		// file that cannot be read without it waits for the check that finds
+		// it back.
+		if now := time.Now(); v.HealthCheckDue(now) {
+			_, _ = v.CheckClouds(ctx)
+		}
 		step, err := v.RekeyStep(ctx, time.Now())
 		if err != nil {
 			return err

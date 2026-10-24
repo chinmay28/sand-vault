@@ -455,11 +455,14 @@ func (v *Vault) clearBackupForce(salt string) {
 	if v.store == nil || !v.store.BackupNeedsForce || v.store.KDF.Salt != salt {
 		return
 	}
+	previous := v.store.PreviousBackupSalts
 	v.store.BackupNeedsForce = false
+	v.store.PreviousBackupSalts = nil
 	if err := writeStore(v.path, v.store); err != nil {
 		// Left set, so the next push forces again. The cost of being wrong in
 		// this direction is one redundant overwrite of our own backup.
 		v.store.BackupNeedsForce = true
+		v.store.PreviousBackupSalts = previous
 		log.Printf("could not record that the manifest backups are current: %v", err)
 	}
 }

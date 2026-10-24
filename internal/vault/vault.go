@@ -1690,6 +1690,13 @@ func (v *Vault) RemoveProvider(id string, force bool) error {
 		}
 	}
 
+	// A part left under the previous key on this account stops being the
+	// index's to remember, for the same reason the records above go: the
+	// account is no longer one this vault can act on. If that storage is
+	// ever connected back, the part is an ordinary orphan there — an archive
+	// no index names — and the stray-parts scan finds and offers it as one.
+	v.manifest.forgetStaleParts(func(p *StalePart) bool { return p.ProviderID == id })
+
 	v.forgetProvider(id)
 	return v.persistLocked()
 }
@@ -2391,6 +2398,15 @@ type Stats struct {
 	// password change, waiting to be re-encrypted under the new one.
 	Pending int `json:"pending_migration"`
 
+	// StaleParts counts the parts re-encryptions have left on accounts they
+	// could not reach, still sealed under the previous key, and StaleBytes
+	// what they weigh. They are strays to clean up once the account answers
+	// — see staleparts.go — and the figure is here so the browser can ask
+	// the stray-parts scan when an account comes back rather than only when
+	// one is connected.
+	StaleParts int   `json:"stale_parts,omitempty"`
+	StaleBytes int64 `json:"stale_bytes,omitempty"`
+
 	// Unresolved counts shard records naming an account this vault is not
 	// connected to, and Stranded the files that cannot be opened as a result.
 	//
@@ -2464,5 +2480,9 @@ func (v *Vault) Stats() (Stats, error) {
 	}
 	s.Folders = len(folders)
 	s.Replication = v.replicationSummaryLocked()
+	for _, p := range v.manifest.StaleParts {
+		s.StaleParts++
+		s.StaleBytes += p.Bytes
+	}
 	return s, nil
 }

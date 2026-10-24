@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -133,6 +134,15 @@ type OrphanArchive struct {
 	// reported and never swept.
 	Deletable bool   `json:"deletable"`
 	Reason    string `json:"reason,omitempty"`
+
+	// PreviousKey says the index knows exactly what this is: a part a
+	// re-encryption left here, sealed under the previous key, because the
+	// account could not be reached at the time (staleparts.go). The one
+	// kind of abandoned archive something *can* be said about — Path is the
+	// file it belonged to, for the main vault's files — and the one kind
+	// worth erasing for more than the room: the previous password opens it.
+	PreviousKey bool   `json:"previous_key,omitempty"`
+	Path        string `json:"path,omitempty"`
 }
 
 // StrayShard is one shard of one file, sitting on an account with no record in
@@ -206,6 +216,12 @@ type OrphanAccount struct {
 	OrphanBytes int64 `json:"orphan_bytes"`
 	Archives    int   `json:"archives"`
 
+	// PreviousKey and PreviousKeyBytes are the share of those that a
+	// re-encryption left here under the previous key, on record in the
+	// index. Counted inside Orphans, not beside it.
+	PreviousKey      int   `json:"previous_key,omitempty"`
+	PreviousKeyBytes int64 `json:"previous_key_bytes,omitempty"`
+
 	// Strays and StrayBytes are the other half: objects belonging to a file
 	// that is still in the tree but has no record of them. Not abandoned —
 	// mislaid, and free to put back.
@@ -241,6 +257,17 @@ type OrphanScan struct {
 	// Deletable and DeletableBytes are the subset a sweep would actually erase.
 	Deletable      int   `json:"deletable"`
 	DeletableBytes int64 `json:"deletable_bytes"`
+
+	// PreviousKey, PreviousKeyBytes and PreviousKeyArchives count the orphans
+	// the index put there itself: parts a re-encryption left under the
+	// previous key on an account it could not reach, now found where it left
+	// them. PreviousKeyOn names the accounts. Counted inside the totals
+	// above, and called out because they are the reason to run the sweep
+	// today rather than someday — the previous password still opens them.
+	PreviousKey         int      `json:"previous_key,omitempty"`
+	PreviousKeyBytes    int64    `json:"previous_key_bytes,omitempty"`
+	PreviousKeyArchives int      `json:"previous_key_archives,omitempty"`
+	PreviousKeyOn       []string `json:"previous_key_on,omitempty"`
 
 	// Strays are shards of files still in the tree that the index has no
 	// record of, and Reattachable how many of them can be written back. They
@@ -404,6 +431,14 @@ func (v *Vault) scanForOrphansOn(ctx context.Context, providerID string) (*Orpha
 	}
 	policy := v.store.Policy
 	vaultKey := append([]byte(nil), v.vaultKey...)
+	stale := v.manifest.stalePartsByKey()
+	// The salt of this vault's own copies from before a password change, for
+	// as long as one may still be sitting on an account the pushes since
+	// could not reach. A copy sealed under it is stale, not foreign.
+	var previousSalts []string
+	if v.store.BackupNeedsForce {
+		previousSalts = append([]string(nil), v.store.PreviousBackupSalts...)
+	}
 	v.mu.RUnlock()
 	defer crypto.ZeroBytes(vaultKey)
 
@@ -426,12 +461,17 @@ func (v *Vault) scanForOrphansOn(ctx context.Context, providerID string) (*Orpha
 	var wg sync.WaitGroup
 	var found []OrphanArchive
 	var loose []StrayShard
+	// The parts on record as left under the previous key that a listing
+	// actually turned up, and the accounts whose listing was complete — the
+	// two facts that together say which of the record is out of date.
+	seen := map[stalePartKey]bool{}
+	listed := map[string]bool{}
 
 	for _, listing := range listings {
 		wg.Add(1)
 		go func(listing orphanListing) {
 			defer wg.Done()
-			account, archives, strays := v.scanAccountForOrphans(ctx, listing, policy, vaultKey)
+			account, archives, strays, present := v.scanAccountForOrphans(ctx, listing, policy, vaultKey, previousSalts, stale)
 
 			mu.Lock()
 			defer mu.Unlock()
@@ -442,10 +482,30 @@ func (v *Vault) scanForOrphansOn(ctx context.Context, providerID string) (*Orpha
 				scan.Warnings = append(scan.Warnings, fmt.Sprintf(
 					"could not ask %s what it holds, so anything abandoned there is not counted: %s",
 					account.Name, account.Error))
+			} else if !listing.replicas {
+				listed[listing.cfg.ID] = true
+				for key := range present {
+					seen[key] = true
+				}
 			}
 		}(listing)
 	}
 	wg.Wait()
+
+	// A part on record that a complete listing of its account did not show
+	// is gone — erased by hand, by the account's own tools, or by a sweep
+	// this process did not see — and the record is corrected here rather
+	// than left to promise a cleanup forever. The write is housekeeping on
+	// the index's own notes, nothing a file depends on, so a failure is a
+	// warning and the next scan tries again.
+	if len(stale) > 0 {
+		if err := v.forgetStaleParts(func(p *StalePart) bool {
+			return listed[p.ProviderID] && !seen[p.key()]
+		}); err != nil && !errors.Is(err, ErrLocked) {
+			scan.Warnings = append(scan.Warnings, fmt.Sprintf(
+				"the record of parts left under the previous key could not be brought up to date: %v", err))
+		}
+	}
 
 	// Applied after the listings rather than during them, because one of the
 	// reasons is a fact about the whole vault rather than about one account.
@@ -465,8 +525,19 @@ func (v *Vault) scanForOrphansOn(ctx context.Context, providerID string) (*Orpha
 			scan.Deletable += found[i].Objects
 			scan.DeletableBytes += found[i].Bytes
 		}
+		if found[i].PreviousKey {
+			scan.PreviousKey += found[i].Objects
+			scan.PreviousKeyBytes += found[i].Bytes
+			scan.PreviousKeyArchives++
+		}
 	}
 	scan.Found = scan.Archives > 0
+	for _, a := range scan.Accounts {
+		if a.PreviousKey > 0 {
+			scan.PreviousKeyOn = append(scan.PreviousKeyOn, a.Name)
+		}
+	}
+	sort.Strings(scan.PreviousKeyOn)
 
 	// Only one row per shard survives, however many accounts turn out to be
 	// holding a copy of it: recording the same shard twice is not redundancy,
@@ -569,14 +640,24 @@ func (v *Vault) orphanListingsLocked(owned map[string]*ownedArchive) []orphanLis
 }
 
 // scanAccountForOrphans is ScanForOrphans' work for a single root.
+//
+// previousSalts are the KDF salts of this vault's own manifest copies from
+// before a password change that has not reached every account yet; a copy
+// sealed under one of them is this vault's, stale, and not a sign of another
+// vault. stale is the record of parts re-encryptions left under the
+// previous key, by account, archive and shard; the keys of it this listing
+// turned up come back as present, so the caller can tell which of the record
+// has been overtaken by events.
 func (v *Vault) scanAccountForOrphans(
 	ctx context.Context,
 	listing orphanListing,
 	policy Policy,
 	vaultKey []byte,
-) (OrphanAccount, []OrphanArchive, []StrayShard) {
+	previousSalts []string,
+	stale map[stalePartKey]*StalePart,
+) (account OrphanAccount, archives []OrphanArchive, loose []StrayShard, present map[stalePartKey]bool) {
 	cfg, owned := listing.cfg, listing.owned
-	account := OrphanAccount{
+	account = OrphanAccount{
 		ProviderID: cfg.ID,
 		Name:       cfg.Name,
 		Kind:       string(cfg.Kind),
@@ -591,7 +672,7 @@ func (v *Vault) scanAccountForOrphans(
 	p, err := v.buildProvider(cfg)
 	if err != nil {
 		account.Error = err.Error()
-		return account, nil, nil
+		return account, nil, nil, nil
 	}
 	objects, err := p.List(ctx, "")
 	if err != nil {
@@ -599,13 +680,13 @@ func (v *Vault) scanAccountForOrphans(
 		// outcome: the alternative is an account whose every part reads as
 		// abandoned because it never got to say otherwise.
 		account.Error = err.Error()
-		return account, nil, nil
+		return account, nil, nil, nil
 	}
 
 	// The manifest backup lives in the parts folder, so only the parts row
 	// can say whose account this is; the replica row has nothing to read.
 	if !listing.replicas {
-		account.Backup, account.Foreign = v.backupState(ctx, p, vaultKey)
+		account.Backup, account.Foreign = v.backupState(ctx, p, vaultKey, previousSalts)
 	}
 
 	reason := ""
@@ -622,6 +703,10 @@ func (v *Vault) scanAccountForOrphans(
 	sizes := map[string]int64{}
 	counts := map[string]int{}
 	strays := map[strayKey]*StrayShard{}
+	// The archives among the orphans that the index itself left here under
+	// the previous key, with the file each belonged to.
+	previous := map[string]string{}
+	present = map[stalePartKey]bool{}
 
 	for _, obj := range objects {
 		if obj.Key == BackupKey {
@@ -643,6 +728,19 @@ func (v *Vault) scanAccountForOrphans(
 			account.OrphanBytes += obj.Size
 			counts[id]++
 			sizes[id] += obj.Size
+			// An orphan the index can account for: a part a re-encryption
+			// left here when the account could not be reached. It is
+			// matched by account as well as by object, because the record
+			// names the account the part was left on, and an account
+			// connected back under a fresh ID is a different account.
+			if left, ok := stale[stalePartKey{providerID: cfg.ID, archiveID: id, part: part}]; ok {
+				present[left.key()] = true
+				account.PreviousKey++
+				account.PreviousKeyBytes += obj.Size
+				if _, noted := previous[id]; !noted {
+					previous[id] = left.Path
+				}
+			}
 
 		case owner.parts[part]:
 			// The index already has a record for this shard of this file. The
@@ -685,8 +783,9 @@ func (v *Vault) scanAccountForOrphans(
 	}
 
 	account.Archives = len(counts)
-	archives := make([]OrphanArchive, 0, len(counts))
+	archives = make([]OrphanArchive, 0, len(counts))
 	for id, count := range counts {
+		path, fromRekey := previous[id]
 		archives = append(archives, OrphanArchive{
 			ProviderID:   cfg.ID,
 			ProviderName: cfg.Name,
@@ -696,16 +795,18 @@ func (v *Vault) scanAccountForOrphans(
 			Bytes:        sizes[id],
 			Deletable:    reason == "",
 			Reason:       reason,
+			PreviousKey:  fromRekey,
+			Path:         path,
 		})
 	}
 
-	loose := make([]StrayShard, 0, len(strays))
+	loose = make([]StrayShard, 0, len(strays))
 	for key, row := range strays {
 		owner := owned[key.archiveID]
 		row.Reattachable, row.Reason = reattachable(owner, cfg, policy, key.part, row.Objects)
 		loose = append(loose, *row)
 	}
-	return account, archives, loose
+	return account, archives, loose, present
 }
 
 // strayKey identifies one shard of one archive, which is the unit a reattach
@@ -757,7 +858,16 @@ func reattachable(owner *ownedArchive, cfg provider.Config, policy Policy, part,
 // An account that will not say is treated as carrying a foreign one, which is
 // the answer that withholds the delete button rather than the one that offers
 // it.
-func (v *Vault) backupState(ctx context.Context, p provider.Provider, vaultKey []byte) (backup, foreign bool) {
+//
+// One copy this vault cannot open is still its own: the one sealed before a
+// password change, on an account the forced pushes since have not reached —
+// away through the change, back now, and holding exactly the stale copy the
+// vault remembers owing it (store.PreviousBackupSalts). The envelope carries
+// the salt it was sealed with, which is how it is recognised. It is reported
+// as a backup and not as a foreign one, so the parts beside it — which are
+// where a re-encryption past that account left them — are offered rather
+// than withheld as another vault's.
+func (v *Vault) backupState(ctx context.Context, p provider.Provider, vaultKey []byte, previousSalts []string) (backup, foreign bool) {
 	blob, err := p.Get(ctx, BackupKey)
 	if err != nil {
 		// Not-found is the ordinary case for an account backup is switched off
@@ -770,7 +880,10 @@ func (v *Vault) backupState(ctx context.Context, p provider.Provider, vaultKey [
 		// about another vault, so it is not held against the account.
 		return false, false
 	}
-	return true, !b.opensWith(vaultKey)
+	if b.opensWith(vaultKey) {
+		return true, false
+	}
+	return true, !slices.Contains(previousSalts, b.KDF.Salt)
 }
 
 // orphanGuard lists the reasons a sweep must not be offered at all.
@@ -1151,6 +1264,10 @@ func (v *Vault) SweepOrphans(ctx context.Context, targets []OrphanTarget, dryRun
 
 	var mu sync.Mutex
 	var wg sync.WaitGroup
+	// The archives each account is now rid of, for the record of parts left
+	// under the previous key: a sweep is one of the two ways such a part
+	// stops being owed.
+	gone := map[string]map[string]bool{}
 	for id, items := range byAccount {
 		cfg, ok := configs[id]
 		if !ok {
@@ -1167,13 +1284,25 @@ func (v *Vault) SweepOrphans(ctx context.Context, targets []OrphanTarget, dryRun
 
 			mu.Lock()
 			defer mu.Unlock()
-			report.Archives += erased
+			report.Archives += len(erased)
 			report.Deleted += objects
 			report.Bytes += bytes
 			report.Warnings = append(report.Warnings, warnings...)
+			if len(erased) > 0 {
+				gone[cfg.ID] = erased
+			}
 		}(cfg, items)
 	}
 	wg.Wait()
+
+	if len(gone) > 0 {
+		if err := v.forgetStaleParts(func(p *StalePart) bool {
+			return gone[p.ProviderID][p.ArchiveID]
+		}); err != nil && !errors.Is(err, ErrLocked) {
+			report.Warnings = append(report.Warnings, fmt.Sprintf(
+				"the record of parts left under the previous key could not be brought up to date: %v", err))
+		}
+	}
 
 	sort.Strings(report.Skipped)
 	sort.Strings(report.Warnings)
@@ -1192,19 +1321,23 @@ const orphanEraseWindow = 8
 // advance, when given, is called once per object dealt with — erased, already
 // gone, or failed and reported — which is what keeps a watcher's count moving
 // against the total SweepOrphans announced.
+//
+// archives is the set of archive IDs at least one object was erased from —
+// what the caller needs to bring the record of parts under the previous key
+// up to date, as well as a count.
 func (v *Vault) eraseOrphans(
 	ctx context.Context,
 	cfg provider.Config,
 	items []OrphanArchive,
 	advance func(),
-) (archives, objects int, bytes int64, warnings []string) {
+) (archives map[string]bool, objects int, bytes int64, warnings []string) {
 	p, err := v.buildProvider(cfg)
 	if err != nil {
-		return 0, 0, 0, []string{fmt.Sprintf("could not reach %s: %v", cfg.Name, err)}
+		return nil, 0, 0, []string{fmt.Sprintf("could not reach %s: %v", cfg.Name, err)}
 	}
 	listing, err := p.List(ctx, "")
 	if err != nil {
-		return 0, 0, 0, []string{fmt.Sprintf("could not list %s: %v", cfg.Name, err)}
+		return nil, 0, 0, []string{fmt.Sprintf("could not list %s: %v", cfg.Name, err)}
 	}
 
 	doomed := map[string]struct{}{}
@@ -1254,7 +1387,7 @@ func (v *Vault) eraseOrphans(
 	}
 	wg.Wait()
 
-	return len(hit), objects, bytes, warnings
+	return hit, objects, bytes, warnings
 }
 
 // ---------------------------------------------------------------------------
