@@ -27,6 +27,19 @@ health check. A listing that fails outright says so in the drawer, with a
 **Try again** button, and is asked for again when the drawer is next opened;
 the accounts that were listed before stay on their cards meanwhile.
 
+### The installer's health check no longer sits silent on an address that does not answer
+
+The quickstart's last step probes the new service, and the probe had no
+timeout: on an address that drops packets rather than refusing — a firewall,
+a Tailscale IP before tailscaled is up, a LAN address the machine cannot reach
+itself on — each of its thirty tries waited out the kernel's connection
+timeout, so the step could sit for most of an hour with nothing on the
+screen. Each probe is now bounded to a few seconds, the step waits a minute
+of wall clock at most and says what it is waiting for while it does, it stops
+at once if the service has already died, and every failure prints the last
+lines of the service's journal, which is where a port that could not be bound
+or a vault that could not be read is explained.
+
 ### A re-encryption no longer waits for a cloud that is not answering
 
 Changing the password re-encrypts every file, and a file with a part on a
