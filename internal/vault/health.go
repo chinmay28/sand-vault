@@ -79,7 +79,9 @@ const (
 // healthPingTimeout is how long one account gets to answer before it counts as
 // unreachable. The same twenty seconds the sidebar's own ping allows, because
 // this is the same ping — an account that needs longer than that is a problem
-// whether or not it eventually answers.
+// whether or not it eventually answers. The sidebar stops waiting for its
+// listing sooner than that (see statusWait), but the ping behind it runs on to
+// this deadline, and this is the answer that is recorded.
 const healthPingTimeout = 20 * time.Second
 
 // CloudHealth is one account's standing: whether it answered last time it was

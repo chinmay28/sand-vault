@@ -163,7 +163,7 @@ function ActionTile({ icon, label, hint, onClick }) {
    two-pane breakpoint it comes out as a drawer over the file browser rather
    than as a pane beside it: there is no room to stand one next to the other. */
 export default function AccountsPanel({
-  providers, loading, status, stats, webdav, mobile, open, health, onHealthChanged,
+  providers, loading, loadError, status, stats, webdav, mobile, open, health, onHealthChanged,
   subVaults = [], showSubVaults, subVaultShown, onToggleSubVaults, onToggleSubVault, onOpenSubVault,
   onClose, onRefresh, onChanged,
 }) {
@@ -173,6 +173,16 @@ export default function AccountsPanel({
   // connect one, and an account signing back in goes back to its own edit
   // dialog, where the tokens replace the ones it already has.
   const [pending] = useState(pendingOAuthFlow)
+
+  /* A listing that died — a phone that put its screen to sleep on it, a
+     connection that dropped — is asked for again the moment somebody opens the
+     drawer to look, rather than leaving them a banner and a button. Only on
+     opening: a refresh that fails again changes nothing here, so this cannot
+     chase its own tail. */
+  useEffect(() => {
+    if (open && loadError && !loading) onRefresh()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
   const [connecting, setConnecting] = useState(() => Boolean(pending && !pending.provider_id))
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [readsOpen, setReadsOpen] = useState(false)
@@ -306,7 +316,23 @@ export default function AccountsPanel({
       <div style={{ flex: 1, overflowY: 'auto', padding: '0 12px' }}>
         {error && <Banner tone="error" onDismiss={() => setError(null)}>{error}</Banner>}
 
-        {providers.length === 0 && !loading && (
+        {/* The list could not be fetched. Said in here, where the accounts
+            are looked for, and never as "No accounts yet": twenty accounts
+            that did not arrive are not none. Whatever was listed before stays
+            on the cards underneath, since it is the best answer there is
+            until the next one lands. */}
+        {loadError && !loading && (
+          <Banner tone="error">
+            {providers.length > 0
+              ? `Could not refresh the accounts — ${loadError}. Showing what was last loaded.`
+              : `Could not load the accounts — ${loadError}.`}
+            <div style={{ marginTop: '8px' }}>
+              <Button size="sm" variant="ghost" onClick={onRefresh}>Try again</Button>
+            </div>
+          </Banner>
+        )}
+
+        {providers.length === 0 && !loading && !loadError && (
           <p style={{
             fontFamily: FONT.sans,
             fontSize: '12px',

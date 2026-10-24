@@ -198,6 +198,11 @@ type Vault struct {
 	healthSeen    map[string]CloudHealth
 	healthSweptAt time.Time
 
+	// statusPings counts the listings that answered before every account had
+	// and are still waiting on the rest in the background, so that a test can
+	// wait for the health record to hear from them. See ProviderStatuses.
+	statusPings sync.WaitGroup
+
 	// pruneSeen is what the last automatic prune did to each account, and
 	// prunedAt when the last one ran — the clock the daily prune is measured
 	// from. The same shape as the health record above, for the same reasons:
@@ -1759,8 +1764,32 @@ type ProviderStatus struct {
 	Space Space `json:"space"`
 }
 
+// statusWait is how long the accounts listing waits for the slowest account
+// before answering with what it has.
+//
+// The listing pings every account, and used to answer when the last of them
+// had — which made one cloud that had stopped replying the pace of the whole
+// drawer: twenty seconds (healthPingTimeout) of spinner on every refresh, for
+// as long as it stayed down. Twenty seconds is long enough for a phone to put
+// the screen to sleep on the request, and a drawer whose listing died shows
+// nothing at all. So the listing waits this long, reports whatever has not
+// answered by then as still being checked, and lets those pings run on to the
+// full deadline in the background, where their answer is filed as the health
+// check's (see recordSweep). A healthy account answers in well under a second;
+// one that needs longer than this is news the card can carry without holding
+// the other nineteen back.
+//
+// A variable so a test need not wait eight seconds to see it happen.
+var statusWait = 8 * time.Second
+
 // ProviderStatuses pings every connected account in parallel and reports how
 // much of the vault each one is holding.
+//
+// It answers within statusWait of being asked, whichever accounts have replied
+// by then. An account still silent at that point is reported offline with an
+// error saying it is still being waited on; its ping continues to
+// healthPingTimeout on its own, and what it finally says goes into the health
+// record, not into this answer.
 func (v *Vault) ProviderStatuses(ctx context.Context) ([]ProviderStatus, error) {
 	v.mu.RLock()
 	if v.dataKey == nil {
@@ -1794,31 +1823,60 @@ func (v *Vault) ProviderStatuses(ctx context.Context) ([]ProviderStatus, error) 
 	}
 	v.mu.RUnlock()
 
+	// Each account answers into a slot of its own and closes its channel when
+	// it has, so the listing can take the answers that are in without waiting
+	// for the ones that are not. The pings hang off a context that outlives
+	// the request: a browser that gives up on the listing, or a listing that
+	// answers early, must not cut short the ping whose result the health
+	// record is waiting for.
+	answers := make([]pingAnswer, len(statuses))
+	answered := make([]chan struct{}, len(statuses))
+	pingBase := context.WithoutCancel(ctx)
 	var wg sync.WaitGroup
 	for i := range statuses {
 		if live[i] == nil {
 			continue
 		}
+		answered[i] = make(chan struct{})
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			pingCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+			defer close(answered[i])
+			pingCtx, cancel := context.WithTimeout(pingBase, healthPingTimeout)
 			defer cancel()
-
-			if err := live[i].Ping(pingCtx); err != nil {
-				statuses[i].Error = err.Error()
-				return
-			}
-			statuses[i].Online = true
-			if reporter, ok := live[i].(provider.UsageReporter); ok {
-				if usage, err := reporter.Usage(pingCtx); err == nil {
-					statuses[i].Usage = usage
-				}
-			}
-			statuses[i].Usage = withDeclaredCapacity(statuses[i].Usage, statuses[i].Capacity)
+			answers[i] = pingAccount(pingCtx, live[i])
 		}(i)
 	}
-	wg.Wait()
+	all := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(all)
+	}()
+
+	wait := time.NewTimer(statusWait)
+	defer wait.Stop()
+	select {
+	case <-all:
+	case <-wait.C:
+	case <-ctx.Done():
+		// The caller has gone; answer with whatever is in all the same, since
+		// a handler mid-write is the caller's problem and not this one's.
+	}
+
+	complete := true
+	for i := range statuses {
+		if answered[i] == nil {
+			continue
+		}
+		select {
+		case <-answered[i]:
+			answers[i].applyTo(&statuses[i])
+		default:
+			complete = false
+			statuses[i].Error = fmt.Sprintf("no answer after %s; still waiting up to %s",
+				statusWait, healthPingTimeout)
+		}
+	}
 
 	// Worked out last, because it needs both halves: what the account said when
 	// it was pinged, and what the index says SAND has put there. An account
@@ -1830,10 +1888,75 @@ func (v *Vault) ProviderStatuses(ctx context.Context) ([]ProviderStatus, error) 
 
 	// This just pinged every connected account, which is precisely what the
 	// scheduled health check does — so it counts as one, both for what it found
-	// and for when the next one is due. See health.go.
-	v.recordSweep(time.Now(), healthFromStatuses(statuses))
-
+	// and for when the next one is due. See health.go. Filed now when every
+	// account has answered, and otherwise once the last of them has: the
+	// answer this listing carries for a slow account is "still waiting", which
+	// is not a finding, and the finding comes with the ping.
+	if complete {
+		v.recordSweep(time.Now(), healthFromStatuses(statuses))
+		return statuses, nil
+	}
+	final := append([]ProviderStatus(nil), statuses...)
+	v.statusPings.Add(1)
+	go func() {
+		defer v.statusPings.Done()
+		<-all
+		for i := range final {
+			if answered[i] != nil {
+				final[i].Error, final[i].Online = "", false
+				answers[i].applyTo(&final[i])
+			}
+		}
+		// A vault that locked while the slow account was being waited on has
+		// forgotten every account's standing on purpose, and the names these
+		// results carry with them.
+		if !v.Unlocked() {
+			return
+		}
+		v.recordSweep(time.Now(), healthFromStatuses(final))
+	}()
 	return statuses, nil
+}
+
+// pingAnswer is what one account said to the listing's ping: whether it
+// answered, what it said if it did not, and how full it is if it can say.
+type pingAnswer struct {
+	online bool
+	err    string
+	usage  provider.Usage
+}
+
+// pingAccount asks one account whether it is there and, if it is, how full it
+// is — the usage call rides on the same deadline as the ping, since an account
+// that answers the first and sits on the second is not answering.
+func pingAccount(ctx context.Context, p provider.Provider) pingAnswer {
+	if err := p.Ping(ctx); err != nil {
+		return pingAnswer{err: err.Error()}
+	}
+	answer := pingAnswer{online: true}
+	if reporter, ok := p.(provider.UsageReporter); ok {
+		if usage, err := reporter.Usage(ctx); err == nil {
+			answer.usage = usage
+		}
+	}
+	return answer
+}
+
+// applyTo writes the answer onto the account's status.
+func (a pingAnswer) applyTo(st *ProviderStatus) {
+	if !a.online {
+		st.Error = a.err
+		return
+	}
+	st.Online = true
+	st.Usage = withDeclaredCapacity(a.usage, st.Capacity)
+}
+
+// AwaitStatusPings blocks until no listing is still waiting on a slow account
+// in the background. For tests, which otherwise cannot tell when the health
+// record has heard from it.
+func (v *Vault) AwaitStatusPings() {
+	v.statusPings.Wait()
 }
 
 // withDeclaredCapacity puts the account holder's own figure in as the total

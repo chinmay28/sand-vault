@@ -1,9 +1,17 @@
 package vault
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/chinmay28/sand-vault/internal/provider"
 )
 
 // breakCloud makes a connected local folder unreachable the way a NAS that has
@@ -285,5 +293,111 @@ func TestCloudHealthNeedsAnOpenVault(t *testing.T) {
 		t.Errorf("a freshly unlocked vault reports %d unchecked, %d healthy — "+
 			"what was found before the lock should have gone with the keys",
 			report.Unchecked, report.Healthy)
+	}
+}
+
+// The drawer is not paced by the slowest account. One cloud that has stopped
+// replying used to hold the whole listing for the ping deadline on every
+// refresh; now the listing answers after statusWait with the accounts that
+// have replied, says the silent one is still being waited on, and the health
+// record hears the ping's actual answer when it comes.
+func TestListingAnswersBeforeASlowAccountDoes(t *testing.T) {
+	v, _ := newTestVault(t, 2)
+
+	// A WebDAV server that answers at once until told to sit on every request
+	// until released — which is what a cloud that has gone quiet looks like
+	// from here: the connection opens and nothing comes back.
+	var slow atomic.Bool
+	release := make(chan struct{})
+	var released sync.Once
+	letGo := func() { released.Do(func() { close(release) }) }
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if slow.Load() {
+			select {
+			case <-release:
+			case <-r.Context().Done():
+				return
+			}
+		}
+		switch r.Method {
+		case http.MethodGet:
+			w.WriteHeader(http.StatusNotFound)
+		case http.MethodPut:
+			w.WriteHeader(http.StatusCreated)
+		default:
+			w.WriteHeader(http.StatusMultiStatus)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(letGo)
+
+	cfg := provider.Config{Kind: provider.KindWebDAV, Name: "quiet", Options: map[string]string{
+		"url": srv.URL, "username": "u", "password": "p",
+	}}
+	added, err := v.AddProvider(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("AddProvider: %v", err)
+	}
+	// Connecting pushed a manifest backup to it; let that land before the
+	// server goes quiet, or it is the push that waits on the release.
+	v.AwaitBackupSync()
+
+	was := statusWait
+	statusWait = 200 * time.Millisecond
+	t.Cleanup(func() { statusWait = was })
+
+	slow.Store(true)
+	started := time.Now()
+	statuses, err := v.ProviderStatuses(t.Context())
+	if err != nil {
+		t.Fatalf("ProviderStatuses: %v", err)
+	}
+	if took := time.Since(started); took > 5*time.Second {
+		t.Fatalf("the listing waited %v on an account that was not answering", took)
+	}
+
+	if len(statuses) != 3 {
+		t.Fatalf("got %d statuses, want 3", len(statuses))
+	}
+	for _, st := range statuses {
+		if st.ID == added.ID {
+			if st.Online {
+				t.Errorf("the quiet account is reported online")
+			}
+			if !strings.Contains(st.Error, "still waiting") {
+				t.Errorf("the quiet account's error is %q, which does not say it is still being waited on", st.Error)
+			}
+			continue
+		}
+		if !st.Online {
+			t.Errorf("%s is reported offline (%s) because another account was slow", st.Name, st.Error)
+		}
+	}
+
+	// The listing's "still waiting" is not a finding, so the health record has
+	// not been told the account is down.
+	report, err := v.CloudHealth()
+	if err != nil {
+		t.Fatalf("CloudHealth: %v", err)
+	}
+	if report.Unhealthy != 0 {
+		t.Errorf("a slow account was filed as unhealthy before its ping had answered: %+v", report.Clouds)
+	}
+
+	// Once the account does answer, its answer is what the record hears — and
+	// the listing's ping of every account counts as the check it was.
+	slow.Store(false)
+	letGo()
+	v.AwaitStatusPings()
+	report, err = v.CloudHealth()
+	if err != nil {
+		t.Fatalf("CloudHealth: %v", err)
+	}
+	if report.Healthy != 3 || report.Unhealthy != 0 || report.Unchecked != 0 {
+		t.Errorf("after the slow account answered: %d healthy, %d unhealthy, %d unchecked",
+			report.Healthy, report.Unhealthy, report.Unchecked)
+	}
+	if v.HealthCheckDue(time.Now()) {
+		t.Error("the listing's ping of every account did not count as a check")
 	}
 }
