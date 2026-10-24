@@ -136,6 +136,14 @@ type spread struct {
 	// are the ones with a replica folder, opened there, and the whole copy is
 	// a code the scatter may be asked for. See replica.go.
 	role provider.Role
+
+	// avoid names connected accounts the placement must not use: the ones
+	// the last health check found unreachable, when a re-encryption is
+	// writing a file back past one of them. An account named here is left
+	// out of the accounts in play altogether, so it is neither preferred nor
+	// picked to top a spread up — a part sent there would not land, and the
+	// file would come back a part short for the sake of trying.
+	avoid map[string]bool
 }
 
 // check is the scheme check a spread is held to: Check for parts, and for
@@ -352,8 +360,14 @@ func (v *Vault) snapshotTarget(scope Scope, sp spread) (*transferTarget, error) 
 		t.byID = make(map[string]provider.Config, len(configs))
 		t.ids = make([]string, 0, len(configs))
 		for _, cfg := range configs {
+			if sp.avoid[cfg.ID] {
+				continue
+			}
 			t.ids = append(t.ids, cfg.ID)
 			t.byID[cfg.ID] = cfg
+		}
+		if len(t.ids) == 0 {
+			return nil, fmt.Errorf("no connected account answered the last health check")
 		}
 	}
 
@@ -1081,8 +1095,18 @@ func (v *Vault) deleteStoredShards(ctx context.Context, archiveID string, chunkC
 // deleteStoredShardsAt is deleteStoredShards at a role: the parts folder of
 // each account, or its replica folder.
 func (v *Vault) deleteStoredShardsAt(ctx context.Context, role provider.Role, archiveID string, chunkCount int, shards []Shard) []string {
+	_, warnings := v.deleteStoredShardsReport(ctx, role, archiveID, chunkCount, shards)
+	return warnings
+}
+
+// deleteStoredShardsReport is deleteStoredShardsAt with the parts that are
+// still there named as well as described: every shard whose objects could not
+// all be erased, whether because the account is no longer connected, would
+// not answer, or refused. A re-encryption writes those down (staleparts.go),
+// which a sentence cannot be written down from.
+func (v *Vault) deleteStoredShardsReport(ctx context.Context, role provider.Role, archiveID string, chunkCount int, shards []Shard) (left []Shard, warnings []string) {
 	if len(shards) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	v.mu.RLock()
@@ -1090,17 +1114,17 @@ func (v *Vault) deleteStoredShardsAt(ctx context.Context, role provider.Role, ar
 	configs := v.configsAtLocked(role, shards)
 	v.mu.RUnlock()
 	if locked {
-		return []string{"vault locked before parts could be erased"}
+		return append([]Shard(nil), shards...), []string{"vault locked before parts could be erased"}
 	}
 
 	var mu sync.Mutex
-	var warnings []string
 	var wg sync.WaitGroup
 
 	for _, shard := range shards {
 		cfg, ok := configs[shard.ProviderID]
 		if !ok {
 			mu.Lock()
+			left = append(left, shard)
 			warnings = append(warnings, fmt.Sprintf(
 				"part %d left behind: account %q is no longer connected", shard.Part, shard.ProviderName))
 			mu.Unlock()
@@ -1117,6 +1141,7 @@ func (v *Vault) deleteStoredShardsAt(ctx context.Context, role provider.Role, ar
 			}
 			if err != nil {
 				mu.Lock()
+				left = append(left, shard)
 				warnings = append(warnings, fmt.Sprintf(
 					"part %d on %s: %v", shard.Part, cfg.Name, err))
 				mu.Unlock()
@@ -1125,7 +1150,8 @@ func (v *Vault) deleteStoredShardsAt(ctx context.Context, role provider.Role, ar
 	}
 
 	wg.Wait()
-	return warnings
+	sortShards(left)
+	return left, warnings
 }
 
 // deleteShardObjects erases the one object a whole-file shard names, or every

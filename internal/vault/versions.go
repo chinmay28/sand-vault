@@ -216,6 +216,13 @@ func (v *Vault) scanForStaleVersions(ctx context.Context) (*VersionScan, map[str
 	v.noteInFlight(owned)
 	configs := append([]provider.Config(nil), v.providers...)
 	vaultKey := append([]byte(nil), v.vaultKey...)
+	// This vault's own index copy from before a password change, where one
+	// may still be sitting on an account the pushes since could not reach;
+	// see backupState.
+	var previousSalts []string
+	if v.store.BackupNeedsForce {
+		previousSalts = append([]string(nil), v.store.PreviousBackupSalts...)
+	}
 	v.mu.RUnlock()
 	defer crypto.ZeroBytes(vaultKey)
 
@@ -242,7 +249,7 @@ func (v *Vault) scanForStaleVersions(ctx context.Context) (*VersionScan, map[str
 		wg.Add(1)
 		go func(cfg provider.Config) {
 			defer wg.Done()
-			account, rows, d := v.scanAccountForStaleVersions(ctx, cfg, owns, vaultKey)
+			account, rows, d := v.scanAccountForStaleVersions(ctx, cfg, owns, vaultKey, previousSalts)
 
 			mu.Lock()
 			defer mu.Unlock()
@@ -298,6 +305,7 @@ func (v *Vault) scanAccountForStaleVersions(
 	cfg provider.Config,
 	owns func(archiveID, providerID string) ownership,
 	vaultKey []byte,
+	previousSalts []string,
 ) (VersionAccount, []VersionKey, doomedVersions) {
 	account := VersionAccount{
 		ProviderID: cfg.ID,
@@ -323,7 +331,7 @@ func (v *Vault) scanAccountForStaleVersions(
 		account.Error = err.Error()
 		return account, nil, doomedVersions{}
 	}
-	account.Backup, account.Foreign = v.backupState(ctx, p, vaultKey)
+	account.Backup, account.Foreign = v.backupState(ctx, p, vaultKey, previousSalts)
 
 	hold := ""
 	if account.Foreign {

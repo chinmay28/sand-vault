@@ -744,11 +744,31 @@ export default function RekeyProgress({ onClose, onChanged, zIndex = 120 }) {
               disabled={saving || !active}
               onChange={(on) => apply({ ...settings, keep_unlocked: on })}
             />
+            {status.stale_parts?.parts > 0 && (
+              <div style={{ marginTop: '12px' }}>
+                <Banner tone={status.stale_parts.reachable > 0 ? 'warn' : 'info'}>
+                  {/* Parts the moves so far could not erase: on a cloud that was
+                      not answering, under the previous key, on record. They
+                      are the previous password's last hold on the files, so
+                      the panel that counts down to "done" has to count them
+                      too. Vault settings → Stray parts is where they go. */}
+                  {`${status.stale_parts.parts} part${status.stale_parts.parts === 1 ? '' : 's'} `
+                    + `(${formatBytes(status.stale_parts.bytes)}) `
+                    + `${status.stale_parts.parts === 1 ? 'is' : 'are'} still under the previous key on `
+                    + `${status.stale_parts.accounts.map((a) => a.name).join(', ')}: left where it `
+                    + `${status.stale_parts.parts === 1 ? 'was' : 'they were'} because the cloud did not answer `
+                    + 'when the files were re-encrypted. '}
+                  {status.stale_parts.reachable > 0
+                    ? 'That cloud is answering now — clean them up from Vault settings → Stray parts to finish the change.'
+                    : 'They will be offered for cleaning up as stray parts once that cloud is back.'}
+                </Banner>
+              </div>
+            )}
             {status.warnings?.length > 0 && (
               <div style={{ marginTop: '12px' }}>
                 <Banner tone="warn">
                   <span style={{ fontFamily: FONT.mono, fontSize: '10.5px', whiteSpace: 'pre-wrap' }}>
-                    {`${status.warnings.length} file${status.warnings.length === 1 ? '' : 's'} could not be read and will be tried again in an hour:\n${status.warnings.join('\n')}`}
+                    {`${status.warnings.length} note${status.warnings.length === 1 ? '' : 's'} from the plan — a file that could not be read is tried again in an hour:\n${status.warnings.join('\n')}`}
                   </span>
                 </Banner>
               </div>

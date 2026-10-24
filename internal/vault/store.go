@@ -172,6 +172,17 @@ type storeFile struct {
 	// produce a vault that cannot read anything re-encrypted since.
 	BackupNeedsForce bool `json:"backup_needs_force,omitempty"`
 
+	// PreviousBackupSalts are the KDF salts the copies BackupNeedsForce is
+	// about may be sealed with — the one the vault had before the password
+	// change, and before any earlier change whose copies are not all
+	// replaced yet — and they are how such a copy is told from another
+	// vault's while it is still out there. A copy this vault cannot open
+	// would otherwise read as foreign to everything that asks (the
+	// stray-parts scan above all), and an account that was down through the
+	// change and the pushes after it holds exactly such a copy when it comes
+	// back. Cleared with the flag.
+	PreviousBackupSalts []string `json:"previous_backup_salts,omitempty"`
+
 	// HealthCheckMinutes is how often the connected accounts are pinged in the
 	// background to see whether they are still answering, and HealthCheckOff
 	// switches that off. Zero minutes means the default — an hour.

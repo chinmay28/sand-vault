@@ -228,16 +228,23 @@ type RekeyStatus struct {
 	Deferred []RekeyFile `json:"deferred,omitempty"`
 
 	// Held counts the pending files the plan is leaving where they are
-	// because an account holding a part of them did not answer its last
-	// health check, and HeldOn names those accounts. A re-encryption writes
-	// a file back to every account it is on and refuses to commit one that
-	// came out a part short (migrateFile), so trying such a file is a
-	// download and an upload spent to be told no; the plan waits for the
-	// account instead, and this is how the wait is explained. Both empty
-	// when nothing is held, so a status from before they existed reads the
-	// same.
+	// because too few of their parts are on accounts that answered the last
+	// health check to rebuild them, and HeldOn names the accounts that did
+	// not answer. A file with enough parts within reach is not held: it is
+	// re-encrypted from those, and the part on the silent account is left
+	// behind and written down (StaleParts). One that cannot be read without
+	// the silent account cannot be moved by anything, so trying it would be
+	// a failure an hour at a time; the plan waits for the account instead,
+	// and this is how the wait is explained. Both empty when nothing is
+	// held, so a status from before they existed reads the same.
 	Held   int      `json:"held,omitempty"`
 	HeldOn []string `json:"held_on,omitempty"`
+
+	// StaleParts is what re-encryptions so far have left behind under the
+	// previous key on accounts they could not reach: how many parts, what
+	// they weigh, and on which accounts, with whether each is answering
+	// now. Nil when nothing is on record. See staleparts.go.
+	StaleParts *StalePartsSummary `json:"stale_parts,omitempty"`
 
 	// Warnings are the files the plan could not move lately, with why. They
 	// are retried after a while; this is so the reason is visible meanwhile.
@@ -531,8 +538,16 @@ func (v *Vault) RekeyStatus() (*RekeyStatus, error) {
 		}
 		status.Warnings = append(status.Warnings, fmt.Sprintf(
 			"%d %s waiting for %s, which did not answer the last health check — "+
-				"a re-encryption has to write a file back to every account it is on",
+				"too few of their parts are on the accounts that did to rebuild them without it",
 			status.Held, noun, strings.Join(status.HeldOn, ", ")))
+	}
+	// And the parts that moves so far have left behind, for the same reason:
+	// they are the previous password's last purchase on the files, and a
+	// status that counted down to zero without mentioning them would be
+	// saying the change was finished when it was not quite.
+	if stale := v.stalePartsLocked(down); stale.Parts > 0 {
+		status.StaleParts = &stale
+		status.Warnings = append(status.Warnings, stale.Sentence())
 	}
 	return status, nil
 }
@@ -771,15 +786,16 @@ func (v *Vault) rekeyFoldersLocked() []RekeyFolder {
 // failed on are passed over until their time comes round.
 //
 // down is the accounts whose last health check failed (unreachableAccounts,
-// taken before the lock). A file with a part on one of them is passed over
-// too: re-encrypting writes a file back to every account it is on and refuses
-// to commit one that came out a part short (migrateFile), so trying such a
-// file while the account is down is a download and an upload spent on a
-// refusal — and, worse, an hour's skip per file, which on a vault of thousands
-// meant a drive unplugged for the afternoon left the plan nibbling at one
-// failure a minute for days. The files wait for the account instead, and move
-// the moment a check finds it back. An account nobody has checked is not held
-// against a file. heldByUnreachableLocked counts what is waiting this way.
+// taken before the lock). A file that cannot be rebuilt from its parts on the
+// other accounts is passed over too: nothing can read it, so trying it while
+// the account is down is a failure and an hour's skip per file, which on a
+// vault of thousands meant a drive unplugged for the afternoon left the plan
+// nibbling at one failure a minute for days. Those files wait for the account
+// instead, and move the moment a check finds it back. A file that *can* be
+// rebuilt without the silent account is not held: migrateFile re-encrypts it
+// from the parts within reach and writes down the part it leaves behind. An
+// account nobody has checked is not held against a file.
+// heldByUnreachableLocked counts what is waiting this way.
 //
 // The caller holds at least the read lock.
 func (v *Vault) nextRekeyLocked(now time.Time, down map[string]bool) (entry *Entry, idle bool) {
@@ -842,18 +858,28 @@ func (v *Vault) nextRekeyLocked(now time.Time, down map[string]bool) (entry *Ent
 	return nil, !waiting
 }
 
-// heldBy is the first of the unreachable accounts a file has a part on, or ""
-// when every account holding it answered its last check.
+// heldBy is the first of the unreachable accounts a file has a part on, when
+// the parts on the accounts that answered are too few to rebuild it — or ""
+// when the file can be re-encrypted now, with or without every account.
 func heldBy(e *Entry, down map[string]bool) string {
 	if len(down) == 0 {
 		return ""
 	}
+	first := ""
+	within := map[int]bool{}
 	for _, s := range e.Shards {
 		if down[s.ProviderID] {
-			return s.ProviderID
+			if first == "" {
+				first = s.ProviderID
+			}
+			continue
 		}
+		within[s.Part] = true
 	}
-	return ""
+	if first == "" || len(within) >= e.Scheme().Data {
+		return ""
+	}
+	return first
 }
 
 // heldByUnreachableLocked counts the pending files nextRekeyLocked is holding

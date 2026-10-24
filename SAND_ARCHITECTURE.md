@@ -176,6 +176,10 @@ What that buys:
 - Every file stays readable throughout, on whichever key it is on.
 - An interrupted migration resumes (`sand vault migrate`) rather than restarts.
 - A file on an offline account holds up nothing but itself, and is reported.
+- A file that can be rebuilt without the offline account does not wait for it
+  either: it is re-encrypted from the parts that answer, and the part on the
+  account that does not is left where it is and **written down**
+  (`manifest.stale_parts`) as a stray under the previous key — see §3.7.1.
 
 A manifest backup written mid-migration carries **every** generation it needs,
 so a vault lost halfway through still recovers both halves of its files.
@@ -443,6 +447,35 @@ dealt with against objects doomed — through an optional callback, the same
 window `Rmdir` opens onto a recursive folder delete: the request itself can
 only answer at the end, and the browser reads the count beside it
 (`GET /api/vault/orphans/erasing`).
+
+**The orphan the index made on purpose.** One kind of abandoned part is not
+an accident, and the index knows exactly what it is. A re-encryption (§3.3)
+that finds one of a file's accounts unreachable — by the last health check's
+verdict — moves the file without it, as long as the parts on the accounts that
+answer can rebuild it, and leaves the part on the silent account where it is:
+sealed under the key being retired, named by nothing, readable by the previous
+password. It records that part in the same write that stops naming it
+(`StalePart`, in `staleparts.go`): the account, the archive and shard number,
+the size, the key generation, the file's path and when it was left. The same
+record is made for a part an erase on an answering account could not remove.
+The record keeps no key alive — the retired key goes with the last file, as
+ever — and it exists for one reason: so the part is a *stray with a name*
+rather than a leak nobody will go back for.
+
+The scan reads the record. An object the index does not own that the record
+names is counted among the orphans and flagged `previous_key`, with the file's
+path on the row, and the scan's totals call them out (`previous_key`,
+`previous_key_bytes`, `previous_key_on`) because they are the reason to run
+the sweep today rather than someday. The vault's stats and the re-encryption
+status (`RekeyStatus.StaleParts`) count what is on record and name the
+accounts, with whether each is answering now, which is what lets the app ask
+the scan the moment a cloud holding recorded parts comes back rather than only
+when the set of accounts changes. The record is dropped three ways, each a
+fact rather than a timer: the sweep that erases the archive, a complete
+listing of the account that does not show the object (erased by hand, or by a
+sweep this process did not see), and disconnecting the account — after which
+the part is an ordinary orphan there, found and offered as one whenever that
+storage is connected back.
 
 **Where the sweep refuses.** "No index points at it" stops meaning "abandoned"
 in four states, each of which an ordinary user can be in, and `orphanGuard`
@@ -2483,7 +2516,7 @@ reveals only whether a vault exists.
 | POST | `/api/vault/recovery` | Adopt that index (`password` — the *lost* vault's, `provider_id`, `dry_run`) |
 | POST | `/api/vault/recovery/resume` | Re-point the index at accounts reconnected since (`dry_run`; no password) |
 | POST | `/api/vault/reclaim` | Fresh data key under this password, every file rebuilt onto it, onto `accounts` (§3.7) |
-| GET | `/api/vault/orphans` | What the accounts hold that no index points at, per account and per archive (§3.7.1) |
+| GET | `/api/vault/orphans` | What the accounts hold that no index points at, per account and per archive (§3.7.1). Rows a re-encryption left under the previous key carry `previous_key` and the file's `path`; the totals carry `previous_key`, `previous_key_bytes`, `previous_key_archives`, `previous_key_on` |
 | POST | `/api/vault/orphans` | Erase it (`targets` — `{provider_id, archive_id}` pairs, empty for all; `dry_run`). Re-scans before deleting |
 | POST | `/api/vault/orphans/reattach` | Record back the shards a disconnect mislaid (`dry_run`; `provider_id` to list and record from one account alone). Moves no bytes (§3.7.2) |
 | GET | `/api/vault/orphans/strays?provider=` | The mislaid half of the scan on its own, asked of one account (`provider`; every account without it): its listing, the rows and the same per-row verdicts, and nothing about the sweep. An unknown `provider` is 404 (§3.7.2) |

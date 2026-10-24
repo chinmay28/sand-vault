@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/chinmay28/sand-vault/internal/vault"
 	"github.com/spf13/cobra"
@@ -79,6 +80,17 @@ another window is never taken out from under it.`,
 				return nil
 			}
 
+			if scan.PreviousKeyArchives > 0 {
+				// Said before the totals, because these are the ones worth
+				// erasing for more than the room: a re-encryption left them
+				// under the previous key when their account could not be
+				// reached, and the previous password still opens them.
+				fmt.Printf("%d part(s) in %d archive(s) (%s) on %s are under the previous key — left there by a "+
+					"re-encryption that could not reach the account at the time, and still readable with the "+
+					"previous password. Erasing them finishes that password change.\n\n",
+					scan.PreviousKey, scan.PreviousKeyArchives, formatBytes(scan.PreviousKeyBytes),
+					strings.Join(scan.PreviousKeyOn, ", "))
+			}
 			fmt.Printf("%d archive(s) in %d object(s) (%s) on your accounts, pointed at by nothing:\n",
 				scan.Archives, scan.Objects, formatBytes(scan.Bytes))
 			for _, account := range scan.Accounts {
@@ -91,8 +103,15 @@ another window is never taken out from under it.`,
 			}
 			if verbose {
 				for _, item := range scan.Items {
-					fmt.Printf("    %s on %s — %d object(s), %s\n",
+					line := fmt.Sprintf("    %s on %s — %d object(s), %s",
 						item.ArchiveID, item.ProviderName, item.Objects, formatBytes(item.Bytes))
+					if item.PreviousKey {
+						line += " — under the previous key"
+						if item.Path != "" {
+							line += ", was " + item.Path
+						}
+					}
+					fmt.Println(line)
 				}
 				if scan.ItemsTruncated > 0 {
 					fmt.Printf("    …and %d more\n", scan.ItemsTruncated)

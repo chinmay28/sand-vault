@@ -243,6 +243,14 @@ type Manifest struct {
 	// them.
 	AccountRemap map[string]string `json:"account_remap,omitempty"`
 
+	// StaleParts are the parts a re-encryption left on an account it could
+	// not reach: sealed under a key this vault retired, pointed at by nothing
+	// else, and readable by the previous password. Only ever on the main
+	// vault's manifest, whichever vault the file was in. Each stays on record
+	// until the stray-parts scan finds it gone, a sweep erases it, or its
+	// account is disconnected. See staleparts.go.
+	StaleParts []*StalePart `json:"stale_parts,omitempty"`
+
 	UpdatedAt time.Time `json:"updated_at"`
 }
 

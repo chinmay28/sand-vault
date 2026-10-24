@@ -481,15 +481,15 @@ func TestOnlyOneReEncryptionPassRunsAtATime(t *testing.T) {
 // upload and an hour's skip per file it holds a part of. Once a health check
 // has said the account is down, the files on it wait for it; the others go
 // on moving, and the status says what is waiting and for whom.
-func TestRekeyStepHoldsFilesOnAnAccountTheHealthCheckFoundDown(t *testing.T) {
+func TestRekeyStepMovesAFileItCanRebuildPastAnAccountThatIsDown(t *testing.T) {
 	v, roots := newTestVault(t, 4)
 	ctx := context.Background()
 	ids := accountIDs(t, v)
 
 	// The smaller file is on the account about to go dark; the larger is not.
-	// Smallest first would pick the small one, so the order they move in is
-	// what shows the hold.
-	held, _, err := v.Upload(ctx, MainScope, "/", "held.txt", []byte(strings.Repeat("h", 50)), UploadOptions{Accounts: ids[:3]})
+	// Smallest first picks the small one, so it is the first step that shows
+	// the move past the dark account.
+	moving, _, err := v.Upload(ctx, MainScope, "/", "moving.txt", []byte(strings.Repeat("h", 50)), UploadOptions{Accounts: ids[:3]})
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -498,6 +498,15 @@ func TestRekeyStepHoldsFilesOnAnAccountTheHealthCheckFoundDown(t *testing.T) {
 	}
 	if _, err := v.ChangePasswordWithPlan(ctx, testPassword, "patient", &RekeySettings{BytesPerDay: 1 << 40}); err != nil {
 		t.Fatalf("ChangePasswordWithPlan: %v", err)
+	}
+	var oldPart Shard
+	for _, s := range moving.Shards {
+		if s.ProviderID == ids[0] {
+			oldPart = s
+		}
+	}
+	if oldPart.Key == "" {
+		t.Fatal("moving.txt has no part on cloud-a")
 	}
 
 	// The first account goes dark, still connected, and the check notices.
@@ -512,16 +521,96 @@ func TestRekeyStepHoldsFilesOnAnAccountTheHealthCheckFoundDown(t *testing.T) {
 		t.Fatalf("CheckClouds = %+v, %v; want one account down", report, err)
 	}
 
+	// A 2-of-3 file with two parts on accounts that answer can be rebuilt, so
+	// it is not held: it moves without cloud-a, and the fourth account takes
+	// the part cloud-a cannot.
 	now := time.Now()
 	step, err := v.RekeyStep(ctx, now)
-	if err != nil || !step.Moved || step.Path != "/free.txt" {
-		t.Fatalf("first step = %+v, %v; want free.txt moved past the held file", step, err)
+	if err != nil || !step.Moved || step.Path != "/moving.txt" {
+		t.Fatalf("first step = %+v, %v; want moving.txt re-encrypted past the dark account", step, err)
 	}
-	// The held file is not tried: no warning, no hour-long skip, just a wait
-	// short enough that the check finding the account back is acted on.
-	step, err = v.RekeyStep(ctx, now)
+	if !strings.Contains(step.Warning, "stray part") || !strings.Contains(step.Warning, "cloud-a") {
+		t.Errorf("step.Warning = %q, want the part left on cloud-a named as a stray", step.Warning)
+	}
+	moved, _ := v.Entry(moving.ID)
+	if len(moved.Shards) != 3 || moved.ArchiveID == moving.ArchiveID {
+		t.Fatalf("moving.txt has %d parts under archive %s, want 3 fresh parts", len(moved.Shards), moved.ArchiveID)
+	}
+	for _, s := range moved.Shards {
+		if s.ProviderID == ids[0] {
+			t.Errorf("a fresh part was placed on the dark account: %+v", s)
+		}
+	}
+	if _, _, err := v.Fetch(ctx, moving.ID); err != nil {
+		t.Errorf("the moved file does not read: %v", err)
+	}
+	// The part left on cloud-a is still there, under the previous key, and the
+	// index knows it.
+	if _, err := os.Stat(filepath.Join(kept, oldPart.Key)); err != nil {
+		t.Errorf("the old part was expected to be left where it was: %v", err)
+	}
+	stale, err := v.StaleParts()
+	if err != nil {
+		t.Fatalf("StaleParts: %v", err)
+	}
+	if stale.Parts != 1 || len(stale.Accounts) != 1 || stale.Accounts[0].Name != "cloud-a" || !stale.Accounts[0].Unreachable {
+		t.Fatalf("StaleParts = %+v, want one part on cloud-a, unreachable", stale)
+	}
+	status, err := v.RekeyStatus()
+	if err != nil {
+		t.Fatalf("RekeyStatus: %v", err)
+	}
+	if status.Held != 0 || status.StaleParts == nil || status.StaleParts.Parts != 1 {
+		t.Errorf("status holds %d with stale %+v; want nothing held and one stray part on record", status.Held, status.StaleParts)
+	}
+	if joined := strings.Join(status.Warnings, "\n"); !strings.Contains(joined, "previous key") || !strings.Contains(joined, "cloud-a") {
+		t.Errorf("status.Warnings = %v, want the stray part explained by account", status.Warnings)
+	}
+
+	// The other file never touched cloud-a and moves as it always did; nothing
+	// is left pending, and the previous key goes with the last file.
+	if step, err := v.RekeyStep(ctx, now); err != nil || !step.Moved || step.Path != "/free.txt" {
+		t.Fatalf("second step = %+v, %v; want free.txt moved", step, err)
+	}
+	if v.PendingMigration() != 0 {
+		t.Error("files still pending after everything moved")
+	}
+	if retiredCount(v) != 0 {
+		t.Error("the previous key outlived the last file on it; a recorded stray part must not keep it")
+	}
+	stats, _ := v.Stats()
+	if stats.StaleParts != 1 || stats.StaleBytes != oldPart.Size {
+		t.Errorf("Stats counts %d stray part(s) of %d bytes, want 1 of %d", stats.StaleParts, stats.StaleBytes, oldPart.Size)
+	}
+}
+
+func TestRekeyStepHoldsAFileItCannotRebuildWithoutTheAccount(t *testing.T) {
+	// Two accounts under the strict policy is two parts per file and both
+	// needed, so a file with one of them on a dark account cannot be read.
+	v, roots := newTestVault(t, 2)
+	ctx := context.Background()
+	held := uploadSized(t, v, "/", "held.txt", 50)
+	if _, err := v.ChangePasswordWithPlan(ctx, testPassword, "patient", &RekeySettings{BytesPerDay: 1 << 40}); err != nil {
+		t.Fatalf("ChangePasswordWithPlan: %v", err)
+	}
+
+	kept := filepath.Join(t.TempDir(), "away")
+	if err := os.Rename(roots[0], kept); err != nil {
+		t.Fatalf("moving the account's folder away: %v", err)
+	}
+	if err := os.WriteFile(roots[0], []byte("not a folder"), 0o600); err != nil {
+		t.Fatalf("blocking the account's folder: %v", err)
+	}
+	if report, err := v.CheckClouds(ctx); err != nil || report.Unhealthy != 1 {
+		t.Fatalf("CheckClouds = %+v, %v; want one account down", report, err)
+	}
+
+	// Not tried: no warning, no hour-long skip, just a wait short enough that
+	// the check finding the account back is acted on.
+	now := time.Now()
+	step, err := v.RekeyStep(ctx, now)
 	if err != nil || step.Moved || step.Idle || step.Warning != "" || step.Wait != MinHealthInterval {
-		t.Fatalf("step with only the held file left = %+v, %v; want a quiet wait of %s", step, err, MinHealthInterval)
+		t.Fatalf("step with only the held file = %+v, %v; want a quiet wait of %s", step, err, MinHealthInterval)
 	}
 	v.rekeyMu.Lock()
 	skipped := len(v.rekey.skip)
@@ -529,7 +618,6 @@ func TestRekeyStepHoldsFilesOnAnAccountTheHealthCheckFoundDown(t *testing.T) {
 	if skipped != 0 {
 		t.Errorf("%d file(s) were skipped for an hour; a held file must not be charged a failure", skipped)
 	}
-
 	status, err := v.RekeyStatus()
 	if err != nil {
 		t.Fatalf("RekeyStatus: %v", err)
@@ -537,18 +625,16 @@ func TestRekeyStepHoldsFilesOnAnAccountTheHealthCheckFoundDown(t *testing.T) {
 	if status.Held != 1 || len(status.HeldOn) != 1 || status.HeldOn[0] != "cloud-a" {
 		t.Errorf("status holds %d on %v, want 1 on cloud-a", status.Held, status.HeldOn)
 	}
-	if status.Idle || status.Pending != 1 {
-		t.Errorf("status = idle %v, pending %d; want not idle with the held file pending", status.Idle, status.Pending)
+	if status.Idle || status.Pending != 1 || status.StaleParts != nil {
+		t.Errorf("status = idle %v, pending %d, stale %+v; want not idle, the held file pending, nothing left behind",
+			status.Idle, status.Pending, status.StaleParts)
 	}
 	if joined := strings.Join(status.Warnings, "\n"); !strings.Contains(joined, "cloud-a") || !strings.Contains(joined, "health check") {
 		t.Errorf("status.Warnings = %v, want the hold explained by name", status.Warnings)
 	}
-	if _, _, err := v.Fetch(ctx, held.ID); err != nil {
-		t.Errorf("the held file does not read: %v", err)
-	}
 
 	// The account back and checked, the held file moves on the next step,
-	// with every part it had.
+	// with every part it had and nothing left behind.
 	if err := os.Remove(roots[0]); err != nil {
 		t.Fatalf("unblocking: %v", err)
 	}
@@ -563,15 +649,20 @@ func TestRekeyStepHoldsFilesOnAnAccountTheHealthCheckFoundDown(t *testing.T) {
 		t.Fatalf("step after the account is back = %+v, %v; want held.txt moved", step, err)
 	}
 	moved, _ := v.Entry(held.ID)
-	if len(moved.Shards) != 3 {
-		t.Errorf("held.txt re-encrypted with %d parts, want 3", len(moved.Shards))
+	if len(moved.Shards) != 2 {
+		t.Errorf("held.txt re-encrypted with %d parts, want 2", len(moved.Shards))
 	}
 	if v.PendingMigration() != 0 {
 		t.Error("files still pending after everything moved")
 	}
 	status, _ = v.RekeyStatus()
-	if status.Held != 0 || len(status.HeldOn) != 0 {
-		t.Errorf("status still holds %d on %v after everything moved", status.Held, status.HeldOn)
+	if status.Held != 0 || len(status.HeldOn) != 0 || status.StaleParts != nil {
+		t.Errorf("status still holds %d on %v with stale %+v after everything moved", status.Held, status.HeldOn, status.StaleParts)
+	}
+	for _, root := range roots {
+		if n := objectsIn(t, root); n != 1 {
+			t.Errorf("%s holds %d objects after the move, want its one part", root, n)
+		}
 	}
 }
 

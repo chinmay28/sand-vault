@@ -12,6 +12,24 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### A re-encryption no longer waits for a cloud that is not answering
+
+Changing the password re-encrypts every file, and a file with a part on a
+cloud that was down used to wait for that cloud — every file on it, for as
+long as it was down, with the previous key and the previous password alive
+meanwhile. Now a file that can be rebuilt from its parts on the clouds that
+answer the health check moves without the silent one, and the part it leaves
+there is **written down** in the index as a stray under the previous key: the
+re-encryption panel and `sand vault status` count such parts and name the
+clouds, the stray-parts scan flags each one with the file it belonged to, and
+the app runs that scan the moment the cloud is back and offers the sweep that
+finishes the change. The record is dropped by the sweep that erases the part,
+by a scan that finds it already gone, or by disconnecting the account. A file
+that cannot be rebuilt without the cloud still waits for it; a write that
+fails on a cloud the check found *up* is still refused rather than committed
+a part short. `sand vault migrate` runs a health check first when the last
+one is stale, so a machine with no server knows which clouds are down.
+
 ### The disk under a Local folder account is checked without being asked
 
 A Local folder answers the health check's ping for as long as its filesystem

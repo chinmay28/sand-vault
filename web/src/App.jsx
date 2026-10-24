@@ -297,6 +297,19 @@ export default function App() {
      needs is an offer to sweep them. The server refuses too (see orphanGuard);
      this is about not putting the question in front of somebody at the worst
      possible moment. */
+  /* A third moment the gap opens: a re-encryption that could not reach one
+     of the clouds moved its files on without that cloud, and left their old
+     parts there under the previous key, on record in the index. Those are
+     worth asking about the moment the cloud answers again — not when the
+     set of accounts next changes, which may be never — so while the index
+     has any on record, the set of clouds the health check finds reachable
+     is part of what re-runs the scan. Nothing while it has none: the health
+     check moves every minute, and a listing of every account must not. */
+  const stalePartsOnRecord = status?.stats?.stale_parts ?? 0
+  const reachableKey = stalePartsOnRecord > 0
+    ? (health?.clouds || []).filter((cloud) => cloud.checked && cloud.healthy).map((cloud) => cloud.id).sort().join(',')
+    : ''
+
   useEffect(() => {
     if (!unlocked || providerKey === '' || recovery?.available) {
       setOrphans(null)
@@ -306,12 +319,16 @@ export default function App() {
     api.orphanScan().then((scan) => {
       if (cancelled) return
       setOrphans(scan.found || scan.reattachable > 0 ? scan : null)
+      // A cloud that came back holding parts under the previous key is news
+      // even if the last notice was waved away: the notice it dismissed was
+      // not about this.
+      if (scan.previous_key_archives > 0) setOrphansDismissed('')
     }).catch(() => {
       // An account that will not answer is the accounts panel's story, and a
       // tidy-up nobody asked for has no business raising an error over it.
     })
     return () => { cancelled = true }
-  }, [unlocked, providerKey, recovery?.available])
+  }, [unlocked, providerKey, recovery?.available, reachableKey])
 
   const lock = async () => {
     await api.lock().catch(() => {})
@@ -716,6 +733,19 @@ function recoveryNotice(scan) {
    banner does not pretend otherwise, and the panel behind it says the same
    thing at more length. */
 function orphanNotice(scan) {
+  if (scan.previous_key_archives > 0) {
+    /* The one kind of abandoned part something can be said about, and the
+       one worth saying first: a re-encryption left it under the previous
+       key when its cloud could not be reached, and the previous password
+       still opens it. The cloud is answering now, so the change can be
+       finished. */
+    const n = scan.previous_key
+    const on = scan.previous_key_on || []
+    const where = on.length === 1 ? on[0] : `${on.length} of your clouds`
+    return `${n} part${n === 1 ? '' : 's'} (${formatBytes(scan.previous_key_bytes)}) on ${where} `
+      + `${n === 1 ? 'is' : 'are'} still under the previous key — left behind when the files were `
+      + 're-encrypted without that cloud. Cleaning them up finishes the password change.'
+  }
   const clouds = scan.accounts.filter((account) => account.orphans > 0).length
   const where = clouds === 1 ? 'one of your clouds is' : `${clouds} of your clouds are`
   return `${formatBytes(scan.bytes)} across ${scan.objects} part${scan.objects === 1 ? '' : 's'} `

@@ -1536,6 +1536,23 @@ folder and its date all lived in the index that stopped mentioning it — so the
 only honest figures are how big it is and where it sits, and those are what you
 get.
 
+**A password change can leave some on purpose.** Re-encrypting a file writes
+it back to the clouds it is on and erases its old parts — and when one of
+those clouds is not answering, the file no longer waits for it. As long as the
+parts on the clouds that do answer can rebuild it, it moves without the silent
+one, and the part left there — still under the previous key, still readable
+with the previous password — is written down in the index. SAND then asks the
+clouds again the moment that cloud is back, flags each such part as *under the
+previous key* with the file it belonged to, and offers the sweep:
+
+> 2 parts (1.3 MB) on nas-attic are still under the previous key — left behind
+> when the files were re-encrypted without that cloud. Cleaning them up
+> finishes the password change. **Take a look**
+
+The re-encryption panel and `sand vault status` count them until they are
+gone. A file that *cannot* be rebuilt without the silent cloud still waits for
+it, and the panel says so.
+
 **That notice is not the only way in.** It is news, so it can be dismissed and
 it only shows up when there is something to say. **Vault settings → Stray
 parts** is the door that is always there: it runs a fresh scan when you open it

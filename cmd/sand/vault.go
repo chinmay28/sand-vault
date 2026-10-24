@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -128,6 +129,14 @@ func vaultStatusCmd() *cobra.Command {
 			fmt.Printf("Stored size:      %s (compressed, split and encrypted)\n", formatBytes(stats.StoredBytes))
 			if stats.Degraded > 0 {
 				fmt.Printf("Degraded:         %d file(s) are missing shards their scheme calls for\n", stats.Degraded)
+			}
+			if stats.StaleParts > 0 {
+				line := fmt.Sprintf("Stray parts:      %d part(s) under the previous key, %s, left where a re-encryption could not reach",
+					stats.StaleParts, formatBytes(stats.StaleBytes))
+				if stale, err := v.StaleParts(); err == nil && len(stale.Accounts) > 0 {
+					line += " — on " + strings.Join(stale.Names(), ", ")
+				}
+				fmt.Println(line + "; run 'sand vault sweep' to clean them up")
 			}
 			if stats.Pending > 0 {
 				line := fmt.Sprintf("Awaiting re-key:  %d file(s) are still under the previous key", stats.Pending)
