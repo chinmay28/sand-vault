@@ -249,3 +249,74 @@ func TestAFileCanBeLeftForLastOverHTTP(t *testing.T) {
 		t.Fatalf("second step = %+v, %v; want small.txt moved", step, err)
 	}
 }
+
+func TestThePendingFilesCanBeListedOverHTTP(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("pw", 3)
+	c.json(http.MethodPost, "/api/folders", map[string]any{"path": "/Taxes"})
+	c.json(http.MethodPost, "/api/folders", map[string]any{"path": "/Photos"})
+	c.upload("p60.pdf", "/Taxes", []byte(strings.Repeat("t", 500)))
+	c.upload("return.pdf", "/Taxes", []byte(strings.Repeat("t", 900)))
+	c.upload("holiday.jpg", "/Photos", []byte(strings.Repeat("p", 2000)))
+
+	if w, _ := c.json(http.MethodPost, "/api/vault/password", map[string]any{
+		"old_password": "pw",
+		"new_password": "slowly does it",
+		"plan":         map[string]any{"bytes_per_day": 1 << 40, "folders": []string{"/Taxes"}},
+	}); w.Code != http.StatusOK {
+		t.Fatalf("change password: %d %s", w.Code, w.Body.String())
+	}
+
+	// The whole list, in the order the plan takes it: the queued folder's
+	// files smallest first, then the rest.
+	w, page := c.json(http.MethodGet, "/api/vault/rekey/files", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list: %d %s", w.Code, w.Body.String())
+	}
+	files := page["files"].([]any)
+	if len(files) != 3 || page["total"] != float64(3) || page["bytes"] != float64(3400) || page["folder"] != "/" {
+		t.Fatalf("page = %v, want three files, 3400 bytes, at /", page)
+	}
+	var got []string
+	for _, f := range files {
+		got = append(got, f.(map[string]any)["path"].(string))
+	}
+	if strings.Join(got, " ") != "/Taxes/p60.pdf /Taxes/return.pdf /Photos/holiday.jpg" {
+		t.Errorf("order = %v", got)
+	}
+	if first := files[0].(map[string]any); first["state"] != "queued" || first["id"] == "" || first["name"] != "p60.pdf" || first["dir"] != "/Taxes" {
+		t.Errorf("first row = %v, want queued, with its id, name and folder", first)
+	}
+
+	// A folder's own list, which is what tapping its count opens.
+	w, page = c.json(http.MethodGet, "/api/vault/rekey/files?folder=/Photos", nil)
+	if w.Code != http.StatusOK || page["total"] != float64(1) || page["folder"] != "/Photos" {
+		t.Errorf("folder list = %d %v, want the one photo at /Photos", w.Code, page)
+	}
+	if w, _ := c.json(http.MethodGet, "/api/vault/rekey/files?folder=/Nowhere", nil); w.Code != http.StatusNotFound {
+		t.Errorf("a folder that is not there: %d, want 404", w.Code)
+	}
+
+	// Pages, and what is not a page.
+	w, page = c.json(http.MethodGet, "/api/vault/rekey/files?offset=1&limit=1", nil)
+	if w.Code != http.StatusOK || len(page["files"].([]any)) != 1 || page["offset"] != float64(1) || page["limit"] != float64(1) || page["total"] != float64(3) {
+		t.Errorf("page 1,1 = %d %v", w.Code, page)
+	}
+	if row := page["files"].([]any)[0].(map[string]any); row["path"] != "/Taxes/return.pdf" {
+		t.Errorf("page 1,1 holds %v, want the second file", row["path"])
+	}
+	if w, _ := c.json(http.MethodGet, "/api/vault/rekey/files?offset=-1", nil); w.Code != http.StatusBadRequest {
+		t.Errorf("a negative offset: %d, want 400", w.Code)
+	}
+
+	// A file left for last says so and goes to the back.
+	id := files[0].(map[string]any)["id"].(string)
+	if w, _ := c.json(http.MethodPost, "/api/vault/rekey/skip", map[string]any{"id": id}); w.Code != http.StatusOK {
+		t.Fatalf("skip: %d", w.Code)
+	}
+	_, page = c.json(http.MethodGet, "/api/vault/rekey/files", nil)
+	files = page["files"].([]any)
+	if last := files[2].(map[string]any); last["id"] != id || last["state"] != "deferred" {
+		t.Errorf("after a skip the last row = %v, want p60.pdf deferred", last)
+	}
+}

@@ -12,6 +12,24 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### The files still on the previous key can be listed, with why each one is waiting
+
+The re-encryption panel counted the files left on the previous key — seven,
+say, seven under `/Archives` — and when they stopped moving, a count was all
+there was: *full speed, taking the next file*, and nothing taken. Which seven,
+and what was wrong with them, took a walk through the file list looking for
+the `prev key` pill. The counts are now buttons. Tapping *files left*, or a
+folder's count, lists the files behind it a page at a time, in the order the
+plan takes them, each with where it stands: moving, in turn, left for last,
+waiting for a cloud that did not answer the last health check (named), or
+tried and failed — with the reason, and when it is tried again. The skip and
+un-skip controls are on each row. The status line says when nothing is moving
+because every file left would not move: *7 files would not move · tried again
+in 40 min*. Over HTTP it is `GET /api/vault/rekey/files` (`?folder`,
+`?offset`, `?limit`), and `RekeyStatus` carries `retrying` and
+`retry_in_seconds`; on the command line, `sand vault rekey --list [--under
+/Archives]`.
+
 ### A Local folder on a disk that has stopped answering no longer takes the server with it
 
 A read or write on a filesystem that has stopped answering — a failing drive,

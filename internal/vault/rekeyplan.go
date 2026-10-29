@@ -240,6 +240,16 @@ type RekeyStatus struct {
 	Held   int      `json:"held,omitempty"`
 	HeldOn []string `json:"held_on,omitempty"`
 
+	// Retrying counts the pending files the plan tried lately and could
+	// not move, which it leaves alone for a while (rekeyRetryAfter), and
+	// RetryInSeconds is how long until the first of them is tried again.
+	// Why each one failed is in Warnings, and file by file in
+	// PendingRekeyFiles. Both zero when nothing is waiting this way, so a
+	// plan that has nothing it can take reads as resting rather than
+	// stuck.
+	Retrying       int   `json:"retrying,omitempty"`
+	RetryInSeconds int64 `json:"retry_in_seconds,omitempty"`
+
 	// StaleParts is what re-encryptions so far have left behind under the
 	// previous key on accounts they could not reach: how many parts, what
 	// they weigh, and on which accounts, with whether each is answering
@@ -274,7 +284,10 @@ const maxRekeyWarnings = 10
 // writing to disk: which files it is leaving alone for a while and why, and
 // which it is moving at the moment.
 type rekeyMemory struct {
+	// skip is when each file that would not move may be tried again, and
+	// why keeps the reason it would not, for as long as skip holds it.
 	skip     map[string]time.Time
+	why      map[string]string
 	warnings []string
 
 	// The file being moved right now, by whichever pass is moving it, how
@@ -526,7 +539,25 @@ func (v *Vault) RekeyStatus() (*RekeyStatus, error) {
 	status.CurrentDone, status.CurrentSize = v.rekey.done, v.rekey.size
 	status.Running = v.rekey.current != ""
 	status.Warnings = append([]string(nil), v.rekey.warnings...)
+	var soonest time.Time
+	for id, until := range v.rekey.skip {
+		if !now.Before(until) {
+			continue
+		}
+		// A file moved by a finish-now pass after it failed here, or
+		// deleted, is not waiting on anything.
+		if e := v.manifest.ByID(id); e == nil || e.KeyID == v.dataKeyID {
+			continue
+		}
+		status.Retrying++
+		if soonest.IsZero() || until.Before(soonest) {
+			soonest = until
+		}
+	}
 	v.rekeyMu.Unlock()
+	if status.Retrying > 0 {
+		status.RetryInSeconds = int64(soonest.Sub(now).Seconds() + 0.5)
+	}
 
 	// Said in Warnings as well as in its own fields, so that whatever shows
 	// the warnings today shows why nothing is moving without being taught
@@ -1028,7 +1059,11 @@ func (v *Vault) RekeyStep(ctx context.Context, now time.Time) (RekeyStep, error)
 	if v.rekey.skip == nil {
 		v.rekey.skip = map[string]time.Time{}
 	}
+	if v.rekey.why == nil {
+		v.rekey.why = map[string]string{}
+	}
 	v.rekey.skip[id] = now.Add(rekeyRetryAfter)
+	v.rekey.why[id] = warning
 	v.rekey.warnings = append(v.rekey.warnings, warning)
 	if len(v.rekey.warnings) > maxRekeyWarnings {
 		v.rekey.warnings = v.rekey.warnings[len(v.rekey.warnings)-maxRekeyWarnings:]

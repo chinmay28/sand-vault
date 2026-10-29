@@ -3,6 +3,7 @@ import { COLORS, FONT, formatBytes } from '../theme'
 import { api } from '../api'
 import { useIsMobile } from '../hooks'
 import { Banner, Button, ConfirmDialog, Modal, Spinner } from './ui'
+import RekeyFiles from './RekeyFiles'
 
 /* The re-encryption behind a password change, as something you can watch and
    steer rather than something you wait for.
@@ -19,6 +20,9 @@ import { Banner, Button, ConfirmDialog, Modal, Spinner } from './ui'
      RekeyProgress    the panel: progress, pace, folders, pause, finish now
                       — which is the plan run at full speed, by the server,
                       so the phone that asked can go back in the pocket
+     RekeyFiles       (its own file) the files behind a count: tap "files
+                      left" or a folder's count to see which, and why each
+                      one is where it is
      RekeyCard        the sidebar's summary, with the two buttons that matter
      RekeyStripEntry  the "Previous key" entry at the top of the vault
 
@@ -337,8 +341,9 @@ const sectionTitle = {
 /* Which folders go first, in the order they were ticked, and whether the rest
    of the vault follows. `folders` are { path, files, bytes } with, after the
    change, what is still pending in each; `queued` is the ordered list of
-   paths; `rest` is the "then everything else" tick. */
-export function FolderQueue({ folders, queued, rest, onToggle, onRest, disabled, pending = false }) {
+   paths; `rest` is the "then everything else" tick. With `onShowFiles`, a
+   folder's count is a button that opens the files behind it. */
+export function FolderQueue({ folders, queued, rest, onToggle, onRest, disabled, pending = false, onShowFiles }) {
   if (!folders) {
     return <div style={{ ...help, display: 'flex', gap: '8px', alignItems: 'center' }}><Spinner size={11} /> Looking at the folders…</div>
   }
@@ -386,9 +391,21 @@ export function FolderQueue({ folders, queued, rest, onToggle, onRest, disabled,
               {f.path}
               {done && <span style={{ color: COLORS.success, marginLeft: '6px' }}>done</span>}
             </span>
-            <span style={{ color: COLORS.textMuted, whiteSpace: 'nowrap' }}>
-              {done ? '✓' : `${f.files} file${f.files === 1 ? '' : 's'} · ${formatBytes(f.bytes)}`}
-            </span>
+            {pending && !done && onShowFiles ? (
+              <button
+                type="button"
+                title={`See the ${f.files} file${f.files === 1 ? '' : 's'} in ${f.path} still on the previous key`}
+                aria-label={`See the files in ${f.path} still on the previous key`}
+                // A button inside a label: the click is the button's own and
+                // must not reach the checkbox the label is for.
+                onClick={(e) => { e.preventDefault(); e.stopPropagation(); onShowFiles(f.path) }}
+                style={{ ...countButton, color: COLORS.textDim }}
+              >{`${f.files} file${f.files === 1 ? '' : 's'} · ${formatBytes(f.bytes)} ›`}</button>
+            ) : (
+              <span style={{ color: COLORS.textMuted, whiteSpace: 'nowrap' }}>
+                {done ? '✓' : `${f.files} file${f.files === 1 ? '' : 's'} · ${formatBytes(f.bytes)}`}
+              </span>
+            )}
           </label>
         )
       })}
@@ -417,6 +434,14 @@ export function FolderQueue({ folders, queued, rest, onToggle, onRest, disabled,
 
 const help = {
   fontFamily: FONT.sans, fontSize: '11px', lineHeight: 1.5, color: COLORS.textMuted, marginTop: '6px',
+}
+
+/* A count that opens the files behind it: the text it replaces, underlined
+   the way a link is, so it reads as the same figure that can be tapped. */
+const countButton = {
+  background: 'transparent', border: 'none', padding: 0, minHeight: 0, cursor: 'pointer',
+  fontFamily: FONT.mono, fontSize: '11px', whiteSpace: 'nowrap',
+  textDecoration: 'underline dotted', textUnderlineOffset: '3px',
 }
 
 /* The tick that keeps the vault open while the plan runs, with the warning it
@@ -518,10 +543,13 @@ export function fullSpeedSettings(status) {
 /* The panel. Everything the plan knows and every control it has. */
 export default function RekeyProgress({ onClose, onChanged, zIndex = 120 }) {
   const mobile = useIsMobile()
-  const { status, error, setStatus } = useRekeyStatus(true)
+  const { status, error, setStatus, refresh } = useRekeyStatus(true)
   const [saving, setSaving] = useState(false)
   const [confirmFinish, setConfirmFinish] = useState(false)
   const [problem, setProblem] = useState(null)
+  // The folder whose files are open in the list, "/" for all of them, null
+  // for a closed list.
+  const [showing, setShowing] = useState(null)
   const changed = useRef(false)
 
   const apply = async (settings) => {
@@ -586,7 +614,12 @@ export default function RekeyProgress({ onClose, onChanged, zIndex = 120 }) {
           <ProgressBar value={fraction(status)} />
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(96px, 1fr))', gap: '10px', margin: '12px 0 4px' }}>
             <Figure value={status.total - status.pending} label="files moved" />
-            <Figure value={status.pending} label="files left" />
+            <Figure
+              value={status.pending}
+              label="files left"
+              title="See which files are still on the previous key, and why each one is where it is"
+              onClick={() => setShowing('/')}
+            />
             <Figure value={formatBytes(status.pending_bytes)} label={`left of ${formatBytes(status.total_bytes)}`} />
             <Figure
               value={fullSpeed ? 'full speed' : perDay > 0 && !plan?.paused ? humanDuration(status.eta_seconds) : '—'}
@@ -610,8 +643,14 @@ export default function RekeyProgress({ onClose, onChanged, zIndex = 120 }) {
                 : status.next_in_seconds > 0 ? `next file in ${humanDuration(status.next_in_seconds)}`
                   : plan?.paused ? 'paused by you'
                     : status.idle && active ? 'the plan has done everything it was allowed to'
-                      : fullSpeed ? 'taking the next file'
-                        : perDay > 0 ? 'waiting for the next tick' : 'nothing moves until a pace is set'}
+                      : status.retrying > 0 && active
+                        /* Nothing moving and files that would not move: the
+                           figure is the way to see which, and why. */
+                        ? `${status.retrying} file${status.retrying === 1 ? '' : 's'} would not move · retry in ${humanDuration(status.retry_in_seconds)}`
+                        : status.held > 0 && active
+                          ? `${status.held} file${status.held === 1 ? '' : 's'} waiting for ${status.held_on.join(', ')}`
+                          : fullSpeed ? 'taking the next file'
+                            : perDay > 0 ? 'waiting for the next tick' : 'nothing moves until a pace is set'}
             </span>
             {/* The file being moved can be left for last: the move stops where
                 it is, the file stays readable on the previous key, and it is
@@ -692,9 +731,11 @@ export default function RekeyProgress({ onClose, onChanged, zIndex = 120 }) {
                 apply({ ...settings, folders, only_folders: folders.length > 0 && settings.only_folders })
               }}
               onRest={(on) => apply({ ...settings, only_folders: !on })}
+              onShowFiles={setShowing}
             />
             <div style={help}>
               Tick a folder to move it next; the numbers are the order. Smallest files go first within a folder.
+              Tap a folder's count to see its files.
             </div>
             {status.deferred?.length > 0 && (
               <div style={{ marginTop: '12px' }}>
@@ -803,6 +844,15 @@ export default function RekeyProgress({ onClose, onChanged, zIndex = 120 }) {
         <Button variant="primary" onClick={close} style={{ justifyContent: 'center' }}>Done</Button>
       </div>
 
+      {showing !== null && (
+        <RekeyFiles
+          folder={showing}
+          zIndex={zIndex + 10}
+          onClose={() => setShowing(null)}
+          onChanged={() => { changed.current = true; refresh() }}
+        />
+      )}
+
       {confirmFinish && (
         <ConfirmDialog
           title="Finish re-encrypting now?"
@@ -823,12 +873,28 @@ export default function RekeyProgress({ onClose, onChanged, zIndex = 120 }) {
 
 const section = { marginTop: '16px', borderTop: `1px solid ${COLORS.border}`, paddingTop: '14px' }
 
-function Figure({ value, label }) {
+/* A figure with its caption. With `onClick` it is a button — the figure
+   underlined, the way the folder counts are — that opens what it counts. */
+function Figure({ value, label, onClick, title }) {
+  const body = (
+    <>
+      <div style={{
+        fontFamily: FONT.mono, fontSize: '15px', fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: COLORS.text,
+        textDecoration: onClick ? 'underline dotted' : 'none', textUnderlineOffset: '4px',
+      }}>{value}</div>
+      <div style={{ fontFamily: FONT.mono, fontSize: '9px', letterSpacing: '1px', textTransform: 'uppercase', color: COLORS.textMuted, marginTop: '2px' }}>
+        {label}{onClick ? ' ›' : ''}
+      </div>
+    </>
+  )
+  if (!onClick) return <div>{body}</div>
   return (
-    <div>
-      <div style={{ fontFamily: FONT.mono, fontSize: '15px', fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: COLORS.text }}>{value}</div>
-      <div style={{ fontFamily: FONT.mono, fontSize: '9px', letterSpacing: '1px', textTransform: 'uppercase', color: COLORS.textMuted, marginTop: '2px' }}>{label}</div>
-    </div>
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      style={{ background: 'transparent', border: 'none', padding: 0, minHeight: 0, textAlign: 'left', cursor: 'pointer', display: 'block' }}
+    >{body}</button>
   )
 }
 

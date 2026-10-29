@@ -317,10 +317,11 @@ the server does.
 | Call | Does |
 |---|---|
 | `POST /api/vault/password` with `plan` | Changes the password now and leaves the files to the plan. `plan` is a `RekeySettings`; giving one means not migrating now, whatever `migrate` says. |
-| `GET /api/vault/rekey` | `RekeyStatus`: pending files and bytes, totals the plan began over, the plan, when the password changed, next-file and ETA seconds, idle, the per-folder breakdown (queued folders first in their order, then every top-level folder with files left), what is moving now, the files held for a cloud that is not answering (`held`, `held_on`), the parts left under the previous key on clouds the moves could not reach (`stale_parts`: count, bytes, per-account rows with whether each answers now — §4.3), and the recent failures. |
+| `GET /api/vault/rekey` | `RekeyStatus`: pending files and bytes, totals the plan began over, the plan, when the password changed, next-file and ETA seconds, idle, the per-folder breakdown (queued folders first in their order, then every top-level folder with files left), what is moving now, the files held for a cloud that is not answering (`held`, `held_on`), the parts left under the previous key on clouds the moves could not reach (`stale_parts`: count, bytes, per-account rows with whether each answers now — §4.3), the recent failures, and how many files failed lately and are waiting to be tried again (`retrying`, `retry_in_seconds`). |
 | `PUT /api/vault/rekey` | Sets the plan from a whole `RekeySettings`. Starts one if none exists; refused when nothing is on the previous key. With `full_speed`, this is how the browser finishes now: the server works through the files on its own and the call answers at once. |
 | `POST /api/vault/migrate` | Finish now in the foreground, holding the request open until the last file has moved. `409 MIGRATION_BUSY` while a step holds the slot. The CLI's `sand vault migrate`; the browser no longer calls it. |
 | `POST /api/vault/rekey/skip` | `{id, undo}`: leave a file for last (the one being moved when `id` is empty, stopping that move), or put it back in its turn. Answers with the status. |
+| `GET /api/vault/rekey/files` | `RekeyPendingPage`: the files still on the previous key, in the order the plan takes them, each with where it stands (`state`: `queued`, `moving`, `deferred`, `held` with `held_on`, `retrying` with `reason` and `retry_at`, or `outside` the plan's folders). `?folder` confines it to one folder, `?offset` and `?limit` page it (50 by default, 500 at most); the answer carries the folder's whole `total` and `bytes`. A folder that is not there is a 404. |
 | `GET /api/vault` | `stats.key_id` names the current generation; `sub_vaults[].key_id` likewise while open. `stats.stale_parts` and `stats.stale_bytes` count the parts left under the previous key (§4.3), which is what has the browser re-run the stray-parts scan when a cloud comes back. |
 | `GET /api/files` | `previous_key` maps each subfolder to how many files under it are still on the previous key. Each file already carries `key_id`. |
 
@@ -334,6 +335,7 @@ sand vault rekey --full-speed         # finish now, in the background under 'san
 sand vault rekey --pause | --resume
 sand vault rekey --skip /Films/Heat.1995.mkv   # leave it for last; '.' is the file moving now
 sand vault rekey --unskip /Films/Heat.1995.mkv
+sand vault rekey --list [--under /Archives]   # the files, in the plan's order, and what holds each
 sand vault rekey --run                # the plan, in the foreground, until done
 sand vault status                     # names the pace and the time left
 sand vault migrate                    # finish now, as before
@@ -350,6 +352,17 @@ failures; the accounts drawer carries a card; the top of the vault carries the
 `prev key` pill beside its parts, and a folder row the count under it.
 Finish-now, and *all at once*, set the plan to full speed and leave the moving
 to the server; the panel polls more often while it runs.
+
+The counts open. *Files left* and each folder's count in the panel are
+buttons: tapping one lists the files behind it (`RekeyFiles`), a page at a
+time, in the order the plan takes them, each with where it stands — moving,
+in turn, left for last, waiting for a cloud that did not answer, or tried and
+failed with the reason and when it is tried again — and with the skip and
+un-skip controls on the row. Seven files left and nothing moving used to be a
+count and a shrug; the status line now says *7 files would not move · tried
+again in 40 min*, and the count says which seven. A file that is simply in
+the way can be skipped from the row; one on a cloud that is down names the
+cloud.
 
 The pace chips' custom field commits when typing pauses, on Enter or on blur,
 not on every keystroke, and is never disabled while it has focus. Each

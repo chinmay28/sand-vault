@@ -295,6 +295,7 @@ func (s *Server) Handler() (http.Handler, error) {
 		"GET /api/vault/rekey":       s.handleRekeyStatus,
 		"PUT /api/vault/rekey":       s.handleRekeyPlan,
 		"POST /api/vault/rekey/skip": s.handleRekeySkip,
+		"GET /api/vault/rekey/files": s.handleRekeyFiles,
 		"POST /api/vault/policy":     s.handleVaultPolicy,
 		"POST /api/vault/defaults":   s.handleVaultDefaults,
 		// Second copies: the policy, what replicates, and where the worker

@@ -101,6 +101,8 @@ func vaultRekeyCmd() *cobra.Command {
 		run    bool
 		skip   string
 		unskip string
+		list   bool
+		under  string
 	)
 
 	cmd := &cobra.Command{
@@ -198,6 +200,9 @@ reach zero.`,
 				return runPacedRekey(cmd.Context(), v)
 			}
 			printRekeyStatus(status)
+			if list {
+				return printPendingRekeyFiles(v, under)
+			}
 			return nil
 		},
 	}
@@ -212,7 +217,58 @@ reach zero.`,
 		"leave this file (a vault path) for last, after everything else; '.' is the file being moved now")
 	cmd.Flags().StringVar(&unskip, "unskip", "",
 		"put a skipped file (a vault path) back in its turn")
+	cmd.Flags().BoolVar(&list, "list", false,
+		"list the files still on the previous key, in the order the plan takes them, with where each one stands")
+	cmd.Flags().StringVar(&under, "under", "/",
+		"with --list, only the files in this folder")
 	return cmd
+}
+
+// printPendingRekeyFiles writes the files still on the previous key under a
+// folder, one a line, in the order the plan takes them: a count, the path,
+// the size, and anything that is keeping the file where it is. The listing
+// is paged on the way out of the vault and whole on the way to the terminal,
+// since a terminal is paged by the person reading it.
+func printPendingRekeyFiles(v *vault.Vault, under string) error {
+	now := time.Now()
+	for offset := 0; ; offset += vault.MaxRekeyPage {
+		page, err := v.PendingRekeyFiles(under, offset, vault.MaxRekeyPage)
+		if err != nil {
+			return err
+		}
+		if offset == 0 {
+			if page.Total == 0 {
+				fmt.Printf("Nothing under %s is on the previous key.\n", page.Folder)
+				return nil
+			}
+			fmt.Printf("\n%d file(s) on the previous key under %s (%s), in the order the plan takes them:\n",
+				page.Total, page.Folder, formatBytes(page.Bytes))
+		}
+		for i, f := range page.Files {
+			fmt.Printf("%5d  %s (%s)%s\n", offset+i+1, f.Path, formatBytes(f.Bytes), describePendingFile(f, now))
+		}
+		if offset+len(page.Files) >= page.Total || len(page.Files) == 0 {
+			return nil
+		}
+	}
+}
+
+// describePendingFile is the clause after a pending file's size: empty for
+// one waiting its turn, otherwise what is keeping it.
+func describePendingFile(f vault.RekeyPendingFile, now time.Time) string {
+	switch f.State {
+	case vault.RekeyFileMoving:
+		return " — moving now"
+	case vault.RekeyFileDeferred:
+		return " — left for last"
+	case vault.RekeyFileHeld:
+		return " — waiting for " + f.HeldOn + ", which did not answer the last health check"
+	case vault.RekeyFileRetrying:
+		return fmt.Sprintf(" — would not move, tried again in %s: %s", humanDuration(f.RetryAt.Sub(now)), f.Reason)
+	case vault.RekeyFileOutside:
+		return " — outside the plan's folders; 'sand vault rekey --all' takes it"
+	}
+	return ""
 }
 
 // runPacedRekey moves files on the plan, here and now, waiting out the meter
