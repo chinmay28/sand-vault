@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react'
 import { COLORS, FONT, formatBytes } from '../theme'
 import { api } from '../api'
 import { useIsMobile } from '../hooks'
-import { Banner, Button, Modal, Spinner } from './ui'
+import { Banner, Button, ConfirmDialog, Modal, Spinner } from './ui'
 import { humanDuration } from './Rekey'
 
 /* The files still on the previous key, one by one.
@@ -14,7 +14,13 @@ import { humanDuration } from './Rekey'
    order the plan takes them, with where each one stands — moving, waiting
    its turn, left for last, held for a cloud that is not answering, or tried
    and failed, with why and when it is tried again. Paged, because a vault
-   that changed its password an hour ago has every file on this list. */
+   that changed its password an hour ago has every file on this list.
+
+   Each row carries the two things to do about a file that will not move:
+   skip it, which leaves it for last, and delete it, which leaves it out. A
+   file whose parts are too few to rebuild is not going to move on the next
+   try or the one after, and the list is where that is found out, so the
+   answer is here rather than a walk to the file's folder. */
 
 /* How many rows a page holds. A row is a path and a word, so this is about
    what fits on a screen. */
@@ -57,7 +63,7 @@ function explain(f, now) {
 
 /* The dialog. `folder` confines it to one folder — the one whose count was
    tapped — or "/" for the whole vault. `onChanged` is told when a row's
-   skip or un-skip changed the plan, so the panel behind can refresh. */
+   skip, un-skip or delete changed the plan, so the panel behind can refresh. */
 export default function RekeyFiles({ folder = '/', onClose, onChanged, zIndex = 130 }) {
   const mobile = useIsMobile()
   const [offset, setOffset] = useState(0)
@@ -66,6 +72,11 @@ export default function RekeyFiles({ folder = '/', onClose, onChanged, zIndex = 
   const [error, setError] = useState(null)
   const [busy, setBusy] = useState(null)
   const [now, setNow] = useState(() => Date.now())
+  /* The row whose delete is being confirmed, and a warning the last delete
+     came back with: the file is gone from the index either way, but a part
+     that would not erase is worth a line. */
+  const [confirming, setConfirming] = useState(null)
+  const [warning, setWarning] = useState(null)
 
   const load = useCallback(async (at, quiet = false) => {
     if (!quiet) setLoading(true)
@@ -107,6 +118,24 @@ export default function RekeyFiles({ folder = '/', onClose, onChanged, zIndex = 
     }
   }
 
+  const remove = async (f) => {
+    setBusy(f.id)
+    try {
+      const answer = await api.deleteRekeyFile(f.id)
+      setConfirming(null)
+      setWarning(answer.warnings?.length
+        ? `${f.name} is deleted, but ${answer.warnings.length === 1 ? 'a part' : `${answer.warnings.length} parts`} could not be erased: ${answer.warnings.join('; ')}`
+        : null)
+      onChanged?.()
+      await load(offset, true)
+    } catch (err) {
+      setConfirming(null)
+      setError(err.message)
+    } finally {
+      setBusy(null)
+    }
+  }
+
   const total = page?.total || 0
   const shown = page?.files?.length || 0
   const first = total === 0 ? 0 : offset + 1
@@ -128,6 +157,7 @@ export default function RekeyFiles({ folder = '/', onClose, onChanged, zIndex = 
       width={620}
     >
       {error && <Banner tone="error" onDismiss={() => setError(null)}>{error}</Banner>}
+      {warning && <Banner tone="warn" onDismiss={() => setWarning(null)}>{warning}</Banner>}
 
       {!page && !error && <div style={{ display: 'flex', justifyContent: 'center', padding: '20px' }}><Spinner /></div>}
 
@@ -137,7 +167,7 @@ export default function RekeyFiles({ folder = '/', onClose, onChanged, zIndex = 
             const { word, tone } = describe(f)
             const why = explain(f, now)
             const dir = f.dir === '/' ? '/' : `${f.dir}/`
-            const action = f.state === 'deferred' ? (
+            const skipAction = f.state === 'deferred' ? (
               <Button size="sm" variant="ghost" disabled={busy === f.id} title="Put this file back in its turn" onClick={() => skip(f, true)}>Back in turn</Button>
             ) : f.state !== 'outside' ? (
               <Button
@@ -150,6 +180,24 @@ export default function RekeyFiles({ folder = '/', onClose, onChanged, zIndex = 
                 onClick={() => skip(f, false)}
               >Skip for now</Button>
             ) : null
+            /* Every row can be deleted, the one being moved included: a file
+               that cannot be rebuilt is not going to move, and a file nobody
+               wants is not worth re-encrypting. */
+            const action = (
+              <>
+                {skipAction}
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={busy === f.id}
+                  title={f.state === 'moving'
+                    ? 'Stop moving this file and erase it from every account instead'
+                    : 'Erase this file from every account instead of re-encrypting it'}
+                  onClick={() => setConfirming(f)}
+                  style={{ color: COLORS.error }}
+                >Delete…</Button>
+              </>
+            )
             const pill = (
               <span style={{
                 fontFamily: FONT.mono, fontSize: '9.5px', letterSpacing: '0.4px', textTransform: 'uppercase',
@@ -180,7 +228,7 @@ export default function RekeyFiles({ folder = '/', onClose, onChanged, zIndex = 
                 </span>
                 {!mobile && <span style={{ color: COLORS.textMuted, whiteSpace: 'nowrap' }}>{formatBytes(f.bytes)}</span>}
                 {!mobile && pill}
-                <span style={{ display: 'flex', justifyContent: 'flex-end', minHeight: '26px', alignItems: 'center' }}>{action}</span>
+                <span style={{ display: 'flex', justifyContent: 'flex-end', minHeight: '26px', alignItems: 'center', gap: '4px' }}>{action}</span>
                 {mobile && (
                   <span style={{ ...ellipsis, gridColumn: '2 / -1', color: COLORS.textMuted, fontSize: '10px' }} title={f.path}>
                     {dir} · {formatBytes(f.bytes)} · <span style={{ color: tone }}>{word}</span>
@@ -215,6 +263,21 @@ export default function RekeyFiles({ folder = '/', onClose, onChanged, zIndex = 
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '16px' }}>
         <Button variant="primary" onClick={onClose} style={{ justifyContent: 'center' }}>Done</Button>
       </div>
+
+      {confirming && (
+        <ConfirmDialog
+          title={`Delete ${confirming.name}?`}
+          subtitle={confirming.path}
+          busy={busy === confirming.id}
+          zIndex={zIndex + 10}
+          onConfirm={() => remove(confirming)}
+          onClose={() => busy !== confirming.id && setConfirming(null)}
+        >
+          {confirming.state === 'moving'
+            ? 'It is being re-encrypted right now; that stops first. Then every part is erased from the accounts holding it, under whichever key it is on, and the plan has one file fewer to take. This cannot be undone.'
+            : 'Every part is erased from the accounts holding it, under whichever key it is on, and the plan has one file fewer to take. This cannot be undone.'}
+        </ConfirmDialog>
+      )}
     </Modal>
   )
 }

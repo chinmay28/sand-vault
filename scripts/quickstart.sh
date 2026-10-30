@@ -119,6 +119,13 @@
 #                    https://proton.me/download/drive/cli/index.html
 #   PROTON_SDK_REF   branch/tag/commit of github.com/ProtonDriveApps/sdk to build
 #                    (default: main)
+#   PROTON_NPM_REGISTRY  npm registry the client's dependencies are fetched from
+#                    (default: https://registry.npmjs.org). The SDK's lockfiles
+#                    name Proton's own mirror, pkg.protontech.ch, for every
+#                    package, and from outside Proton that mirror refuses or
+#                    stalls; the build here points them at this registry instead.
+#                    Set it to a mirror of your own on a host that cannot reach
+#                    npmjs.org.
 #   PROTON_BUILD_TIMEOUT  minutes the compile may take before it is given up on
 #                    (default: 45). The client is built LAST, after the service is
 #                    up and healthy, so a slow or stuck build costs the Proton
@@ -399,6 +406,7 @@ BACKUP_KEEP="${BACKUP_KEEP:-10}"
 INSTALL_PROTON="${INSTALL_PROTON:-auto}"
 PROTON_SDK_REPO="${PROTON_SDK_REPO:-https://github.com/ProtonDriveApps/sdk.git}"
 PROTON_SDK_REF="${PROTON_SDK_REF:-main}"
+PROTON_NPM_REGISTRY="${PROTON_NPM_REGISTRY:-https://registry.npmjs.org}"
 PROTON_CLI_URL="${PROTON_CLI_URL:-}"
 
 SRC_DIR="$PREFIX/src"
@@ -1634,16 +1642,59 @@ fetch_proton_sdk() {
   # Output goes to a log rather than /dev/null for the same reason it does
   # everywhere else in this step: when a clone fails, git's own sentence is the
   # only thing that says whether it was the network, the ref or the disk.
+  #
+  # The checkout is forced because the build edits the lockfiles in place
+  # (proton_point_lockfiles_at_registry), and a checkout that respected those
+  # edits would refuse to move on to a commit that changed them.
   if [ -d "$PROTON_SDK_DIR/.git" ]; then
     AS_SVC_TIMEOUT=600 as_svc git -C "$PROTON_SDK_DIR" fetch --depth 1 origin "$PROTON_SDK_REF" > "$PROTON_FETCH_LOG" 2>&1 </dev/null || return 1
-    as_svc git -C "$PROTON_SDK_DIR" checkout -q FETCH_HEAD >> "$PROTON_FETCH_LOG" 2>&1 </dev/null || return 1
+    as_svc git -C "$PROTON_SDK_DIR" checkout -q -f FETCH_HEAD >> "$PROTON_FETCH_LOG" 2>&1 </dev/null || return 1
   else
     rm -rf "$PROTON_SDK_DIR"
     install -d -o "$SVC_USER" -g "$SVC_USER" -m 755 "$PROTON_SDK_DIR"
     AS_SVC_TIMEOUT=600 as_svc git clone --depth 1 --branch "$PROTON_SDK_REF" "$PROTON_SDK_REPO" "$PROTON_SDK_DIR" > "$PROTON_FETCH_LOG" 2>&1 </dev/null \
       || AS_SVC_TIMEOUT=600 as_svc git clone --depth 1 "$PROTON_SDK_REPO" "$PROTON_SDK_DIR" >> "$PROTON_FETCH_LOG" 2>&1 </dev/null || return 1
   fi
+  # The version tags, so the binary can say which release it was built from.
+  # Proton's build script reads the newest cli/v* and js/v* tags into the
+  # x-pm-appversion header every request carries, and a shallow clone has no
+  # tags, so without this the client introduced itself as version 0.0.0. A
+  # tag per release is a few kilobytes and a couple of seconds; a host that
+  # cannot fetch them builds a 0.0.0 as before rather than not building.
+  AS_SVC_TIMEOUT=300 as_svc git -C "$PROTON_SDK_DIR" fetch -q --depth 1 origin \
+    'refs/tags/cli/v*:refs/tags/cli/v*' 'refs/tags/js/v*:refs/tags/js/v*' >> "$PROTON_FETCH_LOG" 2>&1 </dev/null || true
   as_svc git -C "$PROTON_SDK_DIR" rev-parse HEAD 2>/dev/null
+}
+
+# proton_point_lockfiles_at_registry rewrites the SDK's lockfiles so their
+# packages are fetched from $PROTON_NPM_REGISTRY.
+#
+# This is the fix for a build that spent a long time failing. Two of the three
+# packages the client is built from (cli, incubating/account/js) carry a
+# bun.lock that names a tarball URL for every one of their dependencies — some
+# fifteen hundred of them — on pkg.protontech.ch, the npm mirror inside
+# Proton's own network. From anywhere else that host refuses the download, or
+# does not answer, and bun retries each refused tarball before giving up: the
+# install sat at "installing dependencies in cli…" for the length of the
+# timeout and then had nothing to show. The third package (client/js) names
+# no URLs and installed from the public registry in seconds, which is why the
+# failure always landed on the second one.
+#
+# The mirror holds the same packages at the same versions as the public
+# registry — the lockfile's integrity hash of each one says so, and bun still
+# checks it — so the URLs are pointed at the public registry and the
+# lockfile is otherwise honoured exactly (--frozen-lockfile). With that, the
+# three installs and the compile take well under a minute on an x86-64 box.
+proton_point_lockfiles_at_registry() {
+  registry="${PROTON_NPM_REGISTRY%/}"
+  for package in $PROTON_SDK_PACKAGES; do
+    lock="$PROTON_SDK_DIR/$package/bun.lock"
+    [ -f "$lock" ] || continue
+    n="$(grep -c 'https://pkg\.protontech\.ch/npm/npm-public/' "$lock" 2>/dev/null || true)"
+    [ "${n:-0}" -gt 0 ] 2>/dev/null || continue
+    as_svc sed -i "s#https://pkg\.protontech\.ch/npm/npm-public/#$registry/#g" "$lock" </dev/null || return 1
+    log "$package: $n package URLs pointed at $registry instead of Proton's mirror"
+  done
 }
 
 # proton_bun_wanted reads the bun release Proton's client builds with out of
@@ -1728,11 +1779,11 @@ build_proton_cli() {
     warn "the pinned install failed in $package; retrying without --frozen-lockfile."
     status=0
     run_watched "installing $package" "$PROTON_INSTALL_TIMEOUT" "$PROTON_BUILD_LOG" \
-      proton_bun "$package" install || status=$?
+      proton_bun "$package" install --registry "$PROTON_NPM_REGISTRY" || status=$?
     if [ "$status" -ne 0 ]; then
       if [ "$status" -eq 124 ]; then
         warn "installing dependencies in $package took longer than $((PROTON_INSTALL_TIMEOUT / 60)) minutes and was stopped."
-        warn "The registry is slow or unreachable from this machine. Last lines of $PROTON_BUILD_LOG:"
+        warn "$PROTON_NPM_REGISTRY is slow or unreachable from this machine. Last lines of $PROTON_BUILD_LOG:"
       else
         warn "bun could not install dependencies in $package. Last lines of $PROTON_BUILD_LOG:"
       fi
@@ -1832,7 +1883,12 @@ install_proton_cli() {
   # The SDK first, the bun second: the SDK says which bun it builds with.
   install_bun "$(proton_bun_wanted)" || return 1
 
-  log "building Proton's client (this takes a while)…"
+  if ! proton_point_lockfiles_at_registry; then
+    warn "could not rewrite the SDK's lockfiles under $PROTON_SDK_DIR."
+    return 1
+  fi
+
+  log "building Proton's client (this takes a while on a small board)…"
   if ! build_proton_cli; then
     # build_proton_cli has already said what failed and why. This is the part
     # somebody needs next: the install is fine, and Proton has another route.

@@ -296,8 +296,11 @@ func (s *Server) Handler() (http.Handler, error) {
 		"PUT /api/vault/rekey":       s.handleRekeyPlan,
 		"POST /api/vault/rekey/skip": s.handleRekeySkip,
 		"GET /api/vault/rekey/files": s.handleRekeyFiles,
-		"POST /api/vault/policy":     s.handleVaultPolicy,
-		"POST /api/vault/defaults":   s.handleVaultDefaults,
+		// The other answer to a file that will not move: not left for last,
+		// left out. Answers like DELETE /api/files/{id}.
+		"DELETE /api/vault/rekey/files/{id}": s.handleRekeyDelete,
+		"POST /api/vault/policy":             s.handleVaultPolicy,
+		"POST /api/vault/defaults":           s.handleVaultDefaults,
 		// Second copies: the policy, what replicates, and where the worker
 		// has got to. See handlers_replication.go.
 		"GET /api/vault/replication": s.handleReplicationStatus,

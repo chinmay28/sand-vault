@@ -83,6 +83,11 @@ export const api = {
      its turn. The file stays on the previous key, readable as ever. */
   skipRekeyFile: (id = '', undo = false) =>
     request('/api/vault/rekey/skip', { method: 'POST', body: { id, undo } }),
+  /* Erase a file still on the previous key instead of re-encrypting it,
+     stopping its move first if it is the one moving. Answers as deleteFile
+     does: deleted, with a warning per part that could not be erased. */
+  deleteRekeyFile: (id) =>
+    request(`/api/vault/rekey/files/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   /* The files still on the previous key, a page at a time, in the order the
      plan takes them and with where each one stands — moving, in turn, left
      for last, held for a cloud, or failed and waiting to be tried again.

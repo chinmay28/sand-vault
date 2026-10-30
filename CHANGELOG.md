@@ -30,6 +30,39 @@ in 40 min*. Over HTTP it is `GET /api/vault/rekey/files` (`?folder`,
 `retry_in_seconds`; on the command line, `sand vault rekey --list [--under
 /Archives]`.
 
+### The quick start builds Proton's client on an x86-64 box, in seconds rather than not at all
+
+The Proton step of `scripts/quickstart.sh` sat at *installing dependencies in
+cli…* for a long time and then had no client to show for it. The cause was in
+the SDK rather than the installer: two of the three packages the client is
+built from carry a lockfile that names a download URL for every one of their
+dependencies — some fifteen hundred — on `pkg.protontech.ch`, the npm mirror
+inside Proton's own network. From anywhere else that host refuses the
+download or does not answer, and bun retried each refused package before
+giving up. The third package names no URLs and installed from the public
+registry in seconds, which is why the failure always landed on the second.
+The installer now points the lockfiles at the public registry
+(`PROTON_NPM_REGISTRY`, for a mirror of your own) and otherwise honours them
+exactly — the integrity hash of every package is still checked — and the
+three installs and the compile take well under a minute on an x86-64 box.
+The SDK's version tags are fetched too, so the built client introduces itself
+to Proton as the release it was built from rather than as version 0.0.0.
+
+### A file still on the previous key can be deleted from that list
+
+A file that would not move — a photo with too few parts left to rebuild, say
+— came back to the list every hour with the same reason, and the only ways
+out were to skip it, which left it for last and on the previous key forever,
+or to go and find it in its folder. Each row in the list now carries
+*Delete…* beside *Skip for now*: after a confirmation the file is erased from
+every account, under whichever key its parts are on, and the plan has one
+file fewer to take. The file being moved can be deleted too; its move is
+stopped first and the delete waits for it to let go, so nothing erases the
+same parts twice, and nothing is charged to the day's budget for it. Over
+HTTP it is `DELETE /api/vault/rekey/files/{id}`, answering as a file delete
+does, with a warning per part that could not be erased; a file already on the
+current key is refused, since the ordinary delete is the way for that.
+
 ### A Local folder on a disk that has stopped answering no longer takes the server with it
 
 A read or write on a filesystem that has stopped answering — a failing drive,

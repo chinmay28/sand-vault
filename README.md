@@ -407,8 +407,12 @@ for adding one.
 > one — last, after the service is up and healthy, with a time limit
 > (`PROTON_BUILD_TIMEOUT`, 45 minutes by default) and a line every half minute
 > saying where the build has got to, so a slow board or a registry that will
-> not answer costs the Proton backend and nothing else. `INSTALL_PROTON=never`
-> skips it, and `PROTON_CLI_URL` takes a
+> not answer costs the Proton backend and nothing else. On an x86-64 box the
+> build is a matter of seconds once bun is in place: the SDK's lockfiles name
+> Proton's own package mirror for every dependency, which from outside Proton
+> refuses or stalls, so the installer points them at the public npm registry
+> (`PROTON_NPM_REGISTRY`, for a mirror of your own) and the packages arrive
+> at once. `INSTALL_PROTON=never` skips the step, and `PROTON_CLI_URL` takes a
 > [prebuilt binary](https://proton.me/download/drive/cli/index.html) instead,
 > which on a Raspberry Pi is the difference between seconds and twenty minutes.
 > Without a client the backend still appears in the connect dialog and says so

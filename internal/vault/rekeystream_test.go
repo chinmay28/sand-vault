@@ -3,6 +3,7 @@ package vault
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"math/rand"
 	"sync"
 	"testing"
@@ -432,5 +433,173 @@ func TestSkippingTheFileBeingMovedStopsIt(t *testing.T) {
 	}
 	if v.PendingMigration() != 0 {
 		t.Error("files still pending after everything moved")
+	}
+}
+
+// Deleting a pending file instead of re-encrypting it takes it out of the
+// plan: it is gone from the index, forgotten by the queue, and the plan has one
+// file fewer to take. The guards are the skip's: something to delete, a file
+// that exists, and one that is still on the previous key.
+func TestADeletedPendingFileLeavesThePlan(t *testing.T) {
+	v, _ := newTestVault(t, 3)
+	ctx := context.Background()
+	uploadSized(t, v, "/", "keep.txt", 100)
+	gone := uploadSized(t, v, "/", "gone.txt", 200)
+
+	if _, _, err := v.DeleteRekeyFile(ctx, ""); err == nil {
+		t.Error("deleting with nothing moving was accepted")
+	}
+	if _, _, err := v.DeleteRekeyFile(ctx, gone.ID); err == nil {
+		t.Error("deleting a file already on the current key was accepted")
+	}
+	if _, _, err := v.DeleteRekeyFile(ctx, "no-such-id"); err == nil {
+		t.Error("deleting a file that does not exist was accepted")
+	}
+
+	if _, err := v.ChangePasswordWithPlan(ctx, testPassword, "deleted", &RekeySettings{BytesPerDay: 1 << 40}); err != nil {
+		t.Fatalf("ChangePasswordWithPlan: %v", err)
+	}
+	// Deferred first, so the delete has a place in the queue to tidy.
+	if _, err := v.DeferRekeyFile(gone.ID); err != nil {
+		t.Fatalf("DeferRekeyFile: %v", err)
+	}
+
+	path, warnings, err := v.DeleteRekeyFile(ctx, gone.ID)
+	if err != nil || path != "/gone.txt" || len(warnings) != 0 {
+		t.Fatalf("DeleteRekeyFile = %q, %v, %v; want /gone.txt deleted cleanly", path, warnings, err)
+	}
+	if _, err := v.EntryByPath(MainScope, "/gone.txt"); err == nil {
+		t.Error("the deleted file is still in the index")
+	}
+	if v.PendingMigration() != 1 {
+		t.Errorf("%d file(s) pending, want the one kept", v.PendingMigration())
+	}
+	status, _ := v.RekeyStatus()
+	if len(status.Deferred) != 0 || status.Pending != 1 {
+		t.Errorf("status = deferred %+v, pending %d; want nothing deferred and one pending", status.Deferred, status.Pending)
+	}
+	if plan := v.manifest.Rekey; plan == nil || len(plan.Deferred) != 0 {
+		t.Errorf("the plan still names the deleted file as deferred: %+v", plan)
+	}
+	page, err := v.PendingRekeyFiles("/", 0, 0)
+	if err != nil || page.Total != 1 || page.Files[0].Path != "/keep.txt" {
+		t.Fatalf("PendingRekeyFiles = %+v, %v; want keep.txt alone", page, err)
+	}
+
+	// The rest moves, and the plan ends with it.
+	step, err := v.RekeyStep(ctx, time.Now())
+	if err != nil || !step.Moved || step.Path != "/keep.txt" {
+		t.Fatalf("step = %+v, %v; want keep.txt moved", step, err)
+	}
+	if status, _ := v.RekeyStatus(); !status.Done() {
+		t.Errorf("status = %+v, want done", status)
+	}
+}
+
+// Deleting the file being moved stops that move first, so the two are never
+// erasing the same parts at once: the step ends as a skip does, with nothing
+// charged, and the file is gone.
+func TestDeletingTheFileBeingMovedStopsItFirst(t *testing.T) {
+	g := &gate{}
+	t.Cleanup(g.lift)
+	entered := make(chan struct{}, 16)
+	kind := registerGatedBackend(t, g, entered)
+
+	v, err := Open(t.TempDir() + "/vault.sand")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := v.Init(testPassword, PolicyStrict); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Cleanup(v.AwaitBackupSync)
+	t.Cleanup(v.AwaitReadHistory)
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		if _, err := v.AddProvider(ctx, provider.Config{
+			Kind: kind, Name: "gated-" + string(rune('a'+i)),
+			Options: map[string]string{"path": t.TempDir()},
+		}); err != nil {
+			t.Fatalf("AddProvider: %v", err)
+		}
+	}
+	first := uploadSized(t, v, "/", "first.bin", 400)
+	second := uploadSized(t, v, "/", "second.bin", 900)
+
+	if _, err := v.ChangePasswordWithPlan(ctx, testPassword, "delete", &RekeySettings{BytesPerDay: 1 << 40}); err != nil {
+		t.Fatalf("ChangePasswordWithPlan: %v", err)
+	}
+	for len(entered) > 0 {
+		<-entered
+	}
+
+	g.shut()
+	stepped := make(chan RekeyStep, 1)
+	go func() {
+		step, _ := v.RekeyStep(ctx, time.Now())
+		stepped <- step
+	}()
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the move never reached an upload")
+	}
+	if status, _ := v.RekeyStatus(); !status.Running || status.Current != "/first.bin" {
+		t.Fatalf("status = running %v, current %q; want first.bin moving", status.Running, status.Current)
+	}
+
+	// "" is the file moving now. The delete waits for the stopped move to
+	// let go before it erases anything, and the gate is shut, so the move
+	// has to unwind through the cancel for this to return at all.
+	done := make(chan error, 1)
+	go func() {
+		path, _, err := v.DeleteRekeyFile(ctx, "")
+		if err == nil && path != "/first.bin" {
+			err = fmt.Errorf("deleted %q, want /first.bin", path)
+		}
+		done <- err
+	}()
+	var step RekeyStep
+	select {
+	case step = <-stepped:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the step did not stop after the delete")
+	}
+	if !step.Skipped || step.Moved || step.Warning != "" {
+		t.Fatalf("step = %+v, want the move stopped as a skip, nothing moved, no warning", step)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("DeleteRekeyFile: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the delete did not finish once the move had stopped")
+	}
+	g.lift()
+
+	if _, _, err := v.Fetch(ctx, first.ID); err == nil {
+		t.Error("the deleted file still reads")
+	}
+	if v.PendingMigration() != 1 {
+		t.Errorf("%d file(s) pending, want second.bin alone", v.PendingMigration())
+	}
+	status, _ := v.RekeyStatus()
+	if status.Plan.Level != status.Plan.pacer().burst() {
+		t.Errorf("the meter was charged for a deleted file: level %d", status.Plan.Level)
+	}
+	if status.Running || status.Retrying != 0 || len(status.Warnings) != 0 {
+		t.Errorf("status = running %v, retrying %d, warnings %v; want idle with nothing held or warned", status.Running, status.Retrying, status.Warnings)
+	}
+
+	// The other file moves, and reads, and the plan ends with it.
+	if step, err := v.RekeyStep(ctx, time.Now()); err != nil || !step.Moved || step.Path != "/second.bin" {
+		t.Fatalf("step = %+v, %v; want second.bin moved", step, err)
+	}
+	if _, _, err := v.Fetch(ctx, second.ID); err != nil {
+		t.Errorf("the moved file does not read: %v", err)
+	}
+	if status, _ := v.RekeyStatus(); !status.Done() {
+		t.Errorf("status = %+v, want done", status)
 	}
 }

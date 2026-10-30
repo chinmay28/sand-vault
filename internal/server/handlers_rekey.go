@@ -256,6 +256,31 @@ func (s *Server) handleRekeySkip(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, status)
 }
 
+// handleRekeyDelete erases a file still on the previous key instead of
+// re-encrypting it, stopping its move first if it is the one being moved.
+// See vault.DeleteRekeyFile. The answer is the one DELETE /api/files/{id}
+// gives — deleted, with a warning per part that could not be erased — so the
+// list that asked can show the warnings and ask again for the rows.
+func (s *Server) handleRekeyDelete(w http.ResponseWriter, r *http.Request) {
+	// Detached, as a file delete is: once the erasing has begun the entry
+	// is leaving the index whether or not the client stays to hear about it.
+	// The timeout also bounds the wait for a move in flight to stop.
+	ctx, cancel := detachedContextWithTimeout(r, 5*time.Minute)
+	defer cancel()
+
+	v, _ := s.Vault()
+	path, warnings, err := v.DeleteRekeyFile(ctx, r.PathValue("id"))
+	if err != nil {
+		vaultErrorResponse(w, err)
+		return
+	}
+	log.Printf("re-encryption: %s was deleted instead of being re-encrypted", path)
+	// A move was stopped, or a file is gone from the plan: either way the
+	// loop should look again now rather than at the end of a wait.
+	s.wakeRekey()
+	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "path": path, "warnings": warnings})
+}
+
 // handleRekeyPlan sets how the outstanding re-encryption proceeds. The body is
 // a vault.RekeySettings: the whole of it, each time, since a plan with one
 // field changed is a different plan rather than a patch to the old one.
