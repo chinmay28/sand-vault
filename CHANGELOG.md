@@ -30,6 +30,24 @@ in 40 min*. Over HTTP it is `GET /api/vault/rekey/files` (`?folder`,
 `retry_in_seconds`; on the command line, `sand vault rekey --list [--under
 /Archives]`.
 
+### The quick start builds Proton's client on an x86-64 box, in seconds rather than not at all
+
+The Proton step of `scripts/quickstart.sh` sat at *installing dependencies in
+cli…* for a long time and then had no client to show for it. The cause was in
+the SDK rather than the installer: two of the three packages the client is
+built from carry a lockfile that names a download URL for every one of their
+dependencies — some fifteen hundred — on `pkg.protontech.ch`, the npm mirror
+inside Proton's own network. From anywhere else that host refuses the
+download or does not answer, and bun retried each refused package before
+giving up. The third package names no URLs and installed from the public
+registry in seconds, which is why the failure always landed on the second.
+The installer now points the lockfiles at the public registry
+(`PROTON_NPM_REGISTRY`, for a mirror of your own) and otherwise honours them
+exactly — the integrity hash of every package is still checked — and the
+three installs and the compile take well under a minute on an x86-64 box.
+The SDK's version tags are fetched too, so the built client introduces itself
+to Proton as the release it was built from rather than as version 0.0.0.
+
 ### A file still on the previous key can be deleted from that list
 
 A file that would not move — a photo with too few parts left to rebuild, say
