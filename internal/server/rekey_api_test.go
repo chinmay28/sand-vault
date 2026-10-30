@@ -320,3 +320,58 @@ func TestThePendingFilesCanBeListedOverHTTP(t *testing.T) {
 		t.Errorf("after a skip the last row = %v, want p60.pdf deferred", last)
 	}
 }
+
+func TestAPendingFileCanBeDeletedOverHTTP(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("pw", 3)
+	small := c.upload("small.txt", "/", []byte("tiny"))
+	large := c.upload("large.txt", "/", []byte(strings.Repeat("l", 4000)))
+
+	// Before the password changes, nothing is on the previous key: a delete
+	// through the plan is refused, and the ordinary delete is the way.
+	if w, _ := c.json(http.MethodDelete, "/api/vault/rekey/files/"+small["id"].(string), nil); w.Code != http.StatusBadRequest {
+		t.Errorf("delete with the file on the current key: %d, want 400", w.Code)
+	}
+
+	if w, _ := c.json(http.MethodPost, "/api/vault/password", map[string]any{
+		"old_password": "pw", "new_password": "later",
+		"plan": map[string]any{"bytes_per_day": 1 << 40},
+	}); w.Code != http.StatusOK {
+		t.Fatalf("change password: %d %s", w.Code, w.Body.String())
+	}
+
+	if w, _ := c.json(http.MethodDelete, "/api/vault/rekey/files/no-such-id", nil); w.Code != http.StatusNotFound {
+		t.Errorf("delete of a file that does not exist: %d, want 404", w.Code)
+	}
+
+	w, answer := c.json(http.MethodDelete, "/api/vault/rekey/files/"+small["id"].(string), nil)
+	if w.Code != http.StatusOK || answer["status"] != "deleted" || answer["path"] != "/small.txt" {
+		t.Fatalf("delete = %d %v, want small.txt deleted", w.Code, answer)
+	}
+	if warnings, _ := answer["warnings"].([]any); len(warnings) != 0 {
+		t.Errorf("warnings = %v, want none", warnings)
+	}
+
+	// Gone from the list and from the vault, and the count says so.
+	_, page := c.json(http.MethodGet, "/api/vault/rekey/files", nil)
+	files := page["files"].([]any)
+	if len(files) != 1 || files[0].(map[string]any)["path"] != "/large.txt" {
+		t.Errorf("after the delete the list = %v, want large.txt alone", files)
+	}
+	if w, _ := c.json(http.MethodGet, "/api/files/"+small["id"].(string), nil); w.Code != http.StatusNotFound {
+		t.Errorf("the deleted file is still there: %d", w.Code)
+	}
+	_, status := c.json(http.MethodGet, "/api/vault/rekey", nil)
+	if status["pending"] != float64(1) {
+		t.Errorf("pending = %v, want 1", status["pending"])
+	}
+
+	// The rest moves, and the plan ends with it.
+	v, _ := c.server.Vault()
+	if step, err := c.server.rekeyStep(v, time.Now()); err != nil || !step.Moved || step.Path != "/large.txt" {
+		t.Fatalf("step = %+v, %v; want large.txt moved", step, err)
+	}
+	if w, _ := c.json(http.MethodGet, "/api/files/"+large["id"].(string), nil); w.Code != http.StatusOK {
+		t.Errorf("the kept file: %d, want 200", w.Code)
+	}
+}

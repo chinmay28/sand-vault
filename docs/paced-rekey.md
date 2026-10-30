@@ -322,6 +322,7 @@ the server does.
 | `POST /api/vault/migrate` | Finish now in the foreground, holding the request open until the last file has moved. `409 MIGRATION_BUSY` while a step holds the slot. The CLI's `sand vault migrate`; the browser no longer calls it. |
 | `POST /api/vault/rekey/skip` | `{id, undo}`: leave a file for last (the one being moved when `id` is empty, stopping that move), or put it back in its turn. Answers with the status. |
 | `GET /api/vault/rekey/files` | `RekeyPendingPage`: the files still on the previous key, in the order the plan takes them, each with where it stands (`state`: `queued`, `moving`, `deferred`, `held` with `held_on`, `retrying` with `reason` and `retry_at`, or `outside` the plan's folders). `?folder` confines it to one folder, `?offset` and `?limit` page it (50 by default, 500 at most); the answer carries the folder's whole `total` and `bytes`. A folder that is not there is a 404. |
+| `DELETE /api/vault/rekey/files/{id}` | Erases a file still on the previous key instead of re-encrypting it — the other answer to a file that will not move. The one being moved has that move stopped first, and the delete waits for it to let go, so nothing is erasing the same parts twice; the stopped move ends as a skip does, with nothing charged. Answers as `DELETE /api/files/{id}` does: `deleted`, the `path`, and a `warnings` entry per part that could not be erased. A file already on the current key is a 400: it is not a pending file, and the ordinary delete is the way. |
 | `GET /api/vault` | `stats.key_id` names the current generation; `sub_vaults[].key_id` likewise while open. `stats.stale_parts` and `stats.stale_bytes` count the parts left under the previous key (§4.3), which is what has the browser re-run the stray-parts scan when a cloud comes back. |
 | `GET /api/files` | `previous_key` maps each subfolder to how many files under it are still on the previous key. Each file already carries `key_id`. |
 
@@ -357,12 +358,15 @@ The counts open. *Files left* and each folder's count in the panel are
 buttons: tapping one lists the files behind it (`RekeyFiles`), a page at a
 time, in the order the plan takes them, each with where it stands — moving,
 in turn, left for last, waiting for a cloud that did not answer, or tried and
-failed with the reason and when it is tried again — and with the skip and
-un-skip controls on the row. Seven files left and nothing moving used to be a
-count and a shrug; the status line now says *7 files would not move · tried
-again in 40 min*, and the count says which seven. A file that is simply in
-the way can be skipped from the row; one on a cloud that is down names the
-cloud.
+failed with the reason and when it is tried again — and with the skip,
+un-skip and delete controls on the row. Seven files left and nothing moving
+used to be a count and a shrug; the status line now says *7 files would not
+move · tried again in 40 min*, and the count says which seven. A file that is
+simply in the way can be skipped from the row; one on a cloud that is down
+names the cloud; one that is never going to move — a photo whose parts are
+too few to rebuild, say, that nobody wants kept on the previous key forever —
+can be deleted from the row, after a confirmation, the one being moved
+included. On the command line the ordinary delete does the same.
 
 The pace chips' custom field commits when typing pauses, on Enter or on blur,
 not on every keystroke, and is never disabled while it has focus. Each

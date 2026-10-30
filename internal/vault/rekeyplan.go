@@ -297,6 +297,9 @@ type rekeyMemory struct {
 	done      int64
 	size      int64
 	cancel    context.CancelFunc
+	// finished is closed when the move in flight has let go of the file —
+	// the way a delete that pulled cancel waits for it. See moveTracked.
+	finished chan struct{}
 }
 
 // pendingLocked counts the files in a scope that are on a key other than the
@@ -628,15 +631,19 @@ func (v *Vault) moveTracked(ctx context.Context, scope Scope, id string, account
 	}
 	v.mu.RUnlock()
 
+	finished := make(chan struct{})
 	v.rekeyMu.Lock()
 	v.rekey.current, v.rekey.currentID, v.rekey.cancel = path, id, cancel
 	v.rekey.done, v.rekey.size = 0, 0
+	v.rekey.finished = finished
 	v.rekeyMu.Unlock()
 	defer func() {
 		v.rekeyMu.Lock()
 		v.rekey.current, v.rekey.currentID, v.rekey.cancel = "", "", nil
 		v.rekey.done, v.rekey.size = 0, 0
+		v.rekey.finished = nil
 		v.rekeyMu.Unlock()
+		close(finished)
 	}()
 
 	// No scheme: re-encrypting keeps each file cut the way it already is,
@@ -735,6 +742,115 @@ func (v *Vault) UndeferRekeyFile(id string) (string, error) {
 	}
 	plan.Deferred = kept
 	return path, v.persistLocked()
+}
+
+// DeleteRekeyFile erases one of the main vault's pending files — the one being
+// moved right now when id is empty — instead of re-encrypting it. It is the
+// other answer to a file that will not move: a skip leaves it for last, this
+// leaves it out. Every part is erased from every account, under whichever key
+// it is on, and the plan has one file fewer to take.
+//
+// A file in the middle of a move has that move stopped first and the delete
+// waits for it to let go, so the two are never erasing the same parts at
+// once; a move cancelled this way ends as a skip does, with nothing charged.
+// ctx bounds that wait and the erase. Returns the file's path, and a warning
+// per part that could not be erased, as Delete does.
+//
+// A file already on the current key is refused: it is not a pending file,
+// and a row that moved while the list was open should not be a delete the
+// list did not mean.
+func (v *Vault) DeleteRekeyFile(ctx context.Context, id string) (string, []string, error) {
+	v.rekeyMu.Lock()
+	if id == "" {
+		id = v.rekey.currentID
+	}
+	v.rekeyMu.Unlock()
+	if id == "" {
+		return "", nil, fmt.Errorf("nothing is being re-encrypted right now, so there is nothing to delete")
+	}
+
+	v.mu.RLock()
+	if v.dataKey == nil {
+		v.mu.RUnlock()
+		return "", nil, ErrLocked
+	}
+	e := v.manifest.ByID(id)
+	if e == nil {
+		v.mu.RUnlock()
+		return "", nil, fmt.Errorf("no such file: %s", id)
+	}
+	path := e.Path()
+	onCurrent := e.KeyID == v.dataKeyID
+	v.mu.RUnlock()
+	if onCurrent {
+		return path, nil, fmt.Errorf("%s is already on the current key; delete it from its folder instead", path)
+	}
+
+	// Held out of the chooser's reach for as long as this takes, so the
+	// step that follows a cancelled move does not pick the same file up
+	// again and start reading the parts the delete is erasing. The hold is
+	// the one a failed move gets, far enough out that it cannot lapse, and
+	// it goes with the file below.
+	v.rekeyMu.Lock()
+	if v.rekey.skip == nil {
+		v.rekey.skip = map[string]time.Time{}
+	}
+	if v.rekey.why == nil {
+		v.rekey.why = map[string]string{}
+	}
+	v.rekey.skip[id] = time.Now().Add(24 * time.Hour)
+	v.rekey.why[id] = "it is being deleted"
+	// Stop the move if it is this file's, and wait for it to let go. The
+	// cancel reads as a skip to the pass that was moving it (see
+	// moveTracked), which is right: nothing moved, nothing is charged.
+	var finished chan struct{}
+	if v.rekey.currentID == id && v.rekey.cancel != nil {
+		finished = v.rekey.finished
+		v.rekey.cancel()
+	}
+	v.rekeyMu.Unlock()
+
+	// Whatever comes of it, nothing is left to remember about the file: no
+	// hold and no reason. Deleted, there is nothing to hold; not deleted,
+	// it is back in its turn as it was.
+	forget := func() {
+		v.rekeyMu.Lock()
+		delete(v.rekey.skip, id)
+		delete(v.rekey.why, id)
+		v.rekeyMu.Unlock()
+	}
+
+	if finished != nil {
+		select {
+		case <-finished:
+		case <-ctx.Done():
+			forget()
+			return path, nil, fmt.Errorf("%s is still being re-encrypted and did not stop in time: %w", path, ctx.Err())
+		}
+	}
+
+	warnings, err := v.Delete(ctx, id)
+	forget()
+	if err != nil {
+		return path, warnings, err
+	}
+
+	// Nor a place at the back of the queue. The plan's list is tidied in
+	// memory and written with the next change; a name on it that no file
+	// carries is skipped everywhere it is read, so nothing waits on that
+	// write.
+	v.mu.Lock()
+	if plan := v.manifest.Rekey; plan != nil && plan.isDeferred(id) {
+		kept := plan.Deferred[:0]
+		for _, d := range plan.Deferred {
+			if d != id {
+				kept = append(kept, d)
+			}
+		}
+		plan.Deferred = kept
+	}
+	v.mu.Unlock()
+	return path, warnings, nil
 }
 
 // pendingUnder counts the pending files in and below one folder.

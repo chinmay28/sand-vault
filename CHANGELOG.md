@@ -30,6 +30,21 @@ in 40 min*. Over HTTP it is `GET /api/vault/rekey/files` (`?folder`,
 `retry_in_seconds`; on the command line, `sand vault rekey --list [--under
 /Archives]`.
 
+### A file still on the previous key can be deleted from that list
+
+A file that would not move — a photo with too few parts left to rebuild, say
+— came back to the list every hour with the same reason, and the only ways
+out were to skip it, which left it for last and on the previous key forever,
+or to go and find it in its folder. Each row in the list now carries
+*Delete…* beside *Skip for now*: after a confirmation the file is erased from
+every account, under whichever key its parts are on, and the plan has one
+file fewer to take. The file being moved can be deleted too; its move is
+stopped first and the delete waits for it to let go, so nothing erases the
+same parts twice, and nothing is charged to the day's budget for it. Over
+HTTP it is `DELETE /api/vault/rekey/files/{id}`, answering as a file delete
+does, with a warning per part that could not be erased; a file already on the
+current key is refused, since the ordinary delete is the way for that.
+
 ### A Local folder on a disk that has stopped answering no longer takes the server with it
 
 A read or write on a filesystem that has stopped answering — a failing drive,
