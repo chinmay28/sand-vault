@@ -83,6 +83,18 @@ export const api = {
      its turn. The file stays on the previous key, readable as ever. */
   skipRekeyFile: (id = '', undo = false) =>
     request('/api/vault/rekey/skip', { method: 'POST', body: { id, undo } }),
+  /* The files still on the previous key, a page at a time, in the order the
+     plan takes them and with where each one stands — moving, in turn, left
+     for last, held for a cloud, or failed and waiting to be tried again.
+     folder confines the list to one folder; "/" is the whole vault. */
+  rekeyFiles: ({ folder = '/', offset = 0, limit = 0 } = {}) => {
+    const params = new URLSearchParams()
+    if (folder && folder !== '/') params.set('folder', folder)
+    if (offset) params.set('offset', String(offset))
+    if (limit) params.set('limit', String(limit))
+    const query = params.toString()
+    return request(`/api/vault/rekey/files${query ? `?${query}` : ''}`)
+  },
 
   /* Disaster recovery. Every connected account carries an encrypted copy of
      the index, so a machine that lost its vault can find one sitting on the

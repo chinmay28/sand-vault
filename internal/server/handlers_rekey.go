@@ -193,6 +193,34 @@ func (s *Server) handleRekeyStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, status)
 }
 
+// handleRekeyFiles lists the files still on the previous key, a page at a
+// time, in the order the plan takes them and with where each one stands:
+// moving, waiting its turn, left for last, held for a cloud that is not
+// answering, failed lately and waiting to be tried again. ?folder confines
+// the list to one folder — the one whose count was tapped — and ?offset and
+// ?limit window it. See vault.PendingRekeyFiles.
+func (s *Server) handleRekeyFiles(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	offset, err := intParam(query.Get("offset"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "offset must be a whole number", "BAD_REQUEST")
+		return
+	}
+	limit, err := intParam(query.Get("limit"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "limit must be a whole number", "BAD_REQUEST")
+		return
+	}
+
+	v, _ := s.Vault()
+	page, err := v.PendingRekeyFiles(query.Get("folder"), offset, limit)
+	if err != nil {
+		vaultErrorResponse(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
+}
+
 // rekeySkipRequest names a file to leave for last — the one being moved right
 // now when ID is empty — or, with Undo, to put back in its turn.
 type rekeySkipRequest struct {
