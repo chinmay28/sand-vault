@@ -231,6 +231,8 @@ func (v *Vault) rotate(oldPassword, newPassword string, plan *RekeySettings) err
 	sf.DefaultScheme = v.store.DefaultScheme
 	sf.HealthCheckMinutes = v.store.HealthCheckMinutes
 	sf.HealthCheckOff = v.store.HealthCheckOff
+	sf.PartScanMinutes = v.store.PartScanMinutes
+	sf.PartScanOff = v.store.PartScanOff
 
 	// The sub vaults come across untouched, and this line is the whole of what
 	// "a password change does not touch a sub vault" means on disk. Their

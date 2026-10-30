@@ -199,6 +199,14 @@ type storeFile struct {
 	HealthCheckMinutes int  `json:"health_check_minutes,omitempty"`
 	HealthCheckOff     bool `json:"health_check_off,omitempty"`
 
+	// PartScanMinutes is how often the local-disk accounts are listed and
+	// held against the index for parts that are gone or truncated, and
+	// PartScanOff switches that off. Zero minutes means the default — a day.
+	// Stored as the negative, like HealthCheckOff and for the same reason.
+	// See partscan.go.
+	PartScanMinutes int  `json:"part_scan_minutes,omitempty"`
+	PartScanOff     bool `json:"part_scan_off,omitempty"`
+
 	// SmartCheckOff leaves each local account's disk SMART report out of the
 	// health check. Stored as the negative, like HealthCheckOff, so a vault
 	// that has never chosen reads as on: the quickstart installs the root-run

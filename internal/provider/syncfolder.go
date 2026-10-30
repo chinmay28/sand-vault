@@ -43,6 +43,23 @@ type syncFolder struct {
 	folders func(home string) []string
 }
 
+// OnLocalDisk reports whether an account of this kind is a folder on this
+// machine's disk — a local folder, or one a desktop client keeps in step
+// with a cloud — which is what makes listing it a directory read rather
+// than a billed request, and what the vault's scan of the local disks goes
+// by.
+func (k Kind) OnLocalDisk() bool {
+	if k == KindLocal {
+		return true
+	}
+	for _, f := range syncFolders {
+		if f.kind == k {
+			return true
+		}
+	}
+	return false
+}
+
 // syncFolders is the register. Order runs from the services most people have
 // to the ones most people have not.
 var syncFolders = []syncFolder{

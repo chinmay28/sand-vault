@@ -10,6 +10,7 @@ import { AssistantSettings } from './Assistant'
 import SubVaults from './SubVaults'
 import RecoveryKit from './RecoveryKit'
 import { StrayParts } from './CleanOrphans'
+import PartScan, { scanStatusLine, scanStatusTone } from './PartScan'
 import {
   DefaultClouds, PARTS_PER_FILE, defaultSchemeFor, parseScheme, schemeName,
 } from './CloudSelect'
@@ -80,6 +81,13 @@ export default function VaultSettings({
   const loadKit = () => api.kitStatus().then(setKit).catch(() => {})
   useEffect(() => { loadKit() }, [])
 
+  /* The local-disk scan's standing, for its line; the item is drawn only
+     when some account is a folder on this machine, since the scan has
+     nothing to do otherwise. */
+  const [scan, setScan] = useState(null)
+  const loadScan = () => api.partScanStatus().then(setScan).catch(() => {})
+  useEffect(() => { loadScan() }, [])
+
   const close = () => setOpen(null)
 
   return (
@@ -136,6 +144,21 @@ export default function VaultSettings({
             status={healthStatusLine(health)}
             tone={health?.unhealthy > 0 ? COLORS.error : undefined}
             onClick={() => setOpen('health')}
+          />
+        )}
+
+        {/* The disks in this machine, listed against the index on a schedule
+            for parts that are gone or truncated. Beside the cloud health
+            check because it is the same kind of question asked of the one
+            kind of account a listing can answer it for cheaply. */}
+        {scan?.local_accounts > 0 && (
+          <Setting
+            icon="💽"
+            label="Local disks"
+            hint="How often each disk in this machine is listed against the index for parts that are gone or truncated"
+            status={scanStatusLine(scan)}
+            tone={scanStatusTone(scan)}
+            onClick={() => setOpen('scan')}
           />
         )}
 
@@ -252,6 +275,14 @@ export default function VaultSettings({
           zIndex={CHILD_Z}
           onClose={close}
           onChanged={onChanged}
+        />
+      )}
+
+      {open === 'scan' && (
+        <PartScan
+          zIndex={CHILD_Z}
+          onClose={() => { loadScan(); close() }}
+          onChanged={() => { loadScan(); onChanged?.() }}
         />
       )}
 

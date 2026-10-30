@@ -2138,6 +2138,10 @@ of the accounts you named stays where it is, and what travels is copied across
 still encrypted rather than rebuilt. A folder takes everything under it. See
 [Moving something to different clouds](#moving-something-to-different-clouds).
 
+`sand vault scan` lists every account that is a folder on this machine's disks
+against the index and reports the parts that are gone or truncated; `sand serve`
+does the same on its own, daily by default (`--every 6h`, `--off`).
+
 `sand check --all` exits non-zero when anything is degraded or unrecoverable,
 which makes it a reasonable cron job. A part that is on the account but too
 short to be a part — the zero-length file a removable disk leaves behind when
@@ -2779,6 +2783,7 @@ one walk, so comparing them costs nothing.
 | GET · POST · DELETE | `/api/files/{id}/movie` | What film this is / look it up (`query`, `year`, `tmdb_id`) / forget it |
 | GET | `/api/files/{id}/movie/candidates?q=` | Search the database without storing anything, to correct a match |
 | GET | `/api/files/{id}/health` | Per-part reachability |
+| GET | `/api/vault/partscan` | Where the scan of the local disks stands: its schedule, the last scan's findings per disk, and when the next comes round. `POST` runs one now (`409 PART_SCAN_BUSY` while one is running); `POST /api/vault/partscan/schedule` with `{enabled, interval_minutes}` sets how often, daily by default and never under an hour |
 | GET | `/api/degraded?offset=&limit=` | The files missing at least one part, worst first and paged — what the accounts panel's "N files missing a spare part" is counting. Each row's `lost` names the recorded parts an account has said it does not hold since the server started — not found, or a zero-length file — with the account and the reason |
 | POST | `/api/files/{id}/move` | Rename / move into another folder |
 | DELETE | `/api/files/{id}` | Erase every part |

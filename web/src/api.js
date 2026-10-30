@@ -327,6 +327,21 @@ export const api = {
   /* How often that happens, or never. Omitting either half leaves it alone —
      switching the check off keeps the interval, so switching it back on
      returns to the schedule that was chosen rather than to the default. */
+  /* The scan of the local disks: every account that is a folder on this
+     machine listed against the index for parts that are gone or truncated.
+     Where it stands (contacts nobody), run it now, and how often it runs on
+     its own — daily unless changed; omitting either half of the schedule
+     leaves it alone, as with the cloud health schedule. */
+  partScanStatus: () => request('/api/vault/partscan'),
+  scanLocalDisks: () => request('/api/vault/partscan', { method: 'POST' }),
+  setPartScanSchedule: ({ enabled, minutes } = {}) =>
+    request('/api/vault/partscan/schedule', {
+      method: 'POST',
+      body: {
+        ...(enabled === undefined ? null : { enabled }),
+        ...(minutes === undefined ? null : { interval_minutes: minutes }),
+      },
+    }),
   setCloudHealthSchedule: ({ enabled, minutes, smart } = {}) =>
     request('/api/providers/health/schedule', {
       method: 'POST',

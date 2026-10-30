@@ -229,6 +229,11 @@ type Vault struct {
 	lostMu sync.Mutex
 	lost   map[string]map[int]LostPart
 
+	// partScan is what this process remembers about the scan of the local
+	// disks: the slot it runs in and what the last one found. See
+	// partscan.go.
+	partScan partScanMemory
+
 	// replicateSlot is the one slot a replica is made in, taken with TryLock
 	// the way migrateMu is; replicate is what the worker remembers between
 	// steps, under replicateMu, a leaf lock like rekeyMu. See replica.go.

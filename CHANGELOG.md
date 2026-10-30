@@ -27,8 +27,18 @@ automation sweep rebuilds the file, and a read treats a part that arrives
 too short or unparseable as a failed account and goes on to the next, so a
 spare does what a spare is for.
 
-What a read, a check or a sweep finds missing from an account that was
-answering is also written down for the life of the process (`lostparts.go`):
+The disks in this machine are also scanned on their own, vault-wide: every
+account that is a folder on a local disk — a plain folder, or one a desktop
+client keeps in step with a cloud — is listed and held against the index,
+and every part that is not there or is too short is written down. A listing
+per disk, with no part read, so it is cheap enough to run daily, which it
+does by default; **Vault settings → Local disks** shows what the last scan
+found, runs one now, and sets the interval (six hours, daily, weekly, or
+off), as does `sand vault scan [--every 6h | --off]`. Over HTTP it is
+`GET`/`POST /api/vault/partscan` and `POST /api/vault/partscan/schedule`.
+
+What a read, a check, a sweep or the scan finds missing from an account that
+was answering is also written down for the life of the process (`lostparts.go`):
 the files-missing-a-part panel lists the file with the part, the account and
 the reason, and a repair onto the same clouds writes the part again instead
 of keeping the empty file as "already in place". A re-encryption that moves
