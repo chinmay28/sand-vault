@@ -1213,7 +1213,7 @@ specific one.
 
 **A sweep is two questions, and the first one makes the second cheap.**
 `probeAccounts` pings every connected account once, concurrently, twenty seconds
-each. Only then is each file walked, and a shard on an account that failed the
+each — or as long as the backend has asked for, see below. Only then is each file walked, and a shard on an account that failed the
 probe — or on one no longer connected — is known unreachable without a request.
 Without that, a folder of ten thousand files on a dead cloud would wait out ten
 thousand timeouts. What is left is a `Stat` per shard per sampled chunk, the same
@@ -2502,6 +2502,20 @@ context detached from the request, and the sweep is recorded once the last of
 them has answered — synchronously when every account was in by `statusWait`,
 otherwise from the goroutine that waited, and not at all if the vault locked
 meanwhile.
+
+**A backend that needs longer than twenty seconds says so.** Twenty seconds is
+one round trip for most backends. Proton's client is not a round trip: every
+command is a fresh process that restores the session, fetches the account's
+key material and decrypts its way down the folder's path, and on a small box
+that passes twenty seconds with nothing wrong — the sidebar then showed
+*proton-drive filesystem: context deadline exceeded* for an account that was
+fine, and a sweep skipped every file on it. A backend implementing
+`provider.PingBudgeter` declares its own deadline (`ProtonCLIPingBudget`, two
+minutes); `vault.pingBudget` takes that figure when it is longer than
+`healthPingTimeout` and the default otherwise, and every ping the vault starts
+— the scheduled sweep, the listing, the automation probe, a replica folder's
+check — goes through it. The listing's *still waiting up to …* names the
+account's own budget.
 
 **The schedule** is `HealthCheckMinutes` / `HealthCheckOff` in the store's clear
 section, beside the placement policy and giving away less: how often this

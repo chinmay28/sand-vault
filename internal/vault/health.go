@@ -83,8 +83,27 @@ const (
 // listing sooner than that (see statusWait), but the ping behind it runs on to
 // this deadline, and this is the answer that is recorded.
 //
+// Unless the backend has said it needs longer, which a few do honestly — see
+// pingBudget. Every ping the vault starts goes through that rather than
+// reading this directly.
+//
 // A variable so that a test can hang an account for less than twenty seconds.
 var healthPingTimeout = 20 * time.Second
+
+// pingBudget is how long one Ping of p is given: the backend's own figure when
+// it has declared one (provider.PingBudgeter), and healthPingTimeout when it
+// has not.
+//
+// Twenty seconds was the deadline for every account, and for an account on a
+// backend that answers by running a program which signs in and decrypts its
+// way to the folder — Proton's — it was a deadline missed on an ordinary day.
+// The health check then filed a working account as unreachable, the sidebar
+// drew it red, and a sweep skipped every file on it. The backend is the one
+// that knows what an answer costs, so it is the backend that says how long to
+// wait.
+func pingBudget(p provider.Provider) time.Duration {
+	return provider.PingBudgetOf(p, healthPingTimeout)
+}
 
 // CloudHealth is one account's standing: whether it answered last time it was
 // asked, when that was, and what it said if it did not.
@@ -381,7 +400,7 @@ func (v *Vault) pingAll(ctx context.Context, configs []provider.Config) []CloudH
 			started := time.Now()
 			p, err := v.buildProvider(cfg)
 			if err == nil {
-				pingCtx, cancel := context.WithTimeout(ctx, healthPingTimeout)
+				pingCtx, cancel := context.WithTimeout(ctx, pingBudget(p))
 				defer cancel()
 				err = p.Ping(pingCtx)
 			}

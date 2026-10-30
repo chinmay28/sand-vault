@@ -12,6 +12,25 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### A Proton account is given the time its client needs, rather than twenty seconds
+
+Every connected account was given twenty seconds to answer a ping, and a
+Proton Drive account connected through Proton's client kept missing it:
+*proton-drive filesystem: context deadline exceeded* in the sidebar, red, on
+an account that was fine. Twenty seconds is one round trip for most backends,
+and the client is not a round trip — every command is a fresh process that
+restores the session, fetches the account's keys and decrypts its way down to
+the folder, which on a small box takes longer than that with nothing wrong.
+The health check then filed the account as unreachable at every sweep, and an
+automation sweep skipped every file on it. A backend can now say how long its
+ping needs (`provider.PingBudgeter`), Proton's says two minutes, and every
+ping the vault starts — the scheduled check, the accounts listing, the probe
+before a sweep, a replica folder's check — waits that long for it. Accounts
+that have not asked are held to the twenty seconds as before, and the
+listing's *still waiting up to …* names the account's own figure. Naming a
+freshly signed-in Proton account is given the same two minutes, so it comes
+back as its address rather than as *Proton Drive 2*.
+
 ### The files still on the previous key can be listed, with why each one is waiting
 
 The re-encryption panel counted the files left on the previous key — seven,

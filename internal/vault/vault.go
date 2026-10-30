@@ -1848,7 +1848,7 @@ func (v *Vault) ProviderStatuses(ctx context.Context) ([]ProviderStatus, error) 
 		go func(i int) {
 			defer wg.Done()
 			defer close(answered[i])
-			pingCtx, cancel := context.WithTimeout(pingBase, healthPingTimeout)
+			pingCtx, cancel := context.WithTimeout(pingBase, pingBudget(live[i]))
 			defer cancel()
 			answers[i] = pingAccount(pingCtx, live[i])
 		}(i)
@@ -1880,7 +1880,7 @@ func (v *Vault) ProviderStatuses(ctx context.Context) ([]ProviderStatus, error) 
 		default:
 			complete = false
 			statuses[i].Error = fmt.Sprintf("no answer after %s; still waiting up to %s",
-				statusWait, healthPingTimeout)
+				statusWait, pingBudget(live[i]))
 		}
 	}
 

@@ -189,10 +189,6 @@ const (
 	// keeps all of them.
 	automationWarningsKept = 20
 
-	// automationPingTimeout is how long one account gets to answer the probe
-	// that opens a sweep. The same twenty seconds the accounts panel gives it.
-	automationPingTimeout = 20 * time.Second
-
 	// automationCheckWindow is how many files are checked at once. Each one is
 	// a handful of metadata requests across every account holding it, so this
 	// is already a fan-out; the window is there to keep a folder of ten
@@ -1284,7 +1280,10 @@ func (v *Vault) probeAccounts(ctx context.Context, configs []provider.Config) (o
 				fail(err.Error())
 				return
 			}
-			pingCtx, cancel := context.WithTimeout(ctx, automationPingTimeout)
+			// As long as the accounts panel gives it, which for most backends
+			// is twenty seconds and for a slow one is what it asked for — see
+			// pingBudget.
+			pingCtx, cancel := context.WithTimeout(ctx, pingBudget(p))
 			defer cancel()
 			if err := p.Ping(pingCtx); err != nil {
 				fail(err.Error())

@@ -132,6 +132,20 @@ const (
 	// name rather than by their old path — the account has one trash, not one
 	// per folder.
 	protonCLITrashSection = "/trash"
+
+	// ProtonCLIPingBudget is how long one Ping of a Proton account may take,
+	// and it is minutes where every other backend gets seconds because every
+	// invocation of the client starts from nothing. There is no daemon to ask:
+	// each command is a fresh process that restores the session, fetches the
+	// account's volume and key material, and walks the folder's path by
+	// listing and decrypting each parent's children in turn. On a quiet
+	// laptop that is several seconds; on a small box, or on an account with a
+	// crowded /my-files, it passes twenty seconds with nothing wrong at all —
+	// and a Ping that creates the folder runs the client more than once.
+	//
+	// Exported so the places that ask the client one question outside a Ping
+	// — naming the account after a sign-in — can allow the same.
+	ProtonCLIPingBudget = 2 * time.Minute
 )
 
 // newProtonCLIProvider builds an account backed by the Proton client.
@@ -892,6 +906,12 @@ func (p *protonCLIProvider) Ping(ctx context.Context) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.ensureFolderLocked(ctx)
+}
+
+// PingBudget is how long a Ping is allowed — see ProtonCLIPingBudget for why
+// it is longer than anyone else's. It satisfies PingBudgeter.
+func (p *protonCLIProvider) PingBudget() time.Duration {
+	return ProtonCLIPingBudget
 }
 
 // ensureFolderLocked makes sure the parts have somewhere to go.

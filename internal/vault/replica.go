@@ -349,7 +349,7 @@ func (v *Vault) setReplication(s ReplicationSettings) error {
 		if err != nil {
 			return err
 		}
-		pingCtx, cancel := context.WithTimeout(context.Background(), healthPingTimeout)
+		pingCtx, cancel := context.WithTimeout(context.Background(), pingBudget(live))
 		err = live.Ping(pingCtx)
 		cancel()
 		closeProvider(live)

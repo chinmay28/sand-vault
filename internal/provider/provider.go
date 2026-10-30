@@ -497,6 +497,41 @@ type Versioner interface {
 	DeleteVersion(ctx context.Context, key, versionID string) error
 }
 
+// PingBudgeter is implemented by backends whose Ping is known to need longer
+// than the twenty seconds every account is otherwise given.
+//
+// A ping is one round trip for most backends, and twenty seconds is generous
+// for one round trip. It is not generous for a backend that answers by
+// running a separate program which signs in, fetches the account's key
+// material and decrypts its way down a path before it can say whether a
+// folder is there — Proton's client is one — and a deadline that such a
+// backend misses on a good day reports a working account as unreachable on
+// every refresh. The backend knows what it costs to answer; this is where it
+// says so.
+//
+// The figure is the deadline, not an addition to it, and it covers one Ping
+// from start to finish. Callers that ping on a person's behalf (the sidebar,
+// the Test button, a sweep) take it as given; a backend that does not
+// implement this gets the default.
+type PingBudgeter interface {
+	PingBudget() time.Duration
+}
+
+// PingBudgetOf is the deadline one Ping of p is allowed, taking the backend's
+// own figure when it declares one and otherwise the default given.
+//
+// A declared figure that is not longer than the default is ignored: the
+// interface exists for backends that need more time, and the default is
+// already the least any account is given.
+func PingBudgetOf(p Provider, fallback time.Duration) time.Duration {
+	if b, ok := p.(PingBudgeter); ok {
+		if budget := b.PingBudget(); budget > fallback {
+			return budget
+		}
+	}
+	return fallback
+}
+
 // Identifier is implemented by backends that can say whose account they are
 // pointed at — the signed-in email, usually. A freshly authorized account can
 // then name itself instead of asking the user to invent a label.
