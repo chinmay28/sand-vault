@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -367,6 +368,14 @@ func (v *Vault) gatherChunk(ctx context.Context, entry *Entry, index int, config
 				return
 			}
 			blob, err := p.Get(fetchCtx, ChunkShardKey(entry.ArchiveID, index, shard.Part))
+			// Not there, or not a part: a definite answer, written down, and
+			// a failure the race goes on past (lostparts.go).
+			if reason := lostReasonFor(blob, err); reason != "" {
+				v.noteLostPart(entry.ID, entry.ArchiveID, shard, reason)
+				if err == nil {
+					err = errors.New(reason)
+				}
+			}
 			if err != nil {
 				results <- shardFetch{shard: shard, took: time.Since(started),
 					err: fmt.Errorf("part %d from %s: %w", shard.Part, cfg.Name, err)}

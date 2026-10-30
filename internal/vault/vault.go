@@ -224,6 +224,11 @@ type Vault struct {
 	rekeyMu sync.Mutex
 	rekey   rekeyMemory
 
+	// lost is the parts an answering account has said it does not hold, by
+	// file ID and part; lostMu is a leaf lock like rekeyMu. See lostparts.go.
+	lostMu sync.Mutex
+	lost   map[string]map[int]LostPart
+
 	// replicateSlot is the one slot a replica is made in, taken with TryLock
 	// the way migrateMu is; replicate is what the worker remembers between
 	// steps, under replicateMu, a leaf lock like rekeyMu. See replica.go.
@@ -2597,7 +2602,9 @@ func (v *Vault) Stats() (Stats, error) {
 		for _, sh := range e.Shards {
 			s.StoredBytes += sh.Size
 		}
-		if e.Redundancy() < e.Scheme().Total {
+		// Less what something has found missing from an answering account
+		// (lostparts.go), so the count agrees with the list it opens.
+		if distinctShardsBut(e.Shards, v.lostPartsOf(e)) < e.Scheme().Total {
 			s.Degraded++
 		}
 		if e.KeyID != v.dataKeyID {

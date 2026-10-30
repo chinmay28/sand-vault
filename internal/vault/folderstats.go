@@ -102,7 +102,7 @@ func (v *Vault) FolderStats(scope Scope, dir string) (*FolderStats, error) {
 		if e.ModifiedAt.After(newest) {
 			newest = e.ModifiedAt
 		}
-		if e.Redundancy() < e.Scheme().Total {
+		if distinctShardsBut(e.Shards, v.lostPartsOf(e)) < e.Scheme().Total {
 			out.Degraded++
 		}
 		for _, sh := range e.Shards {

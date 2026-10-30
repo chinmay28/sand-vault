@@ -580,7 +580,7 @@ func (v *Vault) Fetch(ctx context.Context, id string) ([]byte, *Entry, error) {
 		return data, entry, nil
 	}
 
-	data, err := v.gather(ctx, snapshot.Shards, snapshot.Scheme(), snapshot.KeyID, snapshot.Path())
+	data, err := v.gatherOf(ctx, snapshot.ID, snapshot.ArchiveID, snapshot.Shards, snapshot.Scheme(), snapshot.KeyID, snapshot.Path())
 	if err != nil {
 		return nil, nil, err
 	}
@@ -598,7 +598,17 @@ func (v *Vault) Fetch(ctx context.Context, id string) ([]byte, *Entry, error) {
 //
 // label names the thing being read, for error messages: a path for a file, a
 // description for anything else.
+//
+// A part that arrives and is not a part — too short, or not parseable — is a
+// failure like any other, and the race goes on to the next account: a spare
+// part on another cloud is what a spare is for. entryID and archiveID name
+// the file so the loss can be written down (lostparts.go); empty when the
+// parts are not a file's own.
 func (v *Vault) gather(ctx context.Context, shards []Shard, scheme archive.Scheme, keyID, label string) ([]byte, error) {
+	return v.gatherOf(ctx, "", "", shards, scheme, keyID, label)
+}
+
+func (v *Vault) gatherOf(ctx context.Context, entryID, archiveID string, shards []Shard, scheme archive.Scheme, keyID, label string) ([]byte, error) {
 	v.mu.RLock()
 	if v.dataKey == nil {
 		v.mu.RUnlock()
@@ -640,6 +650,14 @@ func (v *Vault) gather(ctx context.Context, shards []Shard, scheme archive.Schem
 				return
 			}
 			blob, err := p.Get(fetchCtx, shard.Key)
+			if reason := lostReasonFor(blob, err); reason != "" {
+				if entryID != "" {
+					v.noteLostPart(entryID, archiveID, shard, reason)
+				}
+				if err == nil {
+					err = errors.New(reason)
+				}
+			}
 			if err != nil {
 				results <- shardFetch{shard: shard, took: time.Since(started), err: fmt.Errorf(
 					"part %d from %s: %w", shard.Part, cfg.Name, err)}
@@ -1296,6 +1314,14 @@ func (v *Vault) Health(ctx context.Context, id string) (*FileHealth, error) {
 				info, err := p.Stat(ctx, key)
 				if err != nil {
 					health.Shards[i].Error = err.Error()
+					v.noteLostPart(id, archiveID, shard, lostReasonFor(nil, err))
+					return
+				}
+				// There, but too short to be a part: not present, and said
+				// so, rather than a tick beside "0 B" (lostparts.go).
+				if partTooShort(info.Size) {
+					health.Shards[i].Error = truncatedReason(info.Size)
+					v.noteLostPart(id, archiveID, shard, health.Shards[i].Error)
 					return
 				}
 				total += info.Size

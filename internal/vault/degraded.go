@@ -52,10 +52,16 @@ type DegradedFile struct {
 	Missing int `json:"missing"`
 	Spare   int `json:"spare"`
 
-	// Readable says the index still records k parts. False is the serious case:
-	// the file cannot be rebuilt from what is written down, and no amount of
-	// moving it between clouds will change that.
+	// Readable says k parts remain. False is the serious case: the file
+	// cannot be rebuilt from what is left, and no amount of moving it
+	// between clouds will change that.
 	Readable bool `json:"readable"`
+
+	// Lost names the recorded parts an account that was answering has said
+	// it does not hold — not found, or too short to be a part — since this
+	// process started looking (lostparts.go). They are counted as missing
+	// above; this is the why, for the row to show.
+	Lost []LostPart `json:"lost,omitempty"`
 
 	ModifiedAt time.Time `json:"modified_at"`
 }
@@ -122,15 +128,28 @@ func (v *Vault) Degraded(offset, limit int) (*DegradedPage, error) {
 	var all []DegradedFile
 	for _, e := range v.manifest.Entries {
 		scheme := e.Scheme()
-		stored := e.Redundancy()
+		// What the index records, less what something has found to be
+		// missing from an account that was answering.
+		lost := v.lostPartsOf(e)
+		stored := distinctShardsBut(e.Shards, lost)
 		if stored >= scheme.Total {
 			continue
 		}
+		readable := stored >= scheme.Data
+		spare := stored - scheme.Data
+		if spare < 0 {
+			spare = 0
+		}
 
 		page.Bytes += e.Size
-		if !e.Recoverable() {
+		if !readable {
 			page.Unreadable++
 		}
+		var lostRows []LostPart
+		for _, l := range lost {
+			lostRows = append(lostRows, l)
+		}
+		sort.Slice(lostRows, func(i, j int) bool { return lostRows[i].Part < lostRows[j].Part })
 
 		all = append(all, DegradedFile{
 			ID:          e.ID,
@@ -144,8 +163,9 @@ func (v *Vault) Degraded(offset, limit int) (*DegradedPage, error) {
 			TotalShards: scheme.Total,
 			Stored:      stored,
 			Missing:     scheme.Total - stored,
-			Spare:       e.Spare(),
-			Readable:    e.Recoverable(),
+			Spare:       spare,
+			Readable:    readable,
+			Lost:        lostRows,
 			ModifiedAt:  e.ModifiedAt,
 		})
 	}

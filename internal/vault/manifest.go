@@ -124,6 +124,21 @@ func (e *Entry) Path() string { return JoinPath(e.Dir, e.Name) }
 // Scheme().Tolerance() accounts and still be read.
 func (e *Entry) Redundancy() int { return distinctShards(e.Shards) }
 
+// distinctShardsBut is distinctShards with the parts something has found
+// missing left out: what can really be read, as far as anyone has looked.
+func distinctShardsBut(shards []Shard, lost map[int]LostPart) int {
+	if len(lost) == 0 {
+		return distinctShards(shards)
+	}
+	seen := map[int]bool{}
+	for _, s := range shards {
+		if _, gone := lost[s.Part]; !gone {
+			seen[s.Part] = true
+		}
+	}
+	return len(seen)
+}
+
 // Recoverable reports whether enough shards are recorded to rebuild the file at
 // all. It is a claim about the index rather than about the accounts — Health
 // asks them.

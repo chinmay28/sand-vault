@@ -2139,7 +2139,10 @@ still encrypted rather than rebuilt. A folder takes everything under it. See
 [Moving something to different clouds](#moving-something-to-different-clouds).
 
 `sand check --all` exits non-zero when anything is degraded or unrecoverable,
-which makes it a reasonable cron job.
+which makes it a reasonable cron job. A part that is on the account but too
+short to be a part — the zero-length file a removable disk leaves behind when
+it loses power after accepting a write — counts as missing, and is reported
+as *0 B on disk — truncated*.
 
 Film details have no CLI of their own. Matching a folder is a thing you look at
 while it happens — the posters, the misses, the match you have to correct by
@@ -2776,7 +2779,7 @@ one walk, so comparing them costs nothing.
 | GET · POST · DELETE | `/api/files/{id}/movie` | What film this is / look it up (`query`, `year`, `tmdb_id`) / forget it |
 | GET | `/api/files/{id}/movie/candidates?q=` | Search the database without storing anything, to correct a match |
 | GET | `/api/files/{id}/health` | Per-part reachability |
-| GET | `/api/degraded?offset=&limit=` | The files missing at least one part, worst first and paged — what the accounts panel's "N files missing a spare part" is counting |
+| GET | `/api/degraded?offset=&limit=` | The files missing at least one part, worst first and paged — what the accounts panel's "N files missing a spare part" is counting. Each row's `lost` names the recorded parts an account has said it does not hold since the server started — not found, or a zero-length file — with the account and the reason |
 | POST | `/api/files/{id}/move` | Rename / move into another folder |
 | DELETE | `/api/files/{id}` | Erase every part |
 | GET | `/api/folders` | Every folder in the vault, for a destination picker |

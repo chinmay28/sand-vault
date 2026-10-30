@@ -534,6 +534,22 @@ function DegradedRow({ file, mobile, onRepair }) {
             whiteSpace: 'nowrap',
           }}
         >{file.dir === '/' ? '' : `${file.dir} · `}{formatBytes(file.size)} · {schemeName(scheme)}</div>
+
+        {/* A part the index records that an account has said it does not
+            hold — not found, or a zero-length file where the part should be,
+            which a removable disk leaves behind when it loses power after
+            accepting the write. Said here, because the empty square alone
+            reads as "never stored", and this one was. */}
+        {file.lost?.length > 0 && (
+          <div style={{ marginTop: '5px', fontFamily: FONT.sans, fontSize: '11px', lineHeight: 1.45, color: COLORS.textDim }}>
+            {file.lost.map((l) => (
+              <div key={l.part}>
+                <span style={{ fontFamily: FONT.mono, color: COLORS.error }}>part {l.part} on {l.provider_name}</span>
+                {' — '}{l.reason}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <div style={{
@@ -545,13 +561,16 @@ function DegradedRow({ file, mobile, onRepair }) {
       }}>
         <span style={{ display: 'flex', alignItems: 'center', gap: '3px' }}>
           {Array.from({ length: scheme.total }, (_, i) => i + 1).map((part) => {
-            const shard = file.shards.find((s) => s.part === part)
+            const lost = file.lost?.find((l) => l.part === part)
+            const shard = lost ? null : file.shards.find((s) => s.part === part)
             return (
               <span
                 key={part}
                 title={shard
                   ? `Part ${part} on ${shard.provider_name}`
-                  : `Part ${part} was never stored`}
+                  : lost
+                    ? `Part ${part} on ${lost.provider_name}: ${lost.reason}`
+                    : `Part ${part} was never stored`}
                 style={{
                   width: scheme.total > 3 ? '12px' : '19px',
                   height: '16px',
@@ -563,9 +582,9 @@ function DegradedRow({ file, mobile, onRepair }) {
                   alignItems: 'center',
                   justifyContent: 'center',
                   flexShrink: 0,
-                  color: shard ? COLORS.bg : COLORS.textMuted,
+                  color: shard ? COLORS.bg : lost ? COLORS.error : COLORS.textMuted,
                   background: shard ? accountColor(shard.provider_id) : 'transparent',
-                  border: shard ? 'none' : `1px dashed ${COLORS.border}`,
+                  border: shard ? 'none' : `1px dashed ${lost ? COLORS.error : COLORS.border}`,
                 }}
               >{part}</span>
             )

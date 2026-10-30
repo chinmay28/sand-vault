@@ -1402,10 +1402,19 @@ func (v *Vault) reachableParts(ctx context.Context, e *Entry, online map[string]
 				if e.Chunked() {
 					key = ChunkShardKey(e.ArchiveID, index, shard.Part)
 				}
-				if _, err := p.Stat(ctx, key); err != nil {
+				info, err := p.Stat(ctx, key)
+				if err != nil {
 					if !errors.Is(err, provider.ErrNotFound) {
 						unanswered(err)
+						return
 					}
+					v.noteLostPart(e.ID, e.ArchiveID, shard, lostReasonFor(nil, err))
+					return
+				}
+				// An object too short to be a part is as definite an answer
+				// as "not found", and recorded the same way (lostparts.go).
+				if partTooShort(info.Size) {
+					v.noteLostPart(e.ID, e.ArchiveID, shard, truncatedReason(info.Size))
 					return
 				}
 			}

@@ -322,7 +322,7 @@ func (r *RelocationReport) Done() bool {
 // clouds possible at all — five names no scheme of its own — and what lets a
 // move be a deliberate change of tradeoff rather than only a change of address.
 func (v *Vault) PlanRelocation(scope Scope, target string, accounts []string, scheme archive.Scheme) (*RelocationPlan, error) {
-	plan, err := v.planRelocation(scope, target, accounts, scheme, relocationOptions{})
+	plan, err := v.planRelocation(scope, target, accounts, scheme, relocationOptions{absent: v.knownAbsent()})
 	if err != nil {
 		return nil, err
 	}
@@ -454,8 +454,12 @@ func (v *Vault) planRelocation(scope Scope, target string, accounts []string, sc
 // repeat: running it again moves whatever is still not where it was asked to be.
 // A file whose account is offline is reported and left alone rather than holding
 // up the rest. progress may be nil.
+//
+// Parts something has found to be missing (lostparts.go) are treated as
+// absent, so a repair writes them again rather than keeping a zero-length
+// file as a part that is "already in place".
 func (v *Vault) Relocate(ctx context.Context, scope Scope, target string, accounts []string, scheme archive.Scheme, progress ProgressFunc) (*RelocationReport, error) {
-	return v.relocate(ctx, scope, target, accounts, scheme, relocationOptions{}, progress, nil)
+	return v.relocate(ctx, scope, target, accounts, scheme, relocationOptions{absent: v.knownAbsent()}, progress, nil)
 }
 
 // RelocateWatched is Relocate reporting as it goes: which file it is on, and —
@@ -463,7 +467,7 @@ func (v *Vault) Relocate(ctx context.Context, scope Scope, target string, accoun
 // accounts, against the plan's estimate of the whole. watch is called from the
 // goroutines doing the copying and must not block.
 func (v *Vault) RelocateWatched(ctx context.Context, scope Scope, target string, accounts []string, scheme archive.Scheme, watch func(RelocationProgress)) (*RelocationReport, error) {
-	return v.relocate(ctx, scope, target, accounts, scheme, relocationOptions{}, nil, watch)
+	return v.relocate(ctx, scope, target, accounts, scheme, relocationOptions{absent: v.knownAbsent()}, nil, watch)
 }
 
 // relocate is Relocate with the assumptions spelled out — see relocationOptions.
@@ -1175,6 +1179,8 @@ func (v *Vault) commitRelocation(ctx context.Context, plan *FilePlan, landed []P
 		entry.Shards = previous
 		return nil, fmt.Errorf("recording where %s moved to: %w", plan.Path, err)
 	}
+	// Whatever was found missing has been written again or let go of.
+	v.forgetLostParts(entry.ID)
 
 	out.dropped += dropped
 	out.moved -= skipped

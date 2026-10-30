@@ -405,6 +405,20 @@ func Seal(h *Header, m *Metadata, partData, key []byte) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// MinPartSize is a floor no well-formed part of any version can be under:
+// the chunked layout's header — magic, version, part number, archive ID,
+// chunk index, nonce — then the payload length and an AES-GCM tag over an
+// empty payload. Every other version's header is longer, and a real part
+// carries its metadata in the payload besides, so this is a floor rather
+// than the weight of the smallest part. An object
+// shorter than this under a part's name is not a part that reads badly, it
+// is not a part at all: a zero-length file is the usual case, and it is what
+// a removable disk leaves behind when it loses power or is unplugged after
+// acknowledging a write but before its cache reached the platters. A size
+// check against this is how an account that is answering can say the part
+// is gone without the part being read.
+const MinPartSize = len(Magic) + 1 + 1 + 16 + 4 + crypto.NonceSize + 4 + 16
+
 // ReadPart parses a part file without decrypting it.
 func ReadPart(data []byte) (*Part, error) {
 	if len(data) < 5 {

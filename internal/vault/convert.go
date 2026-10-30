@@ -329,6 +329,12 @@ func (v *Vault) fetchLegacyParts(ctx context.Context, entry *Entry, configs map[
 			return nil, fmt.Errorf("part %d: %w", s.shard.Part, err)
 		}
 		blob, err := p.Get(ctx, s.shard.Key)
+		if reason := lostReasonFor(blob, err); reason != "" {
+			v.noteLostPart(entry.ID, entry.ArchiveID, s.shard, reason)
+			if err == nil {
+				err = errors.New(reason)
+			}
+		}
 		if err != nil {
 			return nil, fmt.Errorf("part %d from %s: %w", s.shard.Part, s.cfg.Name, err)
 		}

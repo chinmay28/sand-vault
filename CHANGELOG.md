@@ -12,6 +12,28 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### A zero-length part is a missing part, and a read goes past it
+
+A removable disk that loses power or is unplugged after accepting a write can
+leave a zero-length file under the part's name. Everything that looked at
+parts took the name for the part: the inspector drew a tick beside "0 B", the
+folder automation counted it present and repaired nothing, the degraded list
+did not know, and a read that happened to pick it failed on parsing it even
+when a spare part sat on another cloud — which is how a re-encryption came to
+be stuck on files that could have been read. An object shorter than any part
+can be (`sandfile.MinPartSize`) is now missing wherever parts are checked:
+the inspector and `sand files check` say *0 B on disk — truncated*, the
+automation sweep rebuilds the file, and a read treats a part that arrives
+too short or unparseable as a failed account and goes on to the next, so a
+spare does what a spare is for.
+
+What a read, a check or a sweep finds missing from an account that was
+answering is also written down for the life of the process (`lostparts.go`):
+the files-missing-a-part panel lists the file with the part, the account and
+the reason, and a repair onto the same clouds writes the part again instead
+of keeping the empty file as "already in place". A re-encryption that moves
+the file past the loss clears it, as does a repair.
+
 ### The files still on the previous key can be listed, with why each one is waiting
 
 The re-encryption panel counted the files left on the previous key — seven,
