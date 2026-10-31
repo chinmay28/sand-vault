@@ -227,6 +227,10 @@ func (v *Vault) rotate(oldPassword, newPassword string, plan *RekeySettings) err
 	// writes are on a key another vault minted, and after this they are not.
 	// The sealed sections (accounts, index, settings) are re-sealed below.
 	sf.ManifestBackupDisabled = v.store.ManifestBackupDisabled
+	if v.store.ManifestBackupDelaySeconds != nil {
+		delay := *v.store.ManifestBackupDelaySeconds
+		sf.ManifestBackupDelaySeconds = &delay
+	}
 	sf.DefaultAccounts = append([]string(nil), v.store.DefaultAccounts...)
 	sf.DefaultScheme = v.store.DefaultScheme
 	sf.HealthCheckMinutes = v.store.HealthCheckMinutes
@@ -342,6 +346,7 @@ func (v *Vault) rotate(oldPassword, newPassword string, plan *RekeySettings) err
 	}
 
 	v.store = sf
+	v.applyBackupDelayLocked()
 	v.vaultKey = newVaultKey
 	v.dataKey = dataKey
 	v.dataKeyID = sf.DataKeyID

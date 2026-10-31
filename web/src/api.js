@@ -859,6 +859,13 @@ export const api = {
      setting that changed nothing. */
   setManifestBackup: (enabled) =>
     request('/api/vault/backup', { method: 'POST', body: { enabled } }),
+
+  /* How far apart the pushes of the index are kept: whole seconds, 0 for a
+     push the moment the index changes, up to an hour. Its own route rather
+     than a field on setManifestBackup, whose `enabled` is not optional — a
+     body meant only to change the delay must never read as "switch it off". */
+  setManifestBackupDelay: (seconds) =>
+    request('/api/vault/backup/delay', { method: 'POST', body: { seconds } }),
   /* Claims the connected accounts for this vault, replacing a copy of the
      index it cannot open. What an account repaired after a recovery needs: the
      push that followed the recovery could not reach it, so it is still holding

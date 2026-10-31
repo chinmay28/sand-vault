@@ -177,7 +177,11 @@ still be rebuilt. If fewer than m succeed, the ones that did land are deleted
 rather than left as orphans.
 
 Each account also receives `manifest.sand`, an encrypted copy of the index, so
-that losing your vault file is survivable. See
+that losing your vault file is survivable. It is rewritten after every change
+to the index, at most once every five seconds — a folder of a few hundred
+files going in or out is a handful of writes per account rather than a few
+hundred. The gap is **Vault settings › Index backup** in the app, or
+`sand vault backup --every 30s`. See
 [Losing the vault file](#losing-the-vault-file).
 
 ### The date a file keeps
@@ -1993,7 +1997,9 @@ sand vault policy [strict|redundant]          Show or set placement policy
 sand vault defaults [account]... [--scheme m-of-n] [--clear]
                                               Show or set the clouds uploads go to,
                                               and the code they are cut with
-sand vault backup [--disable|--enable]        Write the encrypted index to every account
+sand vault backup [--disable|--enable] [--every 5s]
+                                              Write the encrypted index to every account,
+                                              and set how far apart the automatic writes are kept
 sand vault recover [--from ACCOUNT]           Rebuild a lost vault from an account's copy
 sand vault recover --resume                   Finish one, once the rest of the clouds are back
 sand vault reclaim [--account NAME]...        Re-encrypt recovered files under your own key

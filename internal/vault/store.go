@@ -214,6 +214,14 @@ type storeFile struct {
 	// feature — means the backup is on, which is the default.
 	ManifestBackupDisabled bool `json:"manifest_backup_disabled,omitempty"`
 
+	// ManifestBackupDelaySeconds is the least time between two pushes of the
+	// manifest to the accounts, so that a burst of index changes — a bulk
+	// delete, a folder arriving — is a few pushes rather than one per change.
+	// Absent means the default (DefaultBackupDelay); a stored zero means push
+	// at once, which is why it is a pointer rather than a plain integer with
+	// zero standing for the default. See backuppace.go.
+	ManifestBackupDelaySeconds *int `json:"manifest_backup_delay_seconds,omitempty"`
+
 	// InheritedKeyID names a data key this vault did not mint: the one a
 	// recovery adopted from the vault it rebuilt.
 	//

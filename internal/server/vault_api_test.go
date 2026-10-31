@@ -112,6 +112,12 @@ func (c *testClient) setup(password string, accounts int) []string {
 	if w.Code != http.StatusCreated {
 		c.t.Fatalf("init vault: %d %s", w.Code, w.Body.String())
 	}
+	// Pushes of the index to the accounts are paced a few seconds apart; a
+	// test that uploads and reads the copy back wants them at once. The
+	// pacing is tested on its own in the vault package.
+	if err := c.server.vault.SetBackupDelay(0); err != nil {
+		c.t.Fatalf("SetBackupDelay: %v", err)
+	}
 
 	roots := make([]string, accounts)
 	base := c.t.TempDir()

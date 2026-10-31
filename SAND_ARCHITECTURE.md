@@ -234,7 +234,9 @@ are encrypted under the random `data_key`, which existed in exactly one place.
 Password in hand, every part in every account was permanently opaque.
 
 So a copy of the index travels with the data. Each connected account receives
-`manifest.sand`, rewritten whenever the index changes:
+`manifest.sand`, rewritten whenever the index changes — paced, so that a burst
+of changes is a few rewrites rather than one each (see the end of this
+section):
 
 ```json
 {
@@ -263,6 +265,29 @@ all the others. The film database key is excluded for the same reason and is
 not part of the manifest at all — it lives in the vault file's own `settings`
 section (§3.11). Film *details* do travel, because they are index: recovering
 from a backup gives back every title and asks for the key again.
+
+**When it is written.** Every write to the vault file asks for a push, and
+writes come in bursts: a bulk delete, a folder of photos arriving, an import.
+A push is a round trip to every account, and a provider asked to replace the
+same object a hundred times in a minute starts answering 429. So pushes are
+paced (`internal/vault/backuppace.go`): the first change after a quiet spell
+is pushed at once; changes that follow within the gap wait for it to pass and
+go out as one push; a change that lands while a push is out is pushed once it
+has finished and the gap has passed again. Pushes therefore start at least a
+gap apart, measured from the end of one to the start of the next, and no
+change waits longer than a gap and a push. The gap is five seconds unless the
+vault says otherwise — `manifest_backup_delay_seconds` in the clear in the
+vault file, beside `manifest_backup_disabled`; zero is a push the moment the
+index changes — and it is set from **Vault settings › Index backup**, with
+`sand vault backup --every`, or with `POST /api/vault/backup/delay`. A
+command about to exit, and anything else that calls `AwaitBackupSync`, does
+not sit out the gap: a push that is waiting is started at once — and so does
+`sand serve` on an orderly stop (Ctrl-C, SIGTERM), for up to thirty seconds,
+so a restart inside the gap does not leave the copies a change behind. A
+vault locked with a push waiting pushes nothing; the next unlock brings the
+copies up to date, as it always did. The vault file itself is never behind:
+it is written before any request is answered, and the pacing only concerns
+the replicas of it.
 
 **What it costs.** Every copy is a password away from the data key, so a single
 compromised account plus a cracked password yields the tree, the placement map,
@@ -2581,6 +2606,7 @@ reveals only whether a vault exists.
 | POST | `/api/vault/policy` | Change placement policy |
 | POST | `/api/vault/defaults` | Set the accounts uploads use by default — any multiple of 3, which chooses the scheme (§5.3); empty list = pick per file |
 | POST | `/api/vault/backup` | Turn replication of the index to the accounts on or off (off erases the copies out there) |
+| POST | `/api/vault/backup/delay` | How far apart the automatic pushes of the index are kept (`seconds`, 0 to 3600; the status reports it as `manifest_backup_delay_seconds`) |
 | GET | `/api/vault/recovery` | Is a connected account carrying a vault this one could recover? (§3.7) |
 | POST | `/api/vault/recovery` | Adopt that index (`password` — the *lost* vault's, `provider_id`, `dry_run`) |
 | POST | `/api/vault/recovery/resume` | Re-point the index at accounts reconnected since (`dry_run`; no password) |

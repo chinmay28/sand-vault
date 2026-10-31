@@ -396,6 +396,10 @@ func (v *Vault) adoptKit(kit *Kit, password string) error {
 	sf.DefaultAccounts = append([]string(nil), kit.DefaultAccounts...)
 	sf.DefaultScheme = kit.DefaultScheme
 	sf.ManifestBackupDisabled = kit.ManifestBackupDisabled
+	if kit.ManifestBackupDelaySeconds != nil {
+		delay := *kit.ManifestBackupDelaySeconds
+		sf.ManifestBackupDelaySeconds = &delay
+	}
 
 	// The copies on the accounts are sealed under the lost vault's key, which
 	// is not this one, so the foreign-backup guard has to stand aside for
@@ -432,6 +436,7 @@ func (v *Vault) adoptKit(kit *Kit, password string) error {
 	}
 
 	v.store = sf
+	v.applyBackupDelayLocked()
 	v.vaultKey = vaultKey
 	v.dataKey = dataKey
 	v.dataKeyID = kit.Snapshot.KeyID

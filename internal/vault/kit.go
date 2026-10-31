@@ -130,6 +130,9 @@ type Kit struct {
 	DefaultScheme          string   `json:"default_scheme,omitempty"`
 	MovieAPIKey            string   `json:"movie_api_key,omitempty"`
 	ManifestBackupDisabled bool     `json:"manifest_backup_disabled,omitempty"`
+	// Absent when the vault never chose one, so a kit from a build before
+	// the setting — or a vault on the default — restores to the default.
+	ManifestBackupDelaySeconds *int `json:"manifest_backup_delay_seconds,omitempty"`
 
 	// ReadHistory is the .reads sidecar's plaintext, carried decoded. It is
 	// sealed under the data key on disk, and the data key is in Snapshot, so
@@ -356,6 +359,10 @@ func (v *Vault) buildKitLocked(kitID string) *Kit {
 		DefaultAccounts:        append([]string(nil), v.store.DefaultAccounts...),
 		DefaultScheme:          v.store.DefaultScheme,
 		ManifestBackupDisabled: v.store.ManifestBackupDisabled,
+	}
+	if v.store.ManifestBackupDelaySeconds != nil {
+		delay := *v.store.ManifestBackupDelaySeconds
+		kit.ManifestBackupDelaySeconds = &delay
 	}
 	if v.settings != nil {
 		kit.MovieAPIKey = v.settings.MovieAPIKey

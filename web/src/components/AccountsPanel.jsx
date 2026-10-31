@@ -515,6 +515,7 @@ export default function AccountsPanel({
       {settingsOpen && (
         <VaultSettings
           providers={providers}
+          status={status}
           stats={stats}
           webdav={webdav}
           health={health}

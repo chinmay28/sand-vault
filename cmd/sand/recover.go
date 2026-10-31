@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -24,6 +25,7 @@ func vaultBackupCmd() *cobra.Command {
 		force   bool
 		enable  bool
 		disable bool
+		every   time.Duration
 	)
 
 	cmd := &cobra.Command{
@@ -37,8 +39,10 @@ file required. It holds the file tree, the map of which account holds which
 part, and the key those parts are encrypted under. It never holds the
 credentials for any account.
 
-This runs automatically whenever the index changes. Use this command to force
-it, or to turn it off with --disable.`,
+This runs automatically whenever the index changes — at most once every few
+seconds, so that a burst of changes is a few writes per account rather than one
+each; --every sets how far apart. Use this command to force a write, or to turn
+the backup off with --disable.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if enable && disable {
 				return fmt.Errorf("pick one of --enable or --disable")
@@ -49,6 +53,20 @@ it, or to turn it off with --disable.`,
 				return err
 			}
 			defer closeVault(v)
+
+			if cmd.Flags().Changed("every") {
+				if err := v.SetBackupDelay(every); err != nil {
+					return err
+				}
+				if d := v.BackupDelay(); d == 0 {
+					fmt.Println("The index is now written to the accounts the moment it changes.")
+				} else {
+					fmt.Printf("The index is now written to the accounts at most once every %s after a change.\n", d)
+				}
+				if !force && !enable && !disable {
+					return nil
+				}
+			}
 
 			switch {
 			case disable:
@@ -92,6 +110,9 @@ it, or to turn it off with --disable.`,
 	cmd.Flags().BoolVar(&enable, "enable", false, "turn the manifest backup on for this vault")
 	cmd.Flags().BoolVar(&disable, "disable", false,
 		"turn it off and erase the copies already on the accounts")
+	cmd.Flags().DurationVar(&every, "every", vault.DefaultBackupDelay,
+		"write the index at most this often after a change, so a burst of changes is a few "+
+			"writes rather than one each (whole seconds, up to 1h; 0s writes at once)")
 	return cmd
 }
 
