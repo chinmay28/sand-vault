@@ -1199,27 +1199,61 @@ type ShardHealth struct {
 	Error   string `json:"error,omitempty"`
 }
 
-// FileHealth reports whether a file can still be rebuilt.
-type FileHealth struct {
-	ID          string        `json:"id"`
-	Path        string        `json:"path"`
+// PlacementHealth is what a check of one placement found: the parts, or the
+// replica, each being a set of shards cut under one code and kept on a set
+// of accounts. The two are read the same way, so they are reported the same
+// way.
+type PlacementHealth struct {
 	Recoverable bool          `json:"recoverable"`
 	Shards      []ShardHealth `json:"shards"`
 
-	// Scheme is the code the file was cut with, written as "4-of-6". Needed is
-	// how many shards a rebuild takes, and Spare how many more than that are
-	// currently reachable — the number of further accounts that could go dark
-	// before the file was at risk.
+	// Scheme is the code the placement was cut with, written as "4-of-6".
+	// Needed is how many shards a rebuild takes, and Spare how many more than
+	// that are currently reachable — the number of further accounts that
+	// could go dark before the placement was at risk.
 	Scheme string `json:"scheme"`
 	Needed int    `json:"needed"`
 	Spare  int    `json:"spare"`
 
-	// ChunksSampled is how many of a chunked file's chunks were actually
+	// ChunksSampled is how many of a chunked placement's chunks were actually
 	// checked, and ChunkCount how many it has. They are equal for a small file
 	// and for one stored whole; where they differ, the answer is drawn from a
 	// sample and Recoverable means "the sampled chunks can be rebuilt".
 	ChunksSampled int `json:"chunks_sampled,omitempty"`
 	ChunkCount    int `json:"chunk_count,omitempty"`
+}
+
+// ReplicaHealth is the replica's placement checked the way the parts are:
+// every shard looked for in its account's replica folder, under the
+// replica's own archive ID and chunking. See replica.go.
+type ReplicaHealth struct {
+	PlacementHealth
+
+	// Whole says the replica is the sealed file entire on one account,
+	// rather than cut across several — the one placement SAND allows that
+	// shape.
+	Whole bool `json:"whole"`
+
+	// PreviousKey says the replica is still sealed under a key the vault has
+	// since moved on from. It reads all the same; the worker remakes it on
+	// the current key in its turn.
+	PreviousKey bool `json:"previous_key,omitempty"`
+
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// FileHealth reports whether a file can still be rebuilt: from its parts,
+// and — where it has one — from its replica, each checked on its own.
+type FileHealth struct {
+	ID   string `json:"id"`
+	Path string `json:"path"`
+	PlacementHealth
+
+	// Replica is the file's second placement checked against its accounts,
+	// or nil for a file that has none. Its shards are in folders of their own
+	// and under an archive ID of their own, so a part and a replica shard on
+	// the same account are two objects, and each is looked for where it is.
+	Replica *ReplicaHealth `json:"replica,omitempty"`
 }
 
 // healthSampleLimit caps how many chunks one health check stats per part.
@@ -1233,9 +1267,58 @@ type FileHealth struct {
 // than SAND; `sand check --all` is the exhaustive answer.
 const healthSampleLimit = 4
 
+// placementCheck is what one check of a placement needs from the index,
+// taken under the lock once so the stats that follow do not hold it: the
+// shards, the live config each one's account is reached through at the root
+// the placement is kept in, and the reason for any account that has none.
+type placementCheck struct {
+	shards     []Shard
+	configs    map[string]provider.Config
+	absent     map[string]string
+	archiveID  string
+	chunked    bool
+	chunkCount int
+	scheme     archive.Scheme
+}
+
+// placementCheckLocked gathers a placement check for an entry at one of its
+// accounts' two roots: the parts folder for the entry itself, the replica
+// folder for its replicaView. The caller must hold at least the read lock.
+func (v *Vault) placementCheckLocked(e *Entry, role provider.Role) placementCheck {
+	pc := placementCheck{
+		shards:     append([]Shard(nil), e.Shards...),
+		configs:    v.configsAtLocked(role, e.Shards),
+		absent:     map[string]string{},
+		archiveID:  e.ArchiveID,
+		chunked:    e.Chunked(),
+		chunkCount: e.ChunkCount,
+		scheme:     e.Scheme(),
+	}
+	for _, s := range e.Shards {
+		if _, ok := pc.configs[s.ProviderID]; ok {
+			continue
+		}
+		if _, ok := pc.absent[s.ProviderID]; ok {
+			continue
+		}
+		// An account that is connected but cannot be opened at the replica
+		// root has lost its replica folder, which is a different thing to
+		// say from "gone" — the parts on it are fine.
+		reason := fmt.Sprintf("account %q is no longer connected", s.ProviderName)
+		if cfg, ok := v.configForLocked(s.ProviderID); ok {
+			if _, err := cfg.AtRole(role); err != nil {
+				reason = err.Error()
+			}
+		}
+		pc.absent[s.ProviderID] = reason
+	}
+	return pc
+}
+
 // Health checks a file's parts against the accounts holding them, without
-// downloading any data. For a chunked file it samples chunks rather than
-// walking all of them — see healthSampleLimit.
+// downloading any data, and its replica against the replica folders holding
+// that where the file has one. For a chunked placement it samples chunks
+// rather than walking all of them — see healthSampleLimit.
 func (v *Vault) Health(ctx context.Context, id string) (*FileHealth, error) {
 	v.mu.RLock()
 	if v.dataKey == nil {
@@ -1247,30 +1330,58 @@ func (v *Vault) Health(ctx context.Context, id string) (*FileHealth, error) {
 		v.mu.RUnlock()
 		return nil, fmt.Errorf("no such file: %s", id)
 	}
-	shards := append([]Shard(nil), entry.Shards...)
-	path, archiveID := entry.Path(), entry.ArchiveID
-	chunked, chunkCount := entry.Chunked(), entry.ChunkCount
-	scheme := entry.Scheme()
-	configs := v.configsForLocked(shards)
+	path := entry.Path()
+	parts := v.placementCheckLocked(entry, provider.Parts)
+	var replica *ReplicaHealth
+	var replicaCheck placementCheck
+	if view := entry.replicaView(); view != nil {
+		replicaCheck = v.placementCheckLocked(view, provider.Replicas)
+		replica = &ReplicaHealth{
+			Whole:       entry.Replica.TotalShards == 1,
+			PreviousKey: v.replicaStaleKeyLocked(entry),
+			CreatedAt:   entry.Replica.CreatedAt,
+		}
+	}
 	v.mu.RUnlock()
 
-	sample := sampleChunks(chunked, chunkCount)
-	health := &FileHealth{
-		ID: id, Path: path,
-		Shards:        make([]ShardHealth, len(shards)),
+	health := &FileHealth{ID: id, Path: path}
+	if replica == nil {
+		health.PlacementHealth = v.checkPlacement(ctx, parts)
+		return health, nil
+	}
+	// The two placements are on different objects, and often different
+	// accounts, so they are asked about together rather than in turn.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		replica.PlacementHealth = v.checkPlacement(ctx, replicaCheck)
+	}()
+	health.PlacementHealth = v.checkPlacement(ctx, parts)
+	wg.Wait()
+	health.Replica = replica
+	return health, nil
+}
+
+// checkPlacement stats every shard of one placement where the index says it
+// is, in parallel, and says what the placement can still do.
+func (v *Vault) checkPlacement(ctx context.Context, pc placementCheck) PlacementHealth {
+	sample := sampleChunks(pc.chunked, pc.chunkCount)
+	health := PlacementHealth{
+		Shards:        make([]ShardHealth, len(pc.shards)),
 		ChunksSampled: len(sample),
 	}
-	if chunked {
-		health.ChunkCount = chunkCount
+	if pc.chunked {
+		health.ChunkCount = pc.chunkCount
 	}
 
 	var wg sync.WaitGroup
-	for i, shard := range shards {
+	for i, shard := range pc.shards {
 		health.Shards[i] = ShardHealth{Shard: shard}
 
-		cfg, ok := configs[shard.ProviderID]
+		cfg, ok := pc.configs[shard.ProviderID]
 		if !ok {
-			health.Shards[i].Error = fmt.Sprintf("account %q is no longer connected", shard.ProviderName)
+			health.Shards[i].Error = pc.absent[shard.ProviderID]
 			continue
 		}
 
@@ -1290,8 +1401,8 @@ func (v *Vault) Health(ctx context.Context, id string) (*FileHealth, error) {
 			var total int64
 			for _, index := range sample {
 				key := shard.Key
-				if chunked {
-					key = ChunkShardKey(archiveID, index, shard.Part)
+				if pc.chunked {
+					key = ChunkShardKey(pc.archiveID, index, shard.Part)
 				}
 				info, err := p.Stat(ctx, key)
 				if err != nil {
@@ -1314,14 +1425,14 @@ func (v *Vault) Health(ctx context.Context, id string) (*FileHealth, error) {
 			present[s.Part] = true
 		}
 	}
-	health.Recoverable = len(present) >= scheme.Data
-	health.Scheme = scheme.String()
-	health.Needed = scheme.Data
-	health.Spare = len(present) - scheme.Data
+	health.Recoverable = len(present) >= pc.scheme.Data
+	health.Scheme = pc.scheme.String()
+	health.Needed = pc.scheme.Data
+	health.Spare = len(present) - pc.scheme.Data
 	if health.Spare < 0 {
 		health.Spare = 0
 	}
-	return health, nil
+	return health
 }
 
 // sampleChunks picks which chunks a health check stats: all of them for a small

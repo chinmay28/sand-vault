@@ -526,7 +526,16 @@ function NameButton({ mobile, icon, label, location, chevron, disabled, title, o
    it is actually stored. */
 function describeParts(file) {
   const scheme = fileScheme(file)
-  return `${schemeName(scheme)} · ${storedParts(file.shards)} of ${scheme.total} shards stored`
+  const parts = `${schemeName(scheme)} · ${storedParts(file.shards)} of ${scheme.total} shards stored`
+  const r = file.replica
+  if (!r) return parts
+  /* The second placement in the same breath, so the hint says what the
+     inspector is going to show: a whole copy, or a replica cut its own way. */
+  const stored = new Set(r.shards.map((s) => s.part)).size
+  const replica = r.total_shards === 1
+    ? 'a whole replica on one cloud'
+    : `replica ${r.data_shards}-of-${r.total_shards}, ${stored} of ${r.total_shards} stored`
+  return `${parts} · ${replica}`
 }
 
 /* Which account holds each of the file's shards, as one coloured square each.

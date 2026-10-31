@@ -82,7 +82,7 @@ func describeSpread(e *vault.Entry) string {
 }
 
 // missingShards counts the shards a health check could not find.
-func missingShards(health *vault.FileHealth) int {
+func missingShards(health vault.PlacementHealth) int {
 	missing := 0
 	for _, s := range health.Shards {
 		if !s.Present {
@@ -865,25 +865,33 @@ func checkCmd() *cobra.Command {
 					return err
 				}
 
-				status := "ok"
-				if !health.Recoverable {
-					status = "UNRECOVERABLE"
-					problems++
-				} else if missing := missingShards(health); missing > 0 {
-					status = "degraded"
+				status, bad := placementStatus(health.PlacementHealth)
+				if bad {
 					problems++
 				}
-
 				fmt.Printf("%-40s %s  [%s, %d spare]\n",
 					health.Path, status, health.Scheme, health.Spare)
-				for _, s := range health.Shards {
-					mark := "✓"
-					detail := formatBytes(s.Size)
-					if !s.Present {
-						mark = "✗"
-						detail = s.Error
+				printShards(health.Shards, "shard")
+
+				// The second placement, where there is one, checked in the
+				// replica folders and judged on its own: a replica short of
+				// a shard is a file whose spare copy is thinner than it was
+				// told, which is what this command is for.
+				if r := health.Replica; r != nil {
+					status, bad := placementStatus(r.PlacementHealth)
+					if bad {
+						problems++
 					}
-					fmt.Printf("   %s shard %d on %-20s %s\n", mark, s.Part, s.ProviderName, detail)
+					shape := r.Scheme
+					if r.Whole {
+						shape = "whole copy"
+					}
+					note := ""
+					if r.PreviousKey {
+						note = ", on the previous key"
+					}
+					fmt.Printf("   replica %s  [%s, %d spare%s]\n", status, shape, r.Spare, note)
+					printShards(r.Shards, "replica shard")
 				}
 			}
 
@@ -896,6 +904,31 @@ func checkCmd() *cobra.Command {
 
 	cmd.Flags().BoolVar(&all, "all", false, "check every file in the vault")
 	return cmd
+}
+
+// placementStatus is the one word `sand check` says about a placement, and
+// whether it counts against the exit status.
+func placementStatus(h vault.PlacementHealth) (string, bool) {
+	if !h.Recoverable {
+		return "UNRECOVERABLE", true
+	}
+	if missingShards(h) > 0 {
+		return "degraded", true
+	}
+	return "ok", false
+}
+
+// printShards lists one placement's shards under its status line.
+func printShards(shards []vault.ShardHealth, what string) {
+	for _, s := range shards {
+		mark := "✓"
+		detail := formatBytes(s.Size)
+		if !s.Present {
+			mark = "✗"
+			detail = s.Error
+		}
+		fmt.Printf("   %s %s %d on %-20s %s\n", mark, what, s.Part, s.ProviderName, detail)
+	}
 }
 
 // collectAll walks the vault namespace and returns every entry.

@@ -966,3 +966,169 @@ func TestADegradedReplicaIsRefusedAndThePreviousOneKept(t *testing.T) {
 		t.Errorf("the next step = %+v, %v; want a wait, not another attempt", again, err)
 	}
 }
+
+// The health check asks after the replica as it asks after the parts: each
+// shard looked for in its account's replica folder, and each placement said
+// to be readable or not on its own.
+func TestHealthReportsTheReplicaBesideTheParts(t *testing.T) {
+	v, roots, replicaRoots := replicaVault(t, 3, 3, archive.Scheme{Data: 2, Total: 3})
+	if err := v.SetReplicate("/", on(true)); err != nil {
+		t.Fatal(err)
+	}
+	payload := bytes.Repeat([]byte("watched "), 700)
+	entry, _, err := v.Upload(context.Background(), MainScope, "/", "doc.bin", payload, UploadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Before the worker has been round, there is no replica to report.
+	health, err := v.Health(context.Background(), entry.ID)
+	if err != nil {
+		t.Fatalf("Health: %v", err)
+	}
+	if health.Replica != nil {
+		t.Fatalf("a file not yet replicated reports a replica: %+v", health.Replica)
+	}
+
+	replicate(t, v)
+	health, err = v.Health(context.Background(), entry.ID)
+	if err != nil {
+		t.Fatalf("Health: %v", err)
+	}
+	r := health.Replica
+	if r == nil {
+		t.Fatal("a replicated file reports no replica")
+	}
+	if !r.Recoverable || r.Scheme != "2-of-3" || r.Needed != 2 || r.Spare != 1 || r.Whole || r.PreviousKey {
+		t.Errorf("replica health = %+v, want a readable 2-of-3 with one spare", r.PlacementHealth)
+	}
+	if len(r.Shards) != 3 {
+		t.Fatalf("replica shards = %d, want 3", len(r.Shards))
+	}
+	for _, s := range r.Shards {
+		if !s.Present || s.Size <= 0 {
+			t.Errorf("replica shard %d on %s: present=%v size=%d error=%q", s.Part, s.ProviderName, s.Present, s.Size, s.Error)
+		}
+		if strings.Contains(s.ProviderID, replicaSuffix) {
+			t.Errorf("replica shard names the suffixed account id %q", s.ProviderID)
+		}
+	}
+	if r.ChunkCount <= 1 || r.ChunksSampled == 0 {
+		t.Errorf("a chunked replica reports chunk_count=%d chunks_sampled=%d", r.ChunkCount, r.ChunksSampled)
+	}
+	if r.CreatedAt.IsZero() {
+		t.Error("the replica's creation time is missing")
+	}
+
+	// A replica folder emptied is a replica shard gone, and only that: the
+	// parts on the same account are in their own folder and still answer.
+	emptyCloud(t, replicaRoots[0])
+	health, err = v.Health(context.Background(), entry.ID)
+	if err != nil {
+		t.Fatalf("Health after emptying a replica folder: %v", err)
+	}
+	if !health.Recoverable || health.Spare != 1 {
+		t.Errorf("the parts changed when a replica folder was emptied: %+v", health.PlacementHealth)
+	}
+	for _, s := range health.Shards {
+		if !s.Present {
+			t.Errorf("part %d on %s reported missing: %s", s.Part, s.ProviderName, s.Error)
+		}
+	}
+	gone := 0
+	for _, s := range health.Replica.Shards {
+		if !s.Present {
+			gone++
+			if s.ProviderID != entry.Shards[0].ProviderID && s.Error == "" {
+				t.Errorf("a missing replica shard carries no reason: %+v", s)
+			}
+		}
+	}
+	if gone != 1 || !health.Replica.Recoverable || health.Replica.Spare != 0 {
+		t.Errorf("after emptying one replica folder: %d gone, recoverable=%v spare=%d; want 1, true, 0",
+			gone, health.Replica.Recoverable, health.Replica.Spare)
+	}
+
+	// And the other way round: the parts folders go, the replica stands.
+	emptyCloud(t, roots[1])
+	emptyCloud(t, roots[2])
+	health, err = v.Health(context.Background(), entry.ID)
+	if err != nil {
+		t.Fatalf("Health after emptying the parts: %v", err)
+	}
+	if health.Recoverable {
+		t.Error("the parts read as recoverable with two of three folders emptied")
+	}
+	if !health.Replica.Recoverable {
+		t.Error("the replica stopped reading when the parts folders were emptied")
+	}
+}
+
+// A single-account replica is the whole sealed file, and says so.
+func TestHealthReportsAWholeCopyReplica(t *testing.T) {
+	v, _, _ := replicaVault(t, 2, 1, archive.WholeCopy)
+	if err := v.SetReplicate("/", on(true)); err != nil {
+		t.Fatal(err)
+	}
+	entry, _, err := v.Upload(context.Background(), MainScope, "/", "doc.bin", bytes.Repeat([]byte("whole "), 400), UploadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replicate(t, v)
+
+	health, err := v.Health(context.Background(), entry.ID)
+	if err != nil {
+		t.Fatalf("Health: %v", err)
+	}
+	r := health.Replica
+	if r == nil || !r.Whole || !r.Recoverable || len(r.Shards) != 1 || r.Scheme != "1-of-1" || r.Spare != 0 {
+		t.Fatalf("whole-copy replica health = %+v", r)
+	}
+}
+
+// An account that still holds the parts but has lost its replica folder is
+// named for what it is, not reported as disconnected.
+func TestHealthNamesAnAccountWithoutAReplicaFolder(t *testing.T) {
+	v, _, _ := replicaVault(t, 3, 3, archive.Scheme{Data: 2, Total: 3})
+	if err := v.SetReplicate("/", on(true)); err != nil {
+		t.Fatal(err)
+	}
+	entry, _, err := v.Upload(context.Background(), MainScope, "/", "doc.bin", bytes.Repeat([]byte("held "), 500), UploadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replicate(t, v)
+
+	ids := providerIDs(t, v)
+	v.mu.Lock()
+	for i := range v.providers {
+		if v.providers[i].ID == ids[0] {
+			v.providers[i].ReplicaFolder = ""
+		}
+	}
+	v.mu.Unlock()
+	v.forgetProvider(ids[0])
+
+	health, err := v.Health(context.Background(), entry.ID)
+	if err != nil {
+		t.Fatalf("Health: %v", err)
+	}
+	var found bool
+	for _, s := range health.Replica.Shards {
+		if s.ProviderID != ids[0] {
+			continue
+		}
+		found = true
+		if s.Present || !strings.Contains(s.Error, "no replica folder") {
+			t.Errorf("replica shard on the account without a folder: present=%v error=%q", s.Present, s.Error)
+		}
+	}
+	if !found {
+		t.Fatal("the replica has no shard on the first account")
+	}
+	for _, s := range health.Shards {
+		if !s.Present {
+			t.Errorf("part %d on %s reported missing: %s", s.Part, s.ProviderName, s.Error)
+		}
+	}
+}

@@ -621,66 +621,7 @@ export function ShardInspector({ file, providers = [], onClose, onChanged }) {
           {health.shards.map((shard) => (
             /* Keyed by the copy and not the part: a file spread over six
                 clouds has two rows for every part. */
-            <div key={`${shard.part}-${shard.provider_id}`} style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '12px',
-              padding: '11px 13px',
-              marginBottom: '8px',
-              background: COLORS.bg,
-              border: `1px solid ${shard.present ? COLORS.border : COLORS.error + '66'}`,
-              borderRadius: '6px',
-              fontFamily: FONT.mono,
-              fontSize: '11.5px',
-            }}>
-              <span style={{
-                color: shard.present ? COLORS.success : COLORS.error,
-                fontSize: '13px',
-              }}>{shard.present ? '✓' : '✗'}</span>
-
-              {/* The account's colour, so this list and the row's part badges
-                  can be read against each other. */}
-              <span
-                aria-hidden="true"
-                style={{
-                  width: '14px',
-                  height: '14px',
-                  flexShrink: 0,
-                  borderRadius: '3px',
-                  background: accountColor(shard.provider_id),
-                }}
-              />
-
-              <span style={{ flex: 1, minWidth: 0 }}>
-                <span style={{ color: COLORS.text }}>Shard {shard.part}</span>
-                <span style={{ color: COLORS.textMuted }}> on </span>
-                <span style={{ color: COLORS.text }}>{shard.provider_name}</span>
-                <span style={{ color: COLORS.textMuted }}> ({shard.provider_kind})</span>
-                <div style={{
-                  marginTop: '4px',
-                  color: COLORS.textMuted,
-                  fontSize: '10px',
-                  wordBreak: 'break-all',
-                }}>
-                  {shard.key}
-                  {chunked ? ` — chunk 1 of ${chunks}` : ''}
-                  {shard.error ? ` — ${shard.error}` : ''}
-                </div>
-              </span>
-
-              {/* The recorded figure for a chunked file, because the observed one
-                  is what the sampled chunks weighed and would read as the whole
-                  shard sitting there. For a file stored whole the two are the
-                  same measurement, and the observed one was taken just now. */}
-              <span
-                title={chunked
-                  ? `This shard across all ${chunks} chunks`
-                  : 'Measured on the account just now'}
-                style={{ color: COLORS.textDim, flexShrink: 0, whiteSpace: 'nowrap' }}
-              >
-                {shard.present ? formatBytes(chunked ? shard.size : shard.observed_size) : '—'}
-              </span>
-            </div>
+            <ShardRow key={`${shard.part}-${shard.provider_id}`} shard={shard} chunks={chunks} />
           ))}
 
           {storedParts(file.shards) < fileScheme(file).total && (
@@ -697,6 +638,8 @@ export function ShardInspector({ file, providers = [], onClose, onChanged }) {
               account{health.spare === 1 ? '' : 's'} could go dark before it was at risk.
             </Banner>
           )}
+
+          {health.replica && <ReplicaPlacement replica={health.replica} />}
         </>
       )}
 
@@ -732,5 +675,158 @@ export function ShardInspector({ file, providers = [], onClose, onChanged }) {
         />
       )}
     </Modal>
+  )
+}
+
+/* One shard of one placement: whether it answered, whose colour it is, where
+   it is and what it weighed. A part is drawn as a filled square and a replica
+   shard as an outlined one, the way the row badges tell the two apart. */
+function ShardRow({ shard, chunks, outlined = false, what = 'Shard' }) {
+  const chunked = chunks > 1
+  const colour = accountColor(shard.provider_id)
+  return (
+    <div style={{
+      display: 'flex',
+      alignItems: 'center',
+      gap: '12px',
+      padding: '11px 13px',
+      marginBottom: '8px',
+      background: COLORS.bg,
+      border: `1px solid ${shard.present ? COLORS.border : COLORS.error + '66'}`,
+      borderRadius: '6px',
+      fontFamily: FONT.mono,
+      fontSize: '11.5px',
+    }}>
+      <span style={{
+        color: shard.present ? COLORS.success : COLORS.error,
+        fontSize: '13px',
+      }}>{shard.present ? '✓' : '✗'}</span>
+
+      {/* The account's colour, so this list and the row's badges can be read
+          against each other. */}
+      <span
+        aria-hidden="true"
+        style={{
+          width: '14px',
+          height: '14px',
+          flexShrink: 0,
+          borderRadius: '3px',
+          boxSizing: 'border-box',
+          background: outlined ? 'transparent' : colour,
+          border: outlined ? `2px solid ${colour}` : 'none',
+        }}
+      />
+
+      <span style={{ flex: 1, minWidth: 0 }}>
+        <span style={{ color: COLORS.text }}>{what} {shard.part}</span>
+        <span style={{ color: COLORS.textMuted }}> on </span>
+        <span style={{ color: COLORS.text }}>{shard.provider_name}</span>
+        <span style={{ color: COLORS.textMuted }}> ({shard.provider_kind})</span>
+        <div style={{
+          marginTop: '4px',
+          color: COLORS.textMuted,
+          fontSize: '10px',
+          wordBreak: 'break-all',
+        }}>
+          {shard.key}
+          {chunked ? ` — chunk 1 of ${chunks}` : ''}
+          {shard.error ? ` — ${shard.error}` : ''}
+        </div>
+      </span>
+
+      {/* The recorded figure for a chunked file, because the observed one is
+          what the sampled chunks weighed and would read as the whole shard
+          sitting there. For a file stored whole the two are the same
+          measurement, and the observed one was taken just now. */}
+      <span
+        title={chunked
+          ? `This shard across all ${chunks} chunks`
+          : 'Measured on the account just now'}
+        style={{ color: COLORS.textDim, flexShrink: 0, whiteSpace: 'nowrap' }}
+      >
+        {shard.present ? formatBytes(chunked ? shard.size : shard.observed_size) : '—'}
+      </span>
+    </div>
+  )
+}
+
+/* The second placement, drawn under the first: the replica's own shards, in
+   the replica folders of the accounts the policy named, each checked just
+   now the way the parts were. It is judged on its own — a replica short of a
+   shard is thinner than it was meant to be whatever the parts are doing, and
+   a replica that reads is the copy a file whose parts have gone is rebuilt
+   from. */
+function ReplicaPlacement({ replica }) {
+  const chunks = replica.chunk_count || 0
+  const chunked = chunks > 1
+  const sampled = replica.chunks_sampled || 0
+  const stored = new Set(replica.shards.map((s) => s.part)).size
+  const total = replica.shards.length ? Number(replica.scheme.split('-of-')[1]) || stored : 0
+  const shape = replica.whole
+    ? 'the whole sealed file on one cloud'
+    : `cut ${replica.scheme} into shards of its own`
+  const made = replica.created_at ? new Date(replica.created_at) : null
+
+  return (
+    <>
+      <div style={{
+        display: 'flex', alignItems: 'baseline', gap: '8px', flexWrap: 'wrap',
+        margin: '18px 0 8px',
+      }}>
+        <span style={{
+          fontFamily: FONT.mono, fontSize: '10px', fontWeight: 600, letterSpacing: '1.5px',
+          textTransform: 'uppercase', color: COLORS.textMuted,
+        }}>Replica</span>
+        <span style={{ fontFamily: FONT.sans, fontSize: '11px', color: COLORS.textMuted }}>
+          A second copy, {shape}, in the replica folders beside the parts
+          {made && !Number.isNaN(made.getTime()) ? ` — made ${made.toLocaleDateString()}` : ''}.
+        </span>
+      </div>
+
+      <Banner tone={replica.recoverable ? 'success' : 'error'}>
+        {replica.recoverable
+          ? (replica.whole
+            ? 'The replica is reachable, so the file can be rebuilt from it right now.'
+            : `Enough of the replica is reachable to rebuild the file from it${
+              replica.spare > 0
+                ? `, and ${replica.spare} more of its accounts could go dark first`
+                : ''}.`)
+          : 'Too little of the replica is reachable — the file cannot currently be rebuilt from it.'}
+      </Banner>
+
+      {replica.previous_key && (
+        <Banner tone="info">
+          This replica is still sealed under the key your previous password protected. It reads
+          as it is; it is remade on the current key in its turn.
+        </Banner>
+      )}
+
+      {chunked && (
+        <Banner tone="info">
+          {`The replica is ${chunks} chunks, each cut the same way; one row per shard below, naming `
+            + `its first chunk. `
+            + (sampled > 0 && sampled < chunks
+              ? `${sampled} of the chunks, spread across the file, were checked just now.`
+              : 'Every chunk was checked just now.')}
+        </Banner>
+      )}
+
+      {replica.shards.map((shard) => (
+        <ShardRow
+          key={`replica-${shard.part}-${shard.provider_id}`}
+          shard={shard}
+          chunks={chunks}
+          outlined
+          what={replica.whole ? 'Whole copy' : 'Replica shard'}
+        />
+      ))}
+
+      {total > 0 && stored < total && (
+        <Banner tone="warn">
+          Only {stored} of the {total} shards the replica calls for were recorded, so it has
+          less margin than {replica.scheme} allows for.
+        </Banner>
+      )}
+    </>
   )
 }

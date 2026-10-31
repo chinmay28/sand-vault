@@ -3,7 +3,9 @@ package server
 import (
 	"net/http"
 	"os"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/chinmay28/sand-vault/internal/vault"
 )
@@ -169,5 +171,58 @@ func TestHealthCheckDoesNotHoldTheVaultOpen(t *testing.T) {
 	}
 	if c.server.externalActive() {
 		t.Error("a health check left something looking like an active reader")
+	}
+}
+
+// A file's health carries its replica, checked in the replica folders, so
+// the inspector can draw the second placement beside the first.
+func TestFileHealthCarriesTheReplicaOverHTTP(t *testing.T) {
+	c, _, _ := replicationSetup(t)
+	c.json(http.MethodPost, "/api/folders", map[string]any{"path": "/photos"})
+	uploaded := c.upload("hike.jpg", "/photos", []byte(strings.Repeat("a replicated photo ", 300)))
+	fileID := uploaded["id"].(string)
+
+	w, body := c.json(http.MethodGet, "/api/files/"+fileID+"/health", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("health: %d %v", w.Code, body)
+	}
+	if _, ok := body["replica"]; ok {
+		t.Errorf("a file with no replica carries one in its health: %v", body["replica"])
+	}
+
+	if w, status := c.json(http.MethodPost, "/api/replicate", map[string]any{"path": "/photos", "enabled": true}); w.Code != http.StatusOK {
+		t.Fatalf("flagging /photos = %d %v", w.Code, status)
+	}
+	v, _ := c.server.Vault()
+	if step, err := c.server.replicateStep(v, time.Now()); err != nil || !step.Done {
+		t.Fatalf("step = %+v, %v; want the photo replicated", step, err)
+	}
+
+	w, body = c.json(http.MethodGet, "/api/files/"+fileID+"/health", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("health: %d %v", w.Code, body)
+	}
+	if body["recoverable"] != true {
+		t.Errorf("the parts: %v", body)
+	}
+	replica, ok := body["replica"].(map[string]any)
+	if !ok {
+		t.Fatalf("health carries no replica: %v", body)
+	}
+	if replica["recoverable"] != true || replica["scheme"] != "2-of-3" || replica["whole"] != false {
+		t.Errorf("replica = %v, want a readable 2-of-3", replica)
+	}
+	shards, _ := replica["shards"].([]any)
+	if len(shards) != 3 {
+		t.Fatalf("replica shards = %v, want 3", replica["shards"])
+	}
+	for _, raw := range shards {
+		s := raw.(map[string]any)
+		if s["present"] != true || s["observed_size"].(float64) <= 0 {
+			t.Errorf("replica shard %v", s)
+		}
+		if strings.Contains(s["provider_id"].(string), "#") {
+			t.Errorf("a replica shard names a suffixed account id %q", s["provider_id"])
+		}
 	}
 }
