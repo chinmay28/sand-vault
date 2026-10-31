@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/chinmay28/sand-vault/internal/provider"
 )
@@ -172,7 +171,10 @@ func protonAccountName(ctx context.Context, cfg provider.Config, options map[str
 	if !ok {
 		return ""
 	}
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	// One question to the client, which costs what a Ping costs — see
+	// provider.ProtonCLIPingBudget. Cut shorter, the account was named "Proton
+	// Drive 2" on any machine where the client takes its time.
+	ctx, cancel := context.WithTimeout(ctx, provider.ProtonCLIPingBudget)
 	defer cancel()
 
 	name, err := namer.Account(ctx)
