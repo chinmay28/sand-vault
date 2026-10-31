@@ -6,6 +6,7 @@ import { fetchToBlob, useDownload } from '../download'
 import { readToken } from '../readwatch'
 import { SaveSheet } from './SaveSheet'
 import { thumbnailFromElement } from '../thumbs'
+import { indexPlacement, indexReplica, shardState } from '../placement'
 import ImageViewer from './ImageViewer'
 import PdfPreview from './PdfPreview'
 import ReadStatus from './ReadStatus'
@@ -570,6 +571,17 @@ export function ShardInspector({ file, providers = [], onClose, onChanged }) {
     return () => { cancelled = true }
   }, [file.id])
 
+  /* Where the shards are is known before the dialog opens: the index
+     records every one's account, key and size, and the listing is drawn
+     from that. Only whether each one still answers takes a round trip, so
+     the rows are drawn from the index at once and the probe's answer
+     replaces them when it lands. Until then the verdict banner says a
+     check is running rather than guessing at one; if the probe fails, the
+     rows stay, since the error is about the check and not the placement. */
+  const checking = !health && !error
+  const parts = health || indexPlacement(file.shards, fileScheme(file), file.chunk_count)
+  const replica = health ? health.replica : indexReplica(file.replica)
+
   /* A chunked file is not one object per part — it is one per part per chunk,
      all on the same account under the same name with the chunk number counting
      up. A 4 GB film is thousands of them, so the list below stays one row per
@@ -580,9 +592,9 @@ export function ShardInspector({ file, providers = [], onClose, onChanged }) {
      `-c0000000-` and nothing else reads as if the part were a single object,
      and then the size beside it reads as the whole part when it is what the
      sample weighed. Both are said here instead. */
-  const chunks = health?.chunk_count || file.chunk_count || 0
+  const chunks = parts.chunk_count || file.chunk_count || 0
   const chunked = chunks > 1
-  const sampled = health?.chunks_sampled || 0
+  const sampled = parts.chunks_sampled || 0
 
   return (
     <Modal
@@ -593,55 +605,70 @@ export function ShardInspector({ file, providers = [], onClose, onChanged }) {
       onClose={onClose}
       width={620}
     >
-      {error && <Banner tone="error">{error}</Banner>}
-      {!health && !error && <Spinner />}
+      {error && <Banner tone="error">{`The check did not finish — ${error}`}</Banner>}
+
+      {checking && (
+        <Banner tone="info">
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
+            <Spinner size={12} />
+            <span>Asking each account whether its shard is still there…</span>
+          </span>
+        </Banner>
+      )}
 
       {health && (
-        <>
-          <Banner tone={health.recoverable ? 'success' : 'error'}>
-            {health.recoverable
-              ? 'Enough parts are reachable to rebuild this file right now.'
-              : 'Too few parts are reachable — this file cannot currently be rebuilt.'}
-          </Banner>
-
-          {chunked && (
-            <Banner tone="info">
-              {`This file is stored as ${chunks} chunks, each cut into the same shards. `
-                + "One row per shard below, naming that shard's first chunk — the other "
-                + `${chunks === 2 ? 'one sits' : `${chunks - 1} sit`} beside it on the `
-                + 'same account, same name with the chunk number counting up. '
-                + (sampled > 0 && sampled < chunks
-                  ? `${sampled} of them, spread across the file, were checked just now `
-                    + `rather than all ${chunks}: a shard is written to every chunk or to `
-                    + 'none of them, so a handful catches one that never landed.'
-                  : 'Every one of them was checked just now.')}
-            </Banner>
-          )}
-
-          {health.shards.map((shard) => (
-            /* Keyed by the copy and not the part: a file spread over six
-                clouds has two rows for every part. */
-            <ShardRow key={`${shard.part}-${shard.provider_id}`} shard={shard} chunks={chunks} />
-          ))}
-
-          {storedParts(file.shards) < fileScheme(file).total && (
-            <Banner tone="warn">
-              Only {storedParts(file.shards)} of {fileScheme(file).total} shards were stored, so the
-              file has less margin than {schemeName(fileScheme(file))} allows for. Connect another
-              account and re-upload it to restore the full spread.
-            </Banner>
-          )}
-
-          {health.spare > 0 && (
-            <Banner tone="success">
-              Any {health.needed} of these shards rebuild the file, so {health.spare} more
-              account{health.spare === 1 ? '' : 's'} could go dark before it was at risk.
-            </Banner>
-          )}
-
-          {health.replica && <ReplicaPlacement replica={health.replica} />}
-        </>
+        <Banner tone={health.recoverable ? 'success' : 'error'}>
+          {health.recoverable
+            ? 'Enough parts are reachable to rebuild this file right now.'
+            : 'Too few parts are reachable — this file cannot currently be rebuilt.'}
+        </Banner>
       )}
+
+      {chunked && (
+        <Banner tone="info">
+          {`This file is stored as ${chunks} chunks, each cut into the same shards. `
+            + "One row per shard below, naming that shard's first chunk — the other "
+            + `${chunks === 2 ? 'one sits' : `${chunks - 1} sit`} beside it on the `
+            + 'same account, same name with the chunk number counting up. '
+            + (health
+              ? (sampled > 0 && sampled < chunks
+                ? `${sampled} of them, spread across the file, were checked just now `
+                  + `rather than all ${chunks}: a shard is written to every chunk or to `
+                  + 'none of them, so a handful catches one that never landed.'
+                : 'Every one of them was checked just now.')
+              : 'A handful of them, spread across the file, are being checked now: a '
+                + 'shard is written to every chunk or to none of them, so a handful '
+                + 'catches one that never landed.')}
+        </Banner>
+      )}
+
+      {parts.shards.map((shard) => (
+        /* Keyed by the copy and not the part: a file spread over six
+            clouds has two rows for every part. */
+        <ShardRow
+          key={`${shard.part}-${shard.provider_id}`}
+          shard={shard}
+          chunks={chunks}
+          checking={checking}
+        />
+      ))}
+
+      {storedParts(file.shards) < fileScheme(file).total && (
+        <Banner tone="warn">
+          Only {storedParts(file.shards)} of {fileScheme(file).total} shards were stored, so the
+          file has less margin than {schemeName(fileScheme(file))} allows for. Connect another
+          account and re-upload it to restore the full spread.
+        </Banner>
+      )}
+
+      {health && health.spare > 0 && (
+        <Banner tone="success">
+          Any {health.needed} of these shards rebuild the file, so {health.spare} more
+          account{health.spare === 1 ? '' : 's'} could go dark before it was at risk.
+        </Banner>
+      )}
+
+      {replica && <ReplicaPlacement replica={replica} checking={checking} />}
 
       <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', marginTop: '4px' }}>
         <Button variant="ghost" onClick={onClose}>Close</Button>
@@ -681,9 +708,15 @@ export function ShardInspector({ file, providers = [], onClose, onChanged }) {
 /* One shard of one placement: whether it answered, whose colour it is, where
    it is and what it weighed. A part is drawn as a filled square and a replica
    shard as an outlined one, the way the row badges tell the two apart. */
-function ShardRow({ shard, chunks, outlined = false, what = 'Shard' }) {
+function ShardRow({ shard, chunks, checking = false, outlined = false, what = 'Shard' }) {
   const chunked = chunks > 1
   const colour = accountColor(shard.provider_id)
+  /* The index knows where the shard is before anyone has asked whether it
+     is still there: a row is drawn the moment the dialog opens and the
+     mark on the left says what the check has found, or that it is still
+     out, or that it came back without an answer. */
+  const state = shardState(shard, checking)
+  const missing = state === 'missing'
   return (
     <div style={{
       display: 'flex',
@@ -692,15 +725,32 @@ function ShardRow({ shard, chunks, outlined = false, what = 'Shard' }) {
       padding: '11px 13px',
       marginBottom: '8px',
       background: COLORS.bg,
-      border: `1px solid ${shard.present ? COLORS.border : COLORS.error + '66'}`,
+      border: `1px solid ${missing ? COLORS.error + '66' : COLORS.border}`,
       borderRadius: '6px',
       fontFamily: FONT.mono,
       fontSize: '11.5px',
     }}>
-      <span style={{
-        color: shard.present ? COLORS.success : COLORS.error,
-        fontSize: '13px',
-      }}>{shard.present ? '✓' : '✗'}</span>
+      <span
+        title={{
+          present: 'Answered just now',
+          missing: 'Did not answer',
+          checking: 'Being checked now',
+          unknown: 'The check did not finish',
+        }[state]}
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          width: '13px',
+          flexShrink: 0,
+          color: { present: COLORS.success, missing: COLORS.error }[state] || COLORS.textDim,
+          fontSize: '13px',
+        }}
+      >
+        {state === 'checking'
+          ? <Spinner size={11} color={COLORS.textDim} />
+          : { present: '✓', missing: '✗', unknown: '?' }[state]}
+      </span>
 
       {/* The account's colour, so this list and the row's badges can be read
           against each other. */}
@@ -741,10 +791,10 @@ function ShardRow({ shard, chunks, outlined = false, what = 'Shard' }) {
       <span
         title={chunked
           ? `This shard across all ${chunks} chunks`
-          : 'Measured on the account just now'}
+          : (state === 'present' ? 'Measured on the account just now' : 'As recorded when it was stored')}
         style={{ color: COLORS.textDim, flexShrink: 0, whiteSpace: 'nowrap' }}
       >
-        {shard.present ? formatBytes(chunked ? shard.size : shard.observed_size) : '—'}
+        {missing ? '—' : formatBytes(chunked || state !== 'present' ? shard.size : shard.observed_size)}
       </span>
     </div>
   )
@@ -756,7 +806,7 @@ function ShardRow({ shard, chunks, outlined = false, what = 'Shard' }) {
    shard is thinner than it was meant to be whatever the parts are doing, and
    a replica that reads is the copy a file whose parts have gone is rebuilt
    from. */
-function ReplicaPlacement({ replica }) {
+function ReplicaPlacement({ replica, checking = false }) {
   const chunks = replica.chunk_count || 0
   const chunked = chunks > 1
   const sampled = replica.chunks_sampled || 0
@@ -783,16 +833,29 @@ function ReplicaPlacement({ replica }) {
         </span>
       </div>
 
-      <Banner tone={replica.recoverable ? 'success' : 'error'}>
-        {replica.recoverable
-          ? (replica.whole
-            ? 'The replica is reachable, so the file can be rebuilt from it right now.'
-            : `Enough of the replica is reachable to rebuild the file from it${
-              replica.spare > 0
-                ? `, and ${replica.spare} more of its accounts could go dark first`
-                : ''}.`)
-          : 'Too little of the replica is reachable — the file cannot currently be rebuilt from it.'}
-      </Banner>
+      {/* No verdict until the replica's own shards have been asked about;
+          the rows below come from the index and need no waiting for. */}
+      {replica.pending
+        ? (checking && (
+          <Banner tone="info">
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
+              <Spinner size={12} />
+              <span>Checking the replica in its folders…</span>
+            </span>
+          </Banner>
+        ))
+        : (
+          <Banner tone={replica.recoverable ? 'success' : 'error'}>
+            {replica.recoverable
+              ? (replica.whole
+                ? 'The replica is reachable, so the file can be rebuilt from it right now.'
+                : `Enough of the replica is reachable to rebuild the file from it${
+                  replica.spare > 0
+                    ? `, and ${replica.spare} more of its accounts could go dark first`
+                    : ''}.`)
+              : 'Too little of the replica is reachable — the file cannot currently be rebuilt from it.'}
+          </Banner>
+        )}
 
       {replica.previous_key && (
         <Banner tone="info">
@@ -805,9 +868,11 @@ function ReplicaPlacement({ replica }) {
         <Banner tone="info">
           {`The replica is ${chunks} chunks, each cut the same way; one row per shard below, naming `
             + `its first chunk. `
-            + (sampled > 0 && sampled < chunks
-              ? `${sampled} of the chunks, spread across the file, were checked just now.`
-              : 'Every chunk was checked just now.')}
+            + (replica.pending
+              ? 'A handful of the chunks, spread across the file, are being checked now.'
+              : (sampled > 0 && sampled < chunks
+                ? `${sampled} of the chunks, spread across the file, were checked just now.`
+                : 'Every chunk was checked just now.'))}
         </Banner>
       )}
 
@@ -816,6 +881,7 @@ function ReplicaPlacement({ replica }) {
           key={`replica-${shard.part}-${shard.provider_id}`}
           shard={shard}
           chunks={chunks}
+          checking={checking}
           outlined
           what={replica.whole ? 'Whole copy' : 'Replica shard'}
         />
