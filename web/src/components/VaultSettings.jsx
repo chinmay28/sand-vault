@@ -9,6 +9,7 @@ import { FilmKeySettings } from './FilmDetails'
 import { AssistantSettings } from './Assistant'
 import SubVaults from './SubVaults'
 import RecoveryKit from './RecoveryKit'
+import IndexBackup, { backupDelayLabel } from './IndexBackup'
 import { StrayParts } from './CleanOrphans'
 import {
   DefaultClouds, PARTS_PER_FILE, defaultSchemeFor, parseScheme, schemeName,
@@ -49,7 +50,7 @@ import { ReplicationSettings, replicationStatusLine, replicationStatusTone } fro
 const CHILD_Z = 110
 
 export default function VaultSettings({
-  providers, stats, webdav, health, onHealthChanged,
+  providers, status, stats, webdav, health, onHealthChanged,
   subVaults = [], showSubVaults, subVaultShown,
   onToggleSubVaults, onToggleSubVault, onOpenSubVault, onClose, onChanged,
 }) {
@@ -136,6 +137,24 @@ export default function VaultSettings({
             status={healthStatusLine(health)}
             tone={health?.unhealthy > 0 ? COLORS.error : undefined}
             onClick={() => setOpen('health')}
+          />
+        )}
+
+        {/* The sealed copy of the index each cloud holds, and how far apart
+            its rewrites are kept. The line reads the gap, which is the one
+            thing about it to set — or "Off", in the warning colour, because
+            a vault whose index is on no cloud is one lost disk from losing
+            everything, and a settings list that knew should say so. */}
+        {providers.length > 0 && (
+          <Setting
+            icon="🗂️"
+            label="Index backup"
+            hint="The encrypted copy of the index on every cloud, and how often it is rewritten"
+            status={status?.manifest_backup === false
+              ? 'Off'
+              : backupDelayLabel(status?.manifest_backup_delay_seconds ?? 5)}
+            tone={status?.manifest_backup === false ? COLORS.warn : undefined}
+            onClick={() => setOpen('backup')}
           />
         )}
 
@@ -299,6 +318,15 @@ export default function VaultSettings({
           zIndex={CHILD_Z}
           onClose={close}
           onChanged={setAssistant}
+        />
+      )}
+
+      {open === 'backup' && (
+        <IndexBackup
+          status={status}
+          zIndex={CHILD_Z}
+          onClose={close}
+          onChanged={onChanged}
         />
       )}
 

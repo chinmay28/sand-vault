@@ -35,6 +35,12 @@ type vaultStatus struct {
 	// the app, which meant the one setting that decides whether a lost machine
 	// is recoverable could only be seen by someone who went looking.
 	ManifestBackup bool `json:"manifest_backup"`
+
+	// ManifestBackupDelaySeconds is the least time between two pushes of
+	// that index to the accounts, so a burst of changes is a few pushes
+	// rather than one per change. Zero means a push the moment the index
+	// changes. Set with POST /api/vault/backup/delay.
+	ManifestBackupDelaySeconds int `json:"manifest_backup_delay_seconds"`
 }
 
 // webdavStatus is what the browser needs to tell someone how to mount the
@@ -69,6 +75,7 @@ func (s *Server) unlockedStatus(v *vault.Vault) vaultStatus {
 		status.SubVaults = subs
 	}
 	status.ManifestBackup = v.BackupEnabled()
+	status.ManifestBackupDelaySeconds = int(v.BackupDelay() / time.Second)
 	if s.WebDAV {
 		status.WebDAV = &webdavStatus{Path: s.webdavPrefix() + "/"}
 	}
@@ -395,5 +402,45 @@ func (s *Server) handleVaultBackup(w http.ResponseWriter, r *http.Request) {
 		// success on that would be reporting a push that never happened.
 		"claimed":  req.Force && v.BackupEnabled(),
 		"warnings": warnings,
+	})
+}
+
+// backupDelayRequest is the pacing of the index pushes as the browser sends
+// it: whole seconds, from zero up to an hour.
+type backupDelayRequest struct {
+	Seconds *int `json:"seconds"`
+}
+
+// handleVaultBackupDelay sets the least time between two pushes of the index
+// to the accounts.
+//
+// Its own route rather than a field on POST /api/vault/backup, because that
+// request's `enabled` is not optional: a body that only meant to change the
+// delay would read as "enabled": false there, and switching the backup off
+// erases every copy on the accounts. A setting that tunes how often
+// something happens must not be one missing key away from stopping it.
+func (s *Server) handleVaultBackupDelay(w http.ResponseWriter, r *http.Request) {
+	var req backupDelayRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
+		return
+	}
+	if req.Seconds == nil {
+		writeError(w, http.StatusBadRequest, "seconds is required", "BAD_REQUEST")
+		return
+	}
+
+	v, _ := s.Vault()
+	if err := v.SetBackupDelay(time.Duration(*req.Seconds) * time.Second); err != nil {
+		if errors.Is(err, vault.ErrLocked) {
+			vaultErrorResponse(w, err)
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"manifest_backup":               v.BackupEnabled(),
+		"manifest_backup_delay_seconds": int(v.BackupDelay() / time.Second),
 	})
 }

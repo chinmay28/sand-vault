@@ -279,6 +279,67 @@ func (v *Vault) SetBackupEnabled(ctx context.Context, enabled bool) ([]string, e
 	return v.SyncManifestBackup(ctx, false)
 }
 
+// BackupDelay is the least time between two pushes of the manifest to the
+// accounts. Zero means a push the moment the index changes.
+//
+// It can be read while the vault is locked: it is in the clear in the vault
+// file, beside the setting that turns the backup off, and it says nothing
+// about what the vault holds.
+func (v *Vault) BackupDelay() time.Duration {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	return v.backupDelayLocked()
+}
+
+// backupDelayLocked is BackupDelay with the lock already held, in either mode.
+// A vault with no store yet, or one whose file predates the setting, has the
+// default.
+func (v *Vault) backupDelayLocked() time.Duration {
+	if v.store == nil || v.store.ManifestBackupDelaySeconds == nil {
+		return defaultBackupDelay
+	}
+	return time.Duration(*v.store.ManifestBackupDelaySeconds) * time.Second
+}
+
+// applyBackupDelayLocked tells the pacer what the store says. Called wherever
+// the store is read or replaced; the caller must hold the lock, in either
+// mode, or be the only goroutine that knows about the vault yet.
+func (v *Vault) applyBackupDelayLocked() {
+	v.backups.SetGap(v.backupDelayLocked())
+}
+
+// SetBackupDelay changes the least time between two pushes of the manifest
+// to the accounts, and remembers it in the vault file. Whole seconds, from
+// zero — push at once — up to MaxBackupDelay. A push already waiting is moved
+// to where the new delay puts it.
+//
+// It takes effect for the pushes that follow, including the one the save
+// itself asks for. Changing the delay is an index write like any other, and
+// is paced like one.
+func (v *Vault) SetBackupDelay(delay time.Duration) error {
+	if delay < 0 || delay > MaxBackupDelay {
+		return fmt.Errorf("the manifest backup can be delayed by anything from 0s to %s", MaxBackupDelay)
+	}
+	if delay%time.Second != 0 {
+		return fmt.Errorf("the manifest backup delay is whole seconds")
+	}
+
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.dataKey == nil {
+		return ErrLocked
+	}
+	seconds := int(delay / time.Second)
+	previous := v.store.ManifestBackupDelaySeconds
+	v.store.ManifestBackupDelaySeconds = &seconds
+	if err := v.persistLocked(); err != nil {
+		v.store.ManifestBackupDelaySeconds = previous
+		return err
+	}
+	v.applyBackupDelayLocked()
+	return nil
+}
+
 // backupRefusalLocked reports why a backup must not be written, or "" if it is
 // safe to write one. The caller must hold at least the read lock.
 //
@@ -625,101 +686,62 @@ func (v *Vault) ForgetBackups(ctx context.Context) ([]string, error) {
 // holding the vault lock — which is what lets persistLocked be the single
 // place that notices the index changed.
 //
-// Bursts collapse: a push already running simply gets marked as needing to run
-// again when it finishes, so a hundred quick uploads cost one or two writes
-// per account rather than a hundred.
+// Bursts collapse, and are paced: a push already running simply gets marked
+// as needing to run again when it finishes, and pushes start no closer
+// together than the vault's backup delay (BackupDelay), so a hundred quick
+// uploads cost a few writes per account rather than a hundred. The pacing is
+// the pacer's business — see backuppace.go.
 func (v *Vault) scheduleBackup(force bool) {
-	v.backupMu.Lock()
-	defer v.backupMu.Unlock()
-
-	v.backupForce = v.backupForce || force
-	if v.backupHold {
-		// An import is part-way through connecting the accounts. Pushing now
-		// would write an index that is missing most of them, and would meet
-		// the foreign-backup guard on every account not yet reached — which
-		// says "another vault's backup is here" in the middle of the one
-		// operation where that is both true and entirely expected. The release
-		// runs one forced push over the finished state instead.
-		v.backupPending = true
-		return
-	}
-	if v.backupRunning {
-		v.backupPending = true
-		return
-	}
-	v.backupRunning = true
-	go v.runBackupSync()
+	v.backups.Request(force)
 }
 
 // holdBackups stops scheduled pushes until releaseBackups, collapsing whatever
 // was asked for in between into one push over the finished state.
 //
 // For an import, which connects the accounts one at a time and would otherwise
-// push a half-built index at each of them. Not a general-purpose lock: nothing
-// waits on it, and a caller that forgets to release leaves the vault pushing
-// only when something else asks.
+// push a half-built index at each of them — and would meet the foreign-backup
+// guard on every account not yet reached, which says "another vault's backup
+// is here" in the middle of the one operation where that is both true and
+// entirely expected. Not a general-purpose lock: nothing waits on it, and a
+// caller that forgets to release leaves the vault pushing only when something
+// else asks.
 func (v *Vault) holdBackups() {
-	v.backupMu.Lock()
-	v.backupHold = true
-	v.backupMu.Unlock()
+	v.backups.Hold()
 }
 
 // releaseBackups lifts the hold and reports whether anything was asked for
 // while it was on.
 func (v *Vault) releaseBackups() bool {
-	v.backupMu.Lock()
-	defer v.backupMu.Unlock()
-	v.backupHold = false
-	pending := v.backupPending
-	v.backupPending = false
-	return pending
+	return v.backups.Release()
 }
 
-// runBackupSync pushes until no further change has been requested.
-func (v *Vault) runBackupSync() {
-	for {
-		v.backupMu.Lock()
-		force := v.backupForce
-		v.backupForce = false
-		v.backupMu.Unlock()
+// pushBackup is one push, as the pacer runs it: the sync itself, with its
+// outcome reported to the log because nobody is waiting on it.
+func (v *Vault) pushBackup(force bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	warnings, err := v.SyncManifestBackup(ctx, force)
+	cancel()
 
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-		warnings, err := v.SyncManifestBackup(ctx, force)
-		cancel()
-
-		switch {
-		case errors.Is(err, ErrLocked):
-			// The vault was locked mid-flight. Whatever changed is already on
-			// disk, and the next unlock schedules a fresh push.
-		case errors.Is(err, ErrBackupRefused):
-			log.Printf("manifest backup not written: %v", err)
-		case err != nil:
-			log.Printf("could not write the manifest backup: %v", err)
-		default:
-			for _, w := range warnings {
-				log.Printf("%s", w)
-			}
+	switch {
+	case errors.Is(err, ErrLocked):
+		// The vault was locked mid-flight. Whatever changed is already on
+		// disk, and the next unlock schedules a fresh push.
+	case errors.Is(err, ErrBackupRefused):
+		log.Printf("manifest backup not written: %v", err)
+	case err != nil:
+		log.Printf("could not write the manifest backup: %v", err)
+	default:
+		for _, w := range warnings {
+			log.Printf("%s", w)
 		}
-
-		v.backupMu.Lock()
-		if !v.backupPending {
-			v.backupRunning = false
-			v.backupIdle.Broadcast()
-			v.backupMu.Unlock()
-			return
-		}
-		v.backupPending = false
-		v.backupMu.Unlock()
 	}
 }
 
 // AwaitBackupSync blocks until no background push is running or queued. It
 // exists for callers that need the copies to be settled before they look at
-// them — tests, and the CLI when it reports what a command wrote.
+// them — tests, and the CLI when it reports what a command wrote. A push
+// that is waiting out the backup delay is started at once rather than waited
+// for: a command about to exit wants the copies current now.
 func (v *Vault) AwaitBackupSync() {
-	v.backupMu.Lock()
-	defer v.backupMu.Unlock()
-	for v.backupRunning {
-		v.backupIdle.Wait()
-	}
+	v.backups.Await()
 }

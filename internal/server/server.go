@@ -7,6 +7,7 @@
 package server
 
 import (
+	"context"
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
@@ -20,9 +21,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/chinmay28/sand-vault/internal/davfs"
@@ -316,6 +319,9 @@ func (s *Server) Handler() (http.Handler, error) {
 		"PUT /api/vault/replication": s.handleReplicationSet,
 		"POST /api/replicate":        s.handleReplicateSet,
 		"POST /api/vault/backup":     s.handleVaultBackup,
+		// How far apart the pushes of the index are kept, so a burst of
+		// changes is a few of them rather than one per change.
+		"POST /api/vault/backup/delay": s.handleVaultBackupDelay,
 
 		// Disaster recovery: what the accounts are still holding after the
 		// machine that held the vault is gone, and rebuilding the index from
@@ -776,7 +782,55 @@ func (s *Server) Start() error {
 		Handler:           handler,
 		ReadHeaderTimeout: 20 * time.Second,
 	}
-	return server.ListenAndServe()
+	served := make(chan error, 1)
+	go func() { served <- server.ListenAndServe() }()
+
+	// An orderly stop — Ctrl-C, or the service manager's SIGTERM on a restart
+	// or an update — finishes what the vault owes the accounts before the
+	// process goes. The copies of the index out there are rewritten a few
+	// seconds after a change rather than on it (vault.BackupDelay), so a
+	// restart that lands inside that gap would otherwise leave them a change
+	// behind until the next unlock. Nothing on disk is at risk either way:
+	// the vault file is written before any request is answered.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	select {
+	case err := <-served:
+		return err
+	case <-ctx.Done():
+	}
+	stop()
+	log.Print("shutting down")
+	closing, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_ = server.Shutdown(closing)
+	if !flushBackupsWithin(v, shutdownFlushBound) {
+		log.Printf("the index backup did not finish writing within %s; the next unlock brings the copies up to date",
+			shutdownFlushBound)
+	}
+	return nil
+}
+
+// shutdownFlushBound is how long an orderly stop waits for the index to
+// finish writing to the accounts. Long enough for a push to a slow provider;
+// short enough that an account that is down does not hold the restart.
+const shutdownFlushBound = 30 * time.Second
+
+// flushBackupsWithin starts any push of the index that is waiting out its
+// delay and waits for it, up to the bound. It reports whether the copies
+// settled in time.
+func flushBackupsWithin(v *vault.Vault, bound time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		v.AwaitBackupSync()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(bound):
+		return false
+	}
 }
 
 // warnsOnBind reports whether an address is reachable from off this machine,

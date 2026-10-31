@@ -12,6 +12,26 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### The index backup is written a few seconds apart, not once per change
+
+Every cloud holds `manifest.sand`, the sealed copy of the index that brings a
+vault back from a password and any one account, and it was rewritten the
+moment the index changed. The index changes with every upload, rename, move
+and delete, so a folder of a few hundred films going in or out was a few
+hundred rewrites of the same object on every cloud in a row — which is how a
+provider comes to answer "slow down", and how a vault doing a bulk delete
+spent its rate limit on its own recovery file. The rewrites are now paced:
+the first change after a quiet spell is written at once, the changes that
+follow within the gap are folded into one more write when it has passed, and
+a change that lands while a write is out waits for it and the gap. The gap is
+five seconds unless the vault says otherwise, and is set in **Vault settings ›
+Index backup**, with `sand vault backup --every 30s`, or over HTTP with `POST
+/api/vault/backup/delay`; zero is the old behaviour. The copies are never more
+than a gap and a write behind. A command about to exit does not sit the gap
+out, and neither does `sand serve` on an orderly stop, which now finishes a
+waiting write (for up to thirty seconds) before the process goes. The setting
+survives a password change and travels in a recovery kit.
+
 ### A delete runs on the machine, and the page is free the moment it is asked for
 
 Deleting was a request the browser held open. Erasing a file is a round

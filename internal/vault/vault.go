@@ -132,20 +132,19 @@ type Vault struct {
 	// rather than once per row. It is taken before mu, never while holding it.
 	thumbLoad sync.Mutex
 
-	// backupMu guards the manifest backup syncer's state. Also a leaf lock:
-	// scheduling a push happens while mu is held, and the push itself runs on
-	// its own goroutine after mu is released.
-	backupMu      sync.Mutex
-	backupIdle    sync.Cond
-	backupRunning bool
-	backupPending bool
-	backupForce   bool
+	// backups decides when the manifest backup is pushed to the accounts:
+	// never twice at once, and never closer together than the vault's
+	// backup delay, so a burst of index changes costs a few pushes rather
+	// than one per change. Asking it for a push happens while mu is held;
+	// the push itself runs on its own goroutine after mu is released. It
+	// also carries the hold an import puts on pushes while it is connecting
+	// the accounts. See backuppace.go and holdBackups.
+	backups *backupPacer
 
-	// backupHold suspends scheduled pushes while an import is connecting the
-	// accounts, so a half-built index is never written and the foreign-backup
-	// guard is never met in the middle of the one operation that expects to
-	// find another vault's copy on every account. See holdBackups.
-	backupHold bool
+	// backupMu guards the foreign-backup guard's memory of which accounts
+	// have been checked and warned about, below. A leaf lock: nothing is
+	// acquired while it is held.
+	backupMu sync.Mutex
 
 	// keyHold counts the operations that would be destroyed by losing the keys
 	// half way through, and lockWanted remembers a Lock that arrived while one
@@ -248,7 +247,7 @@ func Open(path string) (*Vault, error) {
 	// nothing about keys or files; this is the one line that hands it back to
 	// the vault, which has both. See readhistory.go.
 	v.reads.flush = v.flushReadHistory
-	v.backupIdle.L = &v.backupMu
+	v.backups = newBackupPacer(defaultBackupDelay, v.pushBackup)
 
 	// A conversion only ever holds its spool open, so anything matching that
 	// name now is what a process killed mid-conversion left behind.
@@ -259,6 +258,7 @@ func Open(path string) (*Vault, error) {
 		return nil, err
 	}
 	v.store = sf
+	v.applyBackupDelayLocked()
 	return v, nil
 }
 
@@ -478,6 +478,7 @@ func (v *Vault) Init(password string, policy Policy) error {
 	}
 
 	v.store = sf
+	v.applyBackupDelayLocked()
 	v.vaultKey = crypto.DeriveKey(password, salt, params)
 	v.dataKey = dataKey
 	v.dataKeyID = sf.DataKeyID
@@ -502,6 +503,7 @@ func (v *Vault) Unlock(password string) error {
 			return err
 		}
 		v.store = sf
+		v.applyBackupDelayLocked()
 	}
 
 	u, err := unsealStore(v.store, password)
