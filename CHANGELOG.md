@@ -12,6 +12,20 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### Where the shards live opens on the answer, not a spinner
+
+**Where this file lives** opened on a spinner and stayed on it until every
+account holding a shard had been asked whether the shard was still there,
+which on a slow cloud was a long wait to be told where the file is. Where
+the shards are was never in question: the index records each one's account,
+key and size, and the listing's badges are drawn from exactly that. The
+dialog now draws every row from the index the moment it opens — parts and
+replica alike — with each row's mark saying the check is still out, and
+fills in reachability, measured sizes and the verdict on whether the file
+can be rebuilt when the probe lands. If the probe fails, the rows stay and
+the error says the check did not finish, since the placement was never in
+doubt.
+
 ### Where the shards live shows the replica too
 
 A file's inspector — **Where the shards live** on a row, or a click on its
