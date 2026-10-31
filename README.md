@@ -944,6 +944,7 @@ sand replicate exclude /photos/raw  # a folder kept out, whatever its parent say
 sand replicate status
 sand replicate run                  # in the foreground; 'sand serve' does it on its own
 sand get --from replica /photos/hike.jpg
+sand relocate /photos --accounts box,s3,drive --from replica   # put the parts back from it
 ```
 
 In the app the policy is **Vault settings › Replication**: tick the clouds,
@@ -961,6 +962,29 @@ parts. Opening, streaming or downloading it offers **Read from**: the parts,
 the replica alone, or **either** — the parts, with the replica standing in for
 any chunk they cannot give. A stream link made for the replica keeps reading
 the replica whoever follows it.
+
+### Putting the parts back from the replica
+
+Reading from the replica keeps a file reachable; it does not put the file
+back. When the parts are gone past reading — two of three accounts lost, or
+the one a whole copy was never meant to depend on — the way back is to
+**rebuild** the parts from the replica onto clouds you choose. **Move to
+other clouds** on a file, a folder or a selection gains **Read from**: *the
+shards*, which is the move it always was, or *the replica*, which reads every
+file in scope that has a replica and writes it out again as a fresh set of
+parts on the clouds you tick, under the code those clouds call for. The
+estimate prices it before anything moves — each file comes down from the
+replica folders and goes back up whole — and says how many files in scope have
+no replica, which are left exactly as they are. The replica itself is not
+touched. A file in the **missing a part** list that cannot be rebuilt from its
+parts offers the same dialog, opened on the replica, when it has one. Every
+file commits on its own, so a rebuild stopped partway has put back every file
+it finished.
+
+```bash
+sand relocate /photos --accounts box,s3,drive --from replica --dry-run
+sand relocate /photos --accounts box,s3,drive --from replica
+```
 
 ## A folder that looks after itself
 
@@ -2089,8 +2113,9 @@ sand put <path>... [--path /dir] [--overwrite] [--accounts a,b,c] [--scheme m-of
 sand get <path-or-id> [-o out]     Rebuild and decrypt
 sand mkdir <path>
 sand mv <path> <new-path>          A file or a folder; index only, parts never move
-sand relocate <path> --accounts a,b,c [--scheme m-of-n] [--dry-run]
-                                   Move a file or folder onto other clouds
+sand relocate <path> --accounts a,b,c [--scheme m-of-n] [--from replica] [--dry-run]
+                                   Move a file or folder onto other clouds — or,
+                                   from the replica, rebuild its parts there
 sand rm <path> [-r]                Erases every part from every account
 sand check [path] [--all]          Verify parts are still there; non-zero if not
 ```
@@ -2141,6 +2166,10 @@ repositories](#keeping-copies-of-git-repositories).
 of the accounts you named stays where it is, and what travels is copied across
 still encrypted rather than rebuilt. A folder takes everything under it. See
 [Moving something to different clouds](#moving-something-to-different-clouds).
+With `--from replica` nothing is moved: every file in scope that has a replica
+is read from it and written out as a fresh set of parts on the accounts you
+named, which is the way back for a file whose parts cannot be read. See
+[Putting the parts back from the replica](#putting-the-parts-back-from-the-replica).
 
 `sand check --all` exits non-zero when anything is degraded or unrecoverable,
 which makes it a reasonable cron job.
@@ -2792,7 +2821,7 @@ one walk, so comparing them costs nothing.
 | GET · POST | `/api/folders/art?path=` | Which file's thumbnail a folder is drawn with, and what else it could be (`id` to pick one, `""` for none) |
 | POST · DELETE | `/api/folders` | Create / delete folders |
 | POST | `/api/folders/move` | Move a folder, and everything under it, `from` one path `to` another |
-| POST | `/api/relocate` | Move a file (`id`) or folder (`path`) onto other `accounts`; `preview` prices it without moving anything. A file short a part is rebuilt rather than carried, which is how a missing part is put back |
+| POST | `/api/relocate` | Move a file (`id`) or folder (`path`) onto other `accounts`; `preview` prices it without moving anything. A file short a part is rebuilt rather than carried, which is how a missing part is put back. `"source": "replica"` rebuilds every file in scope that has a replica from it instead, onto the same `accounts` |
 | GET | `/api/reads?window=` | Which account is winning the race every read runs — `today` (default), `month`, `year` or `all` |
 | POST | `/api/reads/forget` | Erase that history, in memory and on disk |
 | GET | `/api/system/folders?path=` | Folders on this machine, for the folder picker |

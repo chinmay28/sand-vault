@@ -12,6 +12,28 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### A file, or a folder, can be rebuilt from its replica onto clouds you choose
+
+A replica kept a file reachable — *Read from: the replica* — and did nothing
+to put the file back. A file whose parts had gone past reading, two of three
+accounts lost, stayed that way: the relocation dialog could only carry parts
+that could be gathered, and a replica was a copy to read, never a copy to
+rebuild from. **Move to other clouds** on a file, a folder or a selection now
+offers **Read from** — *the shards*, the move it always was, or *the
+replica* — and from the replica every file in scope that has one is read
+from it and written out again as a fresh set of parts on the clouds ticked,
+under the code those clouds call for, with the parts it had erased wherever
+any can still be reached. The replica is not touched. The estimate prices it
+before anything moves, each file down from the replica folders and back up
+whole, and says how many files in scope have no replica, which are left
+exactly as they are and counted rather than failed. A file in the *missing a
+part* list that cannot be rebuilt from its parts offers the same dialog
+opened on the replica, where before nothing was offered. Each file commits
+on its own, the rebuild runs on the machine like any other move and shows up
+in the same runs list, and stopping it keeps every file it finished. Over
+HTTP it is `"source": "replica"` on `POST /api/relocate`, preview and all;
+on the command line, `sand relocate <path> --accounts … --from replica`.
+
 ### A Proton account is given the time its client needs, rather than twenty seconds
 
 Every connected account was given twenty seconds to answer a ping, and a

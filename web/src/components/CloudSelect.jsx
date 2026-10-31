@@ -774,9 +774,19 @@ const PREVIEW_DEBOUNCE_MS = 220
    away used to cancel the move mid-transfer. The dialog draws the machine's
    own reading of the run, so closing it and coming back shows the same bar,
    and the outcome waits here for whoever returns. */
-export function RelocateClouds({ target, targets, title, subtitle, current, providers, onClose, onDone }) {
+/* `replica` says a rebuild from the replica can be offered — the file has one,
+   or the folder or selection is replicated — and `source` is which copy the
+   dialog opens on. A rebuild reads every file in scope that has a replica and
+   writes it out as a fresh set of parts on the chosen clouds, which is the way
+   back when the parts themselves cannot be read; see vault.RelocateFrom. */
+export function RelocateClouds({
+  target, targets, title, subtitle, current, providers, onClose, onDone,
+  replica = false, source: initialSource = 'parts',
+}) {
   const [selected, setSelected] = useState(() => (current || []).filter(
     (id) => providers.some((p) => p.id === id)))
+  const [source, setSource] = useState(replica ? initialSource : 'parts')
+  const fromReplica = replica && source === 'replica'
   const [threshold, setThreshold] = useState(null)
   const [plan, setPlan] = useState(null)
   const [planning, setPlanning] = useState(false)
@@ -809,7 +819,7 @@ export function RelocateClouds({ target, targets, title, subtitle, current, prov
   const named = scheme && (!schemeFor(scheme.total) || schemeFor(scheme.total).data !== scheme.data)
   const cut = named ? schemeName(scheme) : ''
   const enough = usableCut(selected.length, scheme)
-  const key = `${selected.join(',')}|${cut}`
+  const key = `${selected.join(',')}|${cut}|${fromReplica ? 'replica' : 'parts'}`
   const scopeKey = scope.map((t) => t.id || t.path).join('\n')
 
   useEffect(() => {
@@ -827,7 +837,12 @@ export function RelocateClouds({ target, targets, title, subtitle, current, prov
          the index with no account contacted, so a selection of thirty is
          thirty cheap answers and no reason to wait for them in turn. */
       Promise.all(scope.map((t) => api.relocate({
-        ...t, accounts: selected, scheme: cut, preview: true, signal: controller.signal,
+        ...t,
+        accounts: selected,
+        scheme: cut,
+        preview: true,
+        source: fromReplica ? 'replica' : '',
+        signal: controller.signal,
       })))
         .then((plans) => { setPlan(mergePlans(plans)); setError(null) })
         .catch((err) => {
@@ -903,7 +918,9 @@ export function RelocateClouds({ target, targets, title, subtitle, current, prov
          answer is the run rather than the result: the machine carries the
          shards across whether or not this page stays open, and how it comes
          out arrives on the poll. */
-      const resp = await api.relocate({ targets: scope, accounts: selected, scheme: cut, detach: true })
+      const resp = await api.relocate({
+        targets: scope, accounts: selected, scheme: cut, detach: true, source: fromReplica ? 'replica' : '',
+      })
       if (resp.run) {
         started.current.add(resp.run.id)
         setRuns((current) => [...current.filter((r) => r.id !== resp.run.id), resp.run])
@@ -943,6 +960,8 @@ export function RelocateClouds({ target, targets, title, subtitle, current, prov
         : <RelocationRunCard key={run.id} run={run} onStop={() => stopRun(run.id)} />))}
       {busy && runs.length === 0 && <RelocationRunCard run={null} />}
 
+      {replica && <SourceChoice source={source} onChange={setSource} />}
+
       <p style={{
         margin: '0 0 12px',
         fontFamily: FONT.sans,
@@ -950,11 +969,22 @@ export function RelocateClouds({ target, targets, title, subtitle, current, prov
         color: COLORS.textMuted,
         lineHeight: 1.6,
       }}>
-        Shards already on a cloud you keep stay exactly where they are — only the rest are
-        carried across, still encrypted, without ever being rebuilt. Changing the code a file
-        is cut with is different — a wider spread, or a different threshold — because no
-        shard of the old file is a shard of the new one, so it is gathered and written out
-        again. The estimate below says which is happening.
+        {fromReplica ? (
+          <>
+            Every file here that has a replica is read from it and written out again as a
+            fresh set of shards on the clouds you pick — the way back when the shards
+            themselves cannot be read. The replica stays exactly where it is. A file with
+            no replica is left as it is, and the estimate below says how many that is.
+          </>
+        ) : (
+          <>
+            Shards already on a cloud you keep stay exactly where they are — only the rest are
+            carried across, still encrypted, without ever being rebuilt. Changing the code a file
+            is cut with is different — a wider spread, or a different threshold — because no
+            shard of the old file is a shard of the new one, so it is gathered and written out
+            again. The estimate below says which is happening.
+          </>
+        )}
       </p>
 
       <CloudChoice
@@ -970,7 +1000,7 @@ export function RelocateClouds({ target, targets, title, subtitle, current, prov
         <SelectionNote providers={providers} selected={selected} scheme={scheme} moving />
       </div>
 
-      {enough && <RelocationCost plan={plan} planning={planning} />}
+      {enough && <RelocationCost plan={plan} planning={planning} fromReplica={fromReplica} />}
 
       {/* The one promise worth making before the button, because it is the
           one thing the button no longer needs the page for. */}
@@ -981,9 +1011,13 @@ export function RelocateClouds({ target, targets, title, subtitle, current, prov
         color: COLORS.textMuted,
         lineHeight: 1.5,
       }}>
-        The machine carries the shards across on its own — closing this page does not stop it,
-        and this dialog shows how far it has got whenever you come back. Every file that
-        finishes stays moved; running the same move again picks up the rest.
+        {fromReplica
+          ? 'The machine rebuilds the files on its own — closing this page does not stop it, '
+            + 'and this dialog shows how far it has got whenever you come back. Every file that '
+            + 'finishes stays rebuilt; running the same rebuild again does the rest.'
+          : 'The machine carries the shards across on its own — closing this page does not stop it, '
+            + 'and this dialog shows how far it has got whenever you come back. Every file that '
+            + 'finishes stays moved; running the same move again picks up the rest.'}
       </p>
 
       <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', marginTop: '16px' }}>
@@ -999,12 +1033,49 @@ export function RelocateClouds({ target, targets, title, subtitle, current, prov
           {moving ? (
             <>
               <Spinner size={10} color={COLORS.bg} />
-              {' Moving…'}
+              {fromReplica ? ' Rebuilding…' : ' Moving…'}
             </>
-          ) : '⇄ Move the shards'}
+          ) : (fromReplica ? '↻ Rebuild from the replica' : '⇄ Move the shards')}
         </Button>
       </div>
     </Modal>
+  )
+}
+
+/* Which copy the files are read from. The parts are a move — shards carried
+   across, nothing rebuilt that need not be. The replica is a rebuild of
+   everything in scope that has one, and it is offered only where there is a
+   replica to offer. Drawn like the threshold choice above it, because it is
+   the same kind of thing: one setting that changes what the button does. */
+function SourceChoice({ source, onChange }) {
+  return (
+    <label style={{
+      display: 'flex',
+      alignItems: 'center',
+      gap: '8px',
+      margin: '0 0 12px',
+      fontFamily: FONT.mono,
+      fontSize: '11px',
+      color: COLORS.textDim,
+    }}>
+      <span style={{ flexShrink: 0 }}>Read from</span>
+      <select
+        value={source}
+        onChange={(e) => onChange(e.target.value)}
+        style={{
+          fontFamily: FONT.mono,
+          fontSize: '11px',
+          padding: '4px 6px',
+          background: COLORS.bg,
+          color: COLORS.text,
+          border: `1px solid ${COLORS.border}`,
+          borderRadius: '4px',
+        }}
+      >
+        <option value="parts">the shards — move them</option>
+        <option value="replica">the replica — rebuild the shards</option>
+      </select>
+    </label>
   )
 }
 
@@ -1028,12 +1099,15 @@ function mergePlans(plans) {
     total: all.total + (plan.total || 0),
     unchanged: all.unchanged + (plan.unchanged || 0),
     drops: all.drops + (plan.drops || 0),
+    no_replica: all.no_replica + (plan.no_replica || 0),
     warnings: [...all.warnings, ...(plan.warnings || [])],
-  }), { moves: 0, recoded: 0, recode_bytes: 0, bytes: 0, total: 0, unchanged: 0, drops: 0, warnings: [] })
+  }), {
+    moves: 0, recoded: 0, recode_bytes: 0, bytes: 0, total: 0, unchanged: 0, drops: 0, no_replica: 0, warnings: [],
+  })
 }
 
 /* What the chosen clouds would cost, from the index alone. */
-function RelocationCost({ plan, planning }) {
+function RelocationCost({ plan, planning, fromReplica = false }) {
   if (!plan) {
     return (
       <p style={{
@@ -1048,9 +1122,16 @@ function RelocationCost({ plan, planning }) {
   if (!worthDoing(plan)) {
     return (
       <div style={{ marginTop: '12px' }}>
-        <Banner tone="success">
-          Already there — every part is on one of those clouds. Nothing to move.
-        </Banner>
+        {fromReplica ? (
+          <Banner tone="warn">
+            Nothing here has a replica to rebuild from
+            {plan.total > 0 ? ` — ${plan.total} file${plan.total === 1 ? '' : 's'} in scope, none replicated` : ''}.
+          </Banner>
+        ) : (
+          <Banner tone="success">
+            Already there — every part is on one of those clouds. Nothing to move.
+          </Banner>
+        )}
       </div>
     )
   }
@@ -1078,7 +1159,7 @@ function RelocationCost({ plan, planning }) {
         {plan.recoded > 0
           ? (
             <>
-              {plan.recoded} file{plan.recoded === 1 ? '' : 's'} to rebuild
+              {plan.recoded} file{plan.recoded === 1 ? '' : 's'} to rebuild{fromReplica ? ' from the replica' : ''}
               {plan.recode_bytes > 0 && <> · {formatBytes(plan.recode_bytes)}</>}
             </>
           )
@@ -1095,6 +1176,11 @@ function RelocationCost({ plan, planning }) {
       <div style={{ color: COLORS.textMuted }}>
         {plan.total} file{plan.total === 1 ? '' : 's'} in scope
         {plan.unchanged > 0 && <>, {plan.unchanged} already in place</>}
+        {plan.no_replica > 0 && (
+          <span style={{ color: COLORS.warn }}>
+            , {plan.no_replica} with no replica, left as {plan.no_replica === 1 ? 'it is' : 'they are'}
+          </span>
+        )}
         {plan.drops > 0 && (
           <span style={{ color: COLORS.warn }}>
             {' '}· {plan.drops} spare shard{plan.drops === 1 ? '' : 's'} erased
@@ -1219,11 +1305,16 @@ function FinishedRelocation({ run, onDismiss }) {
   return (
     <Banner tone={stuck ? 'warn' : 'success'} onDismiss={onDismiss}>
       {run.cancelled ? 'Stopped. ' : ''}
-      {report.recoded > 0
-        ? `Rebuilt ${report.recoded} file(s)`
-        : `Moved ${report.parts_moved || 0} shard(s) across ${report.relocated || 0} file(s)`}
-      {report.bytes ? `, ${formatBytes(report.bytes)}` : ''}.
-      {stuck > 0 && ` ${stuck} file(s) did not fully move — nothing was lost, try them again.`}
+      {report.source === 'replica'
+        ? `Rebuilt ${report.recoded || 0} file(s) from the replica`
+        : report.recoded > 0
+          ? `Rebuilt ${report.recoded} file(s)`
+          : `Moved ${report.parts_moved || 0} shard(s) across ${report.relocated || 0} file(s)`}
+      {report.bytes ? `, ${formatBytes(report.bytes)}` : ''}
+      {report.source === 'replica' && report.no_replica > 0
+        ? `; ${report.no_replica} left alone with no replica` : ''}.
+      {report.deferred > 0 && ` ${report.deferred} file(s) were put off because a re-encryption had the slot — run it again.`}
+      {stuck > 0 && ` ${stuck} file(s) did not fully ${report.source === 'replica' ? 'rebuild' : 'move'} — nothing was lost, try them again.`}
       {/* The first few reasons why, because "did not fully move" without a
           why is a question, not a report. */}
       {(report.warnings || []).slice(0, 3).map((w, i) => (

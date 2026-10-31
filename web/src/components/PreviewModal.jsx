@@ -722,6 +722,11 @@ export function ShardInspector({ file, providers = [], onClose, onChanged }) {
              the truth and a swap is one click rather than four. */
           current={file.shards.map((s) => s.provider_id)}
           providers={providers}
+          /* A rebuild from the replica is offered where there is one — and
+             opened on it when the index says the parts are past reading,
+             since this panel is where somebody has come to find that out. */
+          replica={!!file.replica}
+          source={file.replica && storedParts(file.shards) < fileScheme(file).data ? 'replica' : 'parts'}
           onClose={() => setRelocating(false)}
           onDone={() => { onChanged?.(); onClose() }}
         />

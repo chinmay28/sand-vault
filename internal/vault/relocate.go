@@ -79,6 +79,12 @@ type relocationOptions struct {
 	// set, and they are never copied from.
 	unreachable map[string]bool
 
+	// source is which placement each file is read from when it has to be
+	// rebuilt rather than carried: its parts, which is the default and the
+	// only choice a move needs, or its replica. See planFileRelocation for
+	// what choosing the replica turns the plan into.
+	source ReadSource
+
 	// absent names parts that have been looked for and are not there, by file
 	// ID and then by part number.
 	//
@@ -205,6 +211,16 @@ type FilePlan struct {
 	// warning a repair carries. Zero on every other kind of plan.
 	Missing int `json:"missing,omitempty"`
 
+	// FromReplica marks a rebuild that reads the file from its replica rather
+	// than from its parts: a fresh set of parts cut from the second copy and
+	// written onto the chosen accounts, which is the way back for a file
+	// whose parts cannot be read at all. Recode is set with it, because that
+	// is the work. NoReplica is the file a replica rebuild could not take —
+	// it has no replica, or too little of one to read — left exactly as it
+	// is and counted apart from the files that were already in place.
+	FromReplica bool `json:"from_replica,omitempty"`
+	NoReplica   bool `json:"no_replica,omitempty"`
+
 	// to is To as the scheme itself, carried so the recode cuts with exactly the
 	// code the plan was costed against rather than re-deriving one.
 	to archive.Scheme
@@ -242,6 +258,11 @@ type RelocationPlan struct {
 	// Accounts is the chosen destination set, in the order it was given.
 	Accounts []string `json:"accounts"`
 
+	// Source is the placement the files are read from where they have to be
+	// rebuilt: empty or "parts" for a move, "replica" for a rebuild from the
+	// second copy. See RelocateFrom.
+	Source ReadSource `json:"source,omitempty"`
+
 	Files     []FilePlan `json:"files"`
 	Truncated bool       `json:"truncated,omitempty"`
 
@@ -252,6 +273,10 @@ type RelocationPlan struct {
 	Moves     int   `json:"moves"`
 	Drops     int   `json:"drops"`
 	Bytes     int64 `json:"bytes"`
+
+	// NoReplica is how many files a rebuild from the replica has to leave
+	// alone, because they have no replica to read. Zero on a move.
+	NoReplica int `json:"no_replica,omitempty"`
 
 	// Recoded is how many files have to be cut again because the chosen accounts
 	// call for a different scheme, and RecodeBytes what that would move. They
@@ -272,9 +297,10 @@ type RelocationPlan struct {
 
 // RelocationReport says what a relocation actually did.
 type RelocationReport struct {
-	Path     string   `json:"path"`
-	Folder   bool     `json:"folder"`
-	Accounts []string `json:"accounts"`
+	Path     string     `json:"path"`
+	Folder   bool       `json:"folder"`
+	Accounts []string   `json:"accounts"`
+	Source   ReadSource `json:"source,omitempty"`
 
 	// Total is how many files were in scope and Unchanged how many were already
 	// on the chosen accounts. Relocated counts the ones that finished on them,
@@ -291,6 +317,10 @@ type RelocationReport struct {
 	// Recoded is how many files were cut again under a different scheme rather
 	// than having their shards carried across.
 	Recoded int `json:"recoded"`
+
+	// NoReplica is how many files a rebuild from the replica left alone for
+	// want of one. They are not failures: nothing was tried on them.
+	NoReplica int `json:"no_replica,omitempty"`
 
 	// Deferred counts the files that had to be rebuilt and were not, because
 	// a re-encryption had the slot a rebuild runs in (recodeEntry). They are
@@ -322,7 +352,17 @@ func (r *RelocationReport) Done() bool {
 // clouds possible at all — five names no scheme of its own — and what lets a
 // move be a deliberate change of tradeoff rather than only a change of address.
 func (v *Vault) PlanRelocation(scope Scope, target string, accounts []string, scheme archive.Scheme) (*RelocationPlan, error) {
-	plan, err := v.planRelocation(scope, target, accounts, scheme, relocationOptions{})
+	return v.PlanRelocationFrom(scope, target, accounts, scheme, ReadParts)
+}
+
+// PlanRelocationFrom is PlanRelocation with the placement the files are read
+// from spelled out — see RelocateFrom for what reading from the replica
+// means.
+func (v *Vault) PlanRelocationFrom(scope Scope, target string, accounts []string, scheme archive.Scheme, from ReadSource) (*RelocationPlan, error) {
+	if err := checkRebuildSource(from); err != nil {
+		return nil, err
+	}
+	plan, err := v.planRelocation(scope, target, accounts, scheme, relocationOptions{source: from})
 	if err != nil {
 		return nil, err
 	}
@@ -396,10 +436,18 @@ func (v *Vault) planRelocation(scope Scope, target string, accounts []string, sc
 		Outgoing: map[string]int64{},
 		Incoming: map[string]int64{},
 	}
+	if opts.source == ReadReplica {
+		plan.Source = ReadReplica
+	}
 
 	for _, entry := range entries {
 		fp := planFileRelocation(scope, entry, targets, byID, capacity, want, opts)
-		if !fp.Changed() {
+		switch {
+		case fp.NoReplica:
+			plan.NoReplica++
+			plan.Warnings = append(plan.Warnings, fmt.Sprintf(
+				"%s has no replica to rebuild from, so it is left as it is", fp.Path))
+		case !fp.Changed():
 			plan.Unchanged++
 		}
 		if fp.Recode {
@@ -424,6 +472,10 @@ func (v *Vault) planRelocation(scope Scope, target string, accounts []string, sc
 				fp.Path, joinParts(fp.Drop), len(targets), len(entry.Shards), policy))
 		}
 		switch {
+		case fp.FromReplica:
+			// Said once for the plan rather than once per file: every file a
+			// replica rebuild touches is rebuilt, and that is what was asked
+			// for rather than a cost to be warned about.
 		case fp.Repair:
 			plan.Warnings = append(plan.Warnings, fmt.Sprintf(
 				"%s is missing %d of its %d shards, so it has to be rebuilt rather than moved — "+
@@ -455,7 +507,7 @@ func (v *Vault) planRelocation(scope Scope, target string, accounts []string, sc
 // A file whose account is offline is reported and left alone rather than holding
 // up the rest. progress may be nil.
 func (v *Vault) Relocate(ctx context.Context, scope Scope, target string, accounts []string, scheme archive.Scheme, progress ProgressFunc) (*RelocationReport, error) {
-	return v.relocate(ctx, scope, target, accounts, scheme, relocationOptions{}, progress, nil)
+	return v.RelocateFrom(ctx, scope, target, accounts, scheme, ReadParts, progress)
 }
 
 // RelocateWatched is Relocate reporting as it goes: which file it is on, and —
@@ -463,7 +515,55 @@ func (v *Vault) Relocate(ctx context.Context, scope Scope, target string, accoun
 // accounts, against the plan's estimate of the whole. watch is called from the
 // goroutines doing the copying and must not block.
 func (v *Vault) RelocateWatched(ctx context.Context, scope Scope, target string, accounts []string, scheme archive.Scheme, watch func(RelocationProgress)) (*RelocationReport, error) {
-	return v.relocate(ctx, scope, target, accounts, scheme, relocationOptions{}, nil, watch)
+	return v.RelocateFromWatched(ctx, scope, target, accounts, scheme, ReadParts, nil, watch)
+}
+
+// RelocateFrom is Relocate with the placement each file is read from spelled
+// out.
+//
+// ReadParts is Relocate: parts carried across where they can be, the file
+// rebuilt from its parts where they cannot. ReadReplica is a different
+// answer to "put this on these clouds": every file in scope that has a
+// replica is read from it and written out as a fresh set of parts on the
+// chosen accounts, under the code those accounts call for, and the parts it
+// had — wherever any of them can still be reached — are erased once the
+// index names the new ones. The replica itself is not touched.
+//
+// It is the way back for a file whose parts are gone past reading — two of
+// three accounts lost, or the one account a whole copy was never meant to
+// depend on — and it is offered for a folder as well as a file because that
+// is the shape the loss has: an account goes, and everything that had a part
+// on it goes with it. Every file in scope with a replica is rebuilt, whether
+// or not its parts look whole in the index, because the index is not what
+// says a part is readable, and somebody choosing the replica has chosen it
+// over the parts. A file with no replica, or one short of the shards it takes
+// to read, is left exactly as it is and counted (RelocationReport.NoReplica)
+// rather than failed.
+//
+// Each file commits on its own, as a move does, so a rebuild stopped partway
+// has put back every file it finished, and asking again does the rest.
+func (v *Vault) RelocateFrom(ctx context.Context, scope Scope, target string, accounts []string, scheme archive.Scheme, from ReadSource, progress ProgressFunc) (*RelocationReport, error) {
+	return v.RelocateFromWatched(ctx, scope, target, accounts, scheme, from, progress, nil)
+}
+
+// RelocateFromWatched is RelocateFrom reporting as it goes, the way
+// RelocateWatched does. Either or both of progress and watch may be nil.
+func (v *Vault) RelocateFromWatched(ctx context.Context, scope Scope, target string, accounts []string, scheme archive.Scheme, from ReadSource, progress ProgressFunc, watch func(RelocationProgress)) (*RelocationReport, error) {
+	if err := checkRebuildSource(from); err != nil {
+		return nil, err
+	}
+	return v.relocate(ctx, scope, target, accounts, scheme, relocationOptions{source: from}, progress, watch)
+}
+
+// checkRebuildSource refuses a source a relocation cannot read from. Empty is
+// the parts, as it is for a read; either is refused, because a rebuild has
+// to say which copy it trusts rather than take whichever answers.
+func checkRebuildSource(from ReadSource) error {
+	switch from {
+	case "", ReadParts, ReadReplica:
+		return nil
+	}
+	return fmt.Errorf("%q is not a placement to rebuild from: parts or replica", from)
 }
 
 // relocate is Relocate with the assumptions spelled out — see relocationOptions.
@@ -491,8 +591,10 @@ func (v *Vault) relocate(ctx context.Context, scope Scope, target string, accoun
 		Path:      plan.Path,
 		Folder:    plan.Folder,
 		Accounts:  plan.Accounts,
+		Source:    plan.Source,
 		Total:     plan.Total,
 		Unchanged: plan.Unchanged,
+		NoReplica: plan.NoReplica,
 		Warnings:  plan.Warnings,
 	}
 
@@ -634,9 +736,31 @@ func planFileRelocation(scope Scope, entry *Entry, targets []string, byID map[st
 	// such a file part by part would land it on the chosen accounts still short
 	// of a part, which is not what "put this file on these clouds" means — and
 	// rebuilding is the only thing that ever puts a missing shard back.
+	//
+	// A rebuild from the replica is a third, and it is not a reason found in
+	// the file but a choice made about it: the parts are not to be trusted,
+	// whatever the index says of them, and the replica is. So there is no
+	// shard to keep and nothing to carry — every file with a replica is cut
+	// again from it, and the only question the file settles is whether it
+	// has one to be cut from.
 	have := entry.Scheme()
 	reachable := opts.countReachable(entry)
 	short := reachable < have.Total
+	if opts.source == ReadReplica {
+		if r := entry.Replica; r == nil || !r.Recoverable() {
+			plan.NoReplica = true
+			return plan
+		}
+		plan.Recode = true
+		plan.FromReplica = true
+		plan.Repair = short && have == want
+		plan.Missing = have.Total - reachable
+		plan.From = have.String()
+		plan.To = want.String()
+		plan.to = want
+		plan.Bytes = entry.Size + entry.Size*int64(want.Total)/int64(want.Data)
+		return plan
+	}
 	if have != want || short {
 		plan.Recode = true
 		plan.Repair = short && have == want
@@ -879,7 +1003,11 @@ func (v *Vault) recodeEntry(ctx context.Context, plan *FilePlan, accounts []stri
 	}
 	defer v.migrateMu.Unlock()
 
-	_, _, warnings, err := v.migrateFile(ctx, plan.vault, plan.ID, accounts, plan.to, nil)
+	from := ReadParts
+	if plan.FromReplica {
+		from = ReadReplica
+	}
+	_, _, warnings, err := v.migrateFileFrom(ctx, plan.vault, plan.ID, accounts, plan.to, from, nil)
 	out.warnings = append(out.warnings, warnings...)
 	if err != nil {
 		return out, err

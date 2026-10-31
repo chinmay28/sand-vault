@@ -791,7 +791,7 @@ func (v *Vault) replicateFile(ctx context.Context, id string, progress func(done
 		exact:     true,
 		scheme:    scheme,
 		role:      provider.Replicas,
-	}, progress)
+	}, ReadParts, progress)
 	defer v.releaseDataKey(placed.keyID)
 	if err != nil {
 		return false, placed.warnings, err
@@ -1157,6 +1157,11 @@ func ParseReadSource(s string) (ReadSource, error) {
 // ErrNoReplica is returned when a read asks for a replica a file does not
 // have.
 var ErrNoReplica = errors.New("this file has no replica to read from")
+
+// ErrReplicaShort is returned when a rebuild asks for a replica that records
+// fewer shards than it takes to read it — one that lost accounts with the
+// parts, and is no more a way back than they are.
+var ErrReplicaShort = errors.New("this file's replica is short of the shards it takes to read it")
 
 // ReadFrom chooses which placement a reader is served from.
 func ReadFrom(source ReadSource) ReadOption {

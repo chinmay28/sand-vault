@@ -112,7 +112,9 @@ export default function MissingParts({ providers, onClose, onChanged }) {
         <Banner tone="error">
           {page.unreadable} of these cannot be rebuilt from what the index records — too
           few parts were ever written. No arrangement of clouds brings one of those back,
-          so they are listed and marked and nothing is offered for them.
+          so they are listed and marked and nothing is offered for them — unless the file
+          has a replica, which is the one other place its bytes are, and then the row
+          offers to rebuild it from there.
         </Banner>
       )}
 
@@ -197,6 +199,10 @@ export default function MissingParts({ providers, onClose, onChanged }) {
           subtitle={`${formatBytes(repairing.size)} — ${schemeName({ data: repairing.data_shards, total: repairing.total_shards })}, ${repairing.stored} part${repairing.stored === 1 ? '' : 's'} stored; pick the clouds it should live on`}
           current={repairSelection(repairing, providers)}
           providers={providers}
+          /* A file past reading from its parts opens on the replica, which
+             is the only copy a rebuild of it could read. */
+          replica={!!repairing.replica}
+          source={!repairing.readable && repairing.replica ? 'replica' : 'parts'}
           onClose={() => setRepairing(null)}
           onDone={repaired}
         />
@@ -589,20 +595,24 @@ function DegradedRow({ file, mobile, onRepair }) {
               ? (file.spare === 0
                 ? 'no cloud left to lose'
                 : `${file.spare} more cloud${file.spare === 1 ? '' : 's'} to spare`)
-              : 'cannot be rebuilt'}
+              : (file.replica ? 'only its replica reads' : 'cannot be rebuilt')}
           </span>
         </span>
 
+        {/* A file past reading from its parts is still a file with a way
+            back when it has a replica: the same dialog, opened on that. */}
         <Button
           size="sm"
-          variant={file.readable ? 'default' : 'ghost'}
+          variant={file.readable || file.replica ? 'default' : 'ghost'}
           onClick={onRepair}
           title={file.readable
             ? 'Choose the clouds this file should live on'
-            : 'Too few parts were written for this file to be rebuilt'}
-          disabled={!file.readable}
+            : (file.replica
+              ? 'Rebuild this file from its replica onto clouds you choose'
+              : 'Too few parts were written for this file to be rebuilt')}
+          disabled={!file.readable && !file.replica}
           style={{ flexShrink: 0 }}
-        >⇄ Clouds</Button>
+        >{!file.readable && file.replica ? '↻ Replica' : '⇄ Clouds'}</Button>
       </div>
     </div>
   )

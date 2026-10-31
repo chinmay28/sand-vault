@@ -539,10 +539,10 @@ export const api = {
      copied — swapping one cloud out of three moves one part, not the file — so
      `preview` is worth asking first: it answers out of the index alone, without
      contacting a single account, and says exactly how much would travel. */
-  relocate: ({ id, path, targets, accounts, scheme = '', preview = false, vault = '', detach = false, signal } = {}) =>
+  relocate: ({ id, path, targets, accounts, scheme = '', preview = false, vault = '', detach = false, source = '', signal } = {}) =>
     request('/api/relocate', {
       method: 'POST',
-      body: { id, path, targets, accounts, scheme, preview, vault, detach },
+      body: { id, path, targets, accounts, scheme, preview, vault, detach, source },
       signal,
     }),
   /* The moves between clouds running right now, and what a detached one lately

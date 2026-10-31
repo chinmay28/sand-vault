@@ -676,6 +676,34 @@ func (v *Vault) MigrateFilesIn(ctx context.Context, scope Scope, accounts []stri
 // resident memory under a unit with an 80% memory ceiling, and the kernel's
 // answer to that is to kill the service mid-move. See rescatter.
 func (v *Vault) migrateFile(ctx context.Context, scope Scope, id string, accounts []string, scheme archive.Scheme, progress func(done, size int64)) (path string, size int64, warnings []string, err error) {
+	return v.migrateFileFrom(ctx, scope, id, accounts, scheme, ReadParts, progress)
+}
+
+// migrateFileFrom is migrateFile with the placement it reads from spelled
+// out.
+//
+// ReadParts is every reason above: the file is read from its parts and the
+// parts are what it goes back out as. ReadReplica is the one more reason to
+// pay for a whole download and a whole upload — the parts are not there to
+// read. A file whose parts have gone below their threshold, or whose
+// accounts have gone with them, still has its replica, cut from the same
+// bytes into the replica folders (replica.go); reading that and writing a
+// fresh set of parts onto accounts somebody chose is what puts the file
+// back. The replica is read and not touched: it stays exactly where it is,
+// under its own archive ID, and the worker keeps it current as it does for
+// every other file. Everything else is migrateFile — the same commit, the
+// same refusal to come out a part shorter, and the old parts erased after
+// the index has stopped naming them, wherever any of them can still be
+// reached.
+//
+// ReadEither is not a place to rebuild from and is refused: a rebuild has
+// to say which copy it trusts.
+func (v *Vault) migrateFileFrom(ctx context.Context, scope Scope, id string, accounts []string, scheme archive.Scheme, from ReadSource, progress func(done, size int64)) (path string, size int64, warnings []string, err error) {
+	switch from {
+	case ReadParts, ReadReplica:
+	default:
+		return "", 0, nil, fmt.Errorf("%q is not a placement to rebuild a file from: parts or replica", from)
+	}
 	// The accounts that did not answer the last health check, taken before
 	// the index lock and never under it (see unreachableAccounts). A part on
 	// one of them is left where it is: the file is read from the parts that
@@ -733,12 +761,32 @@ func (v *Vault) migrateFile(ctx context.Context, scope Scope, id string, account
 		scheme = stale.Scheme()
 	}
 
+	// What is read. The entry itself, or — for a rebuild from the replica —
+	// the entry as if the replica were its placement (replicaView), which is
+	// what lets the read path below treat the two alike. The replica carries
+	// the hash it was cut from; an entry written before hashes were recorded
+	// takes it, so the new parts' headers carry the right one without a
+	// second pass over the file.
+	source := &stale
+	if from == ReadReplica {
+		source = stale.replicaView()
+		if source == nil {
+			return path, 0, nil, fmt.Errorf("%s: %w", path, ErrNoReplica)
+		}
+		if !source.Recoverable() {
+			return path, 0, nil, fmt.Errorf("%s: %w", path, ErrReplicaShort)
+		}
+		if source.Hash == "" {
+			source.Hash = stale.Replica.Hash
+		}
+	}
+
 	// Re-encrypting writes the current format, so a file stored whole before
 	// chunking existed comes back chunked. That is the cheapest moment to do it:
 	// the file is being read back and scattered again anyway, so changing
 	// format costs nothing beyond what the re-encryption was paying.
-	placed, err := v.rescatter(ctx, scope, &stale,
-		spread{preferred: current, exact: exact, scheme: scheme, avoid: down}, progress)
+	placed, err := v.rescatter(ctx, scope, source,
+		spread{preferred: current, exact: exact, scheme: scheme, avoid: down}, from, progress)
 	// Held until the new parts are in the index or erased — see holdDataKeyLocked.
 	defer v.releaseDataKey(placed.keyID)
 	warnings = placed.warnings
@@ -937,11 +985,19 @@ func splitShardsOn(shards []Shard, down map[string]bool) (on, off []Shard) {
 // result is not the hash on record the new parts are erased and the file is
 // left exactly as it was: a re-encryption must never trade a file that read
 // correctly for one that does not.
-func (v *Vault) rescatter(ctx context.Context, scope Scope, stale *Entry, sp spread, progress func(done, size int64)) (placement, error) {
+//
+// from is which placement stale describes and is read from: the parts, or
+// the replica, when stale is the entry's replicaView. A replica is always in
+// the chunked format — it is written by this function — so the whole-file
+// path below is only ever the parts'.
+func (v *Vault) rescatter(ctx context.Context, scope Scope, stale *Entry, sp spread, from ReadSource, progress func(done, size int64)) (placement, error) {
 	path := stale.Path()
 	chunkSize := v.uploadChunkSize()
 
 	if !stale.Chunked() {
+		if from != ReadParts {
+			return placement{}, fmt.Errorf("%s could not be rebuilt: its %s is not in the chunked format", path, from)
+		}
 		spool, size, hash, err := v.rebuildLegacyToDisk(ctx, stale)
 		if err != nil {
 			return placement{}, fmt.Errorf("%s could not be re-encrypted: %w", path, err)
@@ -954,7 +1010,7 @@ func (v *Vault) rescatter(ctx context.Context, scope Scope, stale *Entry, sp spr
 		return placed, nil
 	}
 
-	reader, err := v.OpenReader(stale.ID)
+	reader, err := v.OpenReader(stale.ID, ReadFrom(from))
 	if err != nil {
 		return placement{}, fmt.Errorf("%s could not be re-encrypted: %w", path, err)
 	}
