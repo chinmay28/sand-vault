@@ -982,6 +982,13 @@ type relocateRequest struct {
 	// means, and moving onto six need not.
 	Scheme string `json:"scheme,omitempty"`
 
+	// Source is the copy each file is read from where it has to be rebuilt:
+	// "parts" (or empty), which is a move, or "replica", which rebuilds every
+	// file in scope that has a replica from it, onto the chosen accounts — the
+	// way back for a file whose parts cannot be read. "either" is a way to
+	// read, not a copy to trust, and is refused. See vault.RelocateFrom.
+	Source string `json:"source,omitempty"`
+
 	// Preview asks what the move would do without doing any of it. The answer
 	// comes out of the index alone, so it costs nothing and no account is
 	// contacted.
@@ -1074,6 +1081,11 @@ func (s *Server) handleRelocate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error(), "BAD_SCHEME")
 		return
 	}
+	source, err := parseRebuildSource(req.Source)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "BAD_SOURCE")
+		return
+	}
 
 	v, _ := s.Vault()
 
@@ -1083,7 +1095,7 @@ func (s *Server) handleRelocate(w http.ResponseWriter, r *http.Request) {
 				"a preview prices one target at a time", "BAD_REQUEST")
 			return
 		}
-		plan, err := v.PlanRelocation(vault.Scope(targets[0].Vault), targets[0].target(), req.Accounts, scheme)
+		plan, err := v.PlanRelocationFrom(vault.Scope(targets[0].Vault), targets[0].target(), req.Accounts, scheme, source)
 		if err != nil {
 			vaultErrorResponse(w, err)
 			return
@@ -1093,7 +1105,7 @@ func (s *Server) handleRelocate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Detach {
-		s.startDetachedRelocation(w, v, targets, req.Accounts, scheme)
+		s.startDetachedRelocation(w, v, targets, req.Accounts, scheme, source)
 		return
 	}
 
@@ -1110,12 +1122,26 @@ func (s *Server) handleRelocate(w http.ResponseWriter, r *http.Request) {
 	}
 	defer ticket.done()
 
-	report, err := s.runRelocation(ctx, v, targets, req.Accounts, scheme, ticket)
+	report, err := s.runRelocation(ctx, v, targets, req.Accounts, scheme, source, ticket)
 	if err != nil {
 		vaultErrorResponse(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, report)
+}
+
+// parseRebuildSource reads the copy a relocation is to rebuild from. Empty is
+// the parts, as it is for a read; "either" is refused here, with the reason,
+// rather than left for the vault to refuse per target.
+func parseRebuildSource(raw string) (vault.ReadSource, error) {
+	source, err := vault.ParseReadSource(raw)
+	if err != nil {
+		return "", err
+	}
+	if source == vault.ReadEither {
+		return "", fmt.Errorf("a rebuild has to say which copy it reads: parts or replica")
+	}
+	return source, nil
 }
 
 // relocateLabel names a run for its card: the one thing picked, or how many.
@@ -1136,7 +1162,7 @@ func relocateLabel(targets []relocateTarget) string {
 // has its denominator before the first byte moves — and so a target that
 // cannot even be planned fails its own line without stopping the rest.
 func (s *Server) runRelocation(ctx context.Context, v *vault.Vault, targets []relocateTarget,
-	accounts []string, scheme archive.Scheme, ticket *relocateTicket) (*vault.RelocationReport, error) {
+	accounts []string, scheme archive.Scheme, source vault.ReadSource, ticket *relocateTicket) (*vault.RelocationReport, error) {
 
 	type job struct {
 		t     relocateTarget
@@ -1148,9 +1174,9 @@ func (s *Server) runRelocation(ctx context.Context, v *vault.Vault, targets []re
 		totalFiles int
 		totalBytes int64
 	)
-	merged := &vault.RelocationReport{}
+	merged := &vault.RelocationReport{Source: source}
 	for _, t := range targets {
-		plan, err := v.PlanRelocation(vault.Scope(t.Vault), t.target(), accounts, scheme)
+		plan, err := v.PlanRelocationFrom(vault.Scope(t.Vault), t.target(), accounts, scheme, source)
 		if err != nil {
 			// One target, one answer: the error is the response. In a
 			// selection it is one line of many.
@@ -1194,7 +1220,7 @@ func (s *Server) runRelocation(ctx context.Context, v *vault.Vault, targets []re
 			s.noteExternalActivity()
 		}
 
-		report, err := v.RelocateWatched(ctx, vault.Scope(j.t.Vault), j.t.target(), accounts, scheme, watch)
+		report, err := v.RelocateFromWatched(ctx, vault.Scope(j.t.Vault), j.t.target(), accounts, scheme, source, nil, watch)
 		if report != nil {
 			last = report
 			merged.Accounts = report.Accounts
@@ -1206,6 +1232,8 @@ func (s *Server) runRelocation(ctx context.Context, v *vault.Vault, targets []re
 			merged.PartsMoved += report.PartsMoved
 			merged.PartsDrop += report.PartsDrop
 			merged.Recoded += report.Recoded
+			merged.NoReplica += report.NoReplica
+			merged.Deferred += report.Deferred
 			merged.Bytes += report.Bytes
 			merged.Warnings = append(merged.Warnings, report.Warnings...)
 			filesBefore += report.Total
@@ -1234,7 +1262,7 @@ func (s *Server) runRelocation(ctx context.Context, v *vault.Vault, targets []re
 // ceiling is the same one a foreground move gets, so a detached one cannot
 // outlive the day either.
 func (s *Server) startDetachedRelocation(w http.ResponseWriter, v *vault.Vault,
-	targets []relocateTarget, accounts []string, scheme archive.Scheme) {
+	targets []relocateTarget, accounts []string, scheme archive.Scheme, source vault.ReadSource) {
 
 	// Refused before anything starts, so a selection nothing in which can be
 	// planned — bad accounts, a locked sub vault — comes back as an error on
@@ -1243,7 +1271,7 @@ func (s *Server) startDetachedRelocation(w http.ResponseWriter, v *vault.Vault,
 	planned := 0
 	var firstErr error
 	for _, t := range targets {
-		if _, err := v.PlanRelocation(vault.Scope(t.Vault), t.target(), accounts, scheme); err != nil {
+		if _, err := v.PlanRelocationFrom(vault.Scope(t.Vault), t.target(), accounts, scheme, source); err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -1266,7 +1294,7 @@ func (s *Server) startDetachedRelocation(w http.ResponseWriter, v *vault.Vault,
 
 	go func() {
 		defer cancel()
-		report, err := s.runRelocation(ctx, v, targets, accounts, scheme, ticket)
+		report, err := s.runRelocation(ctx, v, targets, accounts, scheme, source, ticket)
 		// A cancelled run is not a failed one: it stopped because somebody
 		// stopped it, and every file that finished is already committed —
 		// running the same move again picks up the rest.

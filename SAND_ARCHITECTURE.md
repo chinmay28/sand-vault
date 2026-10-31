@@ -1148,7 +1148,12 @@ Nothing was added for the repair itself. Each row hands its file to the same
 accounts the file is on now — and a file that is short takes relocation's
 rebuild branch (§5.6), which is what actually puts the missing shard back. A
 file below its threshold is listed and marked, with nothing offered: no
-arrangement of clouds recreates a shard that was never written.
+arrangement of clouds recreates a shard that was never written — unless the
+file has a replica, which the row carries (`replica`, as the file listing
+names it). Then the same dialog is opened on the replica instead, and
+`"source": "replica"` on the `POST` reads the file from its replica and
+writes a fresh set of parts onto the chosen accounts (`RelocateFrom`), the
+replica itself untouched.
 
 That is the repair for a part that was never written. The dialog also offers
 the one for a part that *was*, and sits on a cloud with nothing pointing at it
@@ -1934,6 +1939,26 @@ back, and it is what the browser's list of short files (§3.14) sends each row
 through. A file below its threshold cannot be gathered at all and fails as one
 file, reported and skipped, with the rest of the relocation carrying on.
 
+**A file whose parts cannot be read is rebuilt from its replica, when asked.**
+`Vault.RelocateFrom` (and `PlanRelocationFrom`) take the placement each file
+is read from: `ReadParts`, which is everything above, or `ReadReplica`. From
+the replica there is nothing to keep and nothing to carry — the parts are not
+to be trusted, whatever the index says of them, and the replica is — so every
+file in scope that has a replica takes the rebuild branch, marked
+`from_replica`, and is read from the replica's view of the entry
+(`replicaView`, the same one a read from the replica is served from) through
+the re-encryption path (`migrateFileFrom`): gathered one chunk at a time from
+the replica folders, cut again under the code the chosen accounts call for,
+committed in one index write, and the old parts erased wherever any of them
+can still be reached, with whatever will not erase written down as a stray.
+The replica is read and not touched. A file with no replica, or one short of
+the shards it takes to read it, is marked `no_replica`, left exactly as it is
+and counted apart from the files already in place, rather than failed —
+nothing was tried on it. `either` is a way to read and not a copy to trust,
+and is refused: a rebuild has to say which copy it believes. It runs in the
+re-encryption slot like any other rebuild, so a replica rebuild and a paced
+password change cannot meet on one file.
+
 The last row is the other one to say out loud: narrowing below a scheme's width
 costs a file its spare. The redundant policy has room for all three shards on
 two accounts and doubles up instead, exactly as an upload to those accounts
@@ -2620,7 +2645,7 @@ reveals only whether a vault exists.
 | POST | `/api/folders` | Create a folder |
 | POST | `/api/folders/move` | Move a folder `from` one path `to` another, with everything under it (§5.6) |
 | DELETE | `/api/folders?path=&recursive=` | Delete a folder |
-| POST | `/api/relocate` | Move a file (`id`) or a folder (`path`) onto other `accounts` (§5.6); a different *count* of accounts changes the scheme and rebuilds the file; `"preview": true` prices it out of the index and moves nothing |
+| POST | `/api/relocate` | Move a file (`id`) or a folder (`path`) onto other `accounts` (§5.6); a different *count* of accounts changes the scheme and rebuilds the file; `"preview": true` prices it out of the index and moves nothing; `"source": "replica"` rebuilds every file in scope that has a replica from it, onto the `accounts`, and leaves the replica as it is |
 | GET | `/api/automation` | Every folder policy this vault can see, and whether a sweep is running. `?path=` answers for one folder — `null`, not a 404, when it has none (§3.15) |
 | POST | `/api/automation` | Put a policy on a `path`: `cadence`, `at`, `weekday`, `task`, `action`, `enabled`, plus that task's bounds — `narrow`, `max_repairs`, `rebuild_limit` for `shards`; `max_repos`, `size_limit`, `prune` for `git`. Creating and editing are the same call; an edit keeps the history and the last-run time |
 | DELETE | `/api/automation?path=` | Take it off, history and all |

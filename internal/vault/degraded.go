@@ -25,7 +25,8 @@ import (
 // Health; this one is about parts that were never written, which the index is
 // the authority on. And putting a missing part back is not here either: it is
 // Relocate, which the browser already has a dialog for — a degraded file
-// re-spread over a set of clouds that are answering comes back whole.
+// re-spread over a set of clouds that are answering comes back whole — or,
+// for a file past reading from its parts, RelocateFrom the replica.
 
 // DegradedFile is one file with fewer parts stored than its scheme calls for.
 type DegradedFile struct {
@@ -54,8 +55,14 @@ type DegradedFile struct {
 
 	// Readable says the index still records k parts. False is the serious case:
 	// the file cannot be rebuilt from what is written down, and no amount of
-	// moving it between clouds will change that.
+	// moving it between clouds will change that — unless the file has a
+	// replica, which is the one other place its bytes are.
 	Readable bool `json:"readable"`
+
+	// Replica is the file's second placement, when it has one, named the way
+	// the file listing names it: the browser offers to rebuild from it where
+	// the parts cannot be read, and this is how it knows to.
+	Replica *Replica `json:"replica,omitempty"`
 
 	ModifiedAt time.Time `json:"modified_at"`
 }
@@ -146,6 +153,7 @@ func (v *Vault) Degraded(offset, limit int) (*DegradedPage, error) {
 			Missing:     scheme.Total - stored,
 			Spare:       e.Spare(),
 			Readable:    e.Recoverable(),
+			Replica:     e.Replica,
 			ModifiedAt:  e.ModifiedAt,
 		})
 	}

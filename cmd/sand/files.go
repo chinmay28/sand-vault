@@ -628,6 +628,7 @@ func relocateCmd() *cobra.Command {
 	var (
 		accounts []string
 		scheme   string
+		from     string
 		dryRun   bool
 	)
 
@@ -651,9 +652,17 @@ file on the wire, and --dry-run says so before it happens.
 Each file is committed on its own, so this is safe to interrupt and safe to
 repeat — run it again and it moves whatever is still in the wrong place.
 
+--from replica is the way back for a file whose parts are gone past reading:
+every file in scope that has a replica is read from it and written out as a
+fresh set of parts on the accounts you name, and the parts it had are erased
+wherever they can still be reached. The replica itself is not touched. A file
+with no replica is left as it is and counted; a folder takes everything under
+it, which is the shape a lost account leaves.
+
   sand relocate /photos --accounts box,s3,drive
   sand relocate /taxes --accounts box,s3,drive,dropbox,onedrive,proton
-  sand relocate /notes.txt --accounts box,s3 --dry-run`,
+  sand relocate /notes.txt --accounts box,s3 --dry-run
+  sand relocate /photos --accounts box,s3,drive --from replica`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(accounts) == 0 {
@@ -674,8 +683,15 @@ repeat — run it again and it moves whatever is still in the wrong place.
 			if err != nil {
 				return err
 			}
+			source, err := vault.ParseReadSource(from)
+			if err != nil {
+				return err
+			}
+			if source == vault.ReadEither {
+				return fmt.Errorf("--from has to say which copy to rebuild from: parts or replica")
+			}
 
-			plan, err := v.PlanRelocation(scope, args[0], chosen, cut)
+			plan, err := v.PlanRelocationFrom(scope, args[0], chosen, cut, source)
 			if err != nil {
 				return err
 			}
@@ -695,21 +711,31 @@ repeat — run it again and it moves whatever is still in the wrong place.
 				return nil
 			}
 
-			report, err := v.Relocate(cmd.Context(), scope, args[0], chosen, cut, progressLine)
+			report, err := v.RelocateFrom(cmd.Context(), scope, args[0], chosen, cut, source, progressLine)
 			clearProgressLine()
 			printWarnings(report.Warnings)
 			if err != nil {
 				return err
 			}
 
-			fmt.Printf("Moved %d part(s), %s, across %d file(s).\n",
-				report.PartsMoved, formatBytes(report.Bytes), report.Relocated)
+			if source == vault.ReadReplica {
+				fmt.Printf("Rebuilt %d file(s) from their replicas, %s.\n", report.Recoded, formatBytes(report.Bytes))
+				if report.NoReplica > 0 {
+					fmt.Printf("Left %d file(s) alone that have no replica to rebuild from.\n", report.NoReplica)
+				}
+			} else {
+				fmt.Printf("Moved %d part(s), %s, across %d file(s).\n",
+					report.PartsMoved, formatBytes(report.Bytes), report.Relocated)
+			}
 			if report.PartsDrop > 0 {
 				fmt.Printf("Erased %d spare part(s) the chosen accounts had no room for.\n", report.PartsDrop)
 			}
+			if report.Deferred > 0 {
+				fmt.Printf("Put off %d file(s) because a re-encryption had the slot a rebuild runs in — run it again.\n", report.Deferred)
+			}
 			if !report.Done() {
 				return fmt.Errorf("%d file(s) did not fully move — run it again once the accounts are answering",
-					report.Partial+report.Failed)
+					report.Partial+report.Failed+report.Deferred)
 			}
 			return nil
 		},
@@ -719,6 +745,8 @@ repeat — run it again and it moves whatever is still in the wrong place.
 		"the accounts to move onto, by name or id; ending up under another scheme rebuilds the file")
 	cmd.Flags().StringVar(&scheme, "scheme", "",
 		"the code to end up cut with, k-of-n — 3-of-5, 6-of-10 (default: 2m-of-3m, from how many accounts were named)")
+	cmd.Flags().StringVar(&from, "from", "",
+		"the copy to rebuild from: replica rebuilds every file that has one from it, onto the accounts named (default: the parts, a move)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "say what would move, and move nothing")
 	return cmd
 }
@@ -732,6 +760,29 @@ func printRelocationPlan(plan *vault.RelocationPlan) {
 		what = "folder"
 	}
 	fmt.Printf("%s %s: %d file(s), %d already in place\n", what, plan.Path, plan.Total, plan.Unchanged)
+
+	// A rebuild from the replica is its own kind of plan: nothing moves and
+	// nothing is kept, every file with a replica is cut again from it.
+	if plan.Source == vault.ReadReplica {
+		if plan.NoReplica > 0 {
+			fmt.Printf("%d file(s) have no replica to rebuild from and are left as they are\n", plan.NoReplica)
+		}
+		if plan.Recoded == 0 {
+			fmt.Println("Nothing to rebuild — no file here has a replica.")
+			return
+		}
+		fmt.Printf("%d file(s) to rebuild from their replicas, %s in all — each comes down from the replica and goes back up as a fresh set of parts\n",
+			plan.Recoded, formatBytes(plan.RecodeBytes))
+		for _, f := range plan.Files {
+			if f.FromReplica {
+				fmt.Printf("  %s\t%s\t%s\n", f.Path, f.To, formatBytes(f.Bytes))
+			}
+		}
+		if plan.Truncated {
+			fmt.Printf("  … and more (showing the first %d file(s))\n", len(plan.Files))
+		}
+		return
+	}
 
 	// Recodes first, because they are the expensive half and saying "nothing to
 	// move" above them reads as "nothing to do" when the whole file is about to

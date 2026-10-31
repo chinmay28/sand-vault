@@ -1052,6 +1052,12 @@ export default function FileBrowser({
              something to price. */
           current={[]}
           providers={providers}
+          /* Offered when anything selected could have a replica: a file
+             that has one, or a folder that is replicated. The estimate
+             says how much of the selection actually does. */
+          replica={!vault && chosen.some((entry) => (entry.kind === 'folder'
+            ? !!listing?.replicated_folders?.[entry.path] || !!listing?.replicate?.enabled
+            : !!entry.file?.replica))}
           onClose={() => setBulk(null)}
           onDone={listProps.onRefresh}
         />
@@ -1217,6 +1223,7 @@ function EntryTable({
           art={entry.art}
           previousKey={previousKey?.[entry.path] || 0}
           replicated={!!replicatedFolders?.[entry.path]}
+          replicate={replicate}
           mobile={mobile}
           providers={providers}
           columns={columns}
@@ -1280,6 +1287,7 @@ function EntryGrid({
           location={entry.location}
           art={entry.art}
           replicated={!!replicatedFolders?.[entry.path]}
+          replicate={replicate}
           mobile={mobile}
           providers={providers}
           aspect={aspect}

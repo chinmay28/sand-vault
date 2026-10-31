@@ -331,6 +331,11 @@ export function useFileActions({
              the truth and a swap is one click rather than four. */
           current={file.shards.map((s) => s.provider_id)}
           providers={providers}
+          /* A rebuild from the replica is offered where there is one — and
+             opened on it when the parts are past reading, since moving
+             shards that cannot be gathered is not a way back. */
+          replica={!vault && !!file.replica}
+          source={!vault && file.replica && dead ? 'replica' : 'parts'}
           onClose={() => setRelocating(false)}
           onDone={onRefresh}
         />
@@ -912,7 +917,7 @@ function folderNote(held) {
    folder is a name in the index rather than something stored: it can be walked
    into, moved onto other clouds wholesale, or deleted with what is inside it. */
 function useFolderActions({
-  name, path, art, providers, vault = '', subVaults = [], replicated = false,
+  name, path, art, providers, vault = '', subVaults = [], replicated = false, replicate = null,
   onNavigate, onRefresh, onError,
 }) {
   const [menu, setMenu] = useState(false)
@@ -1127,6 +1132,10 @@ function useFolderActions({
              where it is being sent. */
           current={[]}
           providers={providers}
+          /* Offered where the folder is replicated, in its own right or by
+             a folder above it. The estimate says how many files inside it
+             actually have a replica to rebuild from. */
+          replica={!vault && (replicated || !!replicate?.enabled)}
           onClose={() => setRelocating(false)}
           onDone={onRefresh}
         />
@@ -1212,9 +1221,11 @@ function useFolderActions({
 export function FolderRow({
   name, path, location, art, mobile, providers, columns, selecting, selected,
   onSelect, onNavigate, onRefresh, onError,
-  vault = '', subVaults = [], previousKey = 0, replicated = false,
+  vault = '', subVaults = [], previousKey = 0, replicated = false, replicate = null,
 }) {
-  const a = useFolderActions({ name, path, art, providers, vault, subVaults, replicated, onNavigate, onRefresh, onError })
+  const a = useFolderActions({
+    name, path, art, providers, vault, subVaults, replicated, replicate, onNavigate, onRefresh, onError,
+  })
 
   const check = selecting && (
     <SelectBox mobile={mobile} checked={selected} label={`Select ${name}`} onChange={onSelect} />
@@ -1476,9 +1487,11 @@ export function FileTile({
 export function FolderTile({
   name, path, location, art, mobile, providers, aspect = TILE_SQUARE, selecting, selected,
   onSelect, onNavigate, onRefresh, onError,
-  vault = '', subVaults = [], replicated = false,
+  vault = '', subVaults = [], replicated = false, replicate = null,
 }) {
-  const a = useFolderActions({ name, path, art, providers, vault, subVaults, replicated, onNavigate, onRefresh, onError })
+  const a = useFolderActions({
+    name, path, art, providers, vault, subVaults, replicated, replicate, onNavigate, onRefresh, onError,
+  })
 
   return (
     <Tile
