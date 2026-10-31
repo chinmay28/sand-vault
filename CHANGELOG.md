@@ -12,6 +12,26 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### A delete runs on the machine, and the page is free the moment it is asked for
+
+Deleting was a request the browser held open. Erasing a file is a round
+trip to every account holding one of its parts, bounded by the slowest of
+them, and a folder of a few hundred films was that a few hundred times over:
+minutes of a dialog that could not be closed, with the tab pinned open under
+it, and a tab closed partway was a delete cut short. Every delete the page
+asks for — a file from its menu, a folder from its menu, a ticked selection,
+the spare copies the duplicate finder found — is now handed to the machine
+and answered at once. A strip above the file list draws what is going, with
+the files counted down out of what was picked, and says what each came to
+when it is done; a delete can be stopped from there, between files, with
+everything it had not reached left exactly where it was. The bulk-delete
+dialog watches its own run and can be closed while it goes. Deletes queue
+behind one another rather than racing the same accounts, and locking the
+vault stops them cleanly. Over HTTP it is `POST /api/delete` with the
+selection and `"detach": true`, followed and stopped through
+`GET` and `DELETE /api/delete/runs`; the three older endpoints still hold
+the request open as they did, and are listed among the runs while they do.
+
 ### A file, or a folder, can be rebuilt from its replica onto clouds you choose
 
 A replica kept a file reachable — *Read from: the replica* — and did nothing

@@ -9,6 +9,7 @@ import FileBrowser from './components/FileBrowser'
 import PreviewModal, { ShardInspector } from './components/PreviewModal'
 import RecoverVault from './components/RecoverVault'
 import CleanOrphans from './components/CleanOrphans'
+import EraseRuns from './components/EraseRuns'
 import ReattachShards from './components/ReattachShards'
 import FilmDetails from './components/FilmDetails'
 import Assistant from './components/Assistant'
@@ -526,6 +527,13 @@ export default function App() {
             </Banner>
           </div>
         )}
+
+        {/* Every delete the machine is carrying out, and what one lately came
+            to. A delete leaves the dialog that asked for it the moment it is
+            accepted and runs here instead, so the page can be used — or
+            closed — while the parts go; the listing refreshes as each one
+            finishes. See erase.js. */}
+        <EraseRuns mobile={mobile} onChanged={refreshAll} />
 
         {/* Two different pieces of news out of one listing, and the repair
             leads — a file short of a spare part is worth more attention than

@@ -2811,7 +2811,10 @@ one walk, so comparing them costs nothing.
 | GET | `/api/files/{id}/health` | Per-part reachability |
 | GET | `/api/degraded?offset=&limit=` | The files missing at least one part, worst first and paged — what the accounts panel's "N files missing a spare part" is counting |
 | POST | `/api/files/{id}/move` | Rename / move into another folder |
-| DELETE | `/api/files/{id}` | Erase every part |
+| DELETE | `/api/files/{id}` | Erase every part, holding the request open until they are gone |
+| POST | `/api/delete` | Delete a selection as one run: `targets` of files (`id`) and folders (`path`, `vault`), or a single `id`/`path`. `"detach": true` answers 202 with the run the moment the selection has been read, and the machine erases the parts and writes the index with no page behind it; without it the request holds open and answers with what went, what was already gone, and the parts left behind. The browser always detaches |
+| GET | `/api/delete/runs` | Every delete waiting, running or lately finished, with how many files have gone out of how many — the foreground ones too. A detached run queues behind the ones already erasing rather than being refused |
+| DELETE | `/api/delete/runs/{run}` | Stop a waiting or running delete, or dismiss a finished one's result. A stop lands between files: what was erased is gone, the rest is exactly where it was |
 | GET | `/api/folders` | Every folder in the vault, for a destination picker |
 | GET | `/api/folders/survey?path=` | Everything under a folder in one walk of the index — every file with its kind and depth, every folder with what it holds. What the organizer plans from |
 | GET | `/api/folders/stats?path=` | What one folder holds, counted rather than listed: files and bytes at or below it, folders under it, what the parts weigh across the accounts, which clouds they are on, files short a part, newest change. What the folder menu shows |

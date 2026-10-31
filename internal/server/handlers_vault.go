@@ -172,6 +172,10 @@ func (s *Server) handleVaultLock(w http.ResponseWriter, r *http.Request) {
 	// commit for want of the index. What it copied first becomes litter the
 	// stray-parts scan knows how to find.
 	s.relocations.stopAll()
+	// And a delete: what it had erased has left the index already, and one
+	// that carried on would find no key to write the index with. The parts
+	// of the file in flight finish their round either way.
+	s.erasures.stopAll()
 	v.Lock()
 	clearSessionCookie(w, isSecureRequest(r))
 
