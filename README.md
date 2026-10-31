@@ -962,10 +962,15 @@ when the policy does. Deleting a file erases its replica with it; clearing the
 policy leaves every replica already made where it is.
 
 A file with a replica carries a second, outlined group of badges after its
-parts. Opening, streaming or downloading it offers **Read from**: the parts,
-the replica alone, or **either** — the parts, with the replica standing in for
-any chunk they cannot give. A stream link made for the replica keeps reading
-the replica whoever follows it.
+parts, and **Where the shards live** draws the replica under them: each of
+its shards looked for in its account's replica folder just now, whether it
+answered and what it weighed, and whether the replica alone can rebuild the
+file — judged on its own, since the two placements are different objects and
+one can be short while the other is whole. `sand check` says the same under
+each file's parts. Opening, streaming or downloading the file offers **Read
+from**: the parts, the replica alone, or **either** — the parts, with the
+replica standing in for any chunk they cannot give. A stream link made for the
+replica keeps reading the replica whoever follows it.
 
 ### Putting the parts back from the replica
 
@@ -2345,7 +2350,8 @@ pipe the password on stdin.
   vault, each hit shown with the folder it lives in; searching inside a folder
   looks there first and offers to widen to the whole vault
 - **Part badges** — `①②③` coloured per account; click for a live per-part
-  health read-out
+  health read-out, with the file's replica checked beside the parts when it
+  has one
 - **Edit an account** — two tabs. *How it looks* renames a cloud, picks the
   colour it wears everywhere in the app, and declares how big it is; none of
   that touches its credentials or the parts on it. *How it connects* is the

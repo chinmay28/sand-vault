@@ -1011,6 +1011,64 @@ class TestUploadAndPreview:
         expect(inspector).to_contain_text("stored as 2 chunks")
         assert inspector.inner_text().count("chunk 1 of 2") >= 3
 
+    @pytest.mark.slow
+    def test_shard_inspector_draws_the_replica_under_the_parts(self, app, server, tmp_path, clouds):
+        """A file with a second copy shows it where the shards live: the
+        replica's own shards, each checked in its account's replica folder,
+        and a verdict of its own on whether the replica alone reads."""
+        source = tmp_path / "twice.txt"
+        source.write_text("kept twice, and the inspector says where both are\n")
+        upload_and_settle(app, source, choose=["ui-one", "ui-two", "ui-three"])
+
+        # The policy and the flag go in over the API, which is what the
+        # settings dialog sends; the worker makes the replica on its own tick.
+        headers = {"Origin": server}
+        providers = app.request.get(f"{server}/api/providers").json()["providers"]
+        accounts = [
+            {"id": p["id"], "replica_folder": clouds(p["name"] + "-replica")}
+            for p in providers if p["name"] in ("ui-one", "ui-two", "ui-three")
+        ]
+        assert len(accounts) == 3
+        r = app.request.put(f"{server}/api/vault/replication", headers=headers,
+                            data={"accounts": accounts, "scheme": "2-of-3", "bytes_per_day": 0})
+        assert r.ok, r.text()
+        try:
+            r = app.request.post(f"{server}/api/replicate", headers=headers,
+                                 data={"path": "/twice.txt", "enabled": True})
+            assert r.ok, r.text()
+
+            deadline = time.time() + 150
+            while time.time() < deadline:
+                status = app.request.get(f"{server}/api/vault/replication").json()
+                if status.get("replicated", 0) >= 1:
+                    break
+                time.sleep(2)
+            else:
+                pytest.fail(f"the worker never made the replica: {status}")
+
+            row = app.locator('button[title="Open"]', has_text="twice.txt").locator("xpath=..")
+            row.locator('button[title="Where the shards live"]').click()
+            inspector = app.get_by_role("dialog", name="Where this file lives")
+            inspector.wait_for(timeout=20000)
+            expect(inspector).to_contain_text("Enough parts are reachable", timeout=60000)
+
+            # The second placement, under the first: a heading of its own, its
+            # own verdict, and one row per replica shard naming the account.
+            expect(inspector).to_contain_text("Replica", timeout=60000)
+            expect(inspector).to_contain_text("Enough of the replica is reachable")
+            text = inspector.inner_text()
+            for part in (1, 2, 3):
+                assert f"Replica shard {part}" in text, text
+            assert re.search(r"Replica shard \d on ui-(one|two|three)", text), text
+            # Cut 2-of-3, with one to spare: said in the replica's own banner.
+            assert "1 more of its accounts could go dark first" in text, text
+            app.keyboard.press("Escape")
+        finally:
+            # The vault is shared across the session: take the policy back
+            # out so later tests do not find replica folders on the accounts.
+            app.request.put(f"{server}/api/vault/replication", headers=headers,
+                            data={"accounts": [], "scheme": "", "bytes_per_day": 0})
+
     def test_moving_a_file_to_other_clouds_moves_only_what_it_has_to(self, app, tmp_path, clouds):
         """The parts inspector prices the change before it happens, and moving
         one cloud out of three leaves the other two parts exactly where they

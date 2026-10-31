@@ -12,6 +12,22 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### Where the shards live shows the replica too
+
+A file's inspector — **Where the shards live** on a row, or a click on its
+part badges — checked the parts and said nothing about the replica, so a file
+with a second copy had no way to show whether that copy was still all there.
+It now draws the replica under the parts: each of its shards looked for in
+its account's replica folder just now, whether it answered and what it
+weighed, drawn outlined the way the row badges draw a replica, and a verdict
+of its own on whether the replica alone can rebuild the file. A replica that
+is the whole sealed file on one cloud says so; one still sealed under the key
+your previous password protected says that too. A file's row hint names the
+replica in the same breath as the parts. Over HTTP, `GET
+/api/files/{id}/health` carries the same under `replica`, absent for a file
+that has none; `sand check` prints the replica's shards under the file's
+parts and counts a replica short of a shard as something to attend to.
+
 ### The index backup is written a few seconds apart, not once per change
 
 Every cloud holds `manifest.sand`, the sealed copy of the index that brings a
