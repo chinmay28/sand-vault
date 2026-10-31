@@ -6,7 +6,7 @@ import { FolderZip } from './FolderZip'
 import { SaveSheet } from './SaveSheet'
 import { MachineTransfer, fileItem } from './MachineTransfer'
 import { Thumb } from './Thumb'
-import { useEraseProgress } from '../hooks'
+import { startErase } from '../erase'
 import { ActionSheet, Banner, Button, ConfirmDialog, IconButton, Modal } from './ui'
 import StreamLink from './StreamLink'
 import ConvertFile from './ConvertFile'
@@ -89,13 +89,16 @@ export function useFileActions({
   // Only what a player is any use for gets offered one.
   const playable = isPlayable(file.mime, file.name)
 
+  /* Handed to the machine rather than waited on: the answer is a run, drawn
+     above the file list while the parts go, and the row leaves the listing
+     when it is done. A file that was already gone refreshes the listing,
+     which is what has the row still in it. */
   const remove = async () => {
     setBusy(true)
     try {
-      const resp = await api.deleteFile(file.id)
-      if (resp.warnings?.length) onError(resp.warnings.join('\n'))
+      const run = await startErase([{ id: file.id }])
       setConfirming(false)
-      onRefresh()
+      if (!run) onRefresh()
     } catch (err) {
       onError(err.message)
       setConfirming(false)
@@ -318,7 +321,8 @@ export function useFileActions({
           onConfirm={remove}
           onClose={() => !busy && setConfirming(false)}
         >
-          Every part is erased from the accounts holding it. This cannot be undone.
+          Every part is erased from the accounts holding it, on the machine — you can keep
+          working, and the row goes when it is done. This cannot be undone.
         </ConfirmDialog>
       )}
 
@@ -933,11 +937,6 @@ function useFolderActions({
 
   const [busy, setBusy] = useState(false)
 
-  /* Followed only while the delete below is in flight: a folder of hundreds
-     of files takes minutes to erase, and the dialog has to count them down
-     rather than sit on "Deleting…" looking hung. */
-  const erasing = useEraseProgress(path, vault, busy)
-
   /* What the folder is holding, fetched when the menu opens and not before.
      A folder row cannot say how big it is — the weight is in the levels below
      it, and finding it is a walk of the index per folder, which is not a price
@@ -966,13 +965,16 @@ function useFolderActions({
 
   const open = () => onNavigate(path)
 
+  /* Handed to the machine, as a file's delete is: a folder of hundreds of
+     files takes minutes to erase, and that is minutes nobody has to spend
+     looking at a dialog. The run is drawn above the file list, counting the
+     folder's files down, and the folder leaves the listing when it is done. */
   const remove = async () => {
     setBusy(true)
     try {
-      const resp = await api.deleteFolder(path, true, vault)
-      if (resp.warnings?.length) onError(resp.warnings.join('\n'))
+      const run = await startErase([{ path, vault }])
       setConfirming(false)
-      onRefresh()
+      if (!run) onRefresh()
     } catch (err) {
       onError(err.message)
       setConfirming(false)
@@ -1094,27 +1096,9 @@ function useFolderActions({
           onConfirm={remove}
           onClose={() => !busy && setConfirming(false)}
         >
-          {/* While the delete runs the warning has served its purpose, and
-              what the dialog owes instead is the count: files whose parts are
-              erased, out of what the folder held. */}
-          {busy && erasing ? (
-            <>
-              <div style={{ fontFamily: FONT.mono, fontSize: '11.5px' }}>
-                Erasing every part from every account — {erasing.done} of {erasing.total} files done.
-              </div>
-              <div style={{
-                marginTop: '10px', height: '3px', background: COLORS.border,
-                borderRadius: '2px', overflow: 'hidden',
-              }}>
-                <div style={{
-                  height: '100%',
-                  width: `${Math.max(4, (erasing.done / (erasing.total || 1)) * 100)}%`,
-                  background: COLORS.accent,
-                  transition: 'width 0.2s ease',
-                }} />
-              </div>
-            </>
-          ) : 'The folder and everything inside it goes: all parts are erased from every account. This cannot be undone.'}
+          The folder and everything inside it goes: all parts are erased from every account,
+          on the machine — you can keep working, and the folder leaves the listing when it is
+          done. This cannot be undone.
         </ConfirmDialog>
       )}
 

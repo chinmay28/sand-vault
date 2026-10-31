@@ -498,23 +498,26 @@ export const api = {
      before it starts, and holds the connection for the duration. */
   convertFile: (id) => request(`/api/files/${encodeURIComponent(id)}/convert`, { method: 'POST' }),
   fileHealth: (id) => request(`/api/files/${encodeURIComponent(id)}/health`),
-  deleteFile: (id) => request(`/api/files/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  /* A batch of files in one request and one index write — what a selection
-     of thousands needs, where deleteFile that many times over rewrites the
-     index for each. `batch` is a token made up by the caller, so where the
-     erasing has got to can be read beside the request; see filesErasing.
-     Answers with what went, what was already gone, and the parts left
-     behind. */
-  deleteFiles: (ids, batch) =>
-    request('/api/files/delete', { method: 'POST', body: { ids, batch } }),
-  /* Where a running deleteFiles has got to, by its token — asked only while
-     one is running, see useBatchEraseProgress. */
-  filesErasing: (batch) => request(`/api/files/erasing?batch=${encodeURIComponent(batch)}`),
-  /* Ask a running deleteFiles to stop, by its token. No further file is
-     started, the few in flight finish, and the deleteFiles request itself
-     then answers with what it got to. */
-  stopFilesErasing: (batch) =>
-    request(`/api/files/erasing?batch=${encodeURIComponent(batch)}`, { method: 'DELETE' }),
+  /* Delete a selection — files, folders, or both — as one run on the machine.
+     `targets` is `{ id }` for a file or `{ path, vault }` for a folder, the
+     shape relocate() names a selection in; a path naming a file is a file.
+     With `detach` the answer is the run rather than the result: the machine
+     erases the parts and writes the index whether or not this page stays
+     open, and how it comes out arrives on eraseRuns(). Without it the
+     request holds open and answers with what went, what was already gone,
+     and the parts left behind — see erase.js for why the browser always
+     detaches. */
+  erase: ({ targets, detach = true } = {}) =>
+    request('/api/delete', { method: 'POST', body: { targets, detach } }),
+  /* The deletes waiting, running or lately finished — the same second, short
+     request a move's progress bar makes, for the same reason. */
+  eraseRuns: ({ signal } = {}) => request('/api/delete/runs', { signal }),
+  /* Stopping a running delete and dismissing a finished one's result are the
+     same request, because they are the same gesture: stop showing me this.
+     A stop lands between files: what was erased is gone, the rest is where
+     it was. */
+  stopErase: (id) =>
+    request(`/api/delete/runs/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   /* Move a file into another folder, rename it, or both. An empty `dir` or
      `name` leaves that half alone. Nothing is uploaded or downloaded: a file's
      folder is a field in the index, and its parts are named after the file
@@ -566,19 +569,14 @@ export const api = {
      every one of them is there afterwards or none is. */
   createFolders: (paths, vault = '') =>
     request('/api/folders', { method: 'POST', body: { paths, vault } }),
+  /* Remove a folder in the foreground: with `recursive` everything under it
+     goes, and the request holds open until it has. The organizer uses it
+     for the empty folders a tidy-up leaves behind, which is index work and
+     over at once; anything with files in it goes through erase() instead,
+     where it runs on the machine. */
   deleteFolder: (path, recursive, vault = '') =>
     request(`/api/folders?path=${encodeURIComponent(path)}${recursive ? '&recursive=1' : ''}${vaultParam(vault)}`,
       { method: 'DELETE' }),
-  /* Where the DELETE above has got to, while it is still in flight. A
-     recursive delete of a big folder erases parts for minutes and the request
-     itself can only answer at the end; this reads the count beside it. Asked
-     only while such a delete is running — see useEraseProgress. */
-  folderErasing: (path, vault = '') =>
-    request(`/api/folders/erasing?path=${encodeURIComponent(path)}${vaultParam(vault)}`),
-  /* The same stop for a running deleteFolder: what was erased is gone, the
-     folder and everything not reached stay as they were. */
-  stopFolderErasing: (path, vault = '') =>
-    request(`/api/folders/erasing?path=${encodeURIComponent(path)}${vaultParam(vault)}`, { method: 'DELETE' }),
 
   /* Every folder in the vault, root first — the whole tree in one answer,
      which is what picking a destination needs. Folder paths and nothing else:

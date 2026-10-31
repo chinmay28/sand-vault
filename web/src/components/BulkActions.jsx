@@ -2,7 +2,8 @@ import React, { useEffect, useRef, useState } from 'react'
 import { COLORS, FONT, formatBytes } from '../theme'
 import { api } from '../api'
 import { downloadFile } from '../download'
-import { useBatchEraseProgress, useEraseProgress } from '../hooks'
+import { claimEraseRun, releaseEraseRun, startErase, stopErase, useEraseRuns } from '../erase'
+import { EraseRunCard, FinishedErase } from './EraseRuns'
 import { Banner, Button, Modal, Spinner } from './ui'
 
 /* What a handful of picked rows can be told to do at once.
@@ -138,73 +139,125 @@ function Outcome({ done, total, verb }) {
    the dialog counts the two kinds separately rather than saying "12 items" and
    leaving the folders to be discovered afterwards.
 
-   Files do not go one request each. Deleting a file is a round of erasures
-   bounded by the slowest account and then the whole index re-sealed and
-   written, and seven thousand duplicates ticked in one go would pay both
-   seven thousand times over. They go a few hundred to a request instead
-   (api.deleteFiles), each request one index write, with the server erasing a
-   few files abreast — the same pace a folder delete already runs at — and
-   counting itself down through the same window. A folder is still a request
-   of its own: the server takes its contents in one write already.
-
-   Batches rather than one request for everything, so the bar moves, no single
-   request outlives its timeout, and a dialog closed part-way through stops
-   at the next batch rather than after all of them. */
+   The whole selection goes as one request and runs as one delete on the
+   machine (api.erase, detached): the files in one index write, then each
+   folder in its own, with the server erasing a few files abreast and counting
+   itself down where this dialog — and the strip above the file list — can
+   read it. Nothing here holds a connection open. The dialog watches its own
+   run for as long as it is up, and can be closed partway: the run carries on,
+   the strip takes over drawing it, and the listing refreshes when it ends.
+   See erase.js. */
 export function BulkDelete({ items, vault = '', onClose, onDone }) {
   /* Taken once, when the dialog opens, for the reason useRun gives: a
      finished run clears the selection it came from, and a dialog still
      reading it would say "0 deleted" over the two things it just deleted. */
   const [batch] = useState(() => items)
-  const [steps] = useState(() => planDeletes(batch))
-  const run = useDeletes(steps, vault, onDone)
+  const [runId, setRunId] = useState(null)
+  const [starting, setStarting] = useState(false)
+  const [stopping, setStopping] = useState(false)
+  const [gone, setGone] = useState(false)
+  const [error, setError] = useState(null)
+  const runs = useEraseRuns()
+  const run = runId ? runs.find((r) => r.id === runId) : null
+
+  /* Claimed for as long as this dialog is drawing it, so the strip above the
+     file list does not draw the same bar twice; closing hands it back. */
+  useEffect(() => {
+    if (!runId) return undefined
+    claimEraseRun(runId)
+    return () => releaseEraseRun(runId)
+  }, [runId])
 
   const folders = batch.filter((i) => i.kind === 'folder')
   const files = batch.filter((i) => i.kind !== 'folder')
   const bytes = files.reduce((sum, f) => sum + (f.file.size || 0), 0)
 
-  /* What the step in flight has done so far, read beside its request: a
-     folder counts its files, a batch counts the files erased out of its
-     own. Either way the bar below moves while one request runs for
-     minutes. */
-  const current = run.running ? steps[run.at] : null
-  const folderInFlight = Boolean(current?.kind === 'folder')
-  const batchInFlight = Boolean(current?.kind === 'files')
-  const erasingFolder = useEraseProgress(folderInFlight ? current.path : '', vault, folderInFlight)
-  const erasingBatch = useBatchEraseProgress(batchInFlight ? current.batch : '', batchInFlight)
+  const start = async () => {
+    setStarting(true)
+    setError(null)
+    try {
+      const started = await startErase(eraseTargets(batch, vault))
+      // Nothing picked was there to delete — a selection deleted twice.
+      if (!started) setGone(true)
+      else setRunId(started.id)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setStarting(false)
+    }
+  }
 
-  const close = () => { if (!run.running) onClose() }
+  const stop = async () => {
+    setStopping(true)
+    try {
+      await stopErase(runId)
+    } catch (err) {
+      setError(err.message)
+      setStopping(false)
+    }
+  }
+
+  /* The way out once the run is over: its result is dismissed here, since
+     this dialog has shown it, and the listing behind is refreshed. */
+  const finish = async () => {
+    if (runId) await stopErase(runId).catch(() => {})
+    onDone?.()
+    onClose()
+  }
+
+  /* Leaving while it runs. The run is not touched — the strip draws it from
+     here on and refreshes the listing when it ends — but the selection it
+     came from is already spoken for. */
+  const background = () => {
+    onDone?.()
+    onClose()
+  }
+
+  const running = Boolean(runId) && !run?.done
+  const title = `Delete ${batch.length} item${batch.length === 1 ? '' : 's'}?`
 
   return (
     <Modal
-      title={`Delete ${batch.length} item${batch.length === 1 ? '' : 's'}?`}
+      title={title}
       subtitle={describe(folders.length, files.length, bytes)}
-      onClose={run.running ? undefined : close}
+      onClose={starting ? undefined : running ? background : run?.done || gone ? finish : onClose}
       width={460}
     >
-      {run.done ? (
+      {error && <Banner tone="error">{error}</Banner>}
+
+      {gone ? (
         <>
-          <Outcome done={run.done} total={batch.length} verb="deleted" />
+          <Banner tone="info">Nothing to delete — everything picked was already gone.</Banner>
           <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-            <Button variant="primary" onClick={close}>Done</Button>
+            <Button variant="primary" onClick={finish}>Done</Button>
           </div>
         </>
-      ) : run.running ? (
+      ) : run?.done ? (
         <>
-          <Meter
-            count={run.finished + (erasingBatch?.done || 0)}
-            total={batch.length}
-            verb={run.stopping ? 'Stopping at' : 'Deleting'}
-            label={folderInFlight ? current.name : ''}
-            note={erasingFolder ? `${erasingFolder.done} of ${erasingFolder.total} files` : ''}
-          />
+          <FinishedErase run={run} />
+          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <Button variant="primary" onClick={finish}>Done</Button>
+          </div>
+        </>
+      ) : runId ? (
+        <>
+          <EraseRunCard run={run || { label: `${batch.length} items`, at: {} }} stopping={stopping} />
+          <p style={{
+            margin: '0 0 16px', fontFamily: FONT.sans, fontSize: '11.5px',
+            color: COLORS.textMuted, lineHeight: 1.6,
+          }}>
+            Running on the machine. You can close this and keep working — the delete carries
+            on, and the listing updates when it is done.
+          </p>
           {/* A stop is the one thing worth a button while this runs. It
               lands between files, not between parts: the few in flight
               finish their round, so nothing is left half erased, and the
               outcome says exactly how many went. */}
-          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-            <Button variant="ghost" disabled={run.stopping} onClick={run.stop}>
-              {run.stopping ? 'Stopping…' : 'Stop'}
+          <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+            <Button variant="ghost" disabled={stopping} onClick={stop}>
+              {stopping ? 'Stopping…' : 'Stop'}
             </Button>
+            <Button variant="primary" onClick={background}>Continue in background</Button>
           </div>
         </>
       ) : (
@@ -218,8 +271,10 @@ export function BulkDelete({ items, vault = '', onClose, onDone }) {
             {' '}This cannot be undone.
           </div>
           <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
-            <Button variant="danger" onClick={run.start}>Delete {batch.length}</Button>
-            <Button variant="ghost" onClick={close}>Cancel</Button>
+            <Button variant="danger" disabled={starting} onClick={start}>
+              {starting ? 'Starting…' : `Delete ${batch.length}`}
+            </Button>
+            <Button variant="ghost" disabled={starting} onClick={onClose}>Cancel</Button>
           </div>
         </>
       )}
@@ -227,134 +282,12 @@ export function BulkDelete({ items, vault = '', onClose, onDone }) {
   )
 }
 
-/* How many files go in one request. Enough that a few thousand is a few
-   dozen index writes rather than a few thousand; few enough that a request
-   answers within minutes on slow accounts and a closed dialog does not have
-   long to wait. */
-export const DELETE_BATCH = 200
-
-/* The requests a selection turns into: files a batch at a time, then each
-   folder on its own. Files first, so a file ticked inside a folder that is
-   also ticked is counted once as deleted rather than once as already gone.
-   Every step says how many of the items it stands for, which is what the
-   bar and the outcome count in. */
-export function planDeletes(items) {
-  const steps = []
-  const files = items.filter((i) => i.kind !== 'folder')
-  for (let i = 0; i < files.length; i += DELETE_BATCH) {
-    const slice = files.slice(i, i + DELETE_BATCH)
-    steps.push({
-      kind: 'files',
-      ids: slice.map((f) => f.file.id),
-      count: slice.length,
-      name: `${slice.length} file${slice.length === 1 ? '' : 's'}`,
-      batch: `${Date.now().toString(36)}-${i}-${Math.random().toString(36).slice(2, 8)}`,
-    })
-  }
-  for (const item of items) {
-    if (item.kind !== 'folder') continue
-    steps.push({ kind: 'folder', path: item.path, count: 1, name: item.name })
-  }
-  return steps
-}
-
-/* Running the plan, one request at a time, and keeping count in items rather
-   than requests: `finished` is how many items the completed steps stood for,
-   and the outcome says how many failed, however many lines that took.
-   Left in whatever state it finished in, like useRun.
-
-   Stop asks the server to stop the step in flight and lets the loop end
-   there. The step's own request then answers with what it got to, so the
-   count is exact — a batch stopped at 130 of 200 says 130 — and nothing
-   after it is touched. Asked a few times if need be: the stop can arrive
-   before the request it is for has opened its window. */
-function useDeletes(steps, vault, onFinished) {
-  const [at, setAt] = useState(-1)
-  const [finished, setFinished] = useState(0)
-  const [stopping, setStopping] = useState(false)
-  const [done, setDone] = useState(null)
-  const live = useRef(true)
-  const halt = useRef(false)
-  const current = useRef(null)
-  useEffect(() => {
-    live.current = true
-    return () => { live.current = false }
-  }, [])
-
-  const running = at >= 0 && !done
-
-  const stop = async () => {
-    if (halt.current) return
-    halt.current = true
-    setStopping(true)
-    const step = current.current
-    for (let tries = 0; tries < 5 && live.current && current.current === step; tries++) {
-      try {
-        const resp = step?.kind === 'folder'
-          ? await api.stopFolderErasing(step.path, vault)
-          : step ? await api.stopFilesErasing(step.batch) : { stopped: true }
-        if (resp?.stopped) return
-      } catch {
-        // The loop stops at the next step whatever this said.
-      }
-      await new Promise((r) => setTimeout(r, 400))
-    }
-  }
-
-  const start = async () => {
-    const failures = []
-    const warnings = []
-    let deleted = 0
-    let failed = 0
-    let gone = 0
-    let counted = 0
-    let cut = 0
-
-    for (let i = 0; i < steps.length; i++) {
-      if (!live.current) return
-      if (halt.current) break
-      const step = steps[i]
-      current.current = step
-      setAt(i)
-      try {
-        if (step.kind === 'folder') {
-          const resp = await api.deleteFolder(step.path, true, vault)
-          for (const w of resp?.warnings || []) warnings.push(`${step.name}: ${w}`)
-          if (resp?.status === 'stopped') {
-            warnings.push(`${step.name}: stopped part-way — what was already erased is gone, the rest of the folder is still there.`)
-            cut += step.count
-          } else {
-            deleted += step.count
-          }
-        } else {
-          const resp = await api.deleteFiles(step.ids, step.batch)
-          warnings.push(...(resp?.warnings || []))
-          gone += resp?.missing?.length || 0
-          const went = resp?.deleted ?? step.count
-          deleted += went
-          if (resp?.status === 'stopped') cut += step.count - went
-        }
-      } catch (err) {
-        failures.push(`${step.name}: ${err.message}`)
-        failed += step.count
-      }
-      counted += step.count
-      setFinished(counted)
-    }
-    current.current = null
-
-    if (gone > 0) {
-      warnings.push(`${gone} file${gone === 1 ? ' was' : 's were'} already gone before this reached ${gone === 1 ? 'it' : 'them'}.`)
-    }
-    if (!live.current) return
-    // Stopped: what the halted step did not reach, and every step after it,
-    // is still where it was.
-    const stopped = halt.current ? steps.reduce((n, s) => n + s.count, 0) - counted + cut : 0
-    setDone({ failures, warnings, failed, deleted, stopped })
-    onFinished?.()
-  }
-
-  return { at, finished, running, stopping, done, start, stop }
+/* The selection as the server names one: a file by its ID, a folder by its
+   path inside its vault — the same shape a relocation sends. */
+export function eraseTargets(items, vault = '') {
+  return items.map((item) => (item.kind === 'folder'
+    ? { path: item.path, vault }
+    : { id: item.file.id }))
 }
 
 function describe(folders, files, bytes) {

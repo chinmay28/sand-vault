@@ -805,6 +805,13 @@ func (s *Server) handleFileDelete(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	v, _ := s.Vault()
+	// Listed among the deletes running while it does, as every delete is,
+	// so the runs list is the whole truth — see handlers_erase.go. It cannot
+	// be stopped from there: a single file's parts go as one round.
+	if ticket, err := s.erasures.start(eraseLabel(v, []relocateTarget{{ID: r.PathValue("id")}}), false, func() {}); err == nil {
+		ticket.update(0, 1)
+		defer ticket.done()
+	}
 	warnings, err := v.Delete(ctx, r.PathValue("id"))
 	if err != nil {
 		vaultErrorResponse(w, err)
@@ -841,17 +848,30 @@ func (s *Server) handleFilesDelete(w http.ResponseWriter, r *http.Request) {
 
 	// Counted as it goes, like a folder delete, for whoever is waiting — and
 	// stoppable by them through the same window, which cancels this context.
-	var onProgress func(done, total int)
+	var stop context.CancelFunc
+	ctx, stop = context.WithCancel(ctx)
+	defer stop()
+	var window func(done, total int)
 	if req.Batch != "" {
 		key := batchEraseKey(req.Batch)
-		var stop context.CancelFunc
-		ctx, stop = context.WithCancel(ctx)
-		defer stop()
 		s.erases.open(key, stop)
 		defer s.erases.clear(key)
-		onProgress = func(done, total int) {
+		window = func(done, total int) {
 			s.erases.set(key, folderErase{Done: done, Total: total})
 		}
+	}
+	// And listed among the deletes running, foreground as it is, so the
+	// runs list is the whole truth — see handlers_erase.go.
+	var ticket *eraseTicket
+	if t, err := s.erasures.start(fmt.Sprintf("%d files", len(req.IDs)), false, stop); err == nil {
+		ticket = t
+		defer ticket.done()
+	}
+	onProgress := func(done, total int) {
+		if window != nil {
+			window(done, total)
+		}
+		ticket.update(done, total)
 	}
 
 	v, _ := s.Vault()
@@ -1756,10 +1776,18 @@ func (s *Server) handleFolderDelete(w http.ResponseWriter, r *http.Request) {
 	defer stop()
 	s.erases.open(key, stop)
 	defer s.erases.clear(key)
+	// And listed among the deletes running, foreground as it is, so the
+	// runs list is the whole truth — see handlers_erase.go.
+	var ticket *eraseTicket
+	if t, err := s.erasures.start(vault.CleanDir(path), false, stop); err == nil {
+		ticket = t
+		defer ticket.done()
+	}
 
 	v, _ := s.Vault()
 	warnings, err := v.Rmdir(ctx, scope, path, recursive, func(done, total int) {
 		s.erases.set(key, folderErase{Done: done, Total: total})
+		ticket.update(done, total)
 	})
 	if err != nil && !errors.Is(err, context.Canceled) {
 		vaultErrorResponse(w, err)

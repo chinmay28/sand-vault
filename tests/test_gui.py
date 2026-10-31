@@ -2104,9 +2104,10 @@ class TestSelection:
 
         Deleting a file one request at a time rewrites the index once per
         file, and a few thousand ticked duplicates would pay that a few
-        thousand times over. The dialog sends the files in batches instead,
-        each one index write on the server, so the requests are what to
-        count — the listing afterwards looks the same either way.
+        thousand times over. The dialog hands the whole selection to the
+        machine as one delete instead, one index write on the server, so the
+        requests are what to count — the listing afterwards looks the same
+        either way.
         """
         make_folder(app, "pick-batched")
         app.get_by_text("pick-batched").first.click()
@@ -2128,13 +2129,13 @@ class TestSelection:
         dialog = app.get_by_role("dialog", name="Delete 3 items?")
         dialog.wait_for(timeout=10000)
         dialog.get_by_role("button", name="Delete 3").click()
-        app.wait_for_selector("text=3 deleted", timeout=60000)
+        app.wait_for_selector("text=Deleted 3 items: 3 files", timeout=60000)
         app.get_by_role("dialog").get_by_role("button", name="Done").click()
         app.wait_for_selector("text=This folder is empty", timeout=20000)
 
-        batches = [u for m, u in requests_seen if m == "POST" and u.endswith("/api/files/delete")]
+        batches = [u for m, u in requests_seen if m == "POST" and u.endswith("/api/delete")]
         singles = [u for m, u in requests_seen if m == "DELETE" and "/api/files/" in u]
-        assert len(batches) == 1, f"expected one batch delete, saw {batches}"
+        assert len(batches) == 1, f"expected one delete of the selection, saw {batches}"
         assert singles == [], f"files still deleted one at a time: {singles}"
 
     def test_select_all_then_delete_empties_the_folder(self, app, tmp_path):
@@ -2164,7 +2165,7 @@ class TestSelection:
         dialog = app.get_by_role("dialog", name="Delete 2 items?")
         dialog.wait_for(timeout=10000)
         dialog.get_by_role("button", name="Delete 2").click()
-        app.wait_for_selector("text=2 deleted", timeout=60000)
+        app.wait_for_selector("text=Deleted 2 items: 2 files", timeout=60000)
         # Two "Done" buttons are on the page — the dialog's and the selection
         # bar's behind it — so this one is asked for by the dialog it is in.
         app.get_by_role("dialog").get_by_role("button", name="Done").click()
@@ -2210,7 +2211,9 @@ class TestDuplicates:
         assert app.get_by_role("dialog").count() == 1, "the finder gives way to the confirmation"
 
         confirm.get_by_role("button", name="Delete 1").click()
-        app.wait_for_selector("text=1 deleted", timeout=60000)
+        # One thing picked is named by its path, so the outcome says which
+        # twin went rather than counting to one.
+        app.wait_for_selector("text=Deleted /dupes-doomed/twin-", timeout=60000)
         app.get_by_role("dialog").get_by_role("button", name="Done").click()
 
         # One twin is gone and the other is exactly where it was; which one

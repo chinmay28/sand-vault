@@ -30,36 +30,14 @@ export function useMediaQuery(query) {
   return matches
 }
 
-/* Where a recursive folder delete has got to, asked about once a second while
-   one is running. The DELETE itself is a single request that answers only at
-   the end, which for a folder of hundreds of files is minutes of a button
-   saying "Deleting…" — indistinguishable from a hang. The server counts files
-   beside the running request (see /api/folders/erasing), and this is the
-   asking end.
-
-   `active` is whether the caller has such a delete in flight: polling starts
-   with it and stops with it, so nothing asks a question that has no answer.
-   The count only ever moves forward here — the last poll can race the delete
-   finishing and come back "not running", and a bar that has watched 76 of 79
-   go should hold there rather than blink empty on the way out. */
-export function useEraseProgress(path, vault, active) {
-  return useErasing(() => api.folderErasing(path, vault), active, [path, vault])
-}
-
-/* The same window, opened onto a batch delete (api.deleteFiles) by the token
-   the batch was given. */
-export function useBatchEraseProgress(batch, active) {
-  return useErasing(() => api.filesErasing(batch), active, [batch])
-}
-
-/* The same window, opened onto the orphan sweep. Erasing the abandoned parts
-   is one POST that answers only at the end — for a vault where somebody has
+/* Where the orphan sweep has got to, asked about once a second while one is
+   running. Erasing the abandoned parts is one POST that answers only at the end — for a vault where somebody has
    been deleting films, minutes of a button saying "Erasing…" — and the server
    counts objects beside it (see /api/vault/orphans/erasing). A total of 0
    while running is its own kind of news: the sweep lists every account again
    before its first delete, so the button is not stuck, the clouds are being
    asked. The count holds rather than blinking empty when the last poll races
-   the sweep finishing, for the reason above. */
+   the sweep finishing, for the reason below. */
 export function useOrphanEraseProgress(active) {
   return useErasing(() => api.orphanErasing(), active, [])
 }

@@ -99,6 +99,12 @@ type Server struct {
 	// handlers_orphans.go.
 	erases *eraseWatch
 
+	// erasures is where the deletes running right now say how far they have
+	// got — the relocation watch's shape, for the same two readers: a progress
+	// bar, and a delete that was detached from the page that started it. See
+	// erase_runs.go.
+	erasures *eraseRuns
+
 	// readWatches is the window onto files being opened right now: which
 	// account each is waiting on, and how much of it has been sent. Read by
 	// the browser beside the content request it is waiting for. See
@@ -219,6 +225,9 @@ func (s *Server) Handler() (http.Handler, error) {
 	}
 	if s.erases == nil {
 		s.erases = newEraseWatch()
+	}
+	if s.erasures == nil {
+		s.erasures = newEraseRuns()
 	}
 	if s.readWatches == nil {
 		s.readWatches = newReadWatch()
@@ -468,7 +477,14 @@ func (s *Server) Handler() (http.Handler, error) {
 		"POST /api/files/delete":    s.handleFilesDelete,
 		"GET /api/files/erasing":    s.handleFilesErasing,
 		"DELETE /api/files/erasing": s.handleFilesErasingStop,
-		"POST /api/files/{id}/move": s.handleFileMove,
+		// A selection — files, folders, or both — deleted as one run, which
+		// the browser hands to the machine rather than waiting on: `detach`
+		// answers at once with the run, and the runs list is where it is
+		// followed, stopped, and read when it is over. See handlers_erase.go.
+		"POST /api/delete":              s.handleErase,
+		"GET /api/delete/runs":          s.handleEraseRuns,
+		"DELETE /api/delete/runs/{run}": s.handleEraseStop,
+		"POST /api/files/{id}/move":     s.handleFileMove,
 		// And a batch of them in one index write, for a plan of thousands.
 		"POST /api/files/move":       s.handleFilesMove,
 		"GET /api/files/{id}/health": s.handleFileHealth,
@@ -783,7 +799,7 @@ func (s *Server) autoLockLoop() {
 		if err != nil || !v.Unlocked() {
 			continue
 		}
-		if s.sessions.sweep() > 0 || s.externalActive() || s.transfers.running() > 0 || s.relocations.running() > 0 {
+		if s.sessions.sweep() > 0 || s.externalActive() || s.transfers.running() > 0 || s.relocations.running() > 0 || s.erasures.running() > 0 {
 			continue
 		}
 		// A replica half-made would be erased and started again on the next
