@@ -47,6 +47,15 @@ type Server struct {
 	// IdleTimeout re-locks the vault after this much inactivity.
 	IdleTimeout time.Duration
 
+	// Profile pins the machine profile — pi5, workstation, auto — over
+	// whatever machine.json beside the vault says. Empty means the file
+	// decides. See tuning.go.
+	Profile string
+
+	// machine is the tuning in effect and where it came from. Set when the
+	// vault is opened, so it is never nil once Handler has run.
+	machine *machineState
+
 	// MaxUploadSize caps a single multipart upload request.
 	MaxUploadSize int64
 
@@ -195,6 +204,9 @@ func (s *Server) Vault() (*vault.Vault, error) {
 		return nil, err
 	}
 	s.vault = v
+	// Before anything can upload or read: the windows, cache and chunk size
+	// this machine runs. See tuning.go.
+	s.loadTuning(v)
 	return v, nil
 }
 
@@ -322,6 +334,14 @@ func (s *Server) Handler() (http.Handler, error) {
 		// How far apart the pushes of the index are kept, so a burst of
 		// changes is a few of them rather than one per change.
 		"POST /api/vault/backup/delay": s.handleVaultBackupDelay,
+
+		// How this machine is sized: the profile, the machine it is taken
+		// to be, and every knob derived from that or set by hand. Not under
+		// /api/vault because it is not the vault's — it is kept beside it
+		// and belongs to the box. See tuning.go.
+		"GET /api/machine":    s.handleMachineGet,
+		"PUT /api/machine":    s.handleMachinePut,
+		"DELETE /api/machine": s.handleMachineReset,
 
 		// Disaster recovery: what the accounts are still holding after the
 		// machine that held the vault is gone, and rebuilding the index from

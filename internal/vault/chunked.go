@@ -16,7 +16,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// chunkUploadWindow is how many chunks are encoded and pushed at once.
+// The upload window — how many chunks are encoded and pushed at once — is
+// Tuning.UploadWindow, sized to the machine (see internal/tuning).
 //
 // A chunked upload is otherwise a sequence of round trips — a 4 GB file is 256
 // of them at the default chunk size, and waiting out each one in turn would
@@ -26,22 +27,24 @@ import (
 //
 // It counts chunks rather than requests, and that is what makes it scale with
 // the scheme rather than against it. A wider spread puts more requests in the
-// air, but they go to more accounts: each provider still sees at most
-// chunkUploadWindow of them at a time, whatever n is, and rate limits are per
-// provider. Memory is flat too — the bytes in flight are
-// window × n × chunkSize/k, and n/k is 1.5 at every scheme, so widening from
-// three clouds to thirty holds exactly as much as it did.
-const chunkUploadWindow = 4
+// air, but they go to more accounts: each provider still sees at most the
+// window of them at a time, whatever n is, and rate limits are per provider.
+// Memory is flat too — the bytes in flight are window × n × chunkSize/k, and
+// n/k is 1.5 at every scheme, so widening from three clouds to thirty holds
+// exactly as much as it did.
 
-// uploadChunkSize is the chunk length new uploads are cut into, falling back to
-// the default for a vault built before the field existed.
+// uploadChunkSize is the chunk length new uploads are cut into: the tuning's,
+// unless a test has pinned the vault's own.
 func (v *Vault) uploadChunkSize() uint32 {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
-	if v.chunkSize == 0 {
-		return archive.DefaultChunkSize
+	if v.chunkSize != 0 {
+		return v.chunkSize
 	}
-	return v.chunkSize
+	if size := v.Tuning().ChunkSize; size > 0 {
+		return uint32(size)
+	}
+	return archive.DefaultChunkSize
 }
 
 // scatterChunked cuts a file into chunks and places each one across the same
@@ -160,7 +163,7 @@ func (v *Vault) putChunks(
 	putCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	window := make(chan struct{}, chunkUploadWindow)
+	window := make(chan struct{}, max(v.Tuning().UploadWindow, 1))
 	var outer sync.WaitGroup
 
 	for index := uint32(0); index < chunks.ChunkCount; index++ {
@@ -312,7 +315,7 @@ func (v *Vault) eraseShardChunks(ctx context.Context, target *transferTarget, pl
 		return
 	}
 
-	window := make(chan struct{}, chunkUploadWindow*archive.PartCount)
+	window := make(chan struct{}, max(v.Tuning().UploadWindow, 1)*archive.PartCount)
 	var wg sync.WaitGroup
 	for index := uint32(0); index < chunkCount; index++ {
 		wg.Add(1)

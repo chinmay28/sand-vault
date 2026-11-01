@@ -1,7 +1,6 @@
 package server
 
 import (
-	"os"
 	"runtime/debug"
 	"testing"
 )
@@ -9,12 +8,12 @@ import (
 // The machine's memory is the fallback when there is no cgroup limit, and on
 // anything SAND runs on it should be readable.
 func TestTotalSystemMemoryIsReadable(t *testing.T) {
-	total, ok := totalSystemMemory()
-	if !ok {
-		t.Skip("no /proc/meminfo on this platform")
+	total, source := availableMemory()
+	if source == "" {
+		t.Skip("no memory figure readable on this platform")
 	}
 	if total < minMemLimit {
-		t.Errorf("total system memory reported as %d bytes, which cannot be right", total)
+		t.Errorf("memory reported as %d bytes (%s), which cannot be right", total, source)
 	}
 }
 
@@ -49,22 +48,5 @@ func TestAnExplicitLimitIsLeftAlone(t *testing.T) {
 
 	if got := debug.SetMemoryLimit(-1); got != explicit {
 		t.Errorf("an explicitly set GOMEMLIMIT was overwritten: limit is now %d, want %d", got, explicit)
-	}
-}
-
-// Nonsense in the cgroup file is ignored rather than obeyed. "max" is the
-// common one — it is what the file says when no limit is set at all.
-func TestAnAbsentCgroupLimitFallsBackToTheMachine(t *testing.T) {
-	if _, err := os.Stat("/sys/fs/cgroup/memory.max"); err == nil {
-		// There is a real file here; the fallback is exercised by whatever it
-		// says, and asserting on this machine's cgroup would be asserting on
-		// the CI runner's configuration.
-		t.Skip("this machine has a cgroup memory file")
-	}
-	if _, ok := cgroupMemoryLimit(); ok {
-		t.Error("a limit was reported from a cgroup file that does not exist")
-	}
-	if _, source := availableMemory(); source != "this machine has" {
-		t.Errorf("expected the fallback to the machine's own memory, got %q", source)
 	}
 }

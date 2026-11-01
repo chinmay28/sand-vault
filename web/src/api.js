@@ -994,6 +994,15 @@ export const api = {
   /* The chat assistant: a model the user runs on a machine of their own,
      reading the index through the server. Where it runs is a setting; the
      token, when there is one, is stored and never read back. */
+  /* How this machine is sized: the profile, the machine it is taken to be,
+     every knob the profile derived and every one set by hand. Not under
+     /api/vault because it is kept beside the vault and belongs to the box.
+     The whole choice goes each time; reset is back to automatic with nothing
+     overridden. */
+  machine: () => request('/api/machine'),
+  setMachine: (choice) => request('/api/machine', { method: 'PUT', body: choice }),
+  resetMachine: () => request('/api/machine', { method: 'DELETE' }),
+
   assistantSettings: () => request('/api/assistant'),
   /* `key` undefined keeps whatever token is stored; '' clears it. An empty
      url clears the assistant altogether. */

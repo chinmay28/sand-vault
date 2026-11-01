@@ -189,22 +189,23 @@ const (
 	// keeps all of them.
 	automationWarningsKept = 20
 
-	// automationCheckWindow is how many files are checked at once. Each one is
-	// a handful of metadata requests across every account holding it, so this
-	// is already a fan-out; the window is there to keep a folder of ten
+	// How many files are checked at once is Tuning.TransferWindow. Each one
+	// is a handful of metadata requests across every account holding it, so
+	// this is already a fan-out; the window is there to keep a folder of ten
 	// thousand files from opening ten thousand of them.
-	automationCheckWindow = 4
 
 	// DefaultRebuildLimit is how large a file an unattended repair will rebuild
-	// unless the policy says otherwise.
+	// unless the policy says otherwise and the machine has not been described
+	// — the floor the tuning starts from, see internal/tuning.
 	//
-	// A rebuild gathers the file into memory before it cuts it again — see
-	// migrateFile — so the ceiling is not about time or bandwidth but about
-	// what the machine has. SAND is meant to run on a Raspberry Pi, where a
-	// scheduled job that decides at three in the morning to hold a 40 GB film
-	// in RAM is a machine that stops answering ssh. Files past this are counted
-	// and named in the run's report and left for somebody to repair by hand,
-	// from the browser, where they can watch it happen.
+	// A rebuild used to gather the file into memory before it cut it again,
+	// and the ceiling was about what the machine had. It streams now, so the
+	// ceiling is about time: SAND is meant to run on a Raspberry Pi, where a
+	// scheduled job that decides at three in the morning to spend the night
+	// re-uploading a 40 GB film is a machine busy with the wrong thing. Files
+	// past this are counted and named in the run's report and left for
+	// somebody to repair by hand, from the browser, where they can watch it
+	// happen.
 	DefaultRebuildLimit int64 = 1 << 30
 )
 
@@ -360,27 +361,28 @@ func (a *Automation) git() GitPolicy {
 }
 
 // rebuildCeiling is the largest file this policy will rebuild, with the zero
-// value resolved to the default and a negative value to no ceiling.
-func (a *Automation) rebuildCeiling() int64 {
-	limit := a.shards().RebuildLimit
-	switch {
-	case limit < 0:
-		return 0
-	case limit == 0:
-		return DefaultRebuildLimit
-	}
-	return limit
+// value resolved to the machine's default and a negative value to no ceiling.
+func (a *Automation) rebuildCeiling(fallback int64) int64 {
+	return ceilingOf(a.shards().RebuildLimit, fallback, DefaultRebuildLimit)
 }
 
 // bundleCeiling is the largest stored bundle the mirror task will re-fetch, on
 // the same terms.
-func (a *Automation) bundleCeiling() int64 {
-	limit := a.git().SizeLimit
+func (a *Automation) bundleCeiling(fallback int64) int64 {
+	return ceilingOf(a.git().SizeLimit, fallback, DefaultBundleLimit)
+}
+
+// ceilingOf resolves a policy's limit: negative is no ceiling, zero is the
+// machine's default — or the floor when no machine has been described.
+func ceilingOf(limit, fallback, floor int64) int64 {
 	switch {
 	case limit < 0:
 		return 0
 	case limit == 0:
-		return DefaultBundleLimit
+		if fallback > 0 {
+			return fallback
+		}
+		return floor
 	}
 	return limit
 }
@@ -1310,7 +1312,7 @@ func (v *Vault) checkEntries(ctx context.Context, entries []*Entry, online map[s
 	states := make([]fileState, 0, len(entries))
 	var mu sync.Mutex
 	var wg sync.WaitGroup
-	window := make(chan struct{}, automationCheckWindow)
+	window := make(chan struct{}, max(v.Tuning().TransferWindow, 1))
 
 	for _, entry := range entries {
 		if !seen.claim(task, entry.ID) {
@@ -1426,7 +1428,7 @@ func (v *Vault) reachableParts(ctx context.Context, e *Entry, online map[string]
 // repairFiles rebuilds what it can of the files the check found wanting.
 func (v *Vault) repairFiles(ctx context.Context, scope Scope, policy *Automation, needy []fileState, online map[string]bool, dark map[string]bool, run *AutomationRun) {
 	answering := v.answeringAccounts(online)
-	ceiling := policy.rebuildCeiling()
+	ceiling := policy.rebuildCeiling(v.Tuning().RebuildLimit)
 	cfg := policy.shards()
 	res := run.Shards
 

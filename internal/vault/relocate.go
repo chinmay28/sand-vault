@@ -39,15 +39,14 @@ import (
 // account that definitely has the bytes. An interruption leaves a copy nobody
 // references rather than a file nobody can rebuild.
 
-// relocateWindow is how many part objects are copied between accounts at once,
-// across every part of one file.
+// The relocate window — how many part objects are copied between accounts
+// at once, across every part of one file — is Tuning.TransferWindow.
 //
 // A chunked file is one object per chunk per part — a 4 GB video is 768 of them
 // — so copying strictly in sequence would make moving a film between clouds a
 // long wait on round-trip latency. It is small because each in-flight copy holds
 // a whole part object in memory while it is in the air, and because the accounts
 // on both ends of it are consumer cloud APIs.
-const relocateWindow = 4
 
 // relocationPreviewLimit caps how many per-file rows a plan hands back. The
 // totals always count every file; this only bounds the detail, so a folder of
@@ -1042,7 +1041,7 @@ func (v *Vault) copyParts(
 	onBytes func(int64),
 	out *relocateOutcome,
 ) []PartMove {
-	window := make(chan struct{}, relocateWindow)
+	window := make(chan struct{}, max(v.Tuning().TransferWindow, 1))
 
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -1368,7 +1367,7 @@ func (v *Vault) erasePartCopy(ctx context.Context, cfg provider.Config, archiveI
 	_ = deleteShardObjects(ctx, p, archiveID, chunkCount, Shard{
 		Part: part,
 		Key:  ShardKey(archiveID, part),
-	})
+	}, v.Tuning().UploadWindow)
 }
 
 // relocateThumbPacks moves the thumbnail packs of the folders a relocation

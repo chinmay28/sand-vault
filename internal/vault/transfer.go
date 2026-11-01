@@ -779,8 +779,7 @@ func (v *Vault) Delete(ctx context.Context, id string) ([]string, error) {
 // its accounts has answered, and a folder of three hundred files paid that
 // worst-of-three latency three hundred times in a row. A few files abreast
 // overlaps the waits without turning the delete into the burst of requests
-// per account that gets rate-limited.
-const eraseWindow = 4
+// per account that gets rate-limited. How many is Tuning.EraseWindow.
 
 // eraseEntries erases the parts of the entries given, in order and a few
 // abreast, and returns how many it got to along with a warning per part that
@@ -809,7 +808,7 @@ func (v *Vault) eraseEntries(ctx context.Context, doomed []*Entry, onProgress fu
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	finished := 0
-	window := make(chan struct{}, eraseWindow)
+	window := make(chan struct{}, max(v.Tuning().EraseWindow, 1))
 	for _, e := range doomed {
 		if ctx.Err() != nil {
 			break
@@ -1137,7 +1136,7 @@ func (v *Vault) deleteStoredShardsReport(ctx context.Context, role provider.Role
 
 			p, err := v.buildProvider(cfg)
 			if err == nil {
-				err = deleteShardObjects(ctx, p, archiveID, chunkCount, shard)
+				err = deleteShardObjects(ctx, p, archiveID, chunkCount, shard, v.Tuning().UploadWindow)
 			}
 			if err != nil {
 				mu.Lock()
@@ -1159,7 +1158,7 @@ func (v *Vault) deleteStoredShardsReport(ctx context.Context, role provider.Role
 //
 // An object that is already gone is not a failure: rollback runs over chunks
 // that may never have been written, and erasing twice must be safe.
-func deleteShardObjects(ctx context.Context, p provider.Provider, archiveID string, chunkCount int, shard Shard) error {
+func deleteShardObjects(ctx context.Context, p provider.Provider, archiveID string, chunkCount int, shard Shard, window int) error {
 	if chunkCount <= 0 {
 		return p.Delete(ctx, shard.Key)
 	}
@@ -1167,14 +1166,14 @@ func deleteShardObjects(ctx context.Context, p provider.Provider, archiveID stri
 	var mu sync.Mutex
 	var firstErr error
 	var wg sync.WaitGroup
-	window := make(chan struct{}, chunkUploadWindow*archive.PartCount)
+	gate := make(chan struct{}, max(window, 1)*archive.PartCount)
 
 	for index := 0; index < chunkCount; index++ {
 		wg.Add(1)
-		window <- struct{}{}
+		gate <- struct{}{}
 		go func(index int) {
 			defer wg.Done()
-			defer func() { <-window }()
+			defer func() { <-gate }()
 
 			err := p.Delete(ctx, ChunkShardKey(archiveID, index, shard.Part))
 			if err == nil || errors.Is(err, provider.ErrNotFound) {

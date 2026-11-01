@@ -371,8 +371,7 @@ type thumbCarry struct {
 // hundred and twenty of them, and one after another that is a hundred and
 // twenty worst-of-three waits in a row. A few abreast overlaps the waits
 // without turning it into the burst per account that gets rate-limited — the
-// same figure, for the same reason, as eraseWindow.
-const packWindow = 4
+// same figure, for the same reason, as the erase window: Tuning.TransferWindow.
 
 // carryThumbs moves a batch of thumbnails between folders' packs, reading each
 // losing folder once and writing each gaining folder once.
@@ -456,6 +455,7 @@ func (v *Vault) carryThumbs(ctx context.Context, carried []thumbCarry) {
 	// is what the losing folders are then allowed to forget.
 	var mu sync.Mutex
 	stored := map[string]bool{}
+	packWindow := max(v.Tuning().TransferWindow, 1)
 	each(packWindow, keysOf(arriving), func(dest folder) {
 		if err := v.SetThumbs(ctx, dest.scope, dest.dir, arriving[dest]); err != nil {
 			return

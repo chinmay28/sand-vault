@@ -207,6 +207,14 @@ func TestFolderZipDoesNotScaleWithTheFolder(t *testing.T) {
 		c := newTestClient(t)
 		c.setup("zip-serving-passphrase", 3)
 		c.mkdir("/big")
+		// Read-ahead fetches the next chunk while this one is being copied
+		// out, which is a bounded extra — one chunk and its gather — that a
+		// one-chunk file cannot show and a four-chunk file does. It would
+		// read here as the folder costing more, so what is measured is the
+		// window alone; the read-ahead's own cost is tested in the vault.
+		tn := c.server.vault.Tuning()
+		tn.ReadAhead = 0
+		c.server.vault.SetTuning(tn)
 
 		// Incompressible, because a film is, and three of them so the archive
 		// spans files rather than measuring one.

@@ -58,10 +58,10 @@ import (
 // count every one; this only bounds the detail.
 const versionKeyPreview = 200
 
-// versionEraseWindow is how many versions are erased from one account at once.
-// The same small number the orphan sweep uses, for the same reason: tidying up
-// has no business being the heaviest thing the vault ever does to an account.
-const versionEraseWindow = 8
+// How many versions are erased from one account at once is twice
+// Tuning.EraseWindow — the same small number the orphan sweep uses, for the
+// same reason: tidying up has no business being the heaviest thing the vault
+// ever does to an account.
 
 // VersionKey is one object key on one account with versions underneath its
 // current one, which is the unit somebody is being asked about: the index
@@ -682,7 +682,7 @@ func (v *Vault) eraseVersions(
 	failed := map[string]bool{}
 	erase := func(batch []provider.ObjectVersion) {
 		var wg sync.WaitGroup
-		window := make(chan struct{}, versionEraseWindow)
+		window := make(chan struct{}, 2*max(v.Tuning().EraseWindow, 1))
 		for _, ver := range batch {
 			wg.Add(1)
 			window <- struct{}{}

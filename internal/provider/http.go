@@ -8,12 +8,67 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 // httpClient is shared by every network-backed provider. Shards are small and
 // requests are independent, so a single pooled client is plenty.
-var httpClient = &http.Client{Timeout: 5 * time.Minute}
+//
+// Its transport is the default one with a larger idle pool. Go keeps two
+// idle connections per host unless told otherwise, and an upload window of
+// four chunks to one cloud — twelve on a workstation — is more requests in
+// the air than that, so every one past the second was a fresh TCP and TLS
+// handshake to the same host. ConfigureTransport sets the pool to the window
+// the machine is running.
+var httpClient = &http.Client{Timeout: 5 * time.Minute, Transport: newTransport(DefaultConnsPerHost)}
+
+// DefaultConnsPerHost is the idle pool size until ConfigureTransport says
+// otherwise: enough for a Pi's upload window with a transfer beside it.
+const DefaultConnsPerHost = 8
+
+// newTransport is the default transport with the idle pool sized to conns.
+func newTransport(conns int) *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxIdleConnsPerHost = conns
+	if t.MaxIdleConns < conns*4 {
+		// The pool across all hosts has to hold a few clouds' worth, or the
+		// per-host figure is a ceiling nothing ever reaches.
+		t.MaxIdleConns = conns * 4
+	}
+	return t
+}
+
+// ConfigureTransport sizes the shared client's idle connection pool. It
+// swaps the transport rather than editing it: a transport in use is not safe
+// to change, and requests in flight finish on the old one, whose idle
+// connections are then closed.
+func ConfigureTransport(connsPerHost int) {
+	if connsPerHost < 2 {
+		connsPerHost = 2
+	}
+	transportMu.Lock()
+	defer transportMu.Unlock()
+	if current, ok := httpClient.Transport.(*http.Transport); ok {
+		if current.MaxIdleConnsPerHost == connsPerHost {
+			return
+		}
+		defer current.CloseIdleConnections()
+	}
+	httpClient.Transport = newTransport(connsPerHost)
+}
+
+// ConnsPerHost reports the idle pool size the shared client is running.
+func ConnsPerHost() int {
+	transportMu.Lock()
+	defer transportMu.Unlock()
+	if current, ok := httpClient.Transport.(*http.Transport); ok {
+		return current.MaxIdleConnsPerHost
+	}
+	return 0
+}
+
+var transportMu sync.Mutex
 
 // drainAndClose consumes the remainder of a response body so the connection
 // can be reused, then closes it.

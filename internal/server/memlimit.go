@@ -4,8 +4,8 @@ import (
 	"log"
 	"os"
 	"runtime/debug"
-	"strconv"
-	"strings"
+
+	"github.com/chinmay28/sand-vault/internal/tuning"
 )
 
 // Telling Go's garbage collector how much room it actually has.
@@ -65,66 +65,9 @@ func applyMemoryLimit() {
 }
 
 // availableMemory reports how many bytes this process may use, and where that
-// number came from.
+// number came from — the cgroup's ceiling when there is one, the machine's
+// total when there is not. The reading lives in internal/tuning, which sizes
+// everything else to the same figure.
 func availableMemory() (int64, string) {
-	if limit, ok := cgroupMemoryLimit(); ok {
-		return limit, "its cgroup allows"
-	}
-	if total, ok := totalSystemMemory(); ok {
-		return total, "this machine has"
-	}
-	return 0, ""
-}
-
-// cgroupMemoryLimit reads the memory ceiling of the cgroup this process is in.
-//
-// Only cgroup v2 is consulted. Every distribution SAND is deployed on — and
-// Raspberry Pi OS in particular — has used the unified hierarchy for years, and
-// a v1 fallback would be more code reading more files to answer the same
-// question on machines that no longer exist.
-func cgroupMemoryLimit() (int64, bool) {
-	for _, path := range []string{
-		// The limit as the process sees it from inside the cgroup namespace,
-		// which is where a systemd service and a container both find theirs.
-		"/sys/fs/cgroup/memory.max",
-	} {
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-		text := strings.TrimSpace(string(raw))
-		// "max" means no limit was set, which is not a number and not a limit.
-		if text == "" || text == "max" {
-			continue
-		}
-		value, err := strconv.ParseInt(text, 10, 64)
-		if err != nil || value <= 0 {
-			continue
-		}
-		return value, true
-	}
-	return 0, false
-}
-
-// totalSystemMemory reports the machine's physical memory.
-func totalSystemMemory() (int64, bool) {
-	raw, err := os.ReadFile("/proc/meminfo")
-	if err != nil {
-		return 0, false
-	}
-	for _, line := range strings.Split(string(raw), "\n") {
-		if !strings.HasPrefix(line, "MemTotal:") {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
-			return 0, false
-		}
-		kb, err := strconv.ParseInt(fields[1], 10, 64)
-		if err != nil || kb <= 0 {
-			return 0, false
-		}
-		return kb << 10, true
-	}
-	return 0, false
+	return tuning.DetectMemory()
 }

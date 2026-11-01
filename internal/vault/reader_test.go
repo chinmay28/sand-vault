@@ -545,3 +545,112 @@ func TestOpenSequentialKeepsOutOfTheSharedCache(t *testing.T) {
 		t.Error("the shared reader stopped caching")
 	}
 }
+
+// A sequential read fetches the chunks after the one it is on, so the next
+// read finds them waiting, and never more of them than the tuning allows.
+func TestSequentialReadFetchesAhead(t *testing.T) {
+	v, _ := chunkedVault(t, 3, 1024)
+	ctx := context.Background()
+
+	tn := v.Tuning()
+	tn.ReadAhead = 3
+	v.SetTuning(tn)
+
+	payload := readerPayload(10 * 1024) // ten chunks exactly
+	entry, _, err := v.Upload(ctx, MainScope, "/", "film.bin", payload, UploadOptions{})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+
+	reader, err := v.OpenReader(entry.ID)
+	if err != nil {
+		t.Fatalf("OpenReader: %v", err)
+	}
+	reader.private = true
+
+	first := make([]byte, 1024)
+	if _, err := reader.ReadAtContext(ctx, first, 0); err != nil {
+		t.Fatalf("ReadAt(0): %v", err)
+	}
+	if !bytes.Equal(first, payload[:1024]) {
+		t.Fatal("chunk 0 came back wrong")
+	}
+
+	reader.aheadMu.Lock()
+	started := len(reader.ahead)
+	reader.aheadMu.Unlock()
+	if started != 3 {
+		t.Errorf("after chunk 0, %d chunks are being fetched ahead, want 3", started)
+	}
+
+	// The whole file, sequentially: every byte right, through the chunks
+	// fetched ahead and the ones fetched on demand alike.
+	out, err := io.ReadAll(io.NewSectionReader(reader, 0, reader.Size()))
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if !bytes.Equal(out, payload) {
+		t.Error("the sequential read came back different from what was stored")
+	}
+
+	// At the end nothing is left in the air: past the last chunk there is
+	// nothing to fetch, and what was fetched has been handed over.
+	reader.aheadMu.Lock()
+	left := len(reader.ahead)
+	reader.aheadMu.Unlock()
+	if left != 0 {
+		t.Errorf("%d prefetched chunks left over after reading to the end", left)
+	}
+}
+
+// A seek does not start any: a player landing in the middle of a film is not
+// reading it front to back, and fetching the chunks after each landing would
+// be bandwidth spent on a guess.
+func TestSeekingDoesNotFetchAhead(t *testing.T) {
+	v, _ := chunkedVault(t, 3, 1024)
+	ctx := context.Background()
+
+	tn := v.Tuning()
+	tn.ReadAhead = 3
+	v.SetTuning(tn)
+
+	payload := readerPayload(10 * 1024)
+	entry, _, err := v.Upload(ctx, MainScope, "/", "film.bin", payload, UploadOptions{})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	reader, err := v.OpenReader(entry.ID)
+	if err != nil {
+		t.Fatalf("OpenReader: %v", err)
+	}
+
+	buf := make([]byte, 16)
+	for _, off := range []int64{5 * 1024, 2 * 1024, 8 * 1024} {
+		if _, err := reader.ReadAtContext(ctx, buf, off); err != nil {
+			t.Fatalf("ReadAt(%d): %v", off, err)
+		}
+		reader.aheadMu.Lock()
+		started := len(reader.ahead)
+		reader.aheadMu.Unlock()
+		if started != 0 {
+			t.Errorf("after a seek to %d, %d chunks are being fetched ahead", off, started)
+		}
+	}
+
+	// And with read-ahead off, even a sequential read starts none.
+	tn.ReadAhead = 0
+	v.SetTuning(tn)
+	seq, err := v.OpenReader(entry.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := seq.ReadAtContext(ctx, buf, 0); err != nil {
+		t.Fatal(err)
+	}
+	seq.aheadMu.Lock()
+	started := len(seq.ahead)
+	seq.aheadMu.Unlock()
+	if started != 0 {
+		t.Errorf("read-ahead of 0 still fetched %d chunks ahead", started)
+	}
+}

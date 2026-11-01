@@ -1074,12 +1074,14 @@ repair that works is the one a short file already gets — gather the shards tha
 can be read, cut the file again, write a full set out. The whole file comes down
 and goes back up, and it goes through memory on the way.
 
-Which is why an unattended repair will not rebuild a file larger than **1 GB**
-unless you raise the ceiling. SAND is meant to run on a Raspberry Pi, and a
-scheduled job that decides at three in the morning to hold a 40 GB film in RAM is
-a machine that stops answering ssh. Files past the ceiling are counted, named in
-the report, and left for you to repair by hand from the browser where you can
-watch it happen:
+Which is why an unattended repair will not rebuild a file larger than a ceiling
+unless you raise it — **4 GB** on a Raspberry Pi 5, **16 GB** on a workstation,
+set with the rest of the machine's sizing under
+[Settings → This machine](#sizing-sand-to-the-machine). SAND is meant to run on
+a Raspberry Pi, and a scheduled job that decides at three in the morning to
+spend the night re-uploading a 40 GB film is a machine busy with the wrong
+thing. Files past the ceiling are counted, named in the report, and left for
+you to repair by hand from the browser where you can watch it happen:
 
 ```bash
 ./sand automation set /films --daily 03:00 --action rebalance --rebuild-limit 8G
@@ -2206,7 +2208,7 @@ sand find receipt
 ### Server
 
 ```
-sand serve [--port 8123] [--bind 0.0.0.0] [--idle-timeout 30m] [--vault PATH]
+sand serve [--port 8123] [--bind 0.0.0.0] [--idle-timeout 30m] [--vault PATH] [--profile auto|pi5|workstation|custom]
            [--webdav] [--webdav-path /dav]
 ```
 
@@ -2795,6 +2797,9 @@ one walk, so comparing them costs nothing.
 | POST | `/api/vault/recovery` | Rebuild the index from that copy (`password`, `provider_id`, `dry_run`) |
 | POST | `/api/vault/recovery/resume` | Re-point the index at accounts reconnected since (`dry_run`; no password) |
 | POST | `/api/vault/reclaim` | Re-encrypt recovered files under this vault's own key, onto `accounts` |
+| GET | `/api/machine` | How SAND is sized to this machine: the profile, the machine it stands on, what was detected, every knob's default and effective value, and the knobs' ranges |
+| PUT | `/api/machine` | Choose a `profile` (`auto`, `pi5`, `workstation`, `custom` with a `machine` of `cpus` and `memory_bytes`) and any `overrides` by knob name; applied at once, refused if it would not fit |
+| DELETE | `/api/machine` | Back to automatic with nothing overridden |
 | GET | `/api/providers/specs` | Backend descriptions for the connect form |
 | GET · POST | `/api/providers` | List / connect accounts. A listed account carries what it holds, what the backend reported, and `space` — how much more fits, with the `source` that answered: `reported`, `declared` or `quota` |
 | POST | `/api/providers/{id}/test` | Re-check an account |
@@ -2974,6 +2979,63 @@ Jellyfin and Plex want a real filesystem rather than a URL, so they need a FUSE
 mount — not built yet.
 
 ---
+
+## Sizing SAND to the machine
+
+How big a piece a file is cut into, how many pieces an upload keeps in the air,
+how far a download reads ahead, how much decrypted film the vault keeps for a
+player seeking around, and how much work a scheduled job will take on by itself
+all depend on what the machine has. Every one of those numbers was chosen for a
+Raspberry Pi, and the same binary on a workstation with sixteen times the memory
+and six times the cores was being held to them: safe, and slow.
+
+So SAND sizes itself to the machine it finds itself on. At startup it reads the
+CPU count and the memory it is allowed — the cgroup's ceiling under systemd,
+which is where the unit's `MemoryMax` lands, or the machine's total — and
+derives every knob from that. Nothing is stored differently: every file records
+the chunk size it was cut with, so a vault moved from a Pi to a workstation
+reads exactly as it did, and new uploads are cut the new way.
+
+**Settings → This machine** shows what was detected and what SAND is running,
+and is where to overrule it:
+
+- **Automatic** — derived from what was detected. The default.
+- **Raspberry Pi 5 · 16 GB** and **Workstation · 64 GB** — the same formula over
+  a fixed machine, for a box that should be treated as one of those whatever it
+  reports. A container that sees the host's memory is the usual reason.
+- **Custom** — type the CPUs and memory to size for, which is how to leave room
+  for other work on the same machine.
+- **Advanced** — every knob, with the profile's value beside it and an arrow
+  back. A knob you set is kept when the profile changes. **Reset to system
+  defaults** is back to automatic with nothing set.
+
+What the two presets come to:
+
+| | Raspberry Pi 5 · 16 GB | Workstation · 64 GB |
+|---|---|---|
+| Chunk size | 16 MiB | 32 MiB |
+| Upload window | 4 chunks | 12 chunks |
+| Read-ahead | 1 chunk | 6 chunks |
+| Chunk cache | 1 GiB | 4 GiB |
+| Compression threads | 2 | 8 |
+| Transfer and erase windows | 4 | 8 |
+| Connections per cloud | 12 | 32 |
+| Unattended rebuild and bundle limits | 4 GiB | 16 GiB |
+
+The choice is kept in `machine.json` beside the vault — plain JSON, nothing
+secret in it, editable by hand — because it belongs to the machine rather than
+the vault: a vault restored from a recovery kit onto a different box should not
+bring a Pi's windows with it. `sand serve --profile pi5` (or `SAND_PROFILE`)
+pins the profile from the unit file instead, and the page then says so rather
+than fighting it. A file that cannot be applied — a hand edit that put a window
+at zero — is reported in the log and the defaults run.
+
+Two things are deliberately not here. The password stretching (Argon2id, 64 MB)
+is stored in the vault and travels with it, so it is a property of the vault and
+not of the box. And the clouds' own rate limits do not grow with the machine:
+the windows are capped where a consumer cloud starts answering with "slow down"
+rather than where the machine does, so a workstation is faster at compressing,
+encrypting and overlapping round trips, and no faster at being allowed to.
 
 ## Security
 
