@@ -12,6 +12,31 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### SAND sizes itself to the machine it runs on
+
+Every number that decided how much was in flight or in memory at once — the
+chunk a file is cut into, how many chunks an upload keeps in the air, how much
+decrypted film is kept for a player seeking around, how many objects a move or
+a delete runs abreast, how large a file a scheduled repair will take on — was
+chosen for a Raspberry Pi, and the same binary on a workstation with sixteen
+times the memory was being held to the same numbers. SAND now reads the CPU
+count and the memory it is allowed at startup and derives all of them from
+that. **Settings → This machine** shows what was detected and what is running,
+offers a Raspberry Pi 5 and a workstation profile for a box that should be
+treated as one whatever it reports, a custom machine to size for, and under
+Advanced every knob with the profile's value beside it, an arrow back, and
+**Reset to system defaults**. The choice is kept in `machine.json` beside the
+vault, and `sand serve --profile` pins it from the unit file.
+
+Three things got faster on the way. A sequential read — a download, an export,
+a zip — now fetches the next few chunks while the one in hand is being copied
+out, instead of waiting out a full round trip per chunk. The compressor runs
+the threads the machine has rather than one per core whatever the core count.
+And the connection pool to each cloud is sized to the upload window, where
+Go's default of two meant every request past the second was a fresh
+handshake. Nothing about what is stored changed: every file records the
+chunk size it was cut with, and reads exactly as it did.
+
 ### Where the shards live opens on the answer, not a spinner
 
 **Where this file lives** opened on a spinner and stayed on it until every

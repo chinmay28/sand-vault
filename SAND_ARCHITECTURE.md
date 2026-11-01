@@ -1285,10 +1285,12 @@ already knows how to find and sweep.
 password change somebody started and is watching; it is a different thing at
 three in the morning on a Raspberry Pi. So:
 
-- **`RebuildLimit`** (default `DefaultRebuildLimit`, 1 GiB) is the largest file
-  an unattended repair will rebuild. Past it the file is counted `Deferred` and
-  named, for somebody to repair by hand where they can watch it. Negative means
-  no ceiling, which is a thing to choose rather than a thing to inherit.
+- **`RebuildLimit`** (default from the machine's tuning, §4.6 — 4 GiB on a
+  Pi 5, 16 GiB on a workstation, `DefaultRebuildLimit` of 1 GiB on a machine
+  nobody has described) is the largest file an unattended repair will rebuild.
+  Past it the file is counted `Deferred` and named, for somebody to repair by
+  hand where they can watch it. Negative means no ceiling, which is a thing to
+  choose rather than a thing to inherit.
 - **`MaxRepairs`** bounds files rebuilt per run; the remainder is deferred and
   picked up next run, worst first.
 - **`Narrow`** is off by default, and the default is the load-bearing half.
@@ -1733,6 +1735,73 @@ plus the two edge subsets (all-data, all-parity-heavy) at widths where C(n, k)
 runs to more digits than the test file has bytes.
 
 ---
+
+### 4.6 Sizing to the machine
+
+Everything above that decides how much is in flight or in memory at once — the
+chunk size, the upload window, the read-ahead, the chunk cache, the windows a
+move or a delete runs at, the pool of connections to each cloud, and the two
+ceilings an unattended job will not pass — comes from one place:
+`internal/tuning`. It knows nothing about vaults. A `Machine` is what the
+process has to work with, read from the cgroup and `/proc` or given; a
+`Tuning` is every knob; `Derive` is the one formula from the first to the
+second; and a `Config` is what the operator chose — a profile, a machine of
+their own, and any knob set by hand — which `Resolve` works out on the machine
+and checks, so that what resolves is what the server can apply.
+
+The two fixed profiles are the formula over the machines they stand for, a
+Pi 5 with 16 GB and a workstation with 64 GB, so there are not three tables to
+keep in agreement. Automatic is the formula over what was detected. Custom is
+the formula over what was typed. The formula is monotone and clamped at both
+ends: the windows follow the CPU count and are capped where a consumer cloud
+starts rate-limiting rather than where the machine does; the cache and the
+ceilings follow memory; the chunk size steps once, from 16 to 32 MiB, at 32 GB.
+A machine too small for the floors has its cache, then its read-ahead, then
+its window shrunk until a `Footprint` — one upload at full window, one
+sequential reader at full read-ahead, the cache full — is within half of what
+it has. The other half is the index, the connections and the runtime, and
+`GOMEMLIMIT` is set at 85% of the same figure (§4.2).
+
+What is stored is the choice and not the numbers, in `machine.json` beside the
+vault. Beside rather than inside, because it is needed at `Open`, before there
+is a password to decrypt anything with, and because it belongs to the machine:
+a vault restored from a kit onto a different box should not bring a Pi's
+windows with it. Storing the derived numbers would freeze them against a later
+release's better formula; deriving them every time means a machine that gained
+memory gets the benefit on the next start.
+
+Each layer takes the tuning handed to it and nothing more. `Vault.SetTuning`
+stores it behind an atomic pointer — every reader takes the whole struct at the
+moment it starts, so an upload in flight keeps its window and the next one gets
+the new one — and resizes the chunk cache in place. `compress.Configure` sets
+the level and the threads the next encoder is built with. The encoder is
+still built per chunk and closed after it: keeping one was tried, and an
+encoder holds its history window and block buffers between calls — tens of
+megabytes after a 16 MiB chunk, times the upload window — which on a Pi
+showed up as a higher floor under every read that followed.
+`provider.ConfigureTransport`
+swaps the shared client's transport for one with the idle pool sized to the
+window, since Go's default of two idle connections per host meant every request
+past the second in a window of twelve to one cloud was a fresh handshake.
+Nothing about what is stored changes under any of this: a file records the
+chunk size it was cut with, and a compressed stream names its own format.
+
+The read-ahead is the one piece of new behaviour. A sequential reader —
+`OpenSequential`, which an export, a zip and a transfer use, or any reader
+whose next chunk is the one after its last — starts fetching the next
+`ReadAhead` chunks through the same single flight the read itself uses, and
+hands them over when they are asked for. A reader that seeks starts none: a
+player landing in the middle of a film is not reading it front to back, and
+the shared cache is what serves that case. A prefetch that failed is forgotten
+rather than reported, so the read that wanted the chunk goes and gets it the
+ordinary way and hears the error that matters, its own.
+
+`GET /api/machine` serves the resolution together with the vocabulary — every
+knob with its range and hint, every profile with its label — so the settings
+page knows nothing the server did not tell it; `PUT` is the whole choice each
+time and is refused rather than clamped when it would not fit; `DELETE` is back
+to automatic with nothing overridden. `sand serve --profile` pins the profile
+from the unit file, and the page then says so rather than fighting it.
 
 ## 5. Placement Policy
 
