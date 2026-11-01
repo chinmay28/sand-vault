@@ -2,6 +2,7 @@ package vault
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -9,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/chinmay28/sand-vault/internal/archive"
 )
 
 // The repositories these tests mirror are served over loopback HTTP rather than
@@ -689,5 +692,196 @@ func TestRepoNameReadsTheLastSegment(t *testing.T) {
 		if got := RepoName(url); got != want {
 			t.Errorf("RepoName(%q) = %q, want %q", url, got, want)
 		}
+	}
+}
+
+// loseEverythingOn empties one account's folder: a cloud that has lost what
+// it held, as the parts of a file see it.
+func loseEverythingOn(t *testing.T, root string) {
+	t.Helper()
+	names, err := filepath.Glob(filepath.Join(root, "*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range names {
+		if err := os.RemoveAll(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// The way back for a bundle whose parts have gone past reading. A refresh
+// needs the stored bundle and cannot have it; the upstream still holds the
+// whole history, and a rebuild stores it afresh on the clouds asked for
+// without the stored parts ever being read.
+func TestRebuildRepoStoresAfreshWhenTheBundleCannotBeRead(t *testing.T) {
+	v, roots := newTestVault(t, 4)
+	ctx := context.Background()
+	ids := accountIDs(t, v)
+	remote := newRemoteRepo(t)
+
+	repo, _, err := v.TrackRepo(ctx, MainScope, "/", remote.URL, UploadOptions{Accounts: ids[:3]})
+	if err != nil {
+		t.Fatalf("TrackRepo: %v", err)
+	}
+	remote.Commit("second")
+
+	// Two of the three accounts holding the bundle lose everything. With the
+	// chunk cache cleared, what the clouds hold is what answers — and it is
+	// not enough to read the bundle.
+	loseEverythingOn(t, roots[0])
+	loseEverythingOn(t, roots[1])
+	v.chunks.clear()
+	if _, _, err := v.RefreshRepo(ctx, MainScope, repo.ID); err == nil {
+		t.Fatal("a refresh read back a bundle two of whose three parts are gone")
+	}
+
+	// The rebuild: onto a different set of clouds, one of which never held
+	// the old bundle at all.
+	after, _, err := v.RebuildRepo(ctx, MainScope, repo.ID, ids[1:], archive.Scheme{})
+	if err != nil {
+		t.Fatalf("RebuildRepo: %v", err)
+	}
+	if after.ID == repo.ID {
+		t.Error("the rebuilt repository kept the old file's ID; an overwrite is a new entry")
+	}
+	if after.Commits <= repo.Commits || after.Digest == repo.Digest {
+		t.Errorf("the rebuild did not bring the upstream's new commit: %+v, was %+v", after.GitSource, repo.GitSource)
+	}
+
+	// One repository, under the same name, with the record on the new file.
+	repos, err := v.TrackedRepos(MainScope, "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repos) != 1 || repos[0].ID != after.ID || repos[0].Name != "project.bundle" {
+		t.Fatalf("after the rebuild the folder holds %+v, want the one rebuilt repository", repos)
+	}
+	if _, err := v.TrackedRepo(MainScope, repo.ID); err == nil {
+		t.Error("the old file's record is still there")
+	}
+
+	// On the clouds asked for, and on no other.
+	entry, err := v.Entry(after.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{ids[1]: true, ids[2]: true, ids[3]: true}
+	if len(entry.Shards) != 3 {
+		t.Fatalf("the fresh bundle has %d shards, want 3", len(entry.Shards))
+	}
+	for _, s := range entry.Shards {
+		if !want[s.ProviderID] {
+			t.Errorf("a shard landed on %s, which was not asked for", s.ProviderID)
+		}
+	}
+
+	// The listing marks it as a repository.
+	listing, err := v.List(MainScope, "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listing.TrackedRepos) != 1 || listing.TrackedRepos[0] != after.ID {
+		t.Errorf("listing.TrackedRepos = %v, want the rebuilt file", listing.TrackedRepos)
+	}
+
+	// And what is stored is the repository as the upstream has it now,
+	// cloneable by a plain git — read from the clouds, not from memory.
+	v.chunks.clear()
+	dir := t.TempDir()
+	bundle := filepath.Join(dir, "out.bundle")
+	if err := v.exportFile(ctx, after.ID, bundle); err != nil {
+		t.Fatalf("exportFile after the rebuild: %v", err)
+	}
+	remote.git(dir, "clone", "--quiet", bundle, filepath.Join(dir, "restored"))
+	if log := remote.git(filepath.Join(dir, "restored"), "log", "--oneline"); !strings.Contains(log, "second") {
+		t.Errorf("the rebuilt bundle is missing the upstream's new commit: %q", log)
+	}
+}
+
+// A rebuild is offered whatever state the bundle is in: one that still reads
+// is put on other clouds from the upstream all the same, and the old parts
+// are erased from the cloud that is no longer asked for.
+func TestRebuildRepoMovesAReadableBundleToOtherClouds(t *testing.T) {
+	v, roots := newTestVault(t, 4)
+	ctx := context.Background()
+	ids := accountIDs(t, v)
+	remote := newRemoteRepo(t)
+
+	repo, _, err := v.TrackRepo(ctx, MainScope, "/", remote.URL, UploadOptions{Accounts: ids[:3]})
+	if err != nil {
+		t.Fatalf("TrackRepo: %v", err)
+	}
+	if n := sandObjectsIn(t, roots[0]); n == 0 {
+		t.Fatalf("%s holds nothing after the track", roots[0])
+	}
+
+	after, _, err := v.RebuildRepo(ctx, MainScope, repo.ID, ids[1:], archive.Scheme{})
+	if err != nil {
+		t.Fatalf("RebuildRepo: %v", err)
+	}
+	if after.Digest != repo.Digest {
+		t.Errorf("the digest moved without the upstream moving: %s → %s", repo.Digest, after.Digest)
+	}
+	// The cloud that was not asked for holds no part of it any more; the
+	// index backup is the one object every account keeps.
+	if n := sandObjectsIn(t, roots[0]); n != 0 {
+		t.Errorf("%s still holds %d part(s) of the old bundle", roots[0], n)
+	}
+	if n := sandObjectsIn(t, roots[3]); n == 0 {
+		t.Errorf("%s, asked for, holds no part of the fresh bundle", roots[3])
+	}
+}
+
+func TestRebuildRepoRefusesAFileThatIsOnlyAFile(t *testing.T) {
+	v, _ := newTestVault(t, 3)
+	ctx := context.Background()
+
+	entry, _, err := v.Upload(ctx, MainScope, "/", "notes.txt", []byte("not a repository"), UploadOptions{})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if _, _, err := v.RebuildRepo(ctx, MainScope, entry.ID, nil, archive.Scheme{}); !errors.Is(err, ErrNotTracked) {
+		t.Errorf("RebuildRepo on a plain file = %v, want ErrNotTracked", err)
+	}
+}
+
+// The index can be as sure the bundle is gone as the clouds can: a bundle the
+// index records too few parts of sits in the missing-a-part list, marked as
+// a repository so the row can offer the one way back, and the rebuild does
+// not care what the index says of the parts it never reads.
+func TestRebuildRepoWorksOnABundleTheIndexSaysCannotBeRead(t *testing.T) {
+	v, _ := newTestVault(t, 3)
+	ctx := context.Background()
+	ids := accountIDs(t, v)
+	remote := newRemoteRepo(t)
+
+	repo, _, err := v.TrackRepo(ctx, MainScope, "/", remote.URL, UploadOptions{})
+	if err != nil {
+		t.Fatalf("TrackRepo: %v", err)
+	}
+	degrade(t, v, repo.ID, 2)
+
+	page, err := v.Degraded(0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Files) != 1 || page.Files[0].Readable || !page.Files[0].Tracked {
+		t.Fatalf("degraded = %+v, want the bundle, unreadable and marked as a repository", page.Files)
+	}
+
+	after, _, err := v.RebuildRepo(ctx, MainScope, repo.ID, ids, archive.Scheme{})
+	if err != nil {
+		t.Fatalf("RebuildRepo: %v", err)
+	}
+	if after.ID == repo.ID {
+		t.Error("the rebuilt repository kept the old file's ID")
+	}
+	page, err = v.Degraded(0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 0 {
+		t.Errorf("%d file(s) still short a part after the rebuild: %+v", page.Total, page.Files)
 	}
 }

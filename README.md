@@ -1224,6 +1224,32 @@ one of them is a reason to throw away what may be the last copy in the world.
 
 Deleting it is a thing you turn on (`--prune`), never a thing that happens.
 
+### The copy that disappears is rebuilt from the upstream
+
+The other way round — the stored bundle lost past reading, the upstream still
+there — has a way back of its own. A refresh reads the stored bundle to fetch
+only what changed, and a move carries its shards across, and neither has
+anything to work with once too few of its accounts answer. The upstream has
+the whole history, so **Rebuild from upstream** mirrors the repository again,
+whole, exactly as the first copy was made, and stores it over the file as a
+fresh set of shards on clouds you choose, cut the way those clouds call for.
+It is the same dialog a rebuild from the replica uses, and the same idea: a
+copy that is trusted, read whole, written out again on clouds you pick. The
+stored shards are never read, so it works whatever state they are in — a
+bundle the index says cannot be read, or one whose clouds have simply emptied
+— and the shards that can still be reached are erased afterwards.
+
+It is on a kept repository's row menu, beside each repository under
+**Repositories kept here**, and on a repository's row in the **missing a
+part** list. It costs what the first copy cost, so for a bundle that still
+reads and only needs to catch up, refresh is the cheaper way.
+
+```bash
+./sand git rebuild /code/sand-vault.bundle --accounts box,s3,drive
+# Mirroring https://github.com/chinmay28/sand-vault.git afresh — the whole history comes down, and the stored copy is not read.
+# Stored /code/sand-vault.bundle afresh (14.2 MB, 47 refs, 1841 commits) in 14s.
+```
+
 ## Sandy, the vault's archivist
 
 **✦ Sandy**, in the header, opens a chat. Type a question in plain words —
@@ -2165,6 +2191,8 @@ See [A folder that looks after itself](#a-folder-that-looks-after-itself).
 sand git track <url> [--into /code] [--accounts a,b,c] [--scheme m-of-n]
 sand git list [folder]                     What is kept, and when it was last fetched
 sand git refresh <path> | <folder> --all   Ask the upstream, and fetch if it has moved
+sand git rebuild <path> --accounts a,b,c   Mirror it again from the upstream onto those accounts,
+                                           whatever state the stored bundle is in
 sand git untrack <path>                    Stop following it; the bundle stays
 ```
 
@@ -2388,7 +2416,10 @@ pipe the password on stdin.
   whether its upstream has moved. See
   [A folder that looks after itself](#a-folder-that-looks-after-itself).
   **Repositories kept here** is the copies themselves, each a bundle holding a
-  whole history, with what is stored and when it was last fetched. See
+  whole history, with what is stored and when it was last fetched — and, for
+  each, **Rebuild from upstream**, which a kept repository's row offers too:
+  the repository mirrored again onto clouds you choose, whatever state the
+  stored copy is in. See
   [Keeping copies of git repositories](#keeping-copies-of-git-repositories).
 
   The button carries the standing state, so a folder looking after itself says

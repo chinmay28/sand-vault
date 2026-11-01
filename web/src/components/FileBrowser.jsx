@@ -224,6 +224,14 @@ export default function FileBrowser({
     () => new Set((searchTerm ? results?.thumbs : listing?.thumbs) || []),
     [searchTerm, results, listing])
 
+  /* Which rows are kept repositories — the ones whose menu can offer a
+     rebuild from the upstream, whatever state their shards are in. The
+     listing says so outright, so no folder costs a second request to find
+     out that it holds none. */
+  const tracked = useMemo(
+    () => new Set((searchTerm ? results?.tracked_repos : listing?.tracked_repos) || []),
+    [searchTerm, results, listing])
+
   /* Every image on screen, in the order it is drawn — what the preview's
      full-screen viewer steps through. Off `entries` rather than the raw
      listing so the pages turn in the order the person is looking at, and so a
@@ -584,6 +592,7 @@ export default function FileBrowser({
     replicatedFolders: listing?.replicated_folders,
     entries,
     thumbs,
+    tracked,
     movies,
     /* A row only offers a film lookup where one could happen: in a folder that
        has asked for it, and on a file a player would take. Everything else
@@ -971,6 +980,7 @@ export default function FileBrowser({
           tool={tool}
           path={path}
           vault={vault}
+          providers={providers}
           onClose={() => setTool(null)}
           /* A flatten moves files out of folders, a prune removes the
              folders, and clearing duplicates erases files; whichever it was,
@@ -1152,7 +1162,7 @@ function EntryList(props) {
 }
 
 function EntryTable({
-  entries, thumbs, movies, films, mobile, providers, selecting, selected,
+  entries, thumbs, tracked, movies, films, mobile, providers, selecting, selected,
   onToggle, onSelectAll, onSelectNone,
   onNavigate, onPreview, onInspect, onFilm, onRefresh, onError,
   vault, subVaults, previousKey, replicate, replicatedFolders,
@@ -1245,6 +1255,7 @@ function EntryTable({
           mobile={mobile}
           providers={providers}
           hasThumb={thumbs.has(entry.file.id)}
+          tracked={tracked.has(entry.file.id)}
           film={movies[entry.file.id]}
           columns={columns}
           selecting={selecting}
@@ -1262,7 +1273,7 @@ function EntryTable({
 }
 
 function EntryGrid({
-  entries, thumbs, movies, films, mobile, providers, selecting, selected, onToggle,
+  entries, thumbs, tracked, movies, films, mobile, providers, selecting, selected, onToggle,
   onNavigate, onPreview, onInspect, onFilm, onRefresh, onError,
   vault, subVaults, replicate, replicatedFolders,
 }) {
@@ -1309,6 +1320,7 @@ function EntryGrid({
           mobile={mobile}
           providers={providers}
           hasThumb={thumbs.has(entry.file.id)}
+          tracked={tracked.has(entry.file.id)}
           film={movies[entry.file.id]}
           aspect={aspect}
           selecting={selecting}

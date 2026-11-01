@@ -4,6 +4,7 @@ import { api } from '../api'
 import { useIsMobile } from '../hooks'
 import { Banner, Button, Empty, Modal, Spinner } from './ui'
 import { RelocateClouds, schemeName } from './CloudSelect'
+import { RebuildRepo } from './RebuildRepo'
 import ReattachShards from './ReattachShards'
 import { StrayParts } from './CleanOrphans'
 
@@ -47,6 +48,7 @@ export default function MissingParts({ providers, onClose, onChanged }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [repairing, setRepairing] = useState(null)
+  const [rebuilding, setRebuilding] = useState(null)
 
   const load = useCallback(async (at) => {
     setLoading(true)
@@ -114,7 +116,8 @@ export default function MissingParts({ providers, onClose, onChanged }) {
           few parts were ever written. No arrangement of clouds brings one of those back,
           so they are listed and marked and nothing is offered for them — unless the file
           has a replica, which is the one other place its bytes are, and then the row
-          offers to rebuild it from there.
+          offers to rebuild it from there; or it is a repository kept from an upstream,
+          which still has the whole history, and then the row offers to mirror it again.
         </Banner>
       )}
 
@@ -151,6 +154,7 @@ export default function MissingParts({ providers, onClose, onChanged }) {
               file={file}
               mobile={mobile}
               onRepair={() => setRepairing(file)}
+              onRebuild={file.tracked && providers.length > 0 ? () => setRebuilding(file) : null}
             />
           ))}
         </div>
@@ -204,6 +208,17 @@ export default function MissingParts({ providers, onClose, onChanged }) {
           replica={!!repairing.replica}
           source={!repairing.readable && repairing.replica ? 'replica' : 'parts'}
           onClose={() => setRepairing(null)}
+          onDone={repaired}
+        />
+      )}
+
+      {rebuilding && (
+        <RebuildRepo
+          file={rebuilding}
+          current={rebuilding.shards.map((s) => s.provider_id)}
+          providers={providers}
+          zIndex={CHILD_Z}
+          onClose={() => setRebuilding(null)}
           onDone={repaired}
         />
       )}
@@ -497,7 +512,7 @@ function repairSelection(file, providers) {
    the scheme, coloured by the account holding it and outlined where nothing
    does — because that is the picture somebody already knows how to read, and
    the empty square is the whole story of the row. */
-function DegradedRow({ file, mobile, onRepair }) {
+function DegradedRow({ file, mobile, onRepair, onRebuild }) {
   const scheme = { data: file.data_shards, total: file.total_shards }
 
   return (
@@ -613,6 +628,18 @@ function DegradedRow({ file, mobile, onRepair }) {
           disabled={!file.readable && !file.replica}
           style={{ flexShrink: 0 }}
         >{!file.readable && file.replica ? '↻ Replica' : '⇄ Clouds'}</Button>
+
+        {/* A kept repository has a copy its parts are not: the upstream,
+            which reads whatever state they are in. */}
+        {onRebuild && (
+          <Button
+            size="sm"
+            variant={file.readable ? 'ghost' : 'default'}
+            onClick={onRebuild}
+            title="Mirror this repository again from its upstream onto clouds you choose"
+            style={{ flexShrink: 0 }}
+          >↻ Upstream</Button>
+        )}
       </div>
     </div>
   )

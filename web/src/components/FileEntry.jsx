@@ -13,6 +13,7 @@ import ConvertFile from './ConvertFile'
 import { PreviousKeyPill } from './Rekey'
 import { onPreviousKey } from '../keys'
 import { RelocateClouds, fileScheme, schemeName, storedParts } from './CloudSelect'
+import { RebuildRepo } from './RebuildRepo'
 import { ReplicaBadges, ReplicaDots, ReplicateFolderDialog } from './Replication'
 import MoveToFolder from './MoveToFolder'
 import FolderArtPicker from './FolderArt'
@@ -48,7 +49,7 @@ export const FILM_COLUMNS = 'minmax(0,1fr) 92px 150px 132px 216px'
    down to a single part cannot be rebuilt at all. Working that out twice —
    once for rows and once for tiles — is how the two views drift apart. */
 export function useFileActions({
-  file, providers, film, vault = '', subVaults = [], replicate = null,
+  file, providers, film, vault = '', subVaults = [], replicate = null, tracked = false,
   onPreview, onInspect, onFilm, onRefresh, onError,
 }) {
   const [busy, setBusy] = useState(false)
@@ -66,6 +67,7 @@ export function useFileActions({
   const [streaming, setStreaming] = useState(null)
   const [converting, setConverting] = useState(null)
   const [relocating, setRelocating] = useState(false)
+  const [rebuilding, setRebuilding] = useState(false)
   const [moving, setMoving] = useState(false)
   const [renaming, setRenaming] = useState(false)
   const [assigning, setAssigning] = useState(false)
@@ -275,6 +277,18 @@ export function useFileActions({
               hint: 'Only the parts that have to move are copied',
               onSelect: () => setRelocating(true),
             },
+            /* A kept repository has a copy its shards are not: the upstream.
+               Offered whatever state the shards are in, because it reads
+               none of them — which is the whole point when they are gone. */
+            tracked && {
+              key: 'rebuild-repo',
+              glyph: '↻',
+              label: 'Rebuild from upstream',
+              hint: dead
+                ? 'The shards here cannot be read; its upstream still can'
+                : 'Mirror it again from its upstream onto clouds you choose',
+              onSelect: () => setRebuilding(true),
+            },
             // Only where there is somewhere to send it. A vault with no sub
             // vaults should not be offered a move into one.
             assignTargets.length > 0 && {
@@ -341,6 +355,17 @@ export function useFileActions({
           replica={!vault && !!file.replica}
           source={!vault && file.replica && dead ? 'replica' : 'parts'}
           onClose={() => setRelocating(false)}
+          onDone={onRefresh}
+        />
+      )}
+
+      {rebuilding && (
+        <RebuildRepo
+          file={file}
+          current={file.shards.map((s) => s.provider_id)}
+          providers={providers}
+          vault={vault}
+          onClose={() => setRebuilding(false)}
           onDone={onRefresh}
         />
       )}
@@ -653,10 +678,10 @@ function PartDots({ file }) {
 export function FileRow({
   file, location, mobile, providers, hasThumb, film, columns, selecting, selected,
   onSelect, onPreview, onInspect, onFilm, onRefresh, onError,
-  vault = '', subVaults = [], replicate = null,
+  vault = '', subVaults = [], replicate = null, tracked = false,
 }) {
   const a = useFileActions({
-    file, providers, film, vault, subVaults, replicate, onPreview, onInspect, onFilm, onRefresh, onError,
+    file, providers, film, vault, subVaults, replicate, tracked, onPreview, onInspect, onFilm, onRefresh, onError,
   })
   const icon = fileIcon(file.mime, file.name)
 
@@ -1413,10 +1438,10 @@ export function FileTile({
   file, location, mobile, providers, hasThumb, film, aspect = TILE_SQUARE,
   selecting, selected,
   onSelect, onPreview, onInspect, onFilm, onRefresh, onError,
-  vault = '', subVaults = [], replicate = null,
+  vault = '', subVaults = [], replicate = null, tracked = false,
 }) {
   const a = useFileActions({
-    file, providers, film, vault, subVaults, replicate, onPreview, onInspect, onFilm, onRefresh, onError,
+    file, providers, film, vault, subVaults, replicate, tracked, onPreview, onInspect, onFilm, onRefresh, onError,
   })
   const icon = fileIcon(file.mime, file.name)
 

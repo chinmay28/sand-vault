@@ -11,10 +11,10 @@ import (
 
 // The repositories a vault is keeping a copy of, over HTTP.
 //
-// Four endpoints, and the split between them is the same one the design turns
-// on: listing is index work and answers in microseconds, while tracking and
-// refreshing talk to somebody else's git server and can move a gigabyte, so
-// they get deadlines of their own.
+// Five endpoints, and the split between them is the same one the design turns
+// on: listing is index work and answers in microseconds, while tracking,
+// refreshing and rebuilding talk to somebody else's git server and can move a
+// gigabyte, so they get deadlines of their own.
 //
 // See internal/vault/gitrepo.go for what a repository in a vault actually is —
 // one bundle file — and internal/git for why SAND borrows the system git rather
@@ -136,6 +136,63 @@ func (s *Server) handleGitRefresh(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"repo":    repo,
 		"updated": moved,
+	})
+}
+
+// gitRebuildRequest is where a repository stored afresh from its upstream
+// should land: the same two choices an upload gets, and for the same reason.
+type gitRebuildRequest struct {
+	Vault    string   `json:"vault,omitempty"`
+	Accounts []string `json:"accounts,omitempty"`
+	Scheme   string   `json:"scheme,omitempty"`
+}
+
+// handleGitRebuild stores one tracked repository afresh from its upstream, on
+// the clouds chosen, whatever state the stored bundle is in.
+//
+// It is the way back for a bundle whose parts have gone past reading — a
+// refresh needs the stored bundle and a move needs its shards, and the
+// upstream needs neither — and it is offered for a bundle that still reads
+// too, since the upstream is as good a copy as any to put it on other clouds
+// from. The whole history comes down, so it carries the deadline a first copy
+// does. The reply carries the repository's new id: an overwrite is a new
+// entry.
+func (s *Server) handleGitRebuild(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "name the repository", "BAD_REQUEST")
+		return
+	}
+	var req gitRebuildRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
+		return
+	}
+	scheme, err := parseSchemeField(req.Scheme)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
+		return
+	}
+	// A rebuild is a choice of clouds before it is anything else: the point of
+	// it is to say where the fresh copy goes. Left to the default, it would
+	// be a refresh that costs a full clone.
+	if len(req.Accounts) == 0 {
+		writeError(w, http.StatusBadRequest, "choose the clouds the repository should be stored on", "BAD_REQUEST")
+		return
+	}
+
+	ctx, cancel := contextWithTimeout(r, gitTrackTimeout)
+	defer cancel()
+
+	v, _ := s.Vault()
+	repo, warnings, err := v.RebuildRepo(ctx, vault.Scope(req.Vault), id, req.Accounts, scheme)
+	if err != nil {
+		vaultErrorResponse(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"repo":     repo,
+		"warnings": warnings,
 	})
 }
 

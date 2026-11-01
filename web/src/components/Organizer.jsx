@@ -196,7 +196,7 @@ function describeStanding(automation) {
    opening one is a spinner in a dialog rather than a dialog that appears
    already wrong. The duplicate finder is handed over whole: it reads a
    different question and draws its own spinner over it. */
-export function OrganizerTool({ tool, path, vault, onClose, onDone, onSelect }) {
+export function OrganizerTool({ tool, path, vault, providers = [], onClose, onDone, onSelect }) {
   const [survey, setSurvey] = useState(null)
   const [error, setError] = useState(null)
 
@@ -236,7 +236,7 @@ export function OrganizerTool({ tool, path, vault, onClose, onDone, onSelect }) 
 
   if (tool === 'repos') {
     return (
-      <FolderRepos path={path} vault={vault} onClose={onClose} onChanged={onDone} />
+      <FolderRepos path={path} vault={vault} providers={providers} onClose={onClose} onChanged={onDone} />
     )
   }
 

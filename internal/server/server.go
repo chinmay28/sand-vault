@@ -619,6 +619,9 @@ func (s *Server) Handler() (http.Handler, error) {
 		"GET /api/git":               s.handleGitList,
 		"POST /api/git/track":        s.handleGitTrack,
 		"POST /api/git/{id}/refresh": s.handleGitRefresh,
+		// Stored afresh from the upstream, on chosen clouds, whatever state
+		// the bundle is in: the way back when its parts cannot be read.
+		"POST /api/git/{id}/rebuild": s.handleGitRebuild,
 		"DELETE /api/git/{id}":       s.handleGitUntrack,
 
 		// A key pair for the two things here that sign in over SSH: a

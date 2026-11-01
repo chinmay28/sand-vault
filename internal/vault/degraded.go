@@ -64,6 +64,12 @@ type DegradedFile struct {
 	// the parts cannot be read, and this is how it knows to.
 	Replica *Replica `json:"replica,omitempty"`
 
+	// Tracked says the file is a tracked repository, whose upstream is the
+	// other place its bytes are — and the one that answers whatever state the
+	// parts are in. The browser offers a rebuild from it where this is set;
+	// see RebuildRepo.
+	Tracked bool `json:"tracked,omitempty"`
+
 	ModifiedAt time.Time `json:"modified_at"`
 }
 
@@ -154,6 +160,7 @@ func (v *Vault) Degraded(offset, limit int) (*DegradedPage, error) {
 			Spare:       e.Spare(),
 			Readable:    e.Recoverable(),
 			Replica:     e.Replica,
+			Tracked:     v.manifest.Repos[e.ID] != nil,
 			ModifiedAt:  e.ModifiedAt,
 		})
 	}

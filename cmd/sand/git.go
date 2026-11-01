@@ -32,6 +32,7 @@ needs SAND to be made and stored, and nothing at all to be used again.
   sand git track https://github.com/chinmay28/sand-vault.git --into /code
   sand git list /code
   sand git refresh /code/sand-vault.bundle
+  sand git rebuild /code/sand-vault.bundle --accounts a,b,c
 
 Refreshing is cheap when nothing has changed. The upstream is asked what refs it
 has, which is a few kilobytes and no objects at all; only a repository that has
@@ -43,7 +44,7 @@ SAND borrows the git already on this machine rather than carrying its own, so a
 repository it can reach is exactly one you can reach from here — your SSH keys,
 your credential helper, your ~/.ssh/config.`,
 	}
-	cmd.AddCommand(gitTrackCmd(), gitListCmd(), gitRefreshCmd(), gitUntrackCmd())
+	cmd.AddCommand(gitTrackCmd(), gitListCmd(), gitRefreshCmd(), gitRebuildCmd(), gitUntrackCmd())
 	return cmd
 }
 
@@ -233,6 +234,84 @@ func gitRefreshTargets(v *vault.Vault, scope vault.Scope, target string, all boo
 		return nil, err
 	}
 	return []vault.TrackedRepo{*repo}, nil
+}
+
+func gitRebuildCmd() *cobra.Command {
+	var (
+		accounts []string
+		scheme   string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "rebuild <path>",
+		Short: "Store a repository afresh from its upstream, on the accounts named",
+		Long: `Mirror a tracked repository again from its upstream and store the bundle
+over the one that is there, on the accounts named.
+
+This is the way back for a bundle whose parts have gone past reading. A refresh
+reads the stored bundle to fetch only the difference, and a relocation moves
+its shards; neither has anything to work with once too few accounts answer.
+The upstream still holds the whole history, and a rebuild reads nothing else:
+the repository comes down whole, exactly as it did the first time, and goes
+back up as a fresh set of parts on the clouds you name, cut the way those
+clouds call for. The old parts are erased wherever they can still be reached.
+
+It is offered whatever state the stored bundle is in — a bundle that still
+reads is no reason to refuse putting it on other clouds from the upstream —
+and it costs what the first copy cost, so it is not the way to keep one
+current. That is 'sand git refresh'.
+
+  sand git rebuild /code/sand-vault.bundle --accounts box,s3,drive
+  sand git rebuild /code/sand-vault.bundle --accounts a,b,c,d,e --scheme 3-of-5`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !git.Available() {
+				return fmt.Errorf("%w — this needs git installed", git.ErrUnavailable)
+			}
+			if len(accounts) == 0 {
+				return fmt.Errorf("--accounts has to name the clouds the repository should be stored on")
+			}
+			parsed, err := parseSchemeFlag(scheme)
+			if err != nil {
+				return err
+			}
+
+			v, scope, err := openVaultIn(cmd)
+			if err != nil {
+				return err
+			}
+			defer closeVault(v)
+
+			entry, err := v.EntryByPath(scope, args[0])
+			if err != nil {
+				return err
+			}
+			repo, err := v.TrackedRepo(scope, entry.ID)
+			if err != nil {
+				return err
+			}
+
+			fmt.Printf("Mirroring %s afresh — the whole history comes down, and the stored copy is not read.\n", repo.URL)
+			started := time.Now()
+
+			after, warnings, err := v.RebuildRepo(cmd.Context(), scope, repo.ID, accounts, parsed)
+			if err != nil {
+				return err
+			}
+			printWarnings(warnings)
+
+			fmt.Printf("Stored %s afresh (%s, %d refs, %d commits) in %s.\n",
+				after.Path, formatBytes(after.Size), after.Refs, after.Commits,
+				time.Since(started).Round(time.Second))
+			return nil
+		},
+	}
+
+	cmd.Flags().StringSliceVar(&accounts, "accounts", nil,
+		"accounts to spread the fresh bundle over, by name or ID (required)")
+	cmd.Flags().StringVar(&scheme, "scheme", "",
+		"erasure code to cut it with, as k-of-n (default: from how many accounts were named)")
+	return cmd
 }
 
 func gitUntrackCmd() *cobra.Command {

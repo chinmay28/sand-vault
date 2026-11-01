@@ -36,6 +36,26 @@ And the connection pool to each cloud is sized to the upload window, where
 Go's default of two meant every request past the second was a fresh
 handshake. Nothing about what is stored changed: every file records the
 chunk size it was cut with, and reads exactly as it did.
+### A kept repository is rebuilt from its upstream, whatever state the copy is in
+
+A repository kept in the vault is one bundle, and a bundle whose shards had
+gone past reading had no way back: **Refresh** reads the stored bundle to
+fetch only what changed, and **Move to other clouds** carries its shards
+across, and neither has anything to work with once too few accounts answer.
+The upstream still holds the whole history. **Rebuild from upstream** mirrors
+the repository again — whole, as the first copy was — and stores it over the
+file as a fresh set of shards on clouds you choose, cut the way those clouds
+call for, exactly as a rebuild from the replica does with a replica. The
+stored shards are never read, so it works whatever the index or the clouds
+say of them, and the ones that can still be reached are erased afterwards.
+It is on a kept repository's row menu, beside each repository in
+**Repositories kept here**, and on a repository's row in the **missing a
+part** list, which now says which rows are repositories. The listing names
+which files are kept repositories (`tracked_repos`, beside `thumbs`) so a
+row knows to offer it. Over HTTP it is `POST /api/git/{id}/rebuild` with
+`accounts` and an optional `scheme`; on the command line, `sand git rebuild
+<path> --accounts a,b,c`. It costs what the first copy cost, so Refresh
+stays the way to keep a healthy bundle current.
 
 ### Where the shards live opens on the answer, not a spinner
 

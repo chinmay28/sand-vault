@@ -240,3 +240,87 @@ func TestGitUntrackKeepsTheFile(t *testing.T) {
 		t.Errorf("untracking removed the file: %v", files)
 	}
 }
+
+// A bundle whose parts have gone past reading is stored afresh from its
+// upstream onto the clouds somebody picks, and reads back from its parts
+// afterwards. Over HTTP the rebuild is its own endpoint, and the listing
+// marks the file as a repository so a row can offer it.
+func TestGitRebuildFromUpstreamOverHTTP(t *testing.T) {
+	c := newTestClient(t)
+	roots := c.setup("pw", 3)
+	ids := c.providerIDs()
+	remote := newServedRepo(t)
+
+	repo := c.track(remote.URL, "/")
+	id := repo["id"].(string)
+	remote.Commit("second")
+
+	// The listing says which rows are repositories, before anything goes wrong.
+	_, listing := c.json(http.MethodGet, "/api/files?path=/", nil)
+	if tracked, _ := listing["tracked_repos"].([]any); len(tracked) != 1 || tracked[0] != id {
+		t.Errorf("listing.tracked_repos = %v, want [%s]", listing["tracked_repos"], id)
+	}
+
+	// Two of the three clouds lose everything; the bundle cannot be read.
+	emptyFolder(t, roots[0])
+	emptyFolder(t, roots[1])
+	c.relock()
+	if w := c.do(http.MethodGet, "/api/files/"+id+"/content", nil, ""); w.Code == http.StatusOK && w.Body.Len() == int(number(t, repo, "size")) {
+		t.Fatal("the bundle still reads with two of three accounts emptied")
+	}
+	if w, _ := c.json(http.MethodPost, "/api/git/"+id+"/refresh", nil); w.Code == http.StatusOK {
+		t.Fatal("a refresh succeeded on a bundle that cannot be read")
+	}
+
+	// A rebuild is a choice of clouds before it is anything else.
+	w, body := c.json(http.MethodPost, "/api/git/"+id+"/rebuild", map[string]any{})
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("rebuild with no accounts = %d %v, want 400", w.Code, body)
+	}
+
+	w, body = c.json(http.MethodPost, "/api/git/"+id+"/rebuild", map[string]any{"accounts": ids})
+	if w.Code != http.StatusOK {
+		t.Fatalf("rebuild: %d %s", w.Code, w.Body.String())
+	}
+	rebuilt, _ := body["repo"].(map[string]any)
+	if rebuilt == nil || rebuilt["id"] == id {
+		t.Fatalf("rebuild answered %v, want the repository under a new id", body)
+	}
+	if number(t, rebuilt, "commits") <= number(t, repo, "commits") {
+		t.Errorf("the rebuild did not bring the upstream's new commit: %v", rebuilt)
+	}
+	newID := rebuilt["id"].(string)
+
+	// It reads from its parts again, from the clouds.
+	c.relock()
+	if w := c.do(http.MethodGet, "/api/files/"+newID+"/content", nil, ""); w.Code != http.StatusOK || w.Body.Len() != int(number(t, rebuilt, "size")) {
+		t.Errorf("content after the rebuild: %d, %d bytes", w.Code, w.Body.Len())
+	}
+
+	// One repository, and the listing marks the new file.
+	_, body = c.json(http.MethodGet, "/api/git?path=/", nil)
+	repos, _ := body["repos"].([]any)
+	if len(repos) != 1 || repos[0].(map[string]any)["id"] != newID {
+		t.Errorf("repositories after the rebuild = %v, want the one rebuilt", repos)
+	}
+	_, listing = c.json(http.MethodGet, "/api/files?path=/", nil)
+	if tracked, _ := listing["tracked_repos"].([]any); len(tracked) != 1 || tracked[0] != newID {
+		t.Errorf("listing.tracked_repos = %v, want [%s]", listing["tracked_repos"], newID)
+	}
+	files := listing["files"].([]any)
+	if len(files) != 1 || len(files[0].(map[string]any)["shards"].([]any)) != 3 {
+		t.Errorf("listing.files = %v, want the bundle with its three parts", files)
+	}
+}
+
+func TestGitRebuildRefusesAFileThatIsOnlyAFile(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("pw", 3)
+	ids := c.providerIDs()
+
+	file := c.upload("notes.txt", "/", []byte("not a repository"))
+	w, body := c.json(http.MethodPost, "/api/git/"+file["id"].(string)+"/rebuild", map[string]any{"accounts": ids})
+	if w.Code == http.StatusOK {
+		t.Errorf("rebuild of a plain file = %d %v, want a refusal", w.Code, body)
+	}
+}
