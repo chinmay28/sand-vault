@@ -59,7 +59,8 @@ import (
 // purpose (GitPolicy.Prune).
 
 // DefaultBundleLimit is how large a stored bundle an unattended refresh will
-// re-fetch unless the policy says otherwise.
+// re-fetch unless the policy says otherwise and the machine has not been
+// described — the floor the tuning starts from, see internal/tuning.
 //
 // The work behind a refresh is a git mirror on local disk plus a new bundle
 // written beside it, so a repository costs roughly twice its bundle in
@@ -659,7 +660,7 @@ func (v *Vault) sweepGit(ctx context.Context, scope Scope, policy *Automation, e
 	}
 
 	cfg := policy.git()
-	ceiling := policy.bundleCeiling()
+	ceiling := policy.bundleCeiling(v.Tuning().BundleLimit)
 
 	for _, repo := range repos {
 		if err := ctx.Err(); err != nil {

@@ -59,6 +59,29 @@ func chunkCacheKey(archiveID string, index int) string {
 	return fmt.Sprintf("%s/%d", archiveID, index)
 }
 
+// resize changes the budget, shedding the least recently used chunks until
+// what is held fits. Growing sheds nothing.
+func (c *chunkCache) resize(limit int64) {
+	if limit <= 0 {
+		limit = DefaultChunkCacheBytes
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.limit = limit
+	c.evictLocked()
+}
+
+// evictLocked drops from the back of the order until used is within limit.
+func (c *chunkCache) evictLocked() {
+	for c.used > c.limit && c.order.Len() > 0 {
+		el := c.order.Back()
+		item := el.Value.(*cachedChunk)
+		c.order.Remove(el)
+		delete(c.items, item.key)
+		c.used -= int64(len(item.data))
+	}
+}
+
 func (c *chunkCache) get(key string) ([]byte, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -190,6 +213,13 @@ type ChunkedReader struct {
 	// observer hears where the read has got to, or is nil. See readwatch.go.
 	observer ReadObserver
 
+	// ahead is the chunks fetched before they were asked for, and last the
+	// chunk most recently handed out, which is what decides whether the next
+	// one is worth fetching early. See readAhead.
+	aheadMu sync.Mutex
+	ahead   map[int]*prefetch
+	last    int
+
 	// source is which placement this reader serves from, and role the root
 	// of each account the entry's shards are on — the replica folder when
 	// entry is a replicaView. fallback is the replica's view when the source
@@ -234,7 +264,7 @@ func (v *Vault) OpenReader(id string, opts ...ReadOption) (*ChunkedReader, error
 
 	snapshot := *entry
 	snapshot.Shards = append([]Shard(nil), entry.Shards...)
-	reader := &ChunkedReader{v: v, entry: &snapshot}
+	reader := &ChunkedReader{v: v, entry: &snapshot, last: -1}
 	for _, opt := range opts {
 		opt(reader)
 	}
@@ -314,9 +344,22 @@ func (r *ChunkedReader) chunkAt(ctx context.Context, index int) ([]byte, error) 
 		r.mu.Unlock()
 	}
 
+	// Fetched early, perhaps: a sequential reader asked for this one while
+	// it was still copying out the one before. Asked before the cache, so a
+	// chunk that was fetched ahead and is in the cache by now is still
+	// reported as ready — a watcher heard it sent for, and should hear it
+	// arrive.
+	if data, ok := r.takeAhead(ctx, index); ok {
+		notifyRead(r.observer, r.entry, ReadEvent{Kind: ReadChunkReady, Chunk: index})
+		r.hold(index, data)
+		r.readAhead(ctx, index)
+		return data, nil
+	}
+
 	key := chunkCacheKey(r.entry.ArchiveID, index)
 	if data, ok := r.v.chunks.get(key); ok {
 		r.hold(index, data)
+		r.readAhead(ctx, index)
 		return data, nil
 	}
 
@@ -325,7 +368,23 @@ func (r *ChunkedReader) chunkAt(ctx context.Context, index int) ([]byte, error) 
 	// gatherChunk — that fetch is reporting to whoever started it.
 	notifyRead(r.observer, r.entry, ReadEvent{Kind: ReadChunkWaiting, Chunk: index})
 
-	data, err := r.v.flight.do(key, func() ([]byte, error) {
+	data, err := r.fetch(ctx, index)
+	if err != nil {
+		notifyRead(r.observer, r.entry, ReadEvent{Kind: ReadChunkFailed, Chunk: index, Err: err})
+		return nil, err
+	}
+	notifyRead(r.observer, r.entry, ReadEvent{Kind: ReadChunkReady, Chunk: index})
+	r.hold(index, data)
+	r.readAhead(ctx, index)
+	return data, nil
+}
+
+// fetch brings one chunk in from the accounts, through the single flight so
+// that two readers — or a reader and its own read-ahead — wanting the same
+// chunk at once gather it once.
+func (r *ChunkedReader) fetch(ctx context.Context, index int) ([]byte, error) {
+	key := chunkCacheKey(r.entry.ArchiveID, index)
+	return r.v.flight.do(key, func() ([]byte, error) {
 		// Another caller may have finished while this one waited for its turn.
 		if data, ok := r.v.chunks.get(key); ok {
 			return data, nil
@@ -347,13 +406,98 @@ func (r *ChunkedReader) chunkAt(ctx context.Context, index int) ([]byte, error) 
 		}
 		return data, nil
 	})
-	if err != nil {
-		notifyRead(r.observer, r.entry, ReadEvent{Kind: ReadChunkFailed, Chunk: index, Err: err})
-		return nil, err
+}
+
+// prefetch is one chunk being fetched before it was asked for.
+type prefetch struct {
+	done chan struct{}
+	data []byte
+	err  error
+}
+
+// readAhead starts fetching the chunks after index, when the read looks
+// sequential and the tuning asks for it.
+//
+// A download, an export or a zip reads a file front to back, and without
+// this each chunk is a full round trip to the clouds that the next one waits
+// out: a 40 GB film is two and a half thousand of them in a row, and a fast
+// machine on a fast line spends most of the download waiting. Fetching the
+// next few while this one is being copied out overlaps the waits. How many
+// is Tuning.ReadAhead, one chunk of memory each.
+//
+// Only a read that follows the one before it starts any. A player seeking
+// around a film asks for chunks in no order, and fetching the ones after
+// each landing would be bandwidth spent on a guess; the shared cache is what
+// serves that case. The first chunk counts as following, since every
+// sequential read starts there.
+func (r *ChunkedReader) readAhead(ctx context.Context, index int) {
+	n := r.v.Tuning().ReadAhead
+	if n <= 0 {
+		return
 	}
-	notifyRead(r.observer, r.entry, ReadEvent{Kind: ReadChunkReady, Chunk: index})
-	r.hold(index, data)
-	return data, nil
+
+	r.aheadMu.Lock()
+	defer r.aheadMu.Unlock()
+	sequential := index == 0 || index == r.last+1
+	r.last = index
+	if !sequential {
+		return
+	}
+
+	// What was fetched for chunks at or behind this one is no longer wanted.
+	// The fetch itself runs to its end — it is in the single flight, where
+	// another reader may be waiting on it — but the result is let go of.
+	for i := range r.ahead {
+		if i <= index {
+			delete(r.ahead, i)
+		}
+	}
+	if r.ahead == nil {
+		r.ahead = map[int]*prefetch{}
+	}
+
+	count := int(r.entry.ChunkCount)
+	for i := index + 1; i <= index+n && i < count; i++ {
+		if _, started := r.ahead[i]; started {
+			continue
+		}
+		p := &prefetch{done: make(chan struct{})}
+		r.ahead[i] = p
+		// Said here, as the on-demand path says it before its own fetch: the
+		// chunk is a network away from this moment, and a watcher hears one
+		// of these per chunk however the chunk comes in.
+		notifyRead(r.observer, r.entry, ReadEvent{Kind: ReadChunkWaiting, Chunk: i})
+		go func(i int) {
+			defer close(p.done)
+			p.data, p.err = r.fetch(ctx, i)
+		}(i)
+	}
+}
+
+// takeAhead hands over a chunk the read-ahead has fetched, waiting for it if
+// it is still in the air. A fetch that failed — the caller's context went,
+// a cloud did not answer — is forgotten rather than reported, so the read
+// that wanted the chunk goes and gets it the ordinary way and hears the
+// error that matters, its own.
+func (r *ChunkedReader) takeAhead(ctx context.Context, index int) ([]byte, bool) {
+	r.aheadMu.Lock()
+	p, ok := r.ahead[index]
+	if ok {
+		delete(r.ahead, index)
+	}
+	r.aheadMu.Unlock()
+	if !ok {
+		return nil, false
+	}
+	select {
+	case <-p.done:
+	case <-ctx.Done():
+		return nil, false
+	}
+	if p.err != nil {
+		return nil, false
+	}
+	return p.data, true
 }
 
 // gather fetches one chunk of a placement from the accounts, at the root

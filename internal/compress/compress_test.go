@@ -222,3 +222,45 @@ func TestCompressDecompress_UnicodeContent(t *testing.T) {
 		t.Fatal("unicode round-trip failed")
 	}
 }
+
+// Configure changes the level the next chunk is compressed at, and what was
+// compressed at any level decompresses the same.
+func TestConfigureChangesTheLevelAndNothingElse(t *testing.T) {
+	t.Cleanup(func() { Configure(Options{Level: DefaultLevel, Threads: DefaultThreads}) })
+
+	// Repetitive enough to compress at every level, long enough that the
+	// levels differ.
+	data := []byte(strings.Repeat("the quick brown fox jumps over the lazy dog; ", 4000))
+
+	sizes := map[int]int{}
+	for level := 1; level <= 4; level++ {
+		Configure(Options{Level: level, Threads: 1})
+		if got := Current(); got.Level != level || got.Threads != 1 {
+			t.Fatalf("Current() = %+v after Configure(level %d)", got, level)
+		}
+		out, err := Compress(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		back, err := Decompress(out)
+		if err != nil {
+			t.Fatalf("level %d: %v", level, err)
+		}
+		if !bytes.Equal(back, data) {
+			t.Fatalf("level %d: round trip changed the data", level)
+		}
+		sizes[level] = len(out)
+	}
+	if sizes[4] > sizes[1] {
+		t.Errorf("best compression (%d bytes) is larger than fastest (%d)", sizes[4], sizes[1])
+	}
+
+	// Out-of-range values are clamped, not refused.
+	Configure(Options{Level: 99, Threads: 0})
+	if got := Current(); got.Level != 4 || got.Threads != 1 {
+		t.Errorf("Configure did not clamp: %+v", got)
+	}
+	if _, err := Compress(data); err != nil {
+		t.Errorf("compressing after a clamped Configure: %v", err)
+	}
+}

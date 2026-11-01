@@ -18,11 +18,13 @@ import (
 	"path"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/chinmay28/sand-vault/internal/archive"
 	"github.com/chinmay28/sand-vault/internal/crypto"
 	"github.com/chinmay28/sand-vault/internal/provider"
+	"github.com/chinmay28/sand-vault/internal/tuning"
 	"github.com/google/uuid"
 )
 
@@ -74,6 +76,13 @@ type Vault struct {
 	// stored — and because a test that wants several chunks should not have to
 	// push tens of megabytes to get them.
 	chunkSize uint32
+
+	// tune is the machine-sized knobs the vault runs on — windows, cache,
+	// chunk size — set by SetTuning and read by Tuning. An atomic pointer so
+	// that the settings page can change it under a running vault without
+	// taking mu: each reader takes the whole struct at the moment it starts
+	// and runs on that. See internal/tuning.
+	tune atomic.Pointer[tuning.Tuning]
 
 	// autoMu guards the automation runner and autoActive names the folder whose
 	// sweep is in flight, empty when none is. A leaf lock, taken on its own and
@@ -231,17 +240,34 @@ type Vault struct {
 	replicate     replicateMemory
 }
 
+// Tuning is the machine-sized knobs the vault is running on.
+func (v *Vault) Tuning() tuning.Tuning {
+	if t := v.tune.Load(); t != nil {
+		return *t
+	}
+	return tuning.Default()
+}
+
+// SetTuning changes the knobs under a running vault. Everything that reads
+// them takes a copy at the start of its work, so an upload in flight keeps
+// its window and the next one gets the new one; the chunk cache is the one
+// thing resized in place, shedding chunks if it shrank.
+func (v *Vault) SetTuning(t tuning.Tuning) {
+	t.ChunkSize = int64(uint32(t.ChunkSize)) // the archive format's width
+	v.tune.Store(&t)
+	v.chunks.resize(t.ChunkCacheBytes)
+}
+
 // Open returns a handle to the vault at path. The vault starts locked; if no
 // file exists yet, Initialized reports false and Init can create one.
 func Open(path string) (*Vault, error) {
 	v := &Vault{
-		path:      path,
-		live:      map[string]provider.Provider{},
-		chunkSize: archive.DefaultChunkSize,
-		spools:    map[string]bool{},
-		chunks:    newChunkCache(DefaultChunkCacheBytes),
-		flight:    newChunkFlight(),
-		reads:     newReadStats(),
+		path:   path,
+		live:   map[string]provider.Provider{},
+		spools: map[string]bool{},
+		chunks: newChunkCache(tuning.Default().ChunkCacheBytes),
+		flight: newChunkFlight(),
+		reads:  newReadStats(),
 	}
 	// How the recorder saves itself. It counts on the read path and knows
 	// nothing about keys or files; this is the one line that hands it back to

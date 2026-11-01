@@ -51,6 +51,13 @@ func (r *recordedReads) ofKind(kind ReadEventKind) []ReadEvent {
 func TestWatchedReadReportsEveryStepOfEveryChunk(t *testing.T) {
 	v, _ := chunkedVault(t, 3, 1024)
 	ctx := context.Background()
+	// On demand, one chunk after another, so the steps come in chunk order.
+	// With read-ahead the chunks after the first are fetched abreast and
+	// their steps interleave; that every chunk still gets each step is
+	// TestWatchedReadAheadStillReportsEveryChunk.
+	tn := v.Tuning()
+	tn.ReadAhead = 0
+	v.SetTuning(tn)
 
 	payload := readerPayload(2500) // three chunks
 	entry, _, err := v.Upload(ctx, MainScope, "/", "watched.bin", payload, UploadOptions{})
@@ -219,5 +226,42 @@ func TestReadEventKindsHaveNames(t *testing.T) {
 	}
 	if ReadEventKind(99).String() != "unknown" {
 		t.Error("an unknown kind is not called unknown")
+	}
+}
+
+// With read-ahead, the chunks after the first are fetched abreast and their
+// steps interleave, but a watcher still hears every step of every chunk.
+func TestWatchedReadAheadStillReportsEveryChunk(t *testing.T) {
+	v, _ := chunkedVault(t, 3, 1024)
+	ctx := context.Background()
+	tn := v.Tuning()
+	tn.ReadAhead = 4
+	v.SetTuning(tn)
+
+	payload := readerPayload(6 * 1024) // six chunks
+	entry, _, err := v.Upload(ctx, MainScope, "/", "watched.bin", payload, UploadOptions{})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+
+	heard := &recordedReads{}
+	body, _, err := v.OpenReadSeeker(ctx, entry.ID, WatchRead(heard))
+	if err != nil {
+		t.Fatalf("OpenReadSeeker: %v", err)
+	}
+	if _, err := io.ReadAll(body); err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+
+	for _, kind := range []ReadEventKind{ReadChunkWaiting, ReadChunkStarted, ReadChunkDecrypting, ReadChunkReady} {
+		seen := map[int]int{}
+		for _, ev := range heard.ofKind(kind) {
+			seen[ev.Chunk]++
+		}
+		for chunk := 0; chunk < 6; chunk++ {
+			if seen[chunk] != 1 {
+				t.Errorf("%v: chunk %d heard %d times, want once: %v", kind, chunk, seen[chunk], heard.kinds())
+			}
+		}
 	}
 }

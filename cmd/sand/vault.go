@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -20,6 +21,7 @@ func serveCmd() *cobra.Command {
 		idleTimeout  time.Duration
 		webdav       bool
 		webdavPrefix string
+		profile      string
 	)
 
 	cmd := &cobra.Command{
@@ -33,6 +35,7 @@ func serveCmd() *cobra.Command {
 				IdleTimeout:  idleTimeout,
 				WebDAV:       webdav,
 				WebDAVPrefix: webdavPrefix,
+				Profile:      profile,
 			}
 			return s.Start()
 		},
@@ -53,6 +56,12 @@ func serveCmd() *cobra.Command {
 		"also serve the vault as a WebDAV share, for mounting in a file manager or player")
 	cmd.Flags().StringVar(&webdavPrefix, "webdav-path", server.DefaultWebDAVPrefix,
 		"URL path to mount the WebDAV share under")
+	// How the machine is sized. Normally left to machine.json beside the
+	// vault, which Settings → This machine writes; the flag pins it from
+	// the unit file for a box that is deliberately run as something it is
+	// not, and the page then says so rather than fighting it.
+	cmd.Flags().StringVar(&profile, "profile", os.Getenv("SAND_PROFILE"),
+		"size SAND to a machine: auto, pi5, workstation or custom (default from SAND_PROFILE, else machine.json beside the vault)")
 	return cmd
 }
 

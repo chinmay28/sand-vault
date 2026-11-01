@@ -276,3 +276,10 @@ func sortedKeys(m map[string]int64) []string {
 	sort.Strings(keys)
 	return keys
 }
+
+// Default is the tuning a vault runs on until it is told otherwise: the
+// Pi's, since that is the machine every number here was originally sized
+// for, and the safe answer on a machine nobody has described yet.
+func Default() Tuning {
+	return Derive(pi5Machine)
+}

@@ -1309,11 +1309,10 @@ func (v *Vault) SweepOrphans(ctx context.Context, targets []OrphanTarget, dryRun
 	return report, nil
 }
 
-// orphanEraseWindow is how many objects are deleted from one account at once.
-// Small, because the accounts on the other end are consumer cloud APIs and
-// tidying up has no business being the heaviest thing the vault ever does to
-// one.
-const orphanEraseWindow = 8
+// How many objects are deleted from one account at once is twice
+// Tuning.EraseWindow. Small, because the accounts on the other end are
+// consumer cloud APIs and tidying up has no business being the heaviest thing
+// the vault ever does to one.
 
 // eraseOrphans deletes every object belonging to the named archives from one
 // account, listing it once more so that what is erased is what is there.
@@ -1347,7 +1346,7 @@ func (v *Vault) eraseOrphans(
 
 	var mu sync.Mutex
 	var wg sync.WaitGroup
-	window := make(chan struct{}, orphanEraseWindow)
+	window := make(chan struct{}, 2*max(v.Tuning().EraseWindow, 1))
 	hit := map[string]bool{}
 
 	for _, obj := range listing {
