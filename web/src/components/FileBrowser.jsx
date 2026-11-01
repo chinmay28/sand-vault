@@ -6,7 +6,7 @@ import { ActionSheet, Banner, Button, Empty, Modal, Spinner } from './ui'
 import { UploadDestination, RelocateClouds } from './CloudSelect'
 import { makeThumbnails } from '../thumbs'
 import {
-  batchBytes, batchPicks, describePicks, describeRetimes, describeSkips, emptyDirs,
+  batchBytes, batchPicks, describeFailure, describePicks, describeRetimes, describeSkips, emptyDirs,
   picksFromDrop, picksFromInput, totalBytes,
 } from '../upload'
 import {
@@ -523,7 +523,7 @@ export default function FileBrowser({
           const results = resp.results || []
           for (const r of results) {
             if (r.ok) stored += 1
-            else failures.push(`${r.name}: ${r.error}`)
+            else failures.push(describeFailure(r))
             for (const w of r.warnings || []) notes.push(`${r.name}: ${w}`)
           }
           if (fileCount > 1) track({ note: `${stored} of ${fileCount} stored` })
@@ -786,7 +786,9 @@ export default function FileBrowser({
       )}
 
       <div style={{ flex: 1, overflowY: 'auto', padding: mobile ? '12px 12px 32px' : '16px 20px 40px' }}>
-        {error && <Banner tone="error">{error}</Banner>}
+        {/* Kept as written: an upload's failure is several lines — the file,
+            each cloud that refused it, what to do — and they are indented. */}
+        {error && <Banner tone="error"><div style={{ whiteSpace: 'pre-wrap' }}>{error}</div></Banner>}
         {warnings.length > 0 && (
           <Banner tone="warn" onDismiss={() => setWarnings([])}>
             {warnings.map((w, i) => <div key={i}>{w}</div>)}

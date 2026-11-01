@@ -257,6 +257,12 @@ func putFile(ctx context.Context, v *vault.Vault, scope vault.Scope, dir, source
 
 	entry, warnings, err := v.UploadStreamAt(ctx, scope, dir, filepath.Base(source), f, info.Size(), opts)
 	if err != nil {
+		// The error names which account refused and why; what to do about
+		// it is a second line, so the first stays the one a log wants.
+		var ue *vault.UploadError
+		if errors.As(err, &ue) && ue.Advice() != "" {
+			return fmt.Errorf("uploading %s while %s: %w\n%s", source, ue.Stage, err, ue.Advice())
+		}
 		return fmt.Errorf("uploading %s: %w", source, err)
 	}
 	for _, warning := range warnings {

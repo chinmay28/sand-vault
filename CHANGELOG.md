@@ -12,6 +12,23 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### A failed upload says which cloud refused it and what to do next
+
+An upload that did not store its file used to be reported as
+"`photo.jpg`: upload failed", and nothing more — the server knew which
+account had turned the part away and why, but a batch in which nothing stored
+came back as a 502, and the browser threw the body away for that one line.
+The result of a failed file now says where the upload was when it stopped
+(choosing clouds, reading the file, sending its parts, or writing the index),
+names each cloud that refused a part with what it said, how many parts landed
+against how many the file needs, and what to do about it: sign in to the
+account again, free some room on it, wait out a rate limit, check it under
+Cloud health, or upload again choosing other clouds. The banner lays that out
+one line per cloud under the file; `sand put` prints the same advice under its
+error. Nothing of a file that failed is left on any account, and the advice
+says so. The HTTP API carries the detail as `stage`, `parts`, `failed_parts`
+and `advice` on the file's result, beside the `error` line it always had.
+
 ### Zoho WorkDrive is a cloud SAND can hold parts on
 
 **Zoho WorkDrive** joins the sign-in backends: connect it the way Google

@@ -58,7 +58,7 @@ func (v *Vault) uploadChunkSize() uint32 {
 func (v *Vault) scatterChunked(ctx context.Context, scope Scope, name string, data []byte, sp spread, chunkSize uint32) (placement, error) {
 	target, err := v.snapshotTarget(scope, sp)
 	if err != nil {
-		return placement{}, err
+		return placement{}, failedAt(UploadPlacing, err)
 	}
 	defer crypto.ZeroBytes(target.dataKey)
 
@@ -83,13 +83,13 @@ func (v *Vault) scatterChunked(ctx context.Context, scope Scope, name string, da
 	seed := binary.BigEndian.Uint64(archiveID[:8])
 	plan, scheme, err := target.planFor(seed)
 	if err != nil {
-		return out, err
+		return out, failedAt(UploadPlacing, err)
 	}
 	out.scheme = scheme
 
 	chunks, err := archive.PlanChunks(archiveID, name, out.originalHash, uint64(len(data)), chunkSize, scheme)
 	if err != nil {
-		return out, err
+		return out, failedAt(UploadPlacing, err)
 	}
 	out.chunkSize = int64(chunks.ChunkSize)
 	out.chunkCount = int(chunks.ChunkCount)
@@ -106,15 +106,15 @@ func (v *Vault) scatterChunked(ctx context.Context, scope Scope, name string, da
 	})
 	if err != nil {
 		v.eraseChunks(context.WithoutCancel(ctx), target, plan, out.archiveID, chunks.ChunkCount)
-		return out, err
+		return out, failedAt(UploadScattering, err)
 	}
 
 	// A shard that failed on any chunk is not a shard this file has. Recording
 	// it would claim objects that are not there, which delete, health and
 	// recovery all read as fact; erasing the chunks it did manage keeps the
 	// index honest at the cost of some bytes already uploaded.
-	for shard, reason := range failures {
-		out.warnings = append(out.warnings, reason)
+	for shard, failure := range failures {
+		out.warnings = append(out.warnings, failure.String())
 		v.eraseShardChunks(context.WithoutCancel(ctx), target, plan, out.archiveID, shard, chunks.ChunkCount)
 	}
 
@@ -125,9 +125,7 @@ func (v *Vault) scatterChunked(ctx context.Context, scope Scope, name string, da
 	// same shards standing — so this one check covers all of them.
 	if distinctShards(out.shards) < scheme.Data {
 		v.eraseChunks(context.WithoutCancel(ctx), target, plan, out.archiveID, chunks.ChunkCount)
-		err := fmt.Errorf("stored only %d of %d shards, need at least %d: %s",
-			distinctShards(out.shards), scheme.Total, scheme.Data,
-			strings.Join(out.warnings, "; "))
+		err := shortOfShards(distinctShards(out.shards), scheme.Data, scheme.Total, failures)
 		out.shards = nil
 		return out, err
 	}
@@ -154,10 +152,10 @@ func (v *Vault) putChunks(
 	plan Plan,
 	chunks archive.ChunkPlan,
 	next func() ([]byte, error),
-) ([]Shard, map[int]string, error) {
+) ([]Shard, map[int]ShardFailure, error) {
 	var mu sync.Mutex
 	sizes := map[int]int64{}
-	failures := map[int]string{}
+	failures := map[int]ShardFailure{}
 	var fatal error
 
 	putCtx, cancel := context.WithCancel(ctx)
@@ -257,7 +255,7 @@ func (v *Vault) putChunkParts(
 	encoded *archive.EncodedChunk,
 	mu *sync.Mutex,
 	sizes map[int]int64,
-	failures map[int]string,
+	failures map[int]ShardFailure,
 ) {
 	idHex := hex.EncodeToString(archiveID[:])
 
@@ -280,7 +278,16 @@ func (v *Vault) putChunkParts(
 			defer mu.Unlock()
 			if err != nil {
 				if _, already := failures[number]; !already {
-					failures[number] = fmt.Sprintf("shard %d → %s: %v", number, cfg.Name, err)
+					failures[number] = ShardFailure{
+						Part: number,
+						// The account's own ID whichever of its roots this
+						// shard was bound for: a replica root refusing is
+						// the account refusing.
+						AccountID: accountIDOf(cfg.ID),
+						Account:   cfg.Name,
+						Kind:      string(cfg.Kind),
+						Reason:    err.Error(),
+					}
 				}
 				return
 			}

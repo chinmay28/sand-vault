@@ -88,12 +88,12 @@ type UploadOptions struct {
 func (v *Vault) Upload(ctx context.Context, scope Scope, dir, name string, data []byte, opts UploadOptions) (*Entry, []string, error) {
 	name, err := SanitizeName(name)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, failedAt(UploadPlacing, err)
 	}
 
 	dir, err = v.destinationLocked(scope, dir)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, failedAt(UploadPlacing, err)
 	}
 
 	// Either the upload's own choice or, left to itself, the vault's default —
@@ -451,7 +451,7 @@ func (t *transferTarget) planFor(seed uint64) (Plan, archive.Scheme, error) {
 func (v *Vault) scatter(ctx context.Context, scope Scope, name string, data []byte, sp spread) (placement, error) {
 	target, err := v.snapshotTarget(scope, sp)
 	if err != nil {
-		return placement{}, err
+		return placement{}, failedAt(UploadPlacing, err)
 	}
 	defer crypto.ZeroBytes(target.dataKey)
 
@@ -460,7 +460,7 @@ func (v *Vault) scatter(ctx context.Context, scope Scope, name string, data []by
 
 	encoded, err := archive.EncodeBytes(data, name, target.shardPassword)
 	if err != nil {
-		return out, err
+		return out, failedAt(UploadPlacing, err)
 	}
 	out.archiveID = hex.EncodeToString(encoded.ArchiveID[:])
 	out.originalHash = encoded.OriginalHash
@@ -471,21 +471,21 @@ func (v *Vault) scatter(ctx context.Context, scope Scope, name string, data []by
 	seed := binary.BigEndian.Uint64(encoded.ArchiveID[:8])
 	plan, scheme, err := target.planFor(seed)
 	if err != nil {
-		return out, err
+		return out, failedAt(UploadPlacing, err)
 	}
 	// EncodeBytes writes the whole-file format, which predates schemes and can
 	// only ever produce the default code's three parts. The one caller left on
 	// this path narrows its account list to match; anything else is a bug here
 	// rather than something to paper over at scatter time.
 	if scheme != archive.SchemeDefault {
-		return out, fmt.Errorf(
-			"the whole-file format is %s only, cannot scatter as %s", archive.SchemeDefault, scheme)
+		return out, failedAt(UploadPlacing, fmt.Errorf(
+			"the whole-file format is %s only, cannot scatter as %s", archive.SchemeDefault, scheme))
 	}
 	out.scheme = scheme
 
 	type putResult struct {
-		shard Shard
-		err   error
+		shard  Shard
+		failed *ShardFailure
 	}
 
 	results := make(chan putResult, len(plan))
@@ -501,12 +501,17 @@ func (v *Vault) scatter(ctx context.Context, scope Scope, name string, data []by
 			defer wg.Done()
 
 			p, err := v.buildProvider(cfg)
-			if err != nil {
-				results <- putResult{err: fmt.Errorf("part %d → %s: %w", part, cfg.Name, err)}
-				return
+			if err == nil {
+				err = p.Put(ctx, key, blob)
 			}
-			if err := p.Put(ctx, key, blob); err != nil {
-				results <- putResult{err: fmt.Errorf("part %d → %s: %w", part, cfg.Name, err)}
+			if err != nil {
+				results <- putResult{failed: &ShardFailure{
+					Part:      part,
+					AccountID: accountIDOf(cfg.ID),
+					Account:   cfg.Name,
+					Kind:      string(cfg.Kind),
+					Reason:    err.Error(),
+				}}
 				return
 			}
 			results <- putResult{shard: Shard{
@@ -523,9 +528,11 @@ func (v *Vault) scatter(ctx context.Context, scope Scope, name string, data []by
 	wg.Wait()
 	close(results)
 
+	failures := map[int]ShardFailure{}
 	for r := range results {
-		if r.err != nil {
-			out.warnings = append(out.warnings, r.err.Error())
+		if r.failed != nil {
+			failures[r.failed.Part] = *r.failed
+			out.warnings = append(out.warnings, r.failed.String())
 			continue
 		}
 		out.shards = append(out.shards, r.shard)
@@ -536,9 +543,7 @@ func (v *Vault) scatter(ctx context.Context, scope Scope, name string, data []by
 		// Not enough shards landed to ever rebuild the file — undo the ones
 		// that did rather than leaving orphaned blobs on people's accounts.
 		v.deleteShards(context.WithoutCancel(ctx), out.shards)
-		err := fmt.Errorf("stored only %d of %d shards, need at least %d: %s",
-			distinctShards(out.shards), scheme.Total, scheme.Data,
-			strings.Join(out.warnings, "; "))
+		err := shortOfShards(distinctShards(out.shards), scheme.Data, scheme.Total, failures)
 		out.shards = nil
 		return out, err
 	}
