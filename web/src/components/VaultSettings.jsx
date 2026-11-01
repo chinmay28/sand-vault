@@ -9,6 +9,7 @@ import { FilmKeySettings } from './FilmDetails'
 import { AssistantSettings } from './Assistant'
 import SubVaults from './SubVaults'
 import RecoveryKit from './RecoveryKit'
+import MachineSettings, { machineStatusLine } from './MachineSettings'
 import IndexBackup, { backupDelayLabel } from './IndexBackup'
 import { StrayParts } from './CleanOrphans'
 import {
@@ -58,6 +59,7 @@ export default function VaultSettings({
   const [filmKey, setFilmKey] = useState(null)
   const [assistant, setAssistant] = useState(null)
   const [kit, setKit] = useState(null)
+  const [machine, setMachine] = useState(null)
 
   const defaults = (stats?.default_accounts || []).filter(
     (id) => providers.some((p) => p.id === id))
@@ -72,6 +74,9 @@ export default function VaultSettings({
       .catch(() => {})
     api.assistantSettings()
       .then((resp) => { if (!cancelled) setAssistant(resp) })
+      .catch(() => {})
+    api.machine()
+      .then((resp) => { if (!cancelled) setMachine(resp) })
       .catch(() => {})
     return () => { cancelled = true }
   }, [])
@@ -225,6 +230,20 @@ export default function VaultSettings({
           onClick={() => setOpen('assistant')}
         />
 
+        {/* The one setting here that is the machine's rather than the
+            vault's: how SAND is sized to the box it runs on. It is kept
+            beside the vault rather than in it, and the line says which
+            profile and what machine that stands on, since "is this thing
+            running as a Pi" is the question that brings somebody here. */}
+        <Setting
+          icon="🖥"
+          label="This machine"
+          hint="How SAND is sized to the box it runs on"
+          status={machine === null ? '…' : machineStatusLine(machine)}
+          tone={COLORS.textDim}
+          onClick={() => setOpen('machine')}
+        />
+
         {/* Absent unless the server was started with --webdav: telling
             someone to mount a share that is not being served is worse than
             not mentioning it. */}
@@ -337,6 +356,10 @@ export default function VaultSettings({
           onClose={close}
           onChanged={onHealthChanged}
         />
+      )}
+
+      {open === 'machine' && (
+        <MachineSettings zIndex={CHILD_Z} onClose={close} onChanged={setMachine} />
       )}
 
       {open === 'mount' && (
