@@ -200,3 +200,41 @@ export function batchPicks(files, { bytes = BATCH_BYTES, count = BATCH_FILES } =
 export function batchBytes(batch) {
   return batch.reduce((sum, { file }) => sum + (file?.size || 0), 0)
 }
+
+/* What the error banner says about one file that did not store.
+
+   The server answers a failure with more than its one line: where the upload
+   was when it stopped, which clouds turned a part away and why, and what to
+   do next. Laid out as one line per thing, indented under the file, because
+   the one line — "stored only 1 of 3 shards, need at least 2: shard 2 →
+   Drive: 403 …; shard 3 → …" — is all of them run together, and on a phone
+   it is unreadable. An older server, or a failure before the vault was
+   reached, sends only the line, and the line is what is shown. */
+const STAGES = {
+  placing: 'nothing was sent',
+  reading: 'the file could not be read on the machine running SAND',
+  scattering: 'its parts could not all be stored',
+  recording: 'its parts were stored but the index could not be written, so they were removed',
+}
+
+export function describeFailure(result) {
+  const failed = result.failed_parts || []
+  const lines = []
+
+  if (failed.length) {
+    const parts = result.parts
+    const count = parts
+      ? ` — ${parts.stored} of ${parts.total} parts landed, ${parts.needed} needed`
+      : ''
+    lines.push(`${result.name}: ${STAGES[result.stage] || 'upload failed'}${count}`)
+    for (const f of failed) {
+      lines.push(`  part ${f.part} → ${f.account}${f.kind ? ` (${f.kind})` : ''}: ${f.reason}`)
+    }
+  } else {
+    const where = result.stage && STAGES[result.stage] ? ` (${STAGES[result.stage]})` : ''
+    lines.push(`${result.name}: ${result.error || 'upload failed'}${where}`)
+  }
+
+  if (result.advice) lines.push(`  ${result.advice}`)
+  return lines.join('\n')
+}

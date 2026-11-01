@@ -1144,7 +1144,12 @@ export const api = {
           reject(new ApiError(`upload failed (${xhr.status})`, 'HTTP_ERROR', xhr.status))
           return
         }
-        if (xhr.status >= 200 && xhr.status < 300) resolve(payload)
+        /* A batch the server read answers with a result per file, and that
+           is the answer whatever the status: a batch in which nothing stored
+           comes back as a 502 with each file's own reason inside, which a
+           reject would throw away for a line saying only that it failed. */
+        if (Array.isArray(payload.results)) resolve(payload)
+        else if (xhr.status >= 200 && xhr.status < 300) resolve(payload)
         else reject(new ApiError(payload.error || 'upload failed', payload.code, xhr.status))
       })
       xhr.addEventListener('error', () => reject(new ApiError('network error during upload', 'NETWORK')))

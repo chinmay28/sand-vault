@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/chinmay28/sand-vault/internal/archive"
@@ -35,17 +34,17 @@ import (
 func (v *Vault) UploadStream(ctx context.Context, scope Scope, dir, name string, r io.Reader, opts UploadOptions) (*Entry, []string, error) {
 	name, err := SanitizeName(name)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, failedAt(UploadPlacing, err)
 	}
 
 	dir, err = v.destinationLocked(scope, dir)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, failedAt(UploadPlacing, err)
 	}
 
 	spool, size, hash, err := v.spool(r)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, failedAt(UploadReading, err)
 	}
 	defer v.discardSpool(spool)
 
@@ -77,12 +76,12 @@ func (v *Vault) UploadStream(ctx context.Context, scope Scope, dir, name string,
 func (v *Vault) UploadStreamAt(ctx context.Context, scope Scope, dir, name string, src io.ReadSeeker, size int64, opts UploadOptions) (*Entry, []string, error) {
 	name, err := SanitizeName(name)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, failedAt(UploadPlacing, err)
 	}
 
 	dir, err = v.destinationLocked(scope, dir)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, failedAt(UploadPlacing, err)
 	}
 
 	readerAt, ok := src.(io.ReaderAt)
@@ -90,20 +89,20 @@ func (v *Vault) UploadStreamAt(ctx context.Context, scope Scope, dir, name strin
 		// Nothing to gain over the spooling path, and correctness beats the
 		// optimisation: fall back rather than guess.
 		if _, err := src.Seek(0, io.SeekStart); err != nil {
-			return nil, nil, fmt.Errorf("rewinding the upload: %w", err)
+			return nil, nil, failedAt(UploadReading, fmt.Errorf("rewinding the upload: %w", err))
 		}
 		return v.UploadStream(ctx, scope, dir, name, src, opts)
 	}
 
 	digest := sha256.New()
 	if _, err := io.Copy(digest, src); err != nil {
-		return nil, nil, fmt.Errorf("reading the upload: %w", err)
+		return nil, nil, failedAt(UploadReading, fmt.Errorf("reading the upload: %w", err))
 	}
 	var hash [32]byte
 	copy(hash[:], digest.Sum(nil))
 
 	if _, err := src.Seek(0, io.SeekStart); err != nil {
-		return nil, nil, fmt.Errorf("rewinding the upload: %w", err)
+		return nil, nil, failedAt(UploadReading, fmt.Errorf("rewinding the upload: %w", err))
 	}
 
 	placed, err := v.scatterStream(ctx, scope, name, readerAt, size, hash,
@@ -164,7 +163,7 @@ func (v *Vault) spool(r io.Reader) (*os.File, int64, [32]byte, error) {
 func (v *Vault) scatterStream(ctx context.Context, scope Scope, name string, src io.ReaderAt, size int64, hash [32]byte, sp spread, chunkSize uint32, onScattered func(done, size int64)) (placement, error) {
 	target, err := v.snapshotTarget(scope, sp)
 	if err != nil {
-		return placement{}, err
+		return placement{}, failedAt(UploadPlacing, err)
 	}
 	defer crypto.ZeroBytes(target.dataKey)
 
@@ -183,13 +182,13 @@ func (v *Vault) scatterStream(ctx context.Context, scope Scope, name string, src
 	seed := binary.BigEndian.Uint64(archiveID[:8])
 	plan, scheme, err := target.planFor(seed)
 	if err != nil {
-		return out, err
+		return out, failedAt(UploadPlacing, err)
 	}
 	out.scheme = scheme
 
 	chunks, err := archive.PlanChunks(archiveID, name, hash, uint64(size), chunkSize, scheme)
 	if err != nil {
-		return out, err
+		return out, failedAt(UploadPlacing, err)
 	}
 	out.chunkSize = int64(chunks.ChunkSize)
 	out.chunkCount = int(chunks.ChunkCount)
@@ -204,7 +203,10 @@ func (v *Vault) scatterStream(ctx context.Context, scope Scope, name string, src
 		// still reading from its own.
 		buf := make([]byte, want)
 		if _, err := io.ReadFull(io.NewSectionReader(src, int64(next)*int64(chunks.ChunkSize), int64(want)), buf); err != nil {
-			return nil, fmt.Errorf("reading chunk %d back from the spool: %w", next, err)
+			// Marked here, where it is known to be the spool and not a
+			// cloud: putChunks wraps it with the chunk and hands it back,
+			// and the stage survives the wrapping.
+			return nil, failedAt(UploadReading, fmt.Errorf("reading chunk %d back from the spool: %w", next, err))
 		}
 		next++
 		if onScattered != nil {
@@ -214,11 +216,11 @@ func (v *Vault) scatterStream(ctx context.Context, scope Scope, name string, src
 	})
 	if err != nil {
 		v.eraseChunks(context.WithoutCancel(ctx), target, plan, out.archiveID, chunks.ChunkCount)
-		return out, err
+		return out, failedAt(UploadScattering, err)
 	}
 
-	for shard, reason := range failures {
-		out.warnings = append(out.warnings, reason)
+	for shard, failure := range failures {
+		out.warnings = append(out.warnings, failure.String())
 		v.eraseShardChunks(context.WithoutCancel(ctx), target, plan, out.archiveID, shard, chunks.ChunkCount)
 	}
 
@@ -227,9 +229,7 @@ func (v *Vault) scatterStream(ctx context.Context, scope Scope, name string, src
 
 	if distinctShards(out.shards) < scheme.Data {
 		v.eraseChunks(context.WithoutCancel(ctx), target, plan, out.archiveID, chunks.ChunkCount)
-		err := fmt.Errorf("stored only %d of %d shards, need at least %d: %s",
-			distinctShards(out.shards), scheme.Total, scheme.Data,
-			strings.Join(out.warnings, "; "))
+		err := shortOfShards(distinctShards(out.shards), scheme.Data, scheme.Total, failures)
 		out.shards = nil
 		return out, err
 	}
@@ -282,7 +282,7 @@ func (v *Vault) commitUpload(ctx context.Context, scope Scope, dir, name string,
 	if err != nil {
 		v.mu.Unlock()
 		v.deleteEntryShards(context.WithoutCancel(ctx), entry)
-		return nil, warnings, err
+		return nil, warnings, failedAt(UploadRecording, err)
 	}
 
 	var replaced *Entry
@@ -313,7 +313,7 @@ func (v *Vault) commitUpload(ctx context.Context, scope Scope, dir, name string,
 
 	if err != nil {
 		v.deleteEntryShards(context.WithoutCancel(ctx), entry)
-		return nil, warnings, err
+		return nil, warnings, failedAt(UploadRecording, err)
 	}
 
 	// The replaced version's parts are now unreferenced; clean them up on a

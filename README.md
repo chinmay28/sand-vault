@@ -2879,14 +2879,29 @@ one walk, so comparing them costs nothing.
 | GET | `/api/system/folders?path=` | Folders on this machine, for the folder picker |
 | POST | `/api/archive` · `/api/restore` | Standalone mode |
 
-Uploads report per-file results, so one failure in a batch doesn't sink the rest:
+Uploads report per-file results, so one failure in a batch doesn't sink the rest.
+A failure says where the upload was when it stopped (`stage`: `placing`,
+`reading`, `scattering` or `recording`), which clouds turned a part away and
+what each said (`failed_parts`), how the count stood (`parts`), and what to do
+next (`advice`). The batch answers 502 when nothing in it stored, with the same
+results inside:
 
 ```json
 {
   "stored": 1,
   "results": [
     { "name": "a.pdf", "ok": true, "file": { "…": "…" } },
-    { "name": "b.mov", "ok": false, "error": "stored only 1 of 3 parts…" }
+    {
+      "name": "b.mov", "ok": false,
+      "error": "stored only 1 of 3 shards, need at least 2: shard 2 → Drive: …; shard 3 → NAS: …",
+      "stage": "scattering",
+      "parts": { "stored": 1, "needed": 2, "total": 3 },
+      "failed_parts": [
+        { "part": 2, "account_id": "…", "account": "Drive", "kind": "gdrive", "reason": "google drive put: 403 Forbidden: storageQuotaExceeded" },
+        { "part": 3, "account_id": "…", "account": "NAS", "kind": "local", "reason": "cannot use /mnt/nas/parts: it is a file, not a directory" }
+      ],
+      "advice": "Nothing of the file was kept: the one part that landed was erased again. Drive has no room left for it: …"
+    }
   ]
 }
 ```

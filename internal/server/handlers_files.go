@@ -124,6 +124,45 @@ type uploadResult struct {
 	Error    string       `json:"error,omitempty"`
 	Warnings []string     `json:"warnings,omitempty"`
 	File     *vault.Entry `json:"file,omitempty"`
+
+	// The rest is what a failure says about itself beyond its one line, so
+	// the browser can say where the upload was, which cloud turned it away
+	// and what to do next. See vault.UploadError.
+	//
+	// Stage is one of placing, reading, scattering or recording. Parts is
+	// set when the scatter fell short, FailedParts names the accounts that
+	// refused a part there, and Advice is what to do about it.
+	Stage       string               `json:"stage,omitempty"`
+	Parts       *uploadParts         `json:"parts,omitempty"`
+	FailedParts []vault.ShardFailure `json:"failed_parts,omitempty"`
+	Advice      string               `json:"advice,omitempty"`
+}
+
+// uploadParts is the count of a scatter that fell short: how many distinct
+// parts landed, how many the file needs to be read back, and how many it has.
+type uploadParts struct {
+	Stored int `json:"stored"`
+	Needed int `json:"needed"`
+	Total  int `json:"total"`
+}
+
+// fail records why a file was not stored, with everything the error can say
+// about where and what next. An error that is not the vault's own — a path
+// refused before anything was sent, a part the parser could not open — is
+// reported at the stage the caller names.
+func (r *uploadResult) fail(err error, stage vault.UploadStage) {
+	r.Error = err.Error()
+	var ue *vault.UploadError
+	if !errors.As(err, &ue) {
+		r.Stage = string(stage)
+		return
+	}
+	r.Stage = string(ue.Stage)
+	r.Advice = ue.Advice()
+	if ue.Stage == vault.UploadScattering && ue.Total > 0 {
+		r.Parts = &uploadParts{Stored: ue.Stored, Needed: ue.Needed, Total: ue.Total}
+	}
+	r.FailedParts = ue.Failures
 }
 
 func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
@@ -209,7 +248,9 @@ func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if err := v.Mkdir(scope, folder); err != nil {
-			results = append(results, uploadResult{Name: strings.TrimPrefix(folder, "/"), Error: err.Error()})
+			result := uploadResult{Name: strings.TrimPrefix(folder, "/")}
+			result.fail(err, vault.UploadPlacing)
+			results = append(results, result)
 			continue
 		}
 		made[folder] = true
@@ -219,19 +260,19 @@ func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 		place := places[i]
 		result := uploadResult{Name: place.Label}
 		if place.Err != nil {
-			result.Error = place.Err.Error()
+			result.fail(place.Err, vault.UploadPlacing)
 			results = append(results, result)
 			continue
 		}
 		if !made[place.Dir] {
-			result.Error = fmt.Sprintf("could not make the folder %s", place.Dir)
+			result.fail(fmt.Errorf("could not make the folder %s", place.Dir), vault.UploadPlacing)
 			results = append(results, result)
 			continue
 		}
 
 		f, err := fh.Open()
 		if err != nil {
-			result.Error = "could not read the uploaded file"
+			result.fail(errors.New("could not read the uploaded file"), vault.UploadReading)
 			results = append(results, result)
 			continue
 		}
@@ -254,7 +295,7 @@ func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 		f.Close()
 		result.Warnings = warnings
 		if err != nil {
-			result.Error = err.Error()
+			result.fail(err, vault.UploadScattering)
 			results = append(results, result)
 			continue
 		}
