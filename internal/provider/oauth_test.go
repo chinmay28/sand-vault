@@ -186,3 +186,57 @@ func TestOAuthSpecsReportWhetherAnAppIsConfigured(t *testing.T) {
 		t.Error("Configured leaked across calls")
 	}
 }
+
+func TestForRegionPointsTheSignInAtOneDeployment(t *testing.T) {
+	regional := &OAuthSpec{
+		AuthURL:     "https://accounts.example.{region}/authorize",
+		TokenURL:    "https://accounts.example.{region}/token",
+		RegionField: "region",
+		Regions:     []Region{{Key: "com", Label: "Global"}, {Key: "eu", Label: "Europe"}},
+	}
+
+	eu, err := regional.ForRegion("eu")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if eu.AuthURL != "https://accounts.example.eu/authorize" || eu.TokenURL != "https://accounts.example.eu/token" {
+		t.Errorf("ForRegion(eu) = %s %s", eu.AuthURL, eu.TokenURL)
+	}
+	if got := eu.Options("id", "", Tokens{RefreshToken: "rt"}); got["region"] != "eu" {
+		t.Errorf("Options after ForRegion(eu) = %v, want the region stored", got)
+	}
+	// The registered spec is untouched: the next sign-in may pick another.
+	if !strings.Contains(regional.AuthURL, "{region}") || regional.region != "" {
+		t.Errorf("ForRegion changed the spec it was called on: %+v", regional)
+	}
+
+	// Nobody picking means the first region listed.
+	def, err := regional.ForRegion("")
+	if err != nil || !strings.HasPrefix(def.AuthURL, "https://accounts.example.com/") {
+		t.Errorf("ForRegion(\"\") = %v, %v", def, err)
+	}
+	if regional.DefaultRegion() != "com" {
+		t.Errorf("DefaultRegion = %q", regional.DefaultRegion())
+	}
+
+	// The region becomes part of the host the client secret is posted to, so
+	// only a listed one will do — whatever the browser sends.
+	for _, bad := range []string{"us", "eu/../", "evil.example/?", "COM"} {
+		if _, err := regional.ForRegion(bad); err == nil {
+			t.Errorf("ForRegion(%q) was accepted", bad)
+		}
+	}
+
+	// A spec with one home is returned as it is, whatever is asked for.
+	single := &OAuthSpec{AuthURL: "https://one.example/authorize", TokenURL: "https://one.example/token"}
+	same, err := single.ForRegion("eu")
+	if err != nil || same != single {
+		t.Errorf("ForRegion on a spec without regions = %v, %v", same, err)
+	}
+	if got := single.Options("id", "", Tokens{RefreshToken: "rt"}); got["region"] != "" {
+		t.Errorf("a spec without regions stored one: %v", got)
+	}
+	if single.DefaultRegion() != "" {
+		t.Errorf("DefaultRegion of a spec without regions = %q", single.DefaultRegion())
+	}
+}

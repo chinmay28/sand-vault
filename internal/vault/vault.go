@@ -1494,6 +1494,11 @@ type ProviderSignIn struct {
 	Name         string
 	ClientID     string
 	ClientSecret string
+
+	// Region is where the account lives, for a backend with one deployment
+	// per region: signing it back in has to go to the same one. Empty for
+	// the rest.
+	Region string
 }
 
 // ProviderSignIn reports the OAuth app one connected account signs in with.
@@ -1512,12 +1517,16 @@ func (v *Vault) ProviderSignIn(id string) (ProviderSignIn, error) {
 	if !ok || spec.OAuth == nil {
 		return ProviderSignIn{}, fmt.Errorf("%s is not connected by signing in", cfg.Name)
 	}
-	return ProviderSignIn{
+	signIn := ProviderSignIn{
 		Kind:         cfg.Kind,
 		Name:         cfg.Name,
 		ClientID:     cfg.Option(spec.OAuth.ClientIDField),
 		ClientSecret: cfg.Option(spec.OAuth.ClientSecretField),
-	}, nil
+	}
+	if spec.OAuth.RegionField != "" {
+		signIn.Region = cfg.Option(spec.OAuth.RegionField)
+	}
+	return signIn, nil
 }
 
 // renameShardsLocked writes a new account name onto every shard held by that

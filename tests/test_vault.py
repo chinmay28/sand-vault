@@ -184,7 +184,8 @@ class TestVaultLifecycle:
         kinds = {s["kind"] for s in specs}
         assert {"local", "s3", "webdav", "gdrive", "dropbox",
                 "onedrive", "box", "icloud", "proton", "mega", "jottacloud",
-                "synccom", "tresorit", "icedrive", "drime", "filen", "internxt"} <= kinds
+                "synccom", "tresorit", "icedrive", "drime", "filen", "internxt",
+                "zoho"} <= kinds
         for spec in specs:
             assert spec["label"] and spec["description"]
             assert isinstance(spec["fields"], list)
@@ -202,13 +203,20 @@ class TestVaultLifecycle:
         specs = requests.get(f"{server}/api/providers/specs", timeout=10).json()["specs"]
         by_kind = {s["kind"]: s for s in specs}
 
-        for kind in ("gdrive", "onedrive", "dropbox", "box"):
+        for kind in ("gdrive", "onedrive", "dropbox", "box", "zoho"):
             oauth = by_kind[kind].get("oauth")
             assert oauth, f"{kind} should offer a sign-in"
             assert oauth["sign_in_label"]
             # No client credentials are configured for the test server, so the
             # dialog has to collect one.
             assert oauth["configured"] is False
+
+        # Zoho runs one deployment per region, so its sign-in offers the
+        # choice; the others have one home and offer none.
+        regions = by_kind["zoho"]["oauth"].get("regions")
+        assert regions and by_kind["zoho"]["oauth"]["region_field"] == "region"
+        assert {r["key"] for r in regions} >= {"com", "eu", "in"}
+        assert "regions" not in by_kind["gdrive"]["oauth"]
 
         assert by_kind["local"].get("oauth") is None
         for kind in ("proton", "icloud", "mega", "jottacloud", "synccom",
@@ -1001,7 +1009,7 @@ class TestCLI:
         for kind in ("local", "s3", "webdav", "gdrive", "dropbox",
                      "onedrive", "box", "icloud", "proton", "mega",
                      "jottacloud", "synccom", "tresorit", "icedrive", "drime",
-                     "filen", "internxt"):
+                     "filen", "internxt", "zoho"):
             assert kind in result.stdout
 
 

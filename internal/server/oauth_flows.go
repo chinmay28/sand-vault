@@ -31,6 +31,12 @@ type oauthFlow struct {
 	ClientSecret string
 	RedirectURI  string
 
+	// Region is the regional deployment the sign-in was sent to, for the
+	// backends that have more than one. The exchange has to go to the same
+	// one the authorization did, and the backend has to be told which, so it
+	// is pinned here when the flow starts. Empty for every other backend.
+	Region string
+
 	// ProviderID is the connected account this sign-in is replacing the
 	// credentials of, when it is a reauthorization rather than a new
 	// connection. It is what the app credentials were read from at the start,

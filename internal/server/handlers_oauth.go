@@ -34,6 +34,12 @@ func (s *Server) handleOAuthStart(w http.ResponseWriter, r *http.Request) {
 		ClientSecret string        `json:"client_secret"`
 		RedirectURI  string        `json:"redirect_uri"`
 
+		// Region picks which of the provider's regional deployments to sign
+		// in to, for the backends that have more than one. Blank means the
+		// backend's default — or, for an account signing back in, wherever
+		// it already lives.
+		Region string `json:"region"`
+
 		// ProviderID turns this into a reauthorization: an account that is
 		// already connected signing back in, rather than a new one being
 		// added. The kind comes from the account itself, and so do the app
@@ -103,8 +109,26 @@ func (s *Server) handleOAuthStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// An account signing back in lives where it lives; anything else is
+	// sent where the browser says, or to the backend's default. For a
+	// backend with one home this is all a no-op.
+	region := strings.TrimSpace(req.Region)
+	if region == "" && existing.Region != "" {
+		region = existing.Region
+	}
+	oauth, err := spec.OAuth.ForRegion(region)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
+		return
+	}
+	if oauth.RegionField == "" {
+		region = ""
+	} else if region == "" {
+		region = oauth.DefaultRegion()
+	}
+
 	var verifier, challenge string
-	if spec.OAuth.PKCE {
+	if oauth.PKCE {
 		if verifier, challenge, err = provider.NewPKCE(); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error(), "INTERNAL")
 			return
@@ -117,6 +141,7 @@ func (s *Server) handleOAuthStart(w http.ResponseWriter, r *http.Request) {
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
 		RedirectURI:  redirectURI,
+		Region:       region,
 		ProviderID:   req.ProviderID,
 		Session:      sessionToken(r),
 	})
@@ -127,7 +152,7 @@ func (s *Server) handleOAuthStart(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"flow_id":      flow.ID,
-		"auth_url":     spec.OAuth.AuthCodeURL(clientID, redirectURI, flow.State, challenge),
+		"auth_url":     oauth.AuthCodeURL(clientID, redirectURI, flow.State, challenge),
 		"redirect_uri": redirectURI,
 		"expires_in":   int(oauthFlowTTL.Seconds()),
 	})
@@ -237,15 +262,22 @@ func (s *Server) completeOAuthFlow(ctx context.Context, flow *oauthFlow, code st
 		s.oauthFlows.finish(flow.ID, nil, "", err.Error())
 		return err
 	}
+	// The code was issued by the deployment the flow was sent to, and only
+	// that one will exchange it.
+	oauth, err := spec.OAuth.ForRegion(flow.Region)
+	if err != nil {
+		s.oauthFlows.finish(flow.ID, nil, "", err.Error())
+		return err
+	}
 
-	tokens, err := spec.OAuth.Exchange(ctx, flow.ClientID, flow.ClientSecret,
+	tokens, err := oauth.Exchange(ctx, flow.ClientID, flow.ClientSecret,
 		code, flow.RedirectURI, flow.Verifier)
 	if err != nil {
 		s.oauthFlows.finish(flow.ID, nil, "", err.Error())
 		return err
 	}
 
-	options := spec.OAuth.Options(flow.ClientID, flow.ClientSecret, tokens)
+	options := oauth.Options(flow.ClientID, flow.ClientSecret, tokens)
 	account, rotated := probeAccount(ctx, spec.Kind, options)
 	for key, value := range rotated {
 		options[key] = value

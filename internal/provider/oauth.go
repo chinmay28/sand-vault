@@ -49,6 +49,18 @@ type OAuthSpec struct {
 	// Filled in per call from the environment; never set on a registered spec.
 	Configured bool `json:"configured"`
 
+	// RegionField and Regions are for a provider that runs one deployment per
+	// data centre, each with its own accounts server — Zoho has one under
+	// zoho.com, another under zoho.eu, and an account exists in exactly one
+	// of them. The sign-in has to be sent to the right one, which is a choice
+	// made before any URL exists, so the browser offers Regions and sends the
+	// pick back with the start of the flow; ForRegion then fills the
+	// "{region}" placeholder in AuthURL and TokenURL, and the pick is stored
+	// under RegionField for the backend to read its hosts from. The first
+	// region listed is the default. Empty for every provider with one home.
+	RegionField string   `json:"region_field,omitempty"`
+	Regions     []Region `json:"regions,omitempty"`
+
 	// --- server-side only ------------------------------------------------
 
 	AuthURL  string   `json:"-"`
@@ -75,6 +87,63 @@ type OAuthSpec struct {
 	// account ever sees an OAuth client ID.
 	ClientIDEnv     string `json:"-"`
 	ClientSecretEnv string `json:"-"`
+
+	// region is the pick ForRegion was made with, on the copy it returned;
+	// empty on a registered spec. Options stores it under RegionField.
+	region string
+}
+
+// Region is one of a provider's regional deployments, as the browser offers
+// it: Key is what goes into the URLs and the stored option, Label is what the
+// account holder reads.
+type Region struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
+}
+
+// regionPlaceholder is what ForRegion fills in AuthURL and TokenURL.
+const regionPlaceholder = "{region}"
+
+// DefaultRegion is the region a sign-in uses when the browser names none: the
+// first one listed. Empty for a spec without regions.
+func (o *OAuthSpec) DefaultRegion() string {
+	if o == nil || len(o.Regions) == 0 {
+		return ""
+	}
+	return o.Regions[0].Key
+}
+
+// ForRegion returns the spec with its URLs pointed at one regional
+// deployment, ready to drive a sign-in there. A spec without regions is
+// returned as it is, whatever region is named, so callers need not know
+// which kind they hold. An empty region means the default.
+//
+// The region has to be one the spec lists. It is spliced into the host the
+// client secret and the authorization code are posted to, so an arbitrary
+// string here would be an arbitrary host to send them to — and the browser
+// is where the string comes from.
+func (o *OAuthSpec) ForRegion(region string) (*OAuthSpec, error) {
+	if o == nil || o.RegionField == "" {
+		return o, nil
+	}
+	if region == "" {
+		region = o.DefaultRegion()
+	}
+	known := false
+	for _, r := range o.Regions {
+		if r.Key == region {
+			known = true
+			break
+		}
+	}
+	if !known {
+		return nil, fmt.Errorf("%q is not a region this sign-in knows", region)
+	}
+	out := *o
+	out.AuthURL = strings.ReplaceAll(o.AuthURL, regionPlaceholder, region)
+	out.TokenURL = strings.ReplaceAll(o.TokenURL, regionPlaceholder, region)
+	out.region = region
+	return &out, nil
 }
 
 // EnvClient returns the app credentials this deployment was started with, if
@@ -177,6 +246,9 @@ func (o *OAuthSpec) Options(clientID, clientSecret string, tok Tokens) map[strin
 	}
 	if o.AccessTokenField != "" && tok.AccessToken != "" {
 		out[o.AccessTokenField] = tok.AccessToken
+	}
+	if o.RegionField != "" && o.region != "" {
+		out[o.RegionField] = o.region
 	}
 	return out
 }
@@ -318,6 +390,15 @@ func (ts *tokenSource) accessToken(ctx context.Context) (string, error) {
 		}
 	}
 	return ts.token, nil
+}
+
+// invalidate drops the cached access token, so the next request refreshes.
+// For the moment a provider says a token is no good before its stated
+// expiry — revoked, or issued with a lifetime it did not honour.
+func (ts *tokenSource) invalidate() {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	ts.token = ""
 }
 
 // authorize attaches a bearer token to a request.
