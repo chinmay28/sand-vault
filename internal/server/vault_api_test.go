@@ -15,7 +15,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/chinmay28/sand-vault/internal/crypto"
+	"github.com/chinmay28/sand-vault/internal/vault"
 	"github.com/chinmay28/sand-vault/internal/version"
+	"os"
 )
 
 // testClient drives the full HTTP handler the same way a browser does,
@@ -1275,4 +1278,13 @@ func TestStoppingAnIdleEraseSaysSo(t *testing.T) {
 	if w.Code != http.StatusOK || body["stopped"] != false {
 		t.Errorf("stop of an idle folder = %d %v, want stopped=false", w.Code, body)
 	}
+}
+
+// Every test here creates a vault over the API, and a vault's password is
+// stretched at nearly half a second a time in production. The stretch is the
+// crypto package's to test; here it is only a cost, so every vault these
+// tests seal is sealed cheaply. See vault.PasswordKDF.
+func TestMain(m *testing.M) {
+	vault.PasswordKDF = crypto.TestArgon2Params()
+	os.Exit(m.Run())
 }

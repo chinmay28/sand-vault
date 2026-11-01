@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/chinmay28/sand-vault/internal/archive"
+	"github.com/chinmay28/sand-vault/internal/crypto"
 	"github.com/chinmay28/sand-vault/internal/provider"
 	"github.com/chinmay28/sand-vault/internal/vault"
 )
@@ -779,4 +780,12 @@ func TestSubVaultIsNeverVisibleOverWebDAV(t *testing.T) {
 	if len(listing.Files) != 1 || listing.Files[0].Name != "p60.pdf" {
 		t.Error("the sub vault's own /Papers was disturbed by a write over the share")
 	}
+}
+
+// The vaults these tests mount are sealed cheaply: the password stretch is
+// the crypto package's to test, and here it would only be half a second per
+// test. See vault.PasswordKDF.
+func TestMain(m *testing.M) {
+	vault.PasswordKDF = crypto.TestArgon2Params()
+	os.Exit(m.Run())
 }

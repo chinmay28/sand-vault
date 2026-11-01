@@ -21,7 +21,7 @@ import (
 // the parameters written into the envelope, so lowering what a *new* kit is
 // sealed under cannot weaken a kit anybody actually holds.
 func init() {
-	kitKDFParams = crypto.Argon2Params{Time: 1, Memory: 8, Threads: 1, SaltLen: 16, KeyLen: 32}
+	kitKDFParams = crypto.TestArgon2Params()
 }
 
 // Small shims so the tests read as tests rather than as plumbing.

@@ -52,6 +52,18 @@ func KitArgon2Params() Argon2Params {
 	}
 }
 
+// TestArgon2Params returns parameters that cost nothing to derive with.
+//
+// They exist for test suites that create hundreds of vaults and kits, each
+// of which would otherwise pay the production stretch — nearly half a second
+// at DefaultArgon2Params, several at KitArgon2Params — for a password nobody
+// is attacking. A file sealed under them is as good as unprotected, so no
+// build writes one: the only callers are tests, through the package
+// variables the vault package exposes for the purpose.
+func TestArgon2Params() Argon2Params {
+	return Argon2Params{Time: 1, Memory: 8, Threads: 1, SaltLen: 16, KeyLen: 32}
+}
+
 // GenerateSalt creates a cryptographically random salt.
 func GenerateSalt(size uint32) ([]byte, error) {
 	salt := make([]byte, size)

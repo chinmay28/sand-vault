@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/chinmay28/sand-vault/internal/crypto"
 	"github.com/chinmay28/sand-vault/internal/provider"
 	"github.com/chinmay28/sand-vault/internal/vault"
 )
@@ -163,4 +164,12 @@ func TestGetDoesNotDestroyTheLocalFileWhenTheVaultCannotBeRead(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "--force") {
 		t.Errorf("get over an existing file without --force = %v, want a refusal naming --force", err)
 	}
+}
+
+// The vaults these tests create are sealed cheaply: the password stretch is
+// the crypto package's to test, and here it would only be half a second per
+// test. See vault.PasswordKDF.
+func TestMain(m *testing.M) {
+	vault.PasswordKDF = crypto.TestArgon2Params()
+	os.Exit(m.Run())
 }

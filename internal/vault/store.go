@@ -360,6 +360,17 @@ func (r subVaultRecord) keyIDs() []string {
 	return ids
 }
 
+// PasswordKDF is what a new vault's — or a new sub vault's — password is
+// stretched with.
+//
+// A variable rather than a call to crypto.DefaultArgon2Params for the same
+// reason kitKDFParams is: a test suite that creates a vault per test would
+// otherwise spend nearly half a second per test on Argon2id, which is most of
+// what such a suite costs. Unlocking always uses the parameters written into
+// the file, and changing the password keeps them, so lowering it here cannot
+// weaken a vault anybody actually has. Nothing but a test should assign it.
+var PasswordKDF = crypto.DefaultArgon2Params()
+
 // newSubVaultRecord creates a sub vault sealed under password, with a fresh
 // random data key of its own and an empty index.
 func newSubVaultRecord(id, password string) (subVaultRecord, *subVault, error) {
@@ -367,7 +378,7 @@ func newSubVaultRecord(id, password string) (subVaultRecord, *subVault, error) {
 		return subVaultRecord{}, nil, fmt.Errorf("password must not be empty")
 	}
 
-	params := crypto.DefaultArgon2Params()
+	params := PasswordKDF
 	salt, err := crypto.GenerateSalt(params.SaltLen)
 	if err != nil {
 		return subVaultRecord{}, nil, err
@@ -640,7 +651,7 @@ func writeStore(path string, sf *storeFile) error {
 
 // newStore creates a fresh vault sealed under password.
 func newStore(password string, policy Policy) (*storeFile, []byte, error) {
-	params := crypto.DefaultArgon2Params()
+	params := PasswordKDF
 	salt, err := crypto.GenerateSalt(params.SaltLen)
 	if err != nil {
 		return nil, nil, err

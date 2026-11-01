@@ -3,6 +3,7 @@ package vault
 import (
 	"context"
 	"fmt"
+	"github.com/chinmay28/sand-vault/internal/crypto"
 	"os"
 	"path/filepath"
 	"testing"
@@ -17,6 +18,11 @@ import (
 // arithmetic, and this file for the setting.
 func TestMain(m *testing.M) {
 	defaultBackupDelay = 0
+	// Nearly every test here creates a vault, and a vault's password is
+	// stretched at nearly half a second a time in production. Nothing in
+	// this package tests the stretch itself — crypto does — so every vault
+	// these tests seal is sealed cheaply. See PasswordKDF.
+	PasswordKDF = crypto.TestArgon2Params()
 	os.Exit(m.Run())
 }
 
