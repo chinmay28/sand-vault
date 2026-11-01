@@ -1418,6 +1418,28 @@ the old one rather than editing it — so the file gets a **new ID**, and
 A caller left holding the ID it started with would be holding one that names
 nothing.
 
+**A bundle that cannot be read is rebuilt from its upstream.** A refresh reads
+the stored bundle back (`exportFile`) to turn it into a mirror and fetch the
+difference, which is the cheap path and the wrong one when the bundle is the
+problem: with too few of its accounts answering, or too few parts in the index,
+the export fails at the first step, and a relocation of its shards has nothing
+to gather. `RebuildRepo` is the same work as `TrackRepo` — `git.Mirror` from
+the upstream, `bundleMirror`, `uploadBundle` with `Overwrite` — pointed at the
+existing file and told which accounts and which code (`UploadOptions.Accounts`,
+`Scheme`), with the stored parts never read. It is the same shape as a rebuild
+from the replica (`RelocateFrom` with `ReadReplica`, §4): a copy that is
+trusted, read whole, written out as a fresh set of parts on chosen clouds; only
+where the copy is differs. The overwrite forgets the old entry's record in the
+same index write (`commitUpload` calls `forgetRepos`) and erases its parts on a
+best-effort basis, which is the right effort for parts on a cloud that is not
+answering; the new record is written under the new ID. It is offered whatever
+state the bundle is in — a readable one is put on other clouds from the
+upstream all the same — and it costs a full clone, so it is not what the sweep
+does. The listing names which files are tracked (`Listing.TrackedRepos`, beside
+`Thumbs`, from `trackedIDs`) and `DegradedFile.Tracked` says the same for the
+missing-a-part list, so a row can offer the rebuild without the browser asking
+for the repository list on every folder it opens.
+
 ---
 
 ### 3.8 Sub vaults
@@ -2748,6 +2770,7 @@ reveals only whether a vault exists.
 | GET | `/api/git` | The repositories stored under `?path=`, and whether this machine has a git to borrow at all (§3.16) |
 | POST | `/api/git/track` | Mirror `url` and store it as a bundle in `path`. The first copy is the whole history, so it carries a long deadline |
 | POST | `/api/git/{id}/refresh` | Ask one repository's upstream whether it has moved, and fetch it if it has. Answers `updated: false` for the common case, which cost one ref advertisement. The reply carries the repository's **new** id — an overwrite is a new entry |
+| POST | `/api/git/{id}/rebuild` | Mirror one repository again from its upstream and store it over the file on the `accounts` named, cut by `scheme` or by how many were named — whatever state the stored bundle is in, since its parts are never read. `accounts` is required: a rebuild is a choice of clouds. A full clone, so it carries the deadline a first copy does. The reply carries the repository's **new** id |
 | DELETE | `/api/git/{id}` | Stop following the upstream. The bundle stays: it is a complete repository and a perfectly good file |
 | GET | `/api/movies` | Whether a film database key is stored, and which folders are opted in (§3.11) |
 | POST | `/api/movies/key` | Store the key — checked against the database before it is kept; `""` clears it |

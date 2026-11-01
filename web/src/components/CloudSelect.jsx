@@ -383,7 +383,7 @@ export function ThresholdChoice({ scheme, onChange }) {
    somewhere for the first time and picking it up off one cloud and setting it
    down on another — the second of which can also erase a spare shard, because
    the chosen clouds may not have room for all of them. */
-function SelectionNote({ providers, selected, scheme, moving = false }) {
+export function SelectionNote({ providers, selected, scheme, moving = false }) {
   if (selected.length < MIN_ACCOUNTS) {
     return (
       <Banner tone="error">
@@ -468,7 +468,7 @@ function SelectionNote({ providers, selected, scheme, moving = false }) {
    Clouds nothing can say anything about are counted rather than warned about.
    Silence is not an all-clear, and a dialog that implied it was would be worse
    than one that admits what it does not know. */
-function SpaceNote({ providers, selected, scheme, bytes }) {
+export function SpaceNote({ providers, selected, scheme, bytes }) {
   const { share, tight, unknown } = useMemo(
     () => tightClouds(providers, selected, scheme, bytes),
     [providers, selected, scheme, bytes],

@@ -2102,6 +2102,13 @@ type Listing struct {
 	// almost all of them. See gitrepo.go.
 	Repos int `json:"repos,omitempty"`
 
+	// TrackedRepos names the files in this listing that are tracked
+	// repositories — the ones a row can offer to rebuild from their upstream,
+	// whatever state their parts are in. Absent when none is, which is almost
+	// every listing. The count above lights the folder's button; this is per
+	// row, the way Thumbs is.
+	TrackedRepos []string `json:"tracked_repos,omitempty"`
+
 	// PreviousKey counts, per subfolder path, the files under it still sealed
 	// under a key other than this vault's current one — waiting for the
 	// re-encryption behind a password change to reach them. Only folders
@@ -2169,18 +2176,19 @@ func (v *Vault) List(scope Scope, dir string) (*Listing, error) {
 	}
 
 	return &Listing{
-		Path:        dir,
-		Parent:      parent,
-		Folders:     folders,
-		Files:       append([]*Entry{}, files...),
-		Thumbs:      thumbs,
-		Movies:      v.movieBriefsForLocked(m, files),
-		MovieLookup: v.movieLookupLocked(m, dir),
-		Automation:  v.automationForLocked(scope, m, dir),
-		FolderArt:   v.folderArtForLocked(m, paths),
-		Repos:       countReposUnder(m, dir),
-		PreviousKey: previousKeyUnder(m, active, dir, folders),
-		Replicate:   replicateForListing(scope, m, dir),
+		Path:         dir,
+		Parent:       parent,
+		Folders:      folders,
+		Files:        append([]*Entry{}, files...),
+		Thumbs:       thumbs,
+		Movies:       v.movieBriefsForLocked(m, files),
+		MovieLookup:  v.movieLookupLocked(m, dir),
+		Automation:   v.automationForLocked(scope, m, dir),
+		FolderArt:    v.folderArtForLocked(m, paths),
+		Repos:        countReposUnder(m, dir),
+		TrackedRepos: trackedIDs(m, files),
+		PreviousKey:  previousKeyUnder(m, active, dir, folders),
+		Replicate:    replicateForListing(scope, m, dir),
 		ReplicatedFolders: func() map[string]bool {
 			if scope != MainScope {
 				return nil

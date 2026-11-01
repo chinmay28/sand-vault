@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chinmay28/sand-vault/internal/archive"
 	"github.com/chinmay28/sand-vault/internal/git"
 )
 
@@ -340,6 +341,92 @@ func (v *Vault) refreshRepo(ctx context.Context, scope Scope, repo *TrackedRepo,
 	}, true, nil
 }
 
+// RebuildRepo stores a tracked repository afresh from its upstream, on the
+// accounts and under the code given, whatever state the stored bundle is in.
+//
+// A refresh reads the stored bundle back and fetches the difference, which is
+// the cheap path and the wrong one when the bundle is the problem. A bundle
+// whose parts have gone past reading — two of three accounts lost, a cloud
+// that emptied its folder — cannot be turned back into a mirror, so a refresh
+// of it fails at its first step, and a move of its shards has nothing to
+// gather. The upstream still holds the whole history, and that is the copy
+// this trusts: the repository is mirrored whole, exactly as TrackRepo does the
+// first time, bundled, and stored over the file at the same path. The stored
+// parts are never read, and the old ones are erased wherever they can still
+// be reached, as any overwrite erases what it replaced.
+//
+// It is the same shape as a rebuild from the replica (RelocateFrom with
+// ReadReplica): a copy that is trusted, read whole, written out as a fresh set
+// of parts on clouds somebody chose. The difference is only where the copy
+// is. And like that rebuild it is offered whatever the file's state, because
+// a bundle that still reads is not a reason to refuse somebody who wants it
+// on different clouds and knows the upstream is the cheaper place to read it
+// from than three accounts of which one is not answering.
+//
+// accounts and scheme are the ordinary upload choices; empty, the vault's
+// default decides, as it does for an upload. The repository comes back as it
+// now stands, with a new ID — an overwrite is a new entry — and the record
+// follows the file.
+func (v *Vault) RebuildRepo(ctx context.Context, scope Scope, id string, accounts []string, scheme archive.Scheme) (*TrackedRepo, []string, error) {
+	repo, err := v.TrackedRepo(scope, id)
+	if err != nil {
+		return nil, nil, err
+	}
+	remote, err := git.ParseRemote(repo.URL)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !git.Available() {
+		return nil, nil, fmt.Errorf(
+			"%w — SAND borrows the git already on the machine rather than carrying its own",
+			git.ErrUnavailable)
+	}
+
+	work, cleanup, err := v.gitWorkspace()
+	if err != nil {
+		return nil, nil, err
+	}
+	defer cleanup()
+
+	// From the upstream and from nothing else. The stored bundle is exactly
+	// what is not trusted here, so it is not read, not even to save the fetch
+	// the difference would cost.
+	mirror := filepath.Join(work, "mirror.git")
+	if err := git.Mirror(ctx, remote, mirror); err != nil {
+		return nil, nil, fmt.Errorf("mirroring %s afresh: %w", repo.URL, err)
+	}
+
+	source, bundle, err := bundleMirror(ctx, work, mirror, remote)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Over the old file, on the clouds chosen. The overwrite files a new
+	// entry over the old one, forgets the old one's record in the same index
+	// write, and erases its parts on a best-effort basis — which is the right
+	// effort for parts that may be on a cloud that is not answering.
+	entry, warnings, err := v.uploadBundle(ctx, scope, repo.Dir, repo.Name, bundle,
+		UploadOptions{Overwrite: true, Accounts: accounts, Scheme: scheme})
+	if err != nil {
+		return nil, warnings, err
+	}
+	// Belt and braces, as refreshRepo does: a record left pointing at an ID
+	// nothing names any more would be a repository the listing could not
+	// find and the sweep could not refresh.
+	if entry.ID != repo.ID {
+		if err := v.setGitSource(scope, repo.ID, nil); err != nil {
+			return nil, warnings, err
+		}
+	}
+	if err := v.setGitSource(scope, entry.ID, source); err != nil {
+		return nil, warnings, err
+	}
+	return &TrackedRepo{
+		ID: entry.ID, Path: entry.Path(), Dir: entry.Dir, Name: entry.Name,
+		Size: entry.Size, GitSource: *source,
+	}, warnings, nil
+}
+
 // bundleMirror writes a bundle of a mirror and describes what went into it.
 func bundleMirror(ctx context.Context, work, mirror string, remote git.Remote) (*GitSource, string, error) {
 	refs, err := git.Refs(ctx, mirror)
@@ -582,6 +669,26 @@ func countReposUnder(m *Manifest, dir string) int {
 		}
 	}
 	return n
+}
+
+// trackedIDs names which of a set of files are tracked repositories, in the
+// order given, or nil when none is — which is every listing of a vault that
+// keeps no repositories, and costs that listing one length check.
+//
+// It is what lets a file row offer what only a repository can do — a rebuild
+// from its upstream — without the browser asking for the repository list on
+// every folder it opens. The caller must hold at least the read lock.
+func trackedIDs(m *Manifest, files []*Entry) []string {
+	if len(m.Repos) == 0 {
+		return nil
+	}
+	var out []string
+	for _, e := range files {
+		if m.Repos[e.ID] != nil {
+			out = append(out, e.ID)
+		}
+	}
+	return out
 }
 
 // UntrackRepo forgets that a file is a mirror, leaving the file alone.

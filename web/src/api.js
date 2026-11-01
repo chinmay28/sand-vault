@@ -690,6 +690,14 @@ export const api = {
       { method: 'POST', signal }),
   untrackRepo: (id, vault = '') =>
     request(`/api/git/${encodeURIComponent(id)}${vaultParam(vault, true)}`, { method: 'DELETE' }),
+  /* Store a kept repository afresh from its upstream, on the clouds named,
+     whatever state the stored bundle is in — the way back when its shards
+     cannot be read. The whole history comes down, so like tracking it is one
+     long request. The answer carries the repository's new id. */
+  rebuildRepo: (id, { vault = '', accounts, scheme = '' } = {}, { signal } = {}) =>
+    request(`/api/git/${encodeURIComponent(id)}/rebuild`, {
+      method: 'POST', body: { vault, accounts, scheme }, signal,
+    }),
 
   /* The machines a vault imports files *from*, which is the other direction
      from a connected account and deliberately not one: an account holds

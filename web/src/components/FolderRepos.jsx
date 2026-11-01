@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { COLORS, FONT, formatBytes } from '../theme'
 import { api } from '../api'
 import { Banner, Button, Input, Modal, Spinner } from './ui'
+import { RebuildRepo } from './RebuildRepo'
 
 /* The repositories a folder is keeping a copy of.
 
@@ -20,15 +21,25 @@ import { Banner, Button, Input, Modal, Spinner } from './ui'
        repository it can reach is exactly one you can reach from here. That is
        what makes private repositories work at all — your keys, your credential
        helper — and it is why a machine with no git says so instead of failing
-       at four in the morning. */
+       at four in the morning.
 
-export function FolderRepos({ path, vault = '', onClose, onChanged }) {
+   And one more thing a bundle cannot do for itself, which the upstream can:
+   be put back. A bundle whose shards have gone past reading cannot be
+   refreshed — a refresh reads it — but its upstream still holds the whole
+   history, and Rebuild from upstream mirrors it again onto clouds you choose,
+   whatever state the stored copy is in. See RebuildRepo.jsx. */
+
+/* The rebuild dialog opens over this one. */
+const CHILD_Z = 110
+
+export function FolderRepos({ path, vault = '', providers = [], onClose, onChanged }) {
   const [repos, setRepos] = useState(null)
   const [available, setAvailable] = useState(true)
   const [error, setError] = useState(null)
   const [busy, setBusy] = useState(false)
   const [url, setUrl] = useState('')
   const [working, setWorking] = useState('')
+  const [rebuilding, setRebuilding] = useState(null)
 
   const load = async () => {
     try {
@@ -129,9 +140,24 @@ export function FolderRepos({ path, vault = '', onClose, onChanged }) {
               busy={busy}
               available={available}
               onRefresh={() => refresh(repo)}
+              onRebuild={providers.length > 0 ? () => setRebuilding(repo) : null}
               onUntrack={() => untrack(repo)}
             />
           ))}
+
+      {rebuilding && (
+        <RebuildRepo
+          file={{ id: rebuilding.id, name: rebuilding.name, size: rebuilding.size, dir: rebuilding.dir }}
+          url={rebuilding.url}
+          providers={providers}
+          vault={vault}
+          zIndex={CHILD_Z}
+          onClose={() => setRebuilding(null)}
+          /* A rebuild stores a new file over the old one, so the row here —
+             and the listing behind this dialog — name an id that is gone. */
+          onDone={() => { load(); onChanged?.() }}
+        />
+      )}
 
       {working && (
         <div style={{
@@ -164,17 +190,24 @@ export function FolderRepos({ path, vault = '', onClose, onChanged }) {
           the repositories task — asking is cheap enough that a weekly sweep over
           a shelf of projects costs almost nothing on the weeks nothing moved.
         </p>
-        <p style={{ margin: 0 }}>
+        <p style={{ margin: '0 0 8px' }}>
           A stored repository whose upstream stops answering is kept, not
           deleted. An outage, a rename and a revoked token all look the same from
           here, and only one of them is a reason to throw away a copy.
+        </p>
+        <p style={{ margin: 0 }}>
+          The other way round — the copy here lost past reading, the upstream
+          still there — is what Rebuild from upstream is for: the repository is
+          mirrored again, whole, onto clouds you choose, with the stored shards
+          never read. It costs what the first copy cost, so Refresh is the way
+          to keep a healthy one current.
         </p>
       </div>
     </Modal>
   )
 }
 
-function Repo({ repo, busy, available, onRefresh, onUntrack }) {
+function Repo({ repo, busy, available, onRefresh, onRebuild, onUntrack }) {
   return (
     <div style={{
       padding: '10px 12px',
@@ -207,8 +240,16 @@ function Repo({ repo, busy, available, onRefresh, onUntrack }) {
         </div>
       )}
 
-      <div style={{ display: 'flex', gap: '8px' }}>
+      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
         <Button size="sm" onClick={onRefresh} disabled={busy || !available}>Refresh</Button>
+        {onRebuild && (
+          <Button
+            size="sm"
+            onClick={onRebuild}
+            disabled={busy || !available}
+            title="Mirror it again from its upstream onto clouds you choose, whatever state the stored copy is in"
+          >↻ Rebuild from upstream</Button>
+        )}
         <Button size="sm" variant="ghost" onClick={onUntrack} disabled={busy}>Stop following</Button>
       </div>
     </div>

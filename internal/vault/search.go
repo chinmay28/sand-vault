@@ -97,6 +97,10 @@ type SearchResults struct {
 	// same way it is in the folder it came from.
 	Movies map[string]MovieBrief `json:"movies,omitempty"`
 
+	// TrackedRepos names the hits that are tracked repositories, exactly as a
+	// listing does, so a hit's row offers the same rebuild from upstream.
+	TrackedRepos []string `json:"tracked_repos,omitempty"`
+
 	// FolderArt names the picture each folder hit is drawn with, by path — and
 	// again for the same reason. A folder found by searching is the same folder
 	// row, and it should look like itself.
@@ -164,6 +168,7 @@ func (v *Vault) Search(opts SearchOptions) (*SearchResults, error) {
 		results.Thumbs = []string{}
 	}
 	results.Movies = v.movieBriefsForLocked(m, matched)
+	results.TrackedRepos = trackedIDs(m, matched)
 
 	folders := make([]string, 0, len(hits))
 	for _, hit := range hits {
