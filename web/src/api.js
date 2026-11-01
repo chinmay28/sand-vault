@@ -400,7 +400,7 @@ export const api = {
 
   /* Browser sign-in. The server holds the tokens; all the app ever sees is
      where to send the user and how far along the flow is. */
-  oauthStart: (kind, { clientId = '', clientSecret = '', redirectUri = '', providerId = '' } = {}) =>
+  oauthStart: (kind, { clientId = '', clientSecret = '', redirectUri = '', region = '', providerId = '' } = {}) =>
     request('/api/providers/oauth/start', {
       method: 'POST',
       body: {
@@ -408,6 +408,10 @@ export const api = {
         client_id: clientId,
         client_secret: clientSecret,
         redirect_uri: redirectUri,
+        // Which of the provider's regional deployments to sign in to, for
+        // the backends that have more than one. Blank means the default —
+        // or, for an account signing back in, wherever it already lives.
+        region,
         // Naming an account makes this a reauthorization: the backend and the
         // OAuth app both come from the account itself, which is the only way
         // the app's secret can be reused — the browser was never given it.

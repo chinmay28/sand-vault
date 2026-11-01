@@ -239,6 +239,7 @@ they always did.
 | `onedrive` | OneDrive, personal or work | **Sign in** |
 | `dropbox` | Dropbox | **Sign in** |
 | `box` | Box | **Sign in** |
+| `zoho` | Zoho WorkDrive, through its API — pick the region the account lives in | **Sign in** |
 | `s3` | Amazon S3, Cloudflare R2, Backblaze B2, Wasabi, MinIO | Bucket, keys, endpoint for non-AWS |
 | `webdav` | Nextcloud, ownCloud, pCloud, Koofr, Fastmail, anything behind `rclone serve webdav` | URL, username, app password |
 | `drime` | Drime, through its API | An access token from the Drime web app |

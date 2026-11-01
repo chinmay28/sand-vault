@@ -54,7 +54,9 @@ IDrive e2, Hetzner Object Storage, Linode/Akamai, Filebase, Tigris, Vultr,
 Contabo, Oracle OCI, Seagate Lyve.
 
 **WebDAV — worth presetting:** Seafile, Yandex Disk, Infomaniak kDrive, Hetzner
-Storage Box, Synology and QNAP NAS boxes, OpenDrive, Zoho WorkDrive.
+Storage Box, Synology and QNAP NAS boxes, OpenDrive. (Zoho WorkDrive was on
+this list by mistake: it has no WebDAV, and Zoho has said it is not building
+one. It is a tier-3 backend of its own now, below.)
 
 A preset is for the services worth a button. Everything else the protocol
 reaches belongs in the backend's `Covers` list, which is what the browser's
@@ -163,6 +165,8 @@ against the provider's REST API.
 
 - **pCloud** — a real API instead of the WebDAV preset, with quota reporting
 - **Yandex Disk**, **Koofr**, **Egnyte**
+- **Zoho WorkDrive's quota** — the backend is done (below); what it lacks is
+  the account's size, which needs a scope and an endpoint not yet verified
 - **Jottacloud** — already connectable as a synced folder; an API backend
   would drop the desktop-app requirement and report quota
 - **Seafile** — token auth rather than OAuth, self-hosted
@@ -173,6 +177,30 @@ When adding one, the parts that are easy to get wrong are already solved
 elsewhere: copy `box.go` for a provider that rotates refresh tokens, and
 `gdrive.go` for one where the scope must stay narrow enough that SAND can only
 ever see what it created.
+
+**Done: Zoho WorkDrive** — `zoho.go`, and the first backend where the sign-in
+itself depends on a choice. Zoho runs a separate deployment per region —
+zoho.com, zoho.eu, zoho.in, zoho.com.au, zoho.jp, zoho.com.cn — each with its
+own accounts server, API, upload and download hosts, and an account exists in
+exactly one of them. No URL can be built until the region is known, so the
+`OAuthSpec` grew `RegionField` and `Regions`: the browser offers the list on
+the sign-in screen, sends the pick with the start of the flow, `ForRegion`
+fills the `{region}` placeholder in the auth and token URLs, the pick is
+stored on the account, and signing the account back in reads it from there.
+Only a listed region is ever accepted — the value is spliced into the host the
+client secret is posted to. Anything else that is Zoho-specific: the token
+goes in an `Authorization: Zoho-oauthtoken` header rather than Bearer; a
+missing file or folder is a 401 whose body names error R008, which is what
+Zoho says of a thing it no longer has, so a bare 401 is still a refusal;
+parts go in a folder under the account's My Folders, found through the
+user → team → membership → private space chain, with an advanced parent-ID
+option for a Team Folder instead; the one-request upload is good to 250 MB
+and the streaming endpoint takes over past 200 MiB; a delete is a move to the
+trash, followed by a permanent erase that Zoho sells only with its Team and
+Business plans, so the first refusal is remembered and the trash is left to
+the account holder from then on. Quota is not on any endpoint the scopes
+reach, so usage is measured from the folder's own size and the account's
+capacity is the one its holder declares.
 
 **Done: Filen and Internxt Drive** — the two end-to-end encrypted services
 with real free tiers, and the first backends here that have to speak a

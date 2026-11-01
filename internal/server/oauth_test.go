@@ -552,7 +552,7 @@ func TestProviderSpecsDescribeTheSignInFlow(t *testing.T) {
 		seen[spec.Kind] = true
 	}
 	for _, kind := range []provider.Kind{"gdrive", "dropbox", "onedrive", "box", "icloud", "proton",
-		"mega", "jottacloud", "synccom", "tresorit", "icedrive", "drime", "filen", "internxt", "local", "s3", "webdav"} {
+		"mega", "jottacloud", "synccom", "tresorit", "icedrive", "drime", "filen", "internxt", "zoho", "local", "s3", "webdav"} {
 		if !seen[kind] {
 			t.Errorf("the connect dialog is not offered %s", kind)
 		}
@@ -738,5 +738,149 @@ func TestReauthorizeIsBoundToTheAccountItWasStartedFor(t *testing.T) {
 	})
 	if w.Code != http.StatusConflict {
 		t.Errorf("reauthorizing from an unfinished sign-in: %d, want 409", w.Code)
+	}
+}
+
+// A provider with one deployment per region — Zoho — has an accounts server
+// in each, and an account exists in exactly one. The browser says which at the
+// start, the whole flow stays there, and the account remembers it.
+func TestSignInGoesToTheRegionTheAccountLivesIn(t *testing.T) {
+	tokenStub, sentToToken := stubTokenEndpoint(t)
+	var (
+		mu       sync.Mutex
+		tokenURL string
+	)
+	// The stub token endpoint answers any path; what matters is which one
+	// the exchange was posted to.
+	recording := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		tokenURL = r.URL.Path
+		mu.Unlock()
+		r.URL.Path = "/"
+		tokenStub.Config.Handler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(recording.Close)
+
+	kind := provider.Kind("stub-regional")
+	var (
+		builtMu sync.Mutex
+		built   []provider.Config
+	)
+	provider.Register(provider.Spec{
+		Kind:        kind,
+		Label:       "Regional Cloud",
+		Description: "A backend with a home in each region, in tests only.",
+		Fields: []provider.FieldSpec{
+			{Key: "client_id", Label: "Client ID", Required: true, Advanced: true},
+			{Key: "client_secret", Label: "Client secret", Secret: true, Advanced: true},
+			{Key: "refresh_token", Label: "Refresh token", Secret: true, Required: true, Advanced: true},
+			{Key: "region", Label: "Region", Default: "com", Advanced: true},
+			{Key: "folder", Label: "Folder", Default: "sand"},
+		},
+		OAuth: &provider.OAuthSpec{
+			SignInLabel:       "Continue with Regional",
+			AuthURL:           "https://accounts.regional.{region}/authorize",
+			TokenURL:          recording.URL + "/{region}/token",
+			ClientIDField:     "client_id",
+			ClientSecretField: "client_secret",
+			RefreshTokenField: "refresh_token",
+			RegionField:       "region",
+			Regions: []provider.Region{
+				{Key: "com", Label: "Global"},
+				{Key: "eu", Label: "Europe"},
+			},
+			ClientIDEnv:     "SAND_REGIONAL_CLIENT_ID",
+			ClientSecretEnv: "SAND_REGIONAL_CLIENT_SECRET",
+		},
+	}, func(cfg provider.Config) (provider.Provider, error) {
+		builtMu.Lock()
+		built = append(built, cfg)
+		builtMu.Unlock()
+		return stubBackend{cfg: cfg}, nil
+	})
+
+	c := newTestClient(t)
+	c.setup("correct horse battery staple", 0)
+
+	// The browser is only ever offered regions the spec lists.
+	w, body := c.json(http.MethodPost, "/api/providers/oauth/start", map[string]any{
+		"kind": kind, "client_id": "client-abc", "client_secret": "secret-abc", "region": "evil.example/",
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("start with an unknown region: %d %v", w.Code, body)
+	}
+
+	// Signing in to Europe sends the browser to Europe's accounts server…
+	_, start := c.json(http.MethodPost, "/api/providers/oauth/start", map[string]any{
+		"kind": kind, "client_id": "client-abc", "client_secret": "secret-abc", "region": "eu",
+	})
+	authURL, _ := start["auth_url"].(string)
+	if !strings.HasPrefix(authURL, "https://accounts.regional.eu/authorize?") {
+		t.Fatalf("auth_url = %q", authURL)
+	}
+	// …and exchanges the code there too.
+	c.redirect(url.Values{"code": {"the-code"}, "state": {stateFrom(t, authURL)}}.Encode())
+	mu.Lock()
+	exchangedAt := tokenURL
+	mu.Unlock()
+	if exchangedAt != "/eu/token" {
+		t.Errorf("the code was exchanged at %q, want Europe's token endpoint", exchangedAt)
+	}
+	if sentToToken.Get("code") != "the-code" {
+		t.Errorf("token exchange sent code %q", sentToToken.Get("code"))
+	}
+
+	w, created := c.json(http.MethodPost, "/api/providers/oauth/complete", map[string]any{
+		"flow_id": start["flow_id"], "options": map[string]string{"folder": "shards"},
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("complete: %d %v", w.Code, created)
+	}
+	account := created["provider"].(map[string]any)
+	if account["options"].(map[string]any)["region"] != "eu" {
+		t.Errorf("the account does not remember its region: %v", account["options"])
+	}
+
+	// Signing the account back in goes where the account is, with nothing
+	// said by the browser.
+	id := account["id"].(string)
+	_, again := c.json(http.MethodPost, "/api/providers/oauth/start", map[string]any{"provider_id": id})
+	authURL, _ = again["auth_url"].(string)
+	if !strings.HasPrefix(authURL, "https://accounts.regional.eu/authorize?") {
+		t.Errorf("a reauthorization left the account's region: %q", authURL)
+	}
+
+	// And a sign-in that names no region takes the first one listed.
+	_, dflt := c.json(http.MethodPost, "/api/providers/oauth/start", map[string]any{
+		"kind": kind, "client_id": "client-abc", "client_secret": "secret-abc",
+	})
+	if authURL, _ := dflt["auth_url"].(string); !strings.HasPrefix(authURL, "https://accounts.regional.com/authorize?") {
+		t.Errorf("auth_url without a region = %q", authURL)
+	}
+
+	// The spec tells the browser what to offer, and no more than that.
+	w = c.do(http.MethodGet, "/api/providers/specs", nil, "")
+	var specs struct {
+		Specs []struct {
+			Kind  provider.Kind `json:"kind"`
+			OAuth *struct {
+				RegionField string            `json:"region_field"`
+				Regions     []provider.Region `json:"regions"`
+			} `json:"oauth"`
+		} `json:"specs"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &specs); err != nil {
+		t.Fatal(err)
+	}
+	for _, spec := range specs.Specs {
+		if spec.Kind != kind {
+			continue
+		}
+		if spec.OAuth == nil || spec.OAuth.RegionField != "region" || len(spec.OAuth.Regions) != 2 {
+			t.Errorf("the browser is not told about the regions: %+v", spec.OAuth)
+		}
+	}
+	if strings.Contains(w.Body.String(), recording.URL) {
+		t.Error("the token endpoint template reached the browser")
 	}
 }

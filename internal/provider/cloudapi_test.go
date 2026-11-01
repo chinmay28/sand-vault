@@ -656,7 +656,7 @@ func TestBoxNamesRoundTripThroughAFlatFolder(t *testing.T) {
 // --- Registry ---------------------------------------------------------------
 
 func TestNewProviderKindsAreRegistered(t *testing.T) {
-	for _, kind := range []Kind{KindOneDrive, KindBox, KindProton} {
+	for _, kind := range []Kind{KindOneDrive, KindBox, KindProton, KindZoho} {
 		spec, ok := SpecFor(kind)
 		if !ok {
 			t.Fatalf("no spec registered for %s", kind)
@@ -678,7 +678,7 @@ func TestNewProviderKindsAreRegistered(t *testing.T) {
 }
 
 func TestSignInBackendsDeclareWhatTheFlowNeeds(t *testing.T) {
-	for _, kind := range []Kind{KindGDrive, KindDropbox, KindOneDrive, KindBox} {
+	for _, kind := range []Kind{KindGDrive, KindDropbox, KindOneDrive, KindBox, KindZoho} {
 		spec, ok := SpecFor(kind)
 		if !ok || spec.OAuth == nil {
 			t.Fatalf("%s should be connectable by signing in", kind)
@@ -700,10 +700,21 @@ func TestSignInBackendsDeclareWhatTheFlowNeeds(t *testing.T) {
 		for _, f := range spec.Fields {
 			declared[f.Key] = true
 		}
-		for _, key := range []string{o.ClientIDField, o.ClientSecretField, o.RefreshTokenField} {
+		for _, key := range []string{o.ClientIDField, o.ClientSecretField, o.RefreshTokenField, o.RegionField} {
 			if key != "" && !declared[key] {
 				t.Errorf("%s: sign-in writes %q, which is not a declared field", kind, key)
 			}
+		}
+
+		// A sign-in with regions has to offer at least one, and its URLs have
+		// to be the templates ForRegion fills; one without has URLs that are
+		// ready to use.
+		hasPlaceholder := strings.Contains(o.AuthURL, regionPlaceholder) || strings.Contains(o.TokenURL, regionPlaceholder)
+		if o.RegionField != "" && (len(o.Regions) == 0 || !hasPlaceholder) {
+			t.Errorf("%s: a regional sign-in with nothing to choose from: %+v", kind, o.Regions)
+		}
+		if o.RegionField == "" && hasPlaceholder {
+			t.Errorf("%s: the sign-in URLs carry a region placeholder nothing fills", kind)
 		}
 	}
 }

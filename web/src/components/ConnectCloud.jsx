@@ -134,6 +134,7 @@ export default function ConnectCloud({ onClose, onConnected }) {
         clientId: client.clientId,
         clientSecret: client.clientSecret,
         redirectUri: callbackURL(),
+        region: regionOf(spec, values),
       })
       const started = { id: resp.flow_id, kind: spec.kind, redirect_uri: resp.redirect_uri }
       rememberFlow(started)
@@ -387,6 +388,63 @@ export default function ConnectCloud({ onClose, onConnected }) {
   )
 }
 
+/* Which of a provider's regional deployments to sign in to, for the backends
+   that have more than one — Zoho has one under zoho.com, another under
+   zoho.eu, and an account exists in exactly one of them. The choice has to be
+   made before the sign-in can be sent anywhere, so it is read off the form's
+   values here, and the first region the spec lists stands in until one is
+   picked. Empty for a backend with one home. */
+function regionOf(spec, values) {
+  const oauth = spec.oauth
+  if (!oauth?.region_field || !oauth.regions?.length) return ''
+  return values[oauth.region_field] || oauth.regions[0].key
+}
+
+function RegionSelect({ spec, value, onChange }) {
+  return (
+    <div style={{ marginBottom: '14px' }}>
+      <label htmlFor="oauth-region" style={{
+        display: 'block',
+        fontFamily: FONT.mono,
+        fontSize: '10px',
+        fontWeight: 600,
+        letterSpacing: '1.5px',
+        textTransform: 'uppercase',
+        color: COLORS.textMuted,
+        marginBottom: '6px',
+      }}>Where the account lives</label>
+      <select
+        id="oauth-region"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        style={{
+          width: '100%',
+          padding: '10px 12px',
+          background: COLORS.bg,
+          border: `1px solid ${COLORS.border}`,
+          borderRadius: '6px',
+          color: COLORS.text,
+          fontFamily: FONT.mono,
+          fontSize: '13px',
+          outline: 'none',
+        }}
+      >
+        {spec.oauth.regions.map((region) => (
+          <option key={region.key} value={region.key}>{region.label}</option>
+        ))}
+      </select>
+      <p style={{
+        margin: '6px 0 0',
+        fontFamily: FONT.sans, fontSize: '11px',
+        color: COLORS.textMuted, lineHeight: 1.5,
+      }}>
+        The end of the address you sign in to {spec.label} at. An account is in
+        one region and signs in nowhere else.
+      </p>
+    </div>
+  )
+}
+
 /* Fields the sign-in does not fill in for you — a folder, usually. */
 function settingFields(spec) {
   return spec.fields.filter((field) => !field.advanced)
@@ -578,6 +636,14 @@ function SignInStart({ spec, client, setClient, values, setValues, busy, onStart
           You will be sent to {spec.label} to approve access, then straight back
           here. SAND keeps the tokens on this machine, inside the vault.
         </p>
+      )}
+
+      {spec.oauth.regions?.length > 0 && (
+        <RegionSelect
+          spec={spec}
+          value={regionOf(spec, values)}
+          onChange={(key) => setValues({ ...values, [spec.oauth.region_field]: key })}
+        />
       )}
 
       <Button

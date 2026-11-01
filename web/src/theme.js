@@ -182,6 +182,7 @@ export const KIND_ICONS = {
   drime: '◍',
   filen: '⬢',
   internxt: '◭',
+  zoho: '◫',
   icloud: '◇',
   proton: '◉',
   mega: '⊙',

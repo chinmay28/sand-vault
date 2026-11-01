@@ -12,6 +12,25 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### Zoho WorkDrive is a cloud SAND can hold parts on
+
+**Zoho WorkDrive** joins the sign-in backends: connect it the way Google
+Drive or Box is connected, and SAND keeps its parts in one folder under the
+account's My Folders — or under a Team Folder named by ID. Zoho runs a
+separate service in each region, with its own sign-in server under zoho.com,
+zoho.eu, zoho.in, zoho.com.au, zoho.jp and zoho.com.cn, and an account lives
+in exactly one of them, so the sign-in screen asks which before it sends you
+anywhere, and the account remembers the answer for the day it has to sign in
+again. The first connection needs a Server-based Application from Zoho's API
+console, registered in the same region; `SAND_ZOHO_CLIENT_ID` and
+`SAND_ZOHO_CLIENT_SECRET` preconfigure one for a whole install. A part
+deleted goes to Zoho's trash and is erased from it where the plan allows —
+Zoho sells that with its Team and Business plans — and is left in the trash
+for you to empty where it does not. Zoho reports no quota to an app, so the
+account shows what SAND's folder holds against the size you declare for it.
+Zoho WorkDrive was listed in the backend notes as a WebDAV preset to add; it
+has no WebDAV, and that entry is gone.
+
 ### SAND sizes itself to the machine it runs on
 
 Every number that decided how much was in flight or in memory at once — the
