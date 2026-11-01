@@ -11,6 +11,7 @@ import SubVaults from './SubVaults'
 import RecoveryKit from './RecoveryKit'
 import MachineSettings, { machineStatusLine } from './MachineSettings'
 import IndexBackup, { backupDelayLabel } from './IndexBackup'
+import Instances from './Instances'
 import { StrayParts } from './CleanOrphans'
 import {
   DefaultClouds, PARTS_PER_FILE, defaultSchemeFor, parseScheme, schemeName,
@@ -160,6 +161,22 @@ export default function VaultSettings({
               : backupDelayLabel(status?.manifest_backup_delay_seconds ?? 5)}
             tone={status?.manifest_backup === false ? COLORS.warn : undefined}
             onClick={() => setOpen('backup')}
+          />
+        )}
+
+        {/* The machines this vault is open on. One, almost always — and then
+            the line says so and the dialog says how a second joins. With
+            company it counts the others, because what the index says about
+            them is what greys a file out here and names where it is read. */}
+        {providers.length > 0 && (
+          <Setting
+            icon="🖥️"
+            label="Machines"
+            hint="Open this vault on more than one machine, sharing the index through the clouds"
+            status={status?.peers > 0
+              ? `${status.instance} + ${status.peers} other${status.peers === 1 ? '' : 's'}`
+              : `Only ${status?.instance || 'this one'}`}
+            onClick={() => setOpen('machines')}
           />
         )}
 
@@ -321,6 +338,12 @@ export default function VaultSettings({
           zIndex={CHILD_Z}
           onClose={() => { setOpen(null); loadKit() }}
         />
+      )}
+
+      {/* A pull changes the listing, so it is `onChanged` rather than a
+          quiet close. */}
+      {open === 'machines' && (
+        <Instances status={status} zIndex={CHILD_Z} onClose={close} onChanged={onChanged} />
       )}
 
       {open === 'film' && (

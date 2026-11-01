@@ -41,6 +41,14 @@ type vaultStatus struct {
 	// rather than one per change. Zero means a push the moment the index
 	// changes. Set with POST /api/vault/backup/delay.
 	ManifestBackupDelaySeconds int `json:"manifest_backup_delay_seconds"`
+
+	// Instance is the name this machine opens the vault under — its
+	// hostname, unless SAND_INSTANCE says otherwise — which is what an
+	// account's host and a file's "readable on" are compared against in the
+	// browser. Peers counts the other machines known to open this vault.
+	// See internal/vault/instance.go.
+	Instance string `json:"instance"`
+	Peers    int    `json:"peers"`
 }
 
 // webdavStatus is what the browser needs to tell someone how to mount the
@@ -76,6 +84,10 @@ func (s *Server) unlockedStatus(v *vault.Vault) vaultStatus {
 	}
 	status.ManifestBackup = v.BackupEnabled()
 	status.ManifestBackupDelaySeconds = int(v.BackupDelay() / time.Second)
+	status.Instance = v.Instance()
+	if instances, err := v.Instances(); err == nil {
+		status.Peers = len(instances) - 1
+	}
 	if s.WebDAV {
 		status.WebDAV = &webdavStatus{Path: s.webdavPrefix() + "/"}
 	}
@@ -151,6 +163,9 @@ func (s *Server) handleVaultUnlock(w http.ResponseWriter, r *http.Request) {
 		vaultErrorResponse(w, err)
 		return
 	}
+	// Whatever the other machines wrote while this one was locked, folded in
+	// behind the answer rather than ahead of it.
+	s.syncAfterUnlock(v)
 
 	s.startSession(w, r)
 	writeJSON(w, http.StatusOK, s.unlockedStatus(v))

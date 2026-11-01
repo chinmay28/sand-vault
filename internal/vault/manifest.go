@@ -90,6 +90,24 @@ type Entry struct {
 	// over whatever its folder says. Nil — the usual — means the folder
 	// decides. See replicatedLocked.
 	Replicate *bool `json:"replicate,omitempty"`
+
+	// IndexedAt is when this row was last written differently: created, moved,
+	// renamed, re-placed, re-keyed, replicated. Stamped by the index write
+	// itself rather than by whatever changed the row (see stampIndexLocked),
+	// so no path through the package can forget to. It is what decides, when
+	// two machines have each changed the same row, whose change stands —
+	// see merge.go. Zero on a row written before machines could share an
+	// index, which merges as if stamped when the file was created.
+	IndexedAt time.Time `json:"indexed_at,omitzero"`
+}
+
+// stamp is when the row was last written differently, for the merge: its
+// IndexedAt, or its CreatedAt on a row from before the stamp existed.
+func (e *Entry) stamp() time.Time {
+	if e.IndexedAt.IsZero() {
+		return e.CreatedAt
+	}
+	return e.IndexedAt
 }
 
 // Scheme is the erasure code this file's shards were cut with. A file recorded
@@ -250,6 +268,26 @@ type Manifest struct {
 	// until the stray-parts scan finds it gone, a sweep erases it, or its
 	// account is disconnected. See staleparts.go.
 	StaleParts []*StalePart `json:"stale_parts,omitempty"`
+
+	// Instances is the register of machines that have written this index, by
+	// instance name, each with when it last did and which accounts it can
+	// reach. Clock is the index's version as a vector clock — one counter per
+	// machine, that machine's count of its own writes — which is how two
+	// copies of the index are told apart: one is ahead of the other, or the
+	// two have diverged and must be merged. Both only ever on the main
+	// vault's manifest; a sub vault's index does not travel between
+	// machines. See instance.go and merge.go.
+	Instances map[string]*Instance `json:"instances,omitempty"`
+	Clock     map[string]uint64    `json:"clock,omitempty"`
+
+	// Tombstones records the files taken out of this index, by ID, and when;
+	// FolderTombstones the explicit folders, by path. They are what lets a
+	// merge tell a file the other machine deleted from a file this machine
+	// added: without them, every merge would bring every deleted file back.
+	// Both are pruned after tombstoneLifetime, and both only on the main
+	// vault's manifest. See merge.go.
+	Tombstones       map[string]time.Time `json:"tombstones,omitempty"`
+	FolderTombstones map[string]time.Time `json:"folder_tombstones,omitempty"`
 
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -526,6 +564,10 @@ func (m *Manifest) Mkdir(dir string) error {
 
 	m.Folders = append(m.Folders, missing...)
 	sort.Strings(m.Folders)
+	// Made (again) here, so no longer deleted, whatever an earlier remove said.
+	for _, f := range missing {
+		delete(m.FolderTombstones, f)
+	}
 	return nil
 }
 
@@ -778,8 +820,15 @@ func dedupeFolders(folders []string) []string {
 
 // add appends an entry, replacing any existing entry at the same path.
 func (m *Manifest) add(entry *Entry) {
+	// A row coming (back) in is not deleted, whatever an earlier remove said:
+	// an upload rolled back after its commit failed puts the row it replaced
+	// back this way.
+	delete(m.Tombstones, entry.ID)
 	for i, e := range m.Entries {
 		if e.Dir == entry.Dir && e.Name == entry.Name {
+			if e.ID != entry.ID {
+				m.tombstone(e.ID)
+			}
 			m.Entries[i] = entry
 			return
 		}
@@ -787,24 +836,41 @@ func (m *Manifest) add(entry *Entry) {
 	m.Entries = append(m.Entries, entry)
 }
 
-// remove drops an entry by ID and reports whether it was present.
+// remove drops an entry by ID and reports whether it was present. The ID is
+// written down as deleted, so that a merge with another machine's index does
+// not read its copy of the row as a file this one has yet to hear of.
 func (m *Manifest) remove(id string) bool {
 	for i, e := range m.Entries {
 		if e.ID == id {
 			m.Entries = append(m.Entries[:i], m.Entries[i+1:]...)
+			m.tombstone(id)
 			return true
 		}
 	}
 	return false
 }
 
-// removeFolders drops a folder and all of its explicit subfolders.
+// tombstone records that a file left this index just now.
+func (m *Manifest) tombstone(id string) {
+	if m.Tombstones == nil {
+		m.Tombstones = map[string]time.Time{}
+	}
+	m.Tombstones[id] = time.Now().UTC()
+}
+
+// removeFolders drops a folder and all of its explicit subfolders, and writes
+// each down as deleted for the same reason remove does.
 func (m *Manifest) removeFolders(dir string) {
 	dir = CleanDir(dir)
 	prefix := dir + "/"
 	kept := m.Folders[:0]
+	now := time.Now().UTC()
 	for _, f := range m.Folders {
 		if f == dir || strings.HasPrefix(f, prefix) {
+			if m.FolderTombstones == nil {
+				m.FolderTombstones = map[string]time.Time{}
+			}
+			m.FolderTombstones[f] = now
 			continue
 		}
 		kept = append(kept, f)

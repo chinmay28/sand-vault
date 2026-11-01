@@ -114,12 +114,18 @@ export function healthSummary(health) {
     }
   }
   if (health.checked_at) {
+    // The clouds this machine reaches. A disk on another machine that opens
+    // the vault is not asked from here and is not one of them.
+    const here = health.accounts - (health.elsewhere || 0)
+    const notes = []
+    // An account connected since the last sweep is not a worry, but it is not
+    // covered by the sentence either, so the line says so under its breath.
+    if (health.unchecked > 0) notes.push(`${health.unchecked} not checked yet`)
+    if (health.elsewhere > 0) notes.push(`${health.elsewhere} on another machine`)
     return {
       tone: COLORS.success,
-      line: health.accounts === 1 ? '1 cloud healthy' : `${health.accounts} clouds healthy`,
-      // An account connected since the last sweep is not a worry, but it is not
-      // covered by the sentence either, so the line says so under its breath.
-      note: health.unchecked > 0 ? `${health.unchecked} not checked yet` : null,
+      line: here === 1 ? '1 cloud healthy' : `${here} clouds healthy`,
+      note: notes.length ? notes.join(' · ') : null,
     }
   }
   return { tone: COLORS.textMuted, line: 'Not checked yet' }
@@ -400,7 +406,7 @@ export default function CloudHealth({ health, zIndex, onClose, onChanged }) {
 /* One cloud's standing. The account's own colour down the edge, because that
    is how an account is identified everywhere else in the app. */
 function CloudRow({ cloud }) {
-  const tone = !cloud.checked ? COLORS.textMuted
+  const tone = cloud.elsewhere || !cloud.checked ? COLORS.textMuted
     : !cloud.healthy ? COLORS.error
       : cloud.disk_warning ? COLORS.warn : COLORS.success
   const took = cloud.took_ms > 0 ? `${cloud.took_ms < 1000
@@ -445,8 +451,9 @@ function CloudRow({ cloud }) {
           color: tone,
           lineHeight: 1.5,
         }}>
-          {!cloud.checked ? 'Not checked yet'
-            : cloud.healthy ? `Answering${took ? ` in ${took}` : ''}`
+          {cloud.elsewhere ? `On ${cloud.elsewhere} — not asked from this machine`
+            : !cloud.checked ? 'Not checked yet'
+              : cloud.healthy ? `Answering${took ? ` in ${took}` : ''}`
               /* How long it has been down, not merely that it is: one is a
                  blip somebody can wait out and the other is a cloud that has
                  quietly stopped being one of the places their files live. An
@@ -455,7 +462,7 @@ function CloudRow({ cloud }) {
               : ['Not answering', lasting(cloud.failing_since)].filter(Boolean).join(' ')}
         </div>
 
-        {cloud.error && (
+        {cloud.error && !cloud.elsewhere && (
           <div style={{
             marginTop: '4px',
             fontFamily: FONT.mono,

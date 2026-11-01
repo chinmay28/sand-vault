@@ -603,7 +603,7 @@ export default function App() {
             pendingRekey={status.stats?.pending_migration || 0}
             onRefresh={refreshAll}
             onPreview={(file, hasThumb, film, gallery) => setPreview({ file, hasThumb, film, gallery })}
-            onInspect={setInspecting}
+            onInspect={(file, reach) => setInspecting({ file, reach })}
             onFilm={setFilming}
             onError={setError}
           />
@@ -716,7 +716,9 @@ export default function App() {
 
       {inspecting && (
         <ShardInspector
-          file={inspecting}
+          file={inspecting.file}
+          reach={inspecting.reach}
+          instance={status.instance}
           providers={providers}
           onClose={() => setInspecting(null)}
           /* Moving the parts changes the badges the listing draws. */

@@ -33,6 +33,12 @@ import (
 type Vault struct {
 	path string
 
+	// instance is the name this machine opens the vault under — the hostname
+	// unless SAND_INSTANCE says otherwise. It is what a local account's Host
+	// is compared against, and the key this machine writes itself into the
+	// index's register of machines under. See instance.go.
+	instance string
+
 	mu       sync.RWMutex
 	store    *storeFile
 	vaultKey []byte // nil while locked
@@ -47,6 +53,11 @@ type Vault struct {
 
 	providers []provider.Config
 	manifest  *Manifest
+
+	// indexFP is every main-index row's fingerprint as of the last write, by
+	// ID — what stampIndexLocked compares against to find the rows this write
+	// changed. Rebuilt whenever an index is adopted whole. See merge.go.
+	indexFP map[string]uint64
 
 	// settings is the sealed preferences section: the film database key, and
 	// anything else that is a secret rather than a knob. nil while locked, like
@@ -149,6 +160,11 @@ type Vault struct {
 	// also carries the hold an import puts on pushes while it is connecting
 	// the accounts. See backuppace.go and holdBackups.
 	backups *backupPacer
+
+	// syncMu guards lastSync, when this machine last pulled the shared
+	// index from the accounts (see sync.go). A leaf lock, taken alone.
+	syncMu   sync.Mutex
+	lastSync time.Time
 
 	// backupMu guards the foreign-backup guard's memory of which accounts
 	// have been checked and warned about, below. A leaf lock: nothing is
@@ -262,12 +278,13 @@ func (v *Vault) SetTuning(t tuning.Tuning) {
 // file exists yet, Initialized reports false and Init can create one.
 func Open(path string) (*Vault, error) {
 	v := &Vault{
-		path:   path,
-		live:   map[string]provider.Provider{},
-		spools: map[string]bool{},
-		chunks: newChunkCache(tuning.Default().ChunkCacheBytes),
-		flight: newChunkFlight(),
-		reads:  newReadStats(),
+		path:     path,
+		instance: InstanceName(),
+		live:     map[string]provider.Provider{},
+		spools:   map[string]bool{},
+		chunks:   newChunkCache(tuning.Default().ChunkCacheBytes),
+		flight:   newChunkFlight(),
+		reads:    newReadStats(),
 	}
 	// How the recorder saves itself. It counts on the read path and knows
 	// nothing about keys or files; this is the one line that hands it back to
@@ -545,6 +562,12 @@ func (v *Vault) Unlock(password string) error {
 	// of the first things somebody opens after signing in.
 	v.loadReadHistoryLocked()
 
+	// A local folder connected before machines had names belongs to the
+	// machine that can see it. Looked for now, with the lock held and a
+	// short deadline per folder, so the listing that follows the unlock
+	// already knows which disks are here.
+	v.claimLocalAccountsLocked()
+
 	// Anything that changed while an account was unreachable — or while the
 	// vault was locked mid-push — is repaired here rather than staying stale
 	// until the next upload.
@@ -667,6 +690,7 @@ func (v *Vault) lockLocked() {
 	v.retired = nil
 	v.providers = nil
 	v.manifest = nil
+	v.indexFP = nil
 	v.settings = nil
 	v.subs = nil
 
@@ -726,6 +750,7 @@ func (v *Vault) adoptLocked(u *unsealed) {
 	}
 	v.providers = u.providers
 	v.manifest = u.manifest
+	v.indexFP = fingerprints(v.manifest)
 	v.settings = u.settings
 	if v.settings == nil {
 		v.settings = &vaultSettings{}
@@ -878,12 +903,37 @@ func (v *Vault) dataKeyForLocked(keyID string) ([]byte, error) {
 // would be gone from memory and from the next successful file alike, leaving
 // a rolled-back entry readable by nothing. See keyPrune.
 func (v *Vault) persistLocked() error {
+	return v.persistIndexLocked(indexWrite{stamp: true, push: true})
+}
+
+// indexWrite says how a write of the vault file is to count.
+//
+// Every write this machine makes on its own account stamps the index as its
+// own — the rows it changed, its counter in the clock, its entry in the
+// register — and schedules a push of the result to the accounts. A write that
+// adopts another machine's copy of the index whole does neither: the copy is
+// already on the accounts, and counting it as this machine's write would have
+// the other machine take it back as news, and so on forever. See sync.go.
+type indexWrite struct {
+	stamp bool // mark the index as changed by this machine
+	push  bool // schedule a push of the index to the accounts
+}
+
+// persistIndexLocked is the write itself; persistLocked is the ordinary case.
+func (v *Vault) persistIndexLocked(how indexWrite) error {
 	if v.vaultKey == nil {
 		return ErrLocked
 	}
 
 	now := time.Now().UTC()
-	v.manifest.UpdatedAt = now
+	if how.stamp {
+		v.manifest.UpdatedAt = now
+		// This write's mark on the index, for the other machines that open
+		// it: which rows changed, whose write this is, and that this machine
+		// was here.
+		v.stampIndexLocked(now)
+		v.registerSelfLocked(now)
+	}
 
 	staged := *v.store
 
@@ -951,7 +1001,9 @@ func (v *Vault) persistLocked() error {
 	// The index on disk just changed, so the copies on the accounts are now
 	// stale. Pushing happens on its own goroutine: this runs under the write
 	// lock, and network round-trips must not block browsing.
-	v.scheduleBackup(false)
+	if how.push {
+		v.scheduleBackup(false)
+	}
 	return nil
 }
 
@@ -1186,6 +1238,14 @@ func (v *Vault) AddProvider(ctx context.Context, cfg provider.Config) (provider.
 	cfg = provider.WithDefaults(cfg)
 	cfg.ID = uuid.NewString()
 	cfg.AddedAt = time.Now().UTC()
+	// A folder on this machine is reachable from this machine and no other,
+	// and the ping below is about to prove it is here. Stamped so that another
+	// machine opening this vault knows not to try the path.
+	if provider.IsLocal(cfg.Kind) {
+		cfg.Host = v.instance
+	} else {
+		cfg.Host = ""
+	}
 
 	live, err := v.newLiveProvider(cfg)
 	if err != nil {
@@ -1387,6 +1447,11 @@ func (v *Vault) UpdateProvider(ctx context.Context, id string, edit ProviderEdit
 		if !provider.SameOptions(before.Options, merged) {
 			after.Options = merged
 			reconnected = true
+			// Re-pointed from this machine, and the ping below is about to
+			// prove the new folder is here: this is where it lives now.
+			if provider.IsLocal(after.Kind) {
+				after.Host = v.instance
+			}
 			// The parts folder may have moved, and the replica folder the
 			// account keeps was checked against the one it had: the same
 			// test SetReplication applies, from the other side, so the parts
@@ -1781,14 +1846,22 @@ func (v *Vault) TestProvider(ctx context.Context, id string) error {
 		return err
 	}
 	record.Healthy = true
+	v.claimAnswered([]CloudHealth{record})
 	return nil
 }
 
 // ProviderStatus is the health and load of one connected account.
 type ProviderStatus struct {
 	provider.Config
-	Online bool           `json:"online"`
-	Error  string         `json:"error,omitempty"`
+	Online bool   `json:"online"`
+	Error  string `json:"error,omitempty"`
+
+	// Elsewhere names the machine this account lives on when it is not this
+	// one — a local folder on another machine that opens the same vault.
+	// Such an account is not pinged: it is neither online nor failing from
+	// here, and the card says where it is instead. See instance.go.
+	Elsewhere string `json:"elsewhere,omitempty"`
+
 	Shards int            `json:"shards"`
 	Stored int64          `json:"stored"`
 	Usage  provider.Usage `json:"usage"`
@@ -1844,6 +1917,12 @@ func (v *Vault) ProviderStatuses(ctx context.Context) ([]ProviderStatus, error) 
 	live := make([]provider.Provider, len(v.providers))
 	for i, cfg := range v.providers {
 		statuses[i] = ProviderStatus{Config: cfg.Redacted()}
+		if v.livesElsewhere(cfg) {
+			// Not a cloud that is down: a disk that is plugged into a
+			// different machine. Said as such, and not asked.
+			statuses[i].Elsewhere = v.awayLocked(cfg)
+			continue
+		}
 		p, err := v.buildProvider(cfg)
 		if err != nil {
 			statuses[i].Error = err.Error()
@@ -1936,7 +2015,9 @@ func (v *Vault) ProviderStatuses(ctx context.Context) ([]ProviderStatus, error) 
 	// answer this listing carries for a slow account is "still waiting", which
 	// is not a finding, and the finding comes with the ping.
 	if complete {
-		v.recordSweep(time.Now(), healthFromStatuses(statuses))
+		found := healthFromStatuses(statuses)
+		v.recordSweep(time.Now(), found)
+		v.claimAnswered(found)
 		return statuses, nil
 	}
 	final := append([]ProviderStatus(nil), statuses...)
@@ -1956,7 +2037,9 @@ func (v *Vault) ProviderStatuses(ctx context.Context) ([]ProviderStatus, error) 
 		if !v.Unlocked() {
 			return
 		}
-		v.recordSweep(time.Now(), healthFromStatuses(final))
+		found := healthFromStatuses(final)
+		v.recordSweep(time.Now(), found)
+		v.claimAnswered(found)
 	}()
 	return statuses, nil
 }
@@ -2132,6 +2215,14 @@ type Listing struct {
 	// replica.go.
 	Replicate         FolderReplicate `json:"replicate"`
 	ReplicatedFolders map[string]bool `json:"replicated_folders,omitempty"`
+
+	// Unreachable names the files in this listing that this machine cannot
+	// read on its own — too few of their parts are on clouds it reaches, a
+	// disk on another machine holding the rest — and for each, which other
+	// machine can. Worked out from the index and the register of machines,
+	// never from a cloud, so it costs the listing nothing. Absent on a vault
+	// that runs on one machine. See reach.go.
+	Unreachable map[string]Reach `json:"unreachable,omitempty"`
 }
 
 // List returns the contents of a folder in one of the vaults inside the file.
@@ -2198,6 +2289,7 @@ func (v *Vault) List(scope Scope, dir string) (*Listing, error) {
 		TrackedRepos: trackedIDs(m, files),
 		PreviousKey:  previousKeyUnder(m, active, dir, folders),
 		Replicate:    replicateForListing(scope, m, dir),
+		Unreachable:  v.outOfReachLocked(scope, files),
 		ReplicatedFolders: func() map[string]bool {
 			if scope != MainScope {
 				return nil

@@ -38,6 +38,7 @@ func init() {
 			"back on demand.",
 		DocsURL: "https://support.apple.com/en-us/HT204025",
 		Order:   30,
+		Local:   true,
 		Fields: []FieldSpec{
 			{
 				Key:         "path",

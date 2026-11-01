@@ -222,6 +222,7 @@ func kitImportCmd() *cobra.Command {
 	var (
 		replace        bool
 		skipCloudIndex bool
+		sibling        bool
 	)
 
 	cmd := &cobra.Command{
@@ -244,7 +245,15 @@ is a real option: it costs only the files added between the export and the
 password change.
 
 An account that will not connect does not stop this. It is recorded, the rest
-carries on, and the report says which one to fix and how.`,
+carries on, and the report says which one to fix and how.
+
+With --second-instance the vault goes on running where the kit was exported,
+and this machine opens it too: the two share the index through the copies on
+the accounts, and a change on either reaches the other. That needs one vault
+key on both, so the password here has to be the vault's own; a different one
+is refused. A local folder stays the business of the machine it is plugged
+into, and files whose parts sit on it are greyed out here, naming that
+machine — see 'sand vault sync' and 'sand vault instances'.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			sealed, err := readKitFile(args[0])
@@ -256,8 +265,11 @@ carries on, and the report says which one to fix and how.`,
 				return err
 			}
 
-			password, err := readPasswordFrom("SAND_PASSWORD",
-				"A password for the recovered vault: ")
+			prompt := "A password for the recovered vault: "
+			if sibling {
+				prompt = "The vault's password: "
+			}
+			password, err := readPasswordFrom("SAND_PASSWORD", prompt)
 			if err != nil {
 				return err
 			}
@@ -273,6 +285,7 @@ carries on, and the report says which one to fix and how.`,
 				Replace:        replace,
 				OldPassword:    os.Getenv("SAND_OLD_PASSWORD"),
 				SkipCloudIndex: skipCloudIndex,
+				Sibling:        sibling,
 			})
 			if err != nil {
 				return err
@@ -286,6 +299,8 @@ carries on, and the report says which one to fix and how.`,
 		"import over a vault that already holds files, replacing them")
 	cmd.Flags().BoolVar(&skipCloudIndex, "skip-cloud-index", false,
 		"use the kit's own index rather than a newer copy from the accounts")
+	cmd.Flags().BoolVar(&sibling, "second-instance", false,
+		"join the vault the kit came from, which goes on running there, under its own password")
 	return cmd
 }
 
@@ -384,8 +399,15 @@ func openKitWithSecret(sealed []byte) (*vault.Kit, error) {
 // report does, because a list of what worked is not what the person reading it
 // needs.
 func printKitImportReport(r *vault.KitImportReport) {
-	fmt.Printf("\nRecovered from kit %s, made %s.\n\n",
-		r.KitID, r.KitCreated.Format("2 Jan 2006"))
+	if r.Sibling {
+		fmt.Printf("\nJoined the vault from kit %s, made %s, as a second instance.\n",
+			r.KitID, r.KitCreated.Format("2 Jan 2006"))
+		fmt.Printf("  The other machine goes on running it; changes on either reach the other\n")
+		fmt.Printf("  through the copies of the index on the accounts ('sand vault sync').\n\n")
+	} else {
+		fmt.Printf("\nRecovered from kit %s, made %s.\n\n",
+			r.KitID, r.KitCreated.Format("2 Jan 2006"))
+	}
 
 	if r.IndexSource != "kit" {
 		fmt.Printf("  The index came off %s, dated %s — newer than the kit.\n",

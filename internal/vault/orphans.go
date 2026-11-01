@@ -410,6 +410,12 @@ func (v *Vault) scanForOrphans(ctx context.Context) (*OrphanScan, error) {
 // answer, because an empty answer here reads as "that cloud holds nothing of
 // yours", which is not what happened.
 func (v *Vault) scanForOrphansOn(ctx context.Context, providerID string) (*OrphanScan, error) {
+	// What another machine stored since the last pull is not in this index
+	// yet, and would be read here as parts no file wants. Pulled first, so
+	// the index the scan reasons from is as current as the accounts can make
+	// it; what is in flight on the other machine right now is said below.
+	peerWarning := v.pullBeforeScan(ctx)
+
 	v.mu.RLock()
 	if v.dataKey == nil {
 		v.mu.RUnlock()
@@ -452,6 +458,9 @@ func (v *Vault) scanForOrphansOn(ctx context.Context, providerID string) (*Orpha
 		// the state a machine that has just been reinstalled is in — and the
 		// state a half-finished import leaves the most spools behind in.
 		Leftovers: v.ScanForLeftovers(),
+	}
+	if peerWarning != "" {
+		scan.Warnings = append(scan.Warnings, peerWarning)
 	}
 	if len(listings) == 0 {
 		return scan, nil

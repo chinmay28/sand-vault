@@ -1442,6 +1442,117 @@ for the repository list on every folder it opens.
 
 ---
 
+### 3.17 One vault on several machines
+
+A vault file is small and a cloud answers from anywhere, so the same vault can
+run on a desk and on a Raspberry Pi at once — the same password, the same
+clouds, the same tree. There is no server between them. Each machine holds its
+own vault file and makes its own changes to it, and the copies of the index
+every account already carries for recovery (`manifest.sand`, §3.6) are the
+channel: a machine reads the copies it can reach, folds each into its own
+index, and pushes the result back. Two things had to be settled to make that
+true, and a third follows from them. The code is `instance.go`, `reach.go`,
+`merge.go` and `sync.go`.
+
+**A machine has a name, and a local folder knows whose it is.** A folder on a
+disk is a part-holder like any other to the machine it is plugged into and a
+path that does not exist to every other. So every machine opens vaults under a
+name — the hostname, or `SAND_INSTANCE` — and every account on a backend
+reached through the machine rather than over the network (`provider.Spec.Local`:
+the local folder, the synced-folder family, iCloud, Proton's client) carries
+the name of the machine that connected it (`provider.Config.Host`). A machine
+reading a `Host` that is not its own does not try the path: the account is
+reported as living *on* that machine rather than as down, the health figure
+leaves it out (`HealthReport.Elsewhere`), and the file health probe marks its
+shards `elsewhere` rather than missing. An account from before machines had
+names has no `Host`; the first machine whose unlock or ping finds the folder
+claims it, and a vault file copied to a second machine does not have that
+machine claim a disk it has never seen.
+
+The index carries a register of the machines that have written it
+(`Manifest.Instances`): name, when it last wrote, and which accounts it can
+reach — every cloud it holds credentials for and the local folders that live on
+it. From the register and the shard records a listing can say, with no network
+call, which files this machine cannot rebuild on its own and which other
+machine can (`Listing.Unreachable`, one `Reach` per file: parts reachable from
+here against the file's own code, the replica counted the same way since a read
+falls back to it, and the machines whose account lists reach enough parts). The
+browser greys such a row out and names the machine; nothing is wrong with the
+file.
+
+**Two copies of the index are told apart by a vector clock and put together by
+rules that both machines reach the same answer under.** The clock
+(`Manifest.Clock`) has one counter per machine, bumped by every write that
+machine makes on its own account. Comparing two clocks says whether one copy is
+a later version of the other — in which case the later one is taken whole — or
+whether both machines have written since they last agreed, in which case the
+rows are combined (`mergeIndexes`):
+
+- A row on both sides: the later stamp wins. Every row carries `IndexedAt`,
+  set by the index write itself for exactly the rows whose contents changed
+  since the last write (`stampIndexLocked` compares a fingerprint of each row
+  against the last write's), so no code path through the package can forget to
+  stamp.
+- A row on one side only, with a tombstone for it on the other: gone. Deleting
+  a file records its ID in `Manifest.Tombstones` for ninety days; the machine
+  that deleted it erased its parts, so a tombstone wins however the stamps
+  compare. Explicit folders have tombstones of their own.
+- A row on one side only and no tombstone: kept — a file the other side has not
+  heard of.
+- Two rows that end up at one path — each machine uploaded a `notes.txt` to the
+  same folder — both survive, and the later one takes the ` (2)` name an upload
+  beside an existing file would have. Decided by stamp rather than by side, so
+  both machines rename the same row.
+
+Thumbnail packs follow their `UpdatedAt`; the per-file and per-folder records
+(film details, repositories, automations, folder art) merge by key with the
+local value standing and drop with the file they describe. A combined index is a
+version no machine had, so it is this machine's write: stamped, counted in the
+clock, and pushed. An adopted copy is written to the vault file and nothing
+more, since counting it as a write would have the other machine take it back as
+news, and so on forever (`indexWrite`). Nothing a machine wrote is ever lost in
+a race: it is in that machine's own vault file, and the next fold carries it to
+the copies again — a push that lands over another machine's push costs one
+round, not a change.
+
+**When the folding happens** (`SyncIndex`, `pullIndex`): at every unlock; every
+`PeerSyncInterval` (five minutes) once another machine is in the register and
+every `LoneSyncInterval` (an hour) until one is, which is what a vault on one
+machine pays to find out that it still is; before every push once another
+machine is known, so that what goes out has what came in folded into it
+(`SyncManifestBackup`); before an orphan scan, which otherwise reads another
+machine's uploads as parts no file wants — the scan also says, when another
+machine is known, that a file being uploaded there right now has parts on the
+accounts and no row in any copy yet, and that the sweep is for a moment when
+the other machine is idle; and on demand (`POST /api/vault/sync`, `sand vault
+sync`, the Machines dialog). A machine the register has never heard of
+announces itself at its first pull with one write of its own, so a machine that
+only ever reads is still known to the others. A copy sealed under a password
+this vault does not have is counted and left alone; the push's own guard says
+what to do about it (§3.6).
+
+**How a second machine joins.** The copies on the accounts are sealed under the
+vault key, so the two machines must derive the same one: the same password and
+the same KDF salt. Copying the vault file does that. So does importing a
+recovery kit with `KitImportOptions.Sibling` (`--second-instance`, the
+checkbox in the import dialog): the kit's salt is kept rather than a fresh one
+minted, the password is checked against the vault key the kit carries, and the
+copies on the accounts are folded in rather than claimed — the other machine is
+still writing them. Changing the password on one machine changes the vault key,
+and the others then read every copy as foreign until they are re-joined from a
+fresh kit; the pull says so.
+
+**What does not travel.** A sub vault's section is sealed under its own
+password, so a sub vault made on one machine appears on the others shut
+(`adoptSubVaultsLocked` takes the record), and what is done inside one stays on
+the machine it was done on. Account credentials never travel, as before: a
+cloud connected on one machine is listed on the other by its shard records and
+its register entry — "readable on study-pc" — and connected there by hand if
+wanted. And a vault whose index backup is off has no copies for another machine
+to read; the pull says so and does nothing.
+
+---
+
 ### 3.8 Sub vaults
 
 A sub vault is a vault inside the vault, with a password of its own. It exists
@@ -2699,6 +2810,8 @@ reveals only whether a vault exists.
 | POST | `/api/vault/defaults` | Set the accounts uploads use by default — any multiple of 3, which chooses the scheme (§5.3); empty list = pick per file |
 | POST | `/api/vault/backup` | Turn replication of the index to the accounts on or off (off erases the copies out there) |
 | POST | `/api/vault/backup/delay` | How far apart the automatic pushes of the index are kept (`seconds`, 0 to 3600; the status reports it as `manifest_backup_delay_seconds`) |
+| GET | `/api/vault/instances` | The machines that open this vault — this one first, each with when it last wrote the index and which accounts it reaches — and when this machine last pulled (§3.17) |
+| POST | `/api/vault/sync` | Pull the copies of the index from the accounts and fold them in now; answers with what came of it (`outcome`, counts, renames, the register) |
 | GET | `/api/vault/recovery` | Is a connected account carrying a vault this one could recover? (§3.7) |
 | POST | `/api/vault/recovery` | Adopt that index (`password` — the *lost* vault's, `provider_id`, `dry_run`) |
 | POST | `/api/vault/recovery/resume` | Re-point the index at accounts reconnected since (`dry_run`; no password) |

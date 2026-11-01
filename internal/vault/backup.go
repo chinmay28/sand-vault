@@ -67,6 +67,11 @@ type BackupAccount struct {
 	Kind    provider.Kind `json:"kind"`
 	Name    string        `json:"name"`
 	AddedAt time.Time     `json:"added_at"`
+
+	// Host is the machine a local account lives on, as the account itself
+	// records it (provider.Config.Host). Not a credential, and the one thing
+	// about such an account a recovery on another machine needs to know.
+	Host string `json:"host,omitempty"`
 }
 
 // Snapshot is the plaintext inside a backup: everything needed to rebuild a
@@ -371,6 +376,7 @@ func (v *Vault) snapshotLocked() *Snapshot {
 			Kind:    cfg.Kind,
 			Name:    cfg.Name,
 			AddedAt: cfg.AddedAt,
+			Host:    cfg.Host,
 		})
 	}
 	keys := []SnapshotKey{{
@@ -416,6 +422,24 @@ func (v *Vault) SyncManifestBackup(ctx context.Context, force bool) ([]string, e
 	if v.store.ManifestBackupDisabled {
 		v.mu.RUnlock()
 		return nil, nil
+	}
+	peers := v.hasPeersLocked()
+	v.mu.RUnlock()
+
+	// Another machine writes these copies too. What it wrote since the last
+	// pull is folded in first, so this push carries both machines' changes
+	// rather than putting this one's over the other's. A copy this vault
+	// cannot open is left to the guard below. See sync.go.
+	if peers && !force {
+		if _, err := v.pullIndex(ctx, false); err != nil && !errors.Is(err, ErrLocked) {
+			log.Printf("could not fold in the other machines' index before pushing: %v", err)
+		}
+	}
+
+	v.mu.RLock()
+	if v.dataKey == nil {
+		v.mu.RUnlock()
+		return nil, ErrLocked
 	}
 	if reason := v.backupRefusalLocked(); reason != "" {
 		v.mu.RUnlock()

@@ -48,6 +48,7 @@ func init() {
 		// Last in the dialog: it is the one that names no service, and the
 		// answer when none of the others fit.
 		Order: 40,
+		Local: true,
 		Covers: []Service{
 			{Name: "An external or network drive", Hint: "wherever it is mounted"},
 			{Name: "A NAS share", Hint: "an SMB or NFS mount on this machine"},

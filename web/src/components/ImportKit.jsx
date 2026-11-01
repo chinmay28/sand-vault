@@ -22,6 +22,11 @@ export default function ImportKit({ onClose, onImported }) {
      made, which is why it is folded away rather than asked for. See
      OldPasswordField for what it buys. */
   const [oldPassword, setOldPassword] = useState('')
+  /* Joining the vault the kit came from, which goes on running there, rather
+     than replacing it. The password then has to be the vault's own: both
+     machines read and write the copies of the index on the accounts, and
+     those are sealed under the key the password derives. */
+  const [sibling, setSibling] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const [codeHint, setCodeHint] = useState(null)
@@ -69,7 +74,7 @@ export default function ImportKit({ onClose, onImported }) {
     setBusy(true)
     setError(null)
     try {
-      const resp = await api.importKit({ file, secret, password, oldPassword })
+      const resp = await api.importKit({ file, secret, password, oldPassword, sibling })
       setReport(resp.report)
       setSignIn(resp.status)
     } catch (err) {
@@ -142,12 +147,16 @@ export default function ImportKit({ onClose, onImported }) {
             />
           )}
 
+          <SiblingChoice on={sibling} onChange={setSibling} />
+
           <PasswordInput
-            label="A password for the recovered vault"
+            label={sibling ? "The vault's password" : 'A password for the recovered vault'}
             value={password}
-            autoComplete="new-password"
-            placeholder="Choose a strong passphrase"
-            help="What you will type to unlock this machine from now on. It can be a new one — the kit carries its own keys, so nothing here depends on it."
+            autoComplete={sibling ? 'current-password' : 'new-password'}
+            placeholder={sibling ? 'The password the vault unlocks with on the other machine' : 'Choose a strong passphrase'}
+            help={sibling
+              ? 'Both machines have to derive the same key, so this has to be the password the vault already has. A different one is refused.'
+              : 'What you will type to unlock this machine from now on. It can be a new one — the kit carries its own keys, so nothing here depends on it.'}
             onChange={(e) => setPassword(e.target.value)}
           />
           <PasswordInput
@@ -167,7 +176,7 @@ export default function ImportKit({ onClose, onImported }) {
             style={{ width: '100%', justifyContent: 'center' }}
           >
             {busy ? <Spinner size={13} color={COLORS.bg} /> : null}
-            {busy ? 'RECOVERING…' : 'RECOVER THIS VAULT'}
+            {busy ? (sibling ? 'JOINING…' : 'RECOVERING…') : (sibling ? 'JOIN THIS VAULT' : 'RECOVER THIS VAULT')}
           </Button>
 
           {busy && (
@@ -232,6 +241,58 @@ function OldPasswordField({ value, onChange }) {
       help="Not what unlocks the recovered vault. It opens the copies of the index on your accounts, which are newer than the kit. Leaving it empty costs only what was added between the kit and the password change."
       onChange={(e) => onChange(e.target.value)}
     />
+  )
+}
+
+/* Replace the vault, or join it.
+
+   A kit was made for the day the machine died, and that is the default. The
+   other reason to carry one to a second machine is that the first is fine: a
+   desk and a Raspberry Pi opening the same vault, each with its own vault file,
+   sharing the index through the copies every cloud already holds. That takes
+   one vault key on both, which is why the choice changes what the password
+   field asks for, and it leaves the copies on the accounts alone rather than
+   claiming them — the other machine is still writing them. */
+function SiblingChoice({ on, onChange }) {
+  return (
+    <div style={{ marginBottom: '18px' }}>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={on}
+        onClick={() => onChange(!on)}
+        style={{
+          display: 'flex', alignItems: 'center', gap: '10px',
+          width: '100%', padding: '9px 11px', textAlign: 'left',
+          background: COLORS.bg,
+          border: `1px solid ${on ? COLORS.accent : COLORS.border}`,
+          borderRadius: '6px',
+          color: COLORS.text,
+          fontFamily: FONT.sans, fontSize: '12.5px',
+          cursor: 'pointer',
+        }}
+      >
+        <span style={{
+          width: '15px', height: '15px', flexShrink: 0,
+          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+          border: `1px solid ${on ? COLORS.accent : COLORS.borderBright}`,
+          borderRadius: '4px',
+          background: on ? COLORS.accent : 'transparent',
+          color: COLORS.bg, fontSize: '10px',
+        }}>{on ? '✓' : ''}</span>
+        <span>The vault is still running on another machine — open it here too</span>
+      </button>
+      <p style={{
+        margin: '6px 0 0', fontFamily: FONT.sans, fontSize: '11px',
+        lineHeight: 1.55, color: COLORS.textMuted,
+      }}>
+        {on
+          ? 'Both machines keep the index in step through the clouds. A folder on the other '
+            + 'machine\'s disk stays its own: files with parts on it are greyed out here and say '
+            + 'which machine can read them.'
+          : 'Leave this off to replace a vault whose machine is gone.'}
+      </p>
+    </div>
   )
 }
 
@@ -377,7 +438,7 @@ function ImportReport({ report: initial, onClose }) {
 
   return (
     <Modal
-      title="Recovered"
+      title={report.sibling ? 'Joined' : 'Recovered'}
       subtitle={complete
         ? 'Your files are browsable now.'
         : 'Your files are browsable now. One thing below would bring back the rest.'}

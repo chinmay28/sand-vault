@@ -74,6 +74,9 @@ func init() {
 		// meets in a different section however these are numbered. Last of the
 		// sign-ins, since it is the only one needing something installed.
 		Order: 14,
+		// The client, its sign-in state and its binary are all on this
+		// machine, which is where the account is reachable from.
+		Local: true,
 		Fields: []FieldSpec{
 			{
 				Key:      "folder",

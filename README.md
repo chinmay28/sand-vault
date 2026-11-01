@@ -1747,6 +1747,50 @@ erase it.
 
 ---
 
+## Opening the vault on more than one machine
+
+The same vault can run on a desk and on a Raspberry Pi at once — the same
+password, the same clouds, the same tree. Each machine keeps its own vault
+file, and the copies of the index every cloud already holds for recovery are
+how a change on one reaches the other: a machine reads the copies it can
+reach, folds them into its own index, and writes the result back. It does that
+at every unlock, every few minutes once it has seen another machine, before
+every push, and when you press **Pull now** under *Vault settings › Machines*
+(or run `sand vault sync`).
+
+To open a vault on a second machine, export a recovery kit on the first and
+import it on the second with **the vault is still running on another machine**
+ticked (`sand vault kit import --second-instance`), under the vault's own
+password — or copy the vault file across. The password has to be the same
+because the copies of the index are sealed under the key it derives, and each
+machine reads what the other writes. The second machine appears under
+*Machines* on the first after its first pull.
+
+A folder on a machine's own disk is that machine's alone. The other machine
+does not try the path: the account card says **on study-pc** instead of going
+red, the health figure leaves it out, and files whose parts are on it are
+**greyed out** in the listing with a note saying which machine can read them —
+worked out from the index, so it costs the listing nothing. Everything with
+enough parts on the clouds opens from either machine.
+
+Two machines writing at once is handled rather than forbidden. A file stored on
+one appears on the other; a file deleted on one disappears from the other,
+however the other has touched it since (its parts are gone); the same row
+changed on both keeps the later change; and a `notes.txt` uploaded to the same
+folder from both machines keeps both files, the later one renamed
+`notes (2).txt` the way an upload beside an existing file is. Nothing written
+on either machine is lost to the race: it is in that machine's own vault file,
+and the next pull carries it over. What does not travel: account credentials
+(a cloud connected on one machine is connected on the other by hand), and the
+inside of a sub vault, which appears on the other machine shut and is yours to
+open there with its own password. Changing the vault password on one machine
+means re-joining the others from a fresh kit.
+
+One caution: an orphan sweep reasons from the index, and a file being uploaded
+on the other machine at that moment has parts on the clouds and no row in any
+copy yet. The scan pulls first and says so; sweep when the other machine is
+idle.
+
 ## Losing the vault file
 
 Parts are encrypted under a random 256-bit key that lives inside your vault
@@ -2034,6 +2078,8 @@ sand vault defaults [account]... [--scheme m-of-n] [--clear]
 sand vault backup [--disable|--enable] [--every 5s]
                                               Write the encrypted index to every account,
                                               and set how far apart the automatic writes are kept
+sand vault sync                               Pull what the other machines opening this vault wrote
+sand vault instances                          List the machines that open this vault
 sand vault recover [--from ACCOUNT]           Rebuild a lost vault from an account's copy
 sand vault recover --resume                   Finish one, once the rest of the clouds are back
 sand vault reclaim [--account NAME]...        Re-encrypt recovered files under your own key
@@ -2829,6 +2875,8 @@ one walk, so comparing them costs nothing.
 | POST | `/api/vault/recovery` | Rebuild the index from that copy (`password`, `provider_id`, `dry_run`) |
 | POST | `/api/vault/recovery/resume` | Re-point the index at accounts reconnected since (`dry_run`; no password) |
 | POST | `/api/vault/reclaim` | Re-encrypt recovered files under this vault's own key, onto `accounts` |
+| GET | `/api/vault/instances` | The machines that open this vault, and when this one last pulled their changes |
+| POST | `/api/vault/sync` | Pull the copies of the index from the clouds and fold them in now |
 | GET | `/api/machine` | How SAND is sized to this machine: the profile, the machine it stands on, what was detected, every knob's default and effective value, and the knobs' ranges |
 | PUT | `/api/machine` | Choose a `profile` (`auto`, `pi5`, `workstation`, `custom` with a `machine` of `cpus` and `memory_bytes`) and any `overrides` by knob name; applied at once, refused if it would not fit |
 | DELETE | `/api/machine` | Back to automatic with nothing overridden |

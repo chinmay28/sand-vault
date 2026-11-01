@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { COLORS, FONT, accountColor, fileIcon, formatBytes, formatDate, formatDay, isPlayable } from '../theme'
 import { api } from '../api'
+import { homeOf } from '../placement'
 import { useDownload } from '../download'
 import { FolderZip } from './FolderZip'
 import { SaveSheet } from './SaveSheet'
@@ -49,7 +50,7 @@ export const FILM_COLUMNS = 'minmax(0,1fr) 92px 150px 132px 216px'
    down to a single part cannot be rebuilt at all. Working that out twice —
    once for rows and once for tiles — is how the two views drift apart. */
 export function useFileActions({
-  file, providers, film, vault = '', subVaults = [], replicate = null, tracked = false,
+  file, providers, film, vault = '', subVaults = [], replicate = null, tracked = false, reach = null,
   onPreview, onInspect, onFilm, onRefresh, onError,
 }) {
   const [busy, setBusy] = useState(false)
@@ -88,6 +89,11 @@ export function useFileActions({
      whole with a spare, where a 2-of-3 one with five would be impossible. */
   const degraded = storedParts(file.shards) < fileScheme(file).total
   const dead = storedParts(file.shards) < fileScheme(file).data
+  /* Whole, but not from here: too few of its parts are on clouds this machine
+     reaches, the rest being on a disk plugged into another machine that opens
+     the same vault. The row is greyed rather than reddened — nothing is wrong
+     with the file — and says which machine can read it. See reach.go. */
+  const away = !!reach
   // Only what a player is any use for gets offered one.
   const playable = isPlayable(file.mime, file.name)
 
@@ -141,7 +147,8 @@ export function useFileActions({
   const open = legacy ? () => setConverting('open') : onPreview
   const openTitle = dead
     ? 'Too few parts remain to rebuild this file'
-    : legacy ? 'Stored in the old format — convert it before it can be opened' : 'Open'
+    : away ? awayTitle(reach)
+      : legacy ? 'Stored in the old format — convert it before it can be opened' : 'Open'
 
   const dialogs = (
     <>
@@ -417,7 +424,7 @@ export function useFileActions({
   )
 
   return {
-    busy, downloading, download, legacy, degraded, dead, playable, open, openTitle, dialogs,
+    busy, downloading, download, legacy, degraded, dead, away, playable, open, openTitle, dialogs,
     openMenu: () => setMenu(true),
     convert: () => setConverting('open'),
     stream: (mode) => setStreaming(mode),
@@ -505,7 +512,7 @@ export function Row({ children, mobile, columns = COLUMNS, check, selected }) {
    height, so opening a file means hitting the row rather than the glyph.
    `location` is the folder the row was found in, which only a search result
    has to say. */
-function NameButton({ mobile, icon, label, location, chevron, disabled, title, onClick }) {
+function NameButton({ mobile, icon, label, location, chevron, disabled, muted, title, onClick }) {
   return (
     <button
       onClick={onClick}
@@ -521,7 +528,10 @@ function NameButton({ mobile, icon, label, location, chevron, disabled, title, o
         cursor: disabled ? 'not-allowed' : 'pointer',
         fontFamily: FONT.mono,
         fontSize: mobile ? '13.5px' : '12.5px',
-        color: disabled ? COLORS.error : COLORS.text,
+        /* Muted is a file that is whole but on another machine; the error
+           colour stays for a file that is short of parts anywhere. */
+        color: muted ? COLORS.textMuted : disabled ? COLORS.error : COLORS.text,
+        opacity: muted ? 0.7 : 1,
         overflow: 'hidden', textAlign: 'left',
       }}
     >
@@ -549,6 +559,16 @@ function NameButton({ mobile, icon, label, location, chevron, disabled, title, o
 
 /* What a file's placement comes to, in one line: the scheme, and how much of
    it is actually stored. */
+/* What the greyed row says when pointed at: how short this machine falls, and
+   where the file can be read instead. */
+export function awayTitle(reach) {
+  const parts = `Only ${reach.here} of the ${reach.needed} parts needed are on clouds this machine can reach`
+  if (reach.elsewhere?.length) {
+    return `${parts} — readable on ${reach.elsewhere.join(', ')}`
+  }
+  return `${parts} — the rest are on a machine this vault has not seen`
+}
+
 function describeParts(file) {
   const scheme = fileScheme(file)
   const parts = `${schemeName(scheme)} · ${storedParts(file.shards)} of ${scheme.total} shards stored`
@@ -570,7 +590,7 @@ function describeParts(file) {
    The squares narrow past three so that nine of them still fit the column.
    This is the desktop row's and the tile's read-out; a phone row draws
    PartDots instead. */
-function PartBadges({ file }) {
+function PartBadges({ file, providers = [] }) {
   const scheme = fileScheme(file)
   const degraded = storedParts(file.shards) < scheme.total
   const dead = storedParts(file.shards) < scheme.data
@@ -580,11 +600,15 @@ function PartBadges({ file }) {
     <>
       {Array.from({ length: scheme.total }, (_, i) => i + 1).map((part) => {
         const shard = file.shards.find((s) => s.part === part)
+        /* A shard on a disk plugged into another machine: drawn faded, and
+           the hover text says where it is. The account list carries the
+           machine; the row only has the account's id. */
+        const home = shard && homeOf(providers, shard.provider_id)
         return (
           <span
             key={part}
             title={shard
-              ? `Shard ${part} on ${shard.provider_name}`
+              ? `Shard ${part} on ${shard.provider_name}${home ? ` (on ${home})` : ''}`
               : `Shard ${part} not stored`}
             style={{
               width: tight ? '12px' : '19px',
@@ -600,6 +624,7 @@ function PartBadges({ file }) {
               color: shard ? COLORS.bg : COLORS.textMuted,
               background: shard ? accountColor(shard.provider_id) : 'transparent',
               border: shard ? 'none' : `1px dashed ${COLORS.border}`,
+              opacity: home ? 0.4 : 1,
             }}
           >{part}</span>
         )
@@ -678,10 +703,11 @@ function PartDots({ file }) {
 export function FileRow({
   file, location, mobile, providers, hasThumb, film, columns, selecting, selected,
   onSelect, onPreview, onInspect, onFilm, onRefresh, onError,
-  vault = '', subVaults = [], replicate = null, tracked = false,
+  vault = '', subVaults = [], replicate = null, tracked = false, reach = null,
 }) {
   const a = useFileActions({
-    file, providers, film, vault, subVaults, replicate, tracked, onPreview, onInspect, onFilm, onRefresh, onError,
+    file, providers, film, vault, subVaults, replicate, tracked, reach,
+    onPreview, onInspect, onFilm, onRefresh, onError,
   })
   const icon = fileIcon(file.mime, file.name)
 
@@ -697,7 +723,8 @@ export function FileRow({
       icon={<Thumb id={file.id} icon={icon} size={26} expected={hasThumb} />}
       label={file.name}
       location={location}
-      disabled={a.dead}
+      disabled={a.dead || a.away}
+      muted={a.away}
       title={a.openTitle}
       onClick={a.open}
     />
@@ -716,14 +743,14 @@ export function FileRow({
   ) : (
     <button
       onClick={onInspect}
-      title="Where the shards live"
+      title={a.away ? a.openTitle : 'Where the shards live'}
       aria-label="Where the shards live"
       style={{
         display: 'flex', alignItems: 'center', gap: '3px',
         background: 'none', border: 'none', padding: 0,
         borderRadius: '6px', cursor: 'pointer', flexShrink: 0,
       }}
-    ><PartBadges file={file} /></button>
+    ><PartBadges file={file} providers={providers} /></button>
   )
 
   /* A pointer can pick between two 34px squares. A fingertip cannot, and one
@@ -828,14 +855,15 @@ export function FileRow({
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
           <button
             onClick={a.open}
-            disabled={a.dead}
+            disabled={a.dead || a.away}
             title={a.openTitle}
             style={{
               display: 'flex', alignItems: 'center', gap: '10px',
               flex: 1, minWidth: 0, minHeight: '52px',
               background: 'none', border: 'none', padding: '0 2px',
               borderRadius: '8px', textAlign: 'left',
-              cursor: a.dead ? 'not-allowed' : 'pointer',
+              cursor: a.dead || a.away ? 'not-allowed' : 'pointer',
+              opacity: a.away ? 0.55 : 1,
             }}
           >
             <Thumb id={file.id} icon={icon} size={52} expected={hasThumb} />
@@ -843,7 +871,7 @@ export function FileRow({
             <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '3px' }}>
               <span style={{
                 fontFamily: FONT.mono, fontSize: '13.5px',
-                color: a.dead ? COLORS.error : COLORS.text,
+                color: a.dead ? COLORS.error : a.away ? COLORS.textMuted : COLORS.text,
                 overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
               }}>{file.name}</span>
 
@@ -1438,10 +1466,11 @@ export function FileTile({
   file, location, mobile, providers, hasThumb, film, aspect = TILE_SQUARE,
   selecting, selected,
   onSelect, onPreview, onInspect, onFilm, onRefresh, onError,
-  vault = '', subVaults = [], replicate = null, tracked = false,
+  vault = '', subVaults = [], replicate = null, tracked = false, reach = null,
 }) {
   const a = useFileActions({
-    file, providers, film, vault, subVaults, replicate, tracked, onPreview, onInspect, onFilm, onRefresh, onError,
+    file, providers, film, vault, subVaults, replicate, tracked, reach,
+    onPreview, onInspect, onFilm, onRefresh, onError,
   })
   const icon = fileIcon(file.mime, file.name)
 
@@ -1466,7 +1495,7 @@ export function FileTile({
         />
       )}
     >
-      <TileFace onClick={a.open} disabled={a.dead} title={a.openTitle}>
+      <TileFace onClick={a.open} disabled={a.dead || a.away} title={a.openTitle} style={{ opacity: a.away ? 0.55 : 1 }}>
         <span style={{
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           width: '100%', aspectRatio: aspect, overflow: 'hidden',
@@ -1490,9 +1519,9 @@ export function FileTile({
                 {film?.year ? film.year : formatBytes(file.size)}
               </span>
               <span
-                title={describeParts(file)}
+                title={a.away ? a.openTitle : describeParts(file)}
                 style={{ marginLeft: 'auto', display: 'flex', gap: '3px', flexShrink: 0 }}
-              ><PartBadges file={file} /></span>
+              ><PartBadges file={file} providers={providers} /></span>
             </>
           )}
         />

@@ -6,7 +6,7 @@ import { fetchToBlob, useDownload } from '../download'
 import { readToken } from '../readwatch'
 import { SaveSheet } from './SaveSheet'
 import { thumbnailFromElement } from '../thumbs'
-import { indexPlacement, indexReplica, shardState } from '../placement'
+import { homeOf, indexPlacement, indexReplica, shardState } from '../placement'
 import ImageViewer from './ImageViewer'
 import PdfPreview from './PdfPreview'
 import ReadStatus from './ReadStatus'
@@ -558,7 +558,7 @@ export default function PreviewModal({
 
 /* A read-out of exactly where a file's parts are and whether each one is still
    answering — the thing you want when an account starts misbehaving. */
-export function ShardInspector({ file, providers = [], onClose, onChanged }) {
+export function ShardInspector({ file, reach = null, instance = '', providers = [], onClose, onChanged }) {
   const [health, setHealth] = useState(null)
   const [error, setError] = useState(null)
   const [relocating, setRelocating] = useState(false)
@@ -616,7 +616,21 @@ export function ShardInspector({ file, providers = [], onClose, onChanged }) {
         </Banner>
       )}
 
-      {health && (
+      {/* Whole, but not from here: the parts this machine cannot reach sit
+          on a disk plugged into another machine that opens the same vault.
+          Said before the probe's verdict, which from this machine can only
+          read as short — and said in grey, because nothing is wrong. */}
+      {reach && (
+        <Banner tone="info">
+          {`${instance || 'This machine'} reaches ${reach.here} of the ${reach.needed} parts needed to `
+            + 'rebuild this file. '}
+          {reach.elsewhere?.length
+            ? `It can be read on ${reach.elsewhere.join(', ')}, where the rest of its parts are.`
+            : 'The rest are on a machine this vault has not seen write the index yet.'}
+        </Banner>
+      )}
+
+      {health && !reach && (
         <Banner tone={health.recoverable ? 'success' : 'error'}>
           {health.recoverable
             ? 'Enough parts are reachable to rebuild this file right now.'
@@ -650,6 +664,7 @@ export function ShardInspector({ file, providers = [], onClose, onChanged }) {
           shard={shard}
           chunks={chunks}
           checking={checking}
+          home={shard.elsewhere || homeOf(providers, shard.provider_id)}
         />
       ))}
 
@@ -708,14 +723,15 @@ export function ShardInspector({ file, providers = [], onClose, onChanged }) {
 /* One shard of one placement: whether it answered, whose colour it is, where
    it is and what it weighed. A part is drawn as a filled square and a replica
    shard as an outlined one, the way the row badges tell the two apart. */
-function ShardRow({ shard, chunks, checking = false, outlined = false, what = 'Shard' }) {
+function ShardRow({ shard, chunks, checking = false, outlined = false, what = 'Shard', home = '' }) {
   const chunked = chunks > 1
   const colour = accountColor(shard.provider_id)
   /* The index knows where the shard is before anyone has asked whether it
      is still there: a row is drawn the moment the dialog opens and the
      mark on the left says what the check has found, or that it is still
-     out, or that it came back without an answer. */
-  const state = shardState(shard, checking)
+     out, or that it came back without an answer. A shard on a disk plugged
+     into another machine is not asked from this one, and the mark says so. */
+  const state = home ? 'elsewhere' : shardState(shard, checking)
   const missing = state === 'missing'
   return (
     <div style={{
@@ -736,6 +752,7 @@ function ShardRow({ shard, chunks, checking = false, outlined = false, what = 'S
           missing: 'Did not answer',
           checking: 'Being checked now',
           unknown: 'The check did not finish',
+          elsewhere: `On ${home} — not asked from this machine`,
         }[state]}
         style={{
           display: 'inline-flex',
@@ -749,7 +766,7 @@ function ShardRow({ shard, chunks, checking = false, outlined = false, what = 'S
       >
         {state === 'checking'
           ? <Spinner size={11} color={COLORS.textDim} />
-          : { present: '✓', missing: '✗', unknown: '?' }[state]}
+          : { present: '✓', missing: '✗', unknown: '?', elsewhere: '⇢' }[state]}
       </span>
 
       {/* The account's colour, so this list and the row's badges can be read
@@ -772,6 +789,7 @@ function ShardRow({ shard, chunks, checking = false, outlined = false, what = 'S
         <span style={{ color: COLORS.textMuted }}> on </span>
         <span style={{ color: COLORS.text }}>{shard.provider_name}</span>
         <span style={{ color: COLORS.textMuted }}> ({shard.provider_kind})</span>
+        {home && <span style={{ color: COLORS.textMuted }}> · on {home}</span>}
         <div style={{
           marginTop: '4px',
           color: COLORS.textMuted,

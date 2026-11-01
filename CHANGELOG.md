@@ -12,6 +12,29 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### One vault, open on more than one machine
+
+The same vault can now run on a desk and on a Raspberry Pi at once, with the
+same password and the same clouds. Each machine keeps its own vault file; the
+copies of the index every cloud already holds for recovery are how a change on
+one reaches the other, pulled at every unlock, every few minutes once another
+machine has been seen, before every push, and on demand from **Vault settings
+› Machines** or `sand vault sync`. A second machine joins by importing a
+recovery kit with *the vault is still running on another machine* ticked
+(`sand vault kit import --second-instance`) under the vault's own password, or
+by copying the vault file. Two machines writing at once is handled: a file
+deleted on one disappears from the other, the same row changed on both keeps
+the later change, and two files uploaded to one path keep both, the later one
+renamed the way an upload beside an existing file is. A folder on one
+machine's disk stays that machine's: the other does not try the path, its
+account card says *on study-pc* rather than going red, the health figure
+leaves it out, and files whose parts are on it are greyed out in the listing
+with a note naming the machine that can read them — from the index, so the
+listing costs nothing more. `GET /api/vault/instances` lists the machines,
+`POST /api/vault/sync` pulls, the vault status carries `instance` and `peers`,
+a listing carries `unreachable`, and an account carries `host` and
+`elsewhere`. See §3.17 of the architecture document for the rules.
+
 ### A failed upload says which cloud refused it and what to do next
 
 An upload that did not store its file used to be reported as

@@ -1201,6 +1201,12 @@ type ShardHealth struct {
 	Present bool   `json:"present"`
 	Size    int64  `json:"observed_size"`
 	Error   string `json:"error,omitempty"`
+
+	// Elsewhere names the machine the shard's account lives on when it is
+	// not this one. Such a shard is not asked for — the path would be tried
+	// on the wrong machine — and counts as neither present nor missing from
+	// here. See instance.go.
+	Elsewhere string `json:"elsewhere,omitempty"`
 }
 
 // PlacementHealth is what a check of one placement found: the parts, or the
@@ -1279,6 +1285,7 @@ type placementCheck struct {
 	shards     []Shard
 	configs    map[string]provider.Config
 	absent     map[string]string
+	elsewhere  map[string]string
 	archiveID  string
 	chunked    bool
 	chunkCount int
@@ -1299,7 +1306,15 @@ func (v *Vault) placementCheckLocked(e *Entry, role provider.Role) placementChec
 		scheme:     e.Scheme(),
 	}
 	for _, s := range e.Shards {
-		if _, ok := pc.configs[s.ProviderID]; ok {
+		if cfg, ok := pc.configs[s.ProviderID]; ok {
+			// A disk on another machine is not asked from this one.
+			if v.livesElsewhere(cfg) {
+				if pc.elsewhere == nil {
+					pc.elsewhere = map[string]string{}
+				}
+				pc.elsewhere[s.ProviderID] = v.awayLocked(cfg)
+				delete(pc.configs, s.ProviderID)
+			}
 			continue
 		}
 		if _, ok := pc.absent[s.ProviderID]; ok {
@@ -1385,7 +1400,11 @@ func (v *Vault) checkPlacement(ctx context.Context, pc placementCheck) Placement
 
 		cfg, ok := pc.configs[shard.ProviderID]
 		if !ok {
-			health.Shards[i].Error = pc.absent[shard.ProviderID]
+			if home := pc.elsewhere[shard.ProviderID]; home != "" {
+				health.Shards[i].Elsewhere = home
+			} else {
+				health.Shards[i].Error = pc.absent[shard.ProviderID]
+			}
 			continue
 		}
 

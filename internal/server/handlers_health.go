@@ -175,7 +175,7 @@ func logHealthChanges(report vault.HealthReport, was map[string]bool) map[string
 			}
 		}
 
-		if !cloud.Checked {
+		if !cloud.Checked || cloud.Elsewhere != "" {
 			continue
 		}
 		if !cloud.Healthy {

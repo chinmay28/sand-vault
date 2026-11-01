@@ -58,3 +58,11 @@ export function shardState(shard, checking) {
   if (shard.present === false) return 'missing'
   return checking ? 'checking' : 'unknown'
 }
+
+/* The machine an account lives on when it is not this one, from the account
+   list's own say-so (`elsewhere` on each account): empty for every cloud and
+   for every disk that is plugged into this machine. A row and the inspector
+   both read it to say where a shard is rather than that it is missing. */
+export function homeOf(providers, id) {
+  return providers?.find((p) => p.id === id)?.elsewhere || ''
+}

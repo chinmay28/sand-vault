@@ -1274,3 +1274,62 @@ func TestKitStatusTracksDrift(t *testing.T) {
 		t.Error("connecting an account after the kit does not show as a change")
 	}
 }
+
+// A kit imported as a second instance shares the vault key: the same password
+// is required, the copies on the accounts are folded in rather than claimed,
+// and the two machines see each other.
+func TestKitImportAsASecondInstanceSharesTheVault(t *testing.T) {
+	ctx := context.Background()
+	pc, _ := newTestVaultOn(t, "pc", 3)
+	stored, _, err := pc.Upload(ctx, MainScope, "/", "on-the-desk.txt", []byte("desk"), UploadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprint, zipped := exportTestKit(t, pc)
+	pc.AwaitBackupSync()
+
+	pi := freshVault(t)
+	pi.SetInstance("pi")
+	kit := openTestKit(t, zipped, fingerprint.Code)
+
+	// Not the vault's password: refused before anything is written.
+	_, err = pi.ImportKit(ctx, kit, KitImportOptions{Password: "something else", Sibling: true})
+	if !errors.Is(err, ErrNotTheVaultsPassword) {
+		t.Fatalf("a second instance under another password: %v", err)
+	}
+
+	report, err := pi.ImportKit(ctx, kit, KitImportOptions{Password: testPassword, Sibling: true})
+	if err != nil {
+		t.Fatalf("ImportKit as a second instance: %v", err)
+	}
+	if !report.Sibling || report.Files != 1 {
+		t.Errorf("report %+v", report)
+	}
+	pi.AwaitBackupSync()
+
+	// The folders were connected on the pc, so from the pi the file is out
+	// of reach, and the listing says which machine can read it.
+	listing, err := pi.List(MainScope, "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reach, away := listing.Unreachable[stored.ID]
+	if !away || len(reach.Elsewhere) != 1 || reach.Elsewhere[0] != "pc" {
+		t.Errorf("on the pi the file reads %+v, want out of reach and readable on the pc", reach)
+	}
+
+	// The pc's next pull learns of the pi — the copies open on both sides,
+	// because the key is the same.
+	if _, err := pc.SyncIndex(ctx); err != nil {
+		t.Fatal(err)
+	}
+	instances, _ := pc.Instances()
+	if len(instances) != 2 || instances[1].Name != "pi" {
+		t.Errorf("the pc's register: %+v, want the pi in it", instances)
+	}
+	// And the pi unlocks under the vault's own password from now on.
+	pi.Lock()
+	if err := pi.Unlock(testPassword); err != nil {
+		t.Errorf("the second instance does not unlock under the vault's password: %v", err)
+	}
+}

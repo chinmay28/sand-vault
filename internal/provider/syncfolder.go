@@ -182,6 +182,7 @@ func (s syncFolder) spec() Spec {
 		Description: s.description,
 		DocsURL:     s.docsURL,
 		Order:       s.order,
+		Local:       true,
 		Fields: []FieldSpec{
 			{
 				Key:         "path",

@@ -23,11 +23,22 @@ const testPassword = "correct horse battery staple"
 // standing in for n separate cloud accounts.
 func newTestVault(t *testing.T, accounts int) (*Vault, []string) {
 	t.Helper()
+	return newTestVaultOn(t, "", accounts)
+}
+
+// newTestVaultOn is newTestVault for a machine with a name of its own, so a
+// test can be two machines in one process (see instance.go). The empty name
+// is this machine's.
+func newTestVaultOn(t *testing.T, instance string, accounts int) (*Vault, []string) {
+	t.Helper()
 
 	dir := t.TempDir()
 	v, err := Open(filepath.Join(dir, "vault.sand"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
+	}
+	if instance != "" {
+		v.SetInstance(instance)
 	}
 	if err := v.Init(testPassword, PolicyStrict); err != nil {
 		t.Fatalf("Init: %v", err)
