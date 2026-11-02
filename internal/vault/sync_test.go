@@ -558,6 +558,10 @@ func TestSavingALocalAccountsSettingsClaimsItForThisMachine(t *testing.T) {
 func TestOrphanSweepWaitsOutARecentPeerWrite(t *testing.T) {
 	v, _ := newTestVaultOn(t, "pc", 3)
 	v.SetArchiveSettleWindow(15 * time.Minute)
+	// The register is edited in memory below; a push still in flight from
+	// connecting the accounts would carry the edit to the copies, and the
+	// scan's own pull would then read it back. Let the pushes settle first.
+	v.AwaitBackupSync()
 	v.mu.Lock()
 	v.manifest.Instances["pi"] = &Instance{Name: "pi", LastSeen: time.Now()}
 	v.mu.Unlock()
