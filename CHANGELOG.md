@@ -12,6 +12,27 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### A long upload no longer stops at the half-hour
+
+Uploading a large tree through the browser — hours of batches — stopped
+thirty minutes after the vault was unlocked, with the lock screen in place of
+the folder and the rest of the files never sent. The session cookie was given
+the idle timeout as its lifetime, counted by the browser from the unlock and
+never reset, so however busy the tab was the browser stopped sending it at
+the half-hour and the next batch was refused as locked. The cookie now has no
+lifetime of its own: the server's record of when the session was last used is
+the one clock on it, so a session lasts as long as it is used. A request
+still running counts as use for as long as it runs — a batch over a slow link
+can outlast the idle timeout on its own, and the auto-lock no longer takes
+the keys out from under it — and the idle deadline moves on again when it
+returns, so the batch after it is let in. The clouds' standing, which a tab
+polls every minute on its own, no longer counts as use, so a tab left open
+does not keep the vault unlocked for good. While an upload is going, the page
+asks the system to keep the screen on, since a laptop that locks its screen
+and then sleeps sends nothing and fails the batch in flight; the ceiling on
+scattering one batch, half an hour, is now six hours, so a slow cloud on a
+slow evening does not cut it short either.
+
 ### One vault, open on more than one machine
 
 The same vault can now run on a desk and on a Raspberry Pi at once, with the

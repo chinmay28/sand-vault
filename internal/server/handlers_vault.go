@@ -346,7 +346,7 @@ func (s *Server) startSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not start a session", "INTERNAL_ERROR")
 		return
 	}
-	setSessionCookie(w, token, isSecureRequest(r), s.sessions.idleTimeout)
+	setSessionCookie(w, token, isSecureRequest(r))
 }
 
 type backupRequest struct {

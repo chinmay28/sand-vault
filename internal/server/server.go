@@ -407,11 +407,12 @@ func (s *Server) Handler() (http.Handler, error) {
 		"POST /api/providers/{id}/test": s.handleProviderTest,
 		// Whether every account is still answering, asked on a schedule so that
 		// a cloud going dark is noticed by the app rather than by the person who
-		// happens to open the drawer next month. The GET is a read of what the
-		// last check found and contacts nobody, which is what lets the panel
-		// poll it; the check itself pings every account; the schedule is how
-		// often that happens, or never. See handlers_health.go.
-		"GET /api/providers/health":           s.handleCloudHealth,
+		// happens to open the drawer next month. The check itself pings every
+		// account; the schedule is how often that happens, or never. See
+		// handlers_health.go. The GET — a read of what the last check found,
+		// which contacts nobody and which the app polls every minute — is
+		// registered below the loop, quietly, so the polling does not count as
+		// somebody using the vault.
 		"POST /api/providers/health/check":    s.handleCloudHealthCheck,
 		"POST /api/providers/health/schedule": s.handleCloudHealthSchedule,
 		// One account taken apart: its quota against what SAND actually put
@@ -670,6 +671,9 @@ func (s *Server) Handler() (http.Handler, error) {
 	for pattern, handler := range protected {
 		mux.HandleFunc(pattern, s.requireSession(handler))
 	}
+	// Behind the session like the rest, but not counted as use of the vault
+	// — see requireSessionQuietly.
+	mux.HandleFunc("GET /api/providers/health", s.requireSessionQuietly(s.handleCloudHealth))
 
 	// --- Embedded single-page frontend -----------------------------------
 	distFS, err := fs.Sub(webAssets, "dist")
@@ -874,6 +878,10 @@ func warnsOnBind(bind string) bool {
 }
 
 // autoLockLoop locks the vault once every session has gone idle.
+//
+// A session with a request still running under it is not idle, however long
+// ago it was renewed — sweep counts it as live — so an upload batch that takes
+// longer than the timeout holds the lock off until it has landed.
 func (s *Server) autoLockLoop() {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
@@ -946,23 +954,54 @@ func (s *Server) externalActive() bool {
 
 // requireSession rejects requests without a valid session, or when the vault
 // has been locked out from under them.
+//
+// A request that gets through counts as use of the vault for as long as it
+// runs, not only for the moment it began: the session is held for the length
+// of the handler and its idle deadline moves on again when the handler
+// returns. An upload of a folder is one request per batch, and a batch over a
+// slow link can take longer than the idle timeout on its own; held only at the
+// start, the session would lapse under it, the auto-lock would take the keys
+// part way through, and every batch after it would be turned away as locked.
 func (s *Server) requireSession(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !s.sessions.validate(sessionToken(r)) {
+		release, ok := s.sessions.acquire(sessionToken(r))
+		if !ok {
 			writeError(w, http.StatusUnauthorized, "vault is locked", "LOCKED")
 			return
 		}
-		v, err := s.Vault()
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error(), "VAULT_ERROR")
-			return
-		}
-		if !v.Unlocked() {
-			writeError(w, http.StatusUnauthorized, "vault is locked", "LOCKED")
-			return
-		}
-		next(w, r)
+		defer release()
+		s.serveUnlocked(w, r, next)
 	}
+}
+
+// requireSessionQuietly is requireSession for a request that is not anybody
+// doing anything: the browser asks for the standing of the clouds every
+// minute for as long as a tab is open, and a poll that counted as use would
+// mean a tab left open kept the vault unlocked forever. The session has to
+// be valid, but asking leaves its idle deadline where it was.
+func (s *Server) requireSessionQuietly(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.sessions.peek(sessionToken(r)) {
+			writeError(w, http.StatusUnauthorized, "vault is locked", "LOCKED")
+			return
+		}
+		s.serveUnlocked(w, r, next)
+	}
+}
+
+// serveUnlocked runs a handler whose session has been checked, provided the
+// vault itself is still open.
+func (s *Server) serveUnlocked(w http.ResponseWriter, r *http.Request, next http.HandlerFunc) {
+	v, err := s.Vault()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error(), "VAULT_ERROR")
+		return
+	}
+	if !v.Unlocked() {
+		writeError(w, http.StatusUnauthorized, "vault is locked", "LOCKED")
+		return
+	}
+	next(w, r)
 }
 
 // withSameOriginGuard blocks cross-origin state changes. Combined with the
