@@ -1,7 +1,11 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { COLORS, FONT, fileIcon, formatBytes } from '../theme'
 import { api } from '../api'
 import { Banner, Button, Input, Modal, PasswordInput, Spinner } from './ui'
+import {
+  CloudChoice, MIN_DATA, SelectionNote, ThresholdChoice, defaultSchemeFor, initialSelection,
+  parseScheme, schemeFor, schemeName, usableCut,
+} from './CloudSelect'
 import SshKeyField from './SshKeyField'
 import { Thumb } from './Thumb'
 
@@ -76,6 +80,7 @@ export function fileItem(file) {
    preview opens this over itself, and it has to sit above what opened it. */
 export function MachineTransfer({
   path, vault = '', mode: initialMode = 'import', preset = null, zIndex, onClose, onChanged,
+  providers = null, defaults = [], defaultScheme = '',
 }) {
   const [mode, setMode] = useState(initialMode)
   const [sources, setSources] = useState(null)
@@ -118,6 +123,9 @@ export function MachineTransfer({
         vault={vault}
         preset={preset}
         zIndex={zIndex}
+        providers={providers}
+        defaults={defaults}
+        defaultScheme={defaultScheme}
         onBack={() => setPicked(null)}
         onClose={onClose}
         onChanged={onChanged}
@@ -376,8 +384,18 @@ function ConnectSource({ onCancel, onConnected }) {
 
    In the import direction the listing is what you pick from; in the export
    direction it is where you are standing, and the button sends the vault's
-   selection here. Both draw the same rows. */
-function SourceBrowser({ source, mode, onMode, path, vault, preset, zIndex, onBack, onClose, onChanged }) {
+   selection here. Both draw the same rows.
+
+   `providers`, `defaults` and `defaultScheme` are the vault's connected clouds
+   and its standing choice among them, as the upload dialog is given them. With
+   them the import direction offers the same choice an upload gets — see
+   ImportClouds. Without them (a dialog opened to send a file out, which was
+   not told the clouds) an import names none, and the server lands it on the
+   vault's default, which is the same place the picker starts from. */
+function SourceBrowser({
+  source, mode, onMode, path, vault, preset, zIndex, providers, defaults, defaultScheme,
+  onBack, onClose, onChanged,
+}) {
   const [cwd, setCwd] = useState('')
   const [listing, setListing] = useState(null)
   const [reload, setReload] = useState(0)
@@ -388,8 +406,13 @@ function SourceBrowser({ source, mode, onMode, path, vault, preset, zIndex, onBa
   const [error, setError] = useState(null)
   const [summary, setSummary] = useState(null)
   const [runs, setRuns] = useState([])
-  const [detach, setDetach] = useState(false)
+  const [detach, setDetach] = useState(true)
   const [overwrite, setOverwrite] = useState(false)
+  // Where an import lands: the upload dialog's own starting point, which is
+  // the vault's default, and the same picker to change it with.
+  const [clouds, setClouds] = useState(() => (providers ? initialSelection(providers, defaults) : []))
+  const [threshold, setThreshold] = useState(() => parseScheme(defaultScheme)?.data ?? null)
+  const scheme = useMemo(() => chosenScheme(clouds.length, threshold), [clouds.length, threshold])
 
   useEffect(() => {
     let live = true
@@ -499,6 +522,7 @@ function SourceBrowser({ source, mode, onMode, path, vault, preset, zIndex, onBa
         paths: [...picked],
         dest: path,
         detach,
+        ...placementFor(providers, clouds, scheme),
       })
       // Detached, the answer is the run rather than the result: the transfer
       // has not happened yet, and what it comes to arrives on the poll. The
@@ -672,8 +696,23 @@ function SourceBrowser({ source, mode, onMode, path, vault, preset, zIndex, onBa
         />
       )}
 
-      {/* Asked for, never assumed. A transfer that keeps running after the
-          page is closed is a thing to have decided, not to discover. */}
+      {!exporting && providers && (
+        <ImportClouds
+          providers={providers}
+          defaults={defaults}
+          selected={clouds}
+          scheme={scheme}
+          disabled={busy}
+          onClouds={setClouds}
+          onThreshold={setThreshold}
+        />
+      )}
+
+      {/* Ticked to begin with, because the page is the fragile half of the
+          pair: a phone that sleeps or a tab closed by habit should not be what
+          decides whether an 18 GB film finishes arriving. It can be unticked
+          for the transfer that should stop when the page does, and the help
+          says what the tick costs: a restart of SAND still ends it. */}
       <Choice
         checked={detach}
         disabled={busy}
@@ -691,7 +730,11 @@ function SourceBrowser({ source, mode, onMode, path, vault, preset, zIndex, onBa
           )
           : (
             <>
-              <Button variant="primary" onClick={runImport} disabled={busy || picked.size === 0}>
+              <Button
+                variant="primary"
+                onClick={runImport}
+                disabled={busy || picked.size === 0 || (providers && !usableCut(clouds.length, scheme))}
+              >
                 {busy ? 'Bringing them in…' : `Import ${picked.size || ''}`.trim()}
               </Button>
               {picked.size > 0 && (
@@ -712,6 +755,97 @@ function SourceBrowser({ source, mode, onMode, path, vault, preset, zIndex, onBa
           : 'A folder brings everything under it, keeping its shape. Nothing is removed from the machine. If this is interrupted, every file that arrived whole is already scattered, and running the same import again skips those and carries on from the next one. A file cut off partway is the exception: nothing of it is kept, and the next run fetches it again from the first byte.'}
       </p>
     </Modal>
+  )
+}
+
+/* The code an import is cut with, from the clouds chosen and the threshold
+   asked for: the suggested code for that many clouds until somebody moves the
+   threshold, and a threshold left over from a wider selection pulled back
+   inside the new one rather than left naming a code that no longer exists.
+   Null while too few clouds are chosen to name one at all. */
+function chosenScheme(count, threshold) {
+  const suggested = defaultSchemeFor(count)
+  if (!suggested) return null
+  if (threshold === null) return suggested
+  return { data: Math.min(Math.max(threshold, MIN_DATA), count), total: count }
+}
+
+/* The placement fields of an import request: the clouds chosen, and the code
+   only when it is one the count would not have named by itself, so the rest
+   leave the server's own default in charge, as an upload does. Nothing at all
+   when the dialog was not told the clouds — the server lands the import on the
+   vault's default then, which is where the picker would have started. */
+export function placementFor(providers, clouds, scheme) {
+  if (!providers) return {}
+  const named = scheme && (!schemeFor(scheme.total) || schemeFor(scheme.total).data !== scheme.data)
+  return { accounts: clouds, scheme: named ? schemeName(scheme) : '' }
+}
+
+/* Where the files land, said in a line, with the upload dialog's picker
+   behind a button for the import that should go somewhere else.
+
+   Folded to begin with because the default is the right answer nearly every
+   time, and an import is already a dialog with a file list in it; what is
+   drawn folded is enough to notice when it is wrong. Opened, it is the same
+   rows and the same threshold an upload chooses from, with the same notes
+   under them, and nothing here is remembered as the vault's default — that is
+   the settings' job, and an import is not where to change it by accident. */
+function ImportClouds({ providers, defaults, selected, scheme, disabled, onClouds, onThreshold }) {
+  const [open, setOpen] = useState(false)
+  const usingDefault = useMemo(() => {
+    const set = new Set(defaults || [])
+    return set.size > 0 && selected.length === set.size && selected.every((id) => set.has(id))
+  }, [defaults, selected])
+  const names = selected
+    .map((id) => providers.find((p) => p.id === id)?.name)
+    .filter(Boolean)
+    .join(', ')
+
+  return (
+    <div style={{
+      marginBottom: '12px', padding: '8px 10px', background: COLORS.surface,
+      border: `1px solid ${COLORS.border}`, borderRadius: '6px',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+        <span style={{
+          flex: 1, minWidth: 0, fontFamily: FONT.sans, fontSize: '12px', lineHeight: 1.5,
+          color: COLORS.textDim,
+        }}>
+          {selected.length === 0
+            ? 'No cloud chosen to land on.'
+            : `Landing on ${usingDefault ? 'your default clouds' : `${selected.length} cloud${selected.length === 1 ? '' : 's'}`}${
+              scheme ? `, cut ${schemeName(scheme)}` : ''}`}
+          <span style={{
+            display: 'block', fontSize: '11px', color: COLORS.textMuted,
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          }}>{names}</span>
+        </span>
+        <Button size="sm" variant="ghost" onClick={() => setOpen(!open)} disabled={disabled}>
+          {open ? 'Done' : 'Change'}
+        </Button>
+      </div>
+
+      {open && (
+        <div style={{ marginTop: '10px' }}>
+          <CloudChoice
+            providers={providers}
+            selected={selected}
+            onChange={onClouds}
+            cap={providers.length}
+          />
+          <ThresholdChoice scheme={scheme} onChange={(next) => onThreshold(next.data)} />
+          <div style={{ marginTop: '14px' }}>
+            <SelectionNote providers={providers} selected={selected} scheme={scheme} />
+          </div>
+          <p style={{
+            margin: '8px 0 0', fontFamily: FONT.sans, fontSize: '11px', lineHeight: 1.55,
+            color: COLORS.textMuted,
+          }}>
+            For this import only. The vault's default clouds are set in its settings.
+          </p>
+        </div>
+      )}
+    </div>
   )
 }
 

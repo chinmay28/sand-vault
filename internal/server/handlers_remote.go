@@ -220,9 +220,10 @@ type remoteImportRequest struct {
 	Overwrite bool `json:"overwrite,omitempty"`
 
 	// Detach runs the import on a context of its own and answers at once,
-	// rather than holding the request open until it is done. Asked for, never
-	// assumed: an import that keeps running after the page is closed is a thing
-	// somebody should have decided, not something they discover later.
+	// rather than holding the request open until it is done. Off unless asked
+	// for, so a request that says nothing is the one whose cost is visible
+	// while it is paid; the dialog asks for it by default, because the page is
+	// the fragile half of the pair, and says so beside the tick.
 	Detach bool `json:"detach,omitempty"`
 }
 

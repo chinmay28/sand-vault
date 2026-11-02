@@ -353,15 +353,20 @@ for adding one.
 > two halves are two different pipes — the machine's upstream and yours — and
 > it says nothing at all rather than a stale number once a transfer stalls.
 >
-> By default that import is the request itself, so closing the page stops it —
-> which is the right answer for a folder of photographs and the wrong one for
-> one 18 GB film. **Keep going if I close this page** hands it to the machine
-> instead: the transfer carries on with no browser behind it, the dialog picks
-> the progress back up whenever you return to that machine, and the result
-> waits there to be read. It can be stopped from the same place, and stopping
-> keeps every file that already landed. Restarting SAND does stop it — nothing
-> is written down about a transfer in flight — and the way to carry on is the
-> same as it ever was: run the import again.
+> **Keep going if I close this page**, ticked unless you untick it, hands the
+> import to the machine: the transfer carries on with no browser behind it,
+> the dialog picks the progress back up whenever you return to that machine,
+> and the result waits there to be read. It can be stopped from the same
+> place, and stopping keeps every file that already landed. Restarting SAND
+> does stop it — nothing is written down about a transfer in flight — and the
+> way to carry on is the same as it ever was: run the import again. Unticked,
+> the import is the request itself and closing the page stops it, which is
+> the right answer for a folder of photographs you mean to watch arrive.
+>
+> What arrives lands on the vault's default clouds, cut the default way, and
+> the dialog says so above the button. **Change** opens the same picker an
+> upload has — which clouds, and how many of them a file needs — for the one
+> import that should go somewhere else; it changes nothing about the default.
 
 > **The backends that take a path** — `local`, and the seven services whose
 > folders a desktop client syncs — are pointed at one rather than told it: the

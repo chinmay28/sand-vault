@@ -12,6 +12,25 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### An import keeps going on its own, and says which clouds it lands on
+
+**Keep going if I close this page** now starts ticked. The page was the
+fragile half of a long import — a phone that slept or a tab closed by habit
+decided whether a film finished arriving — and a choice that was right nearly
+every time was one being made by hand every time. The tick can still be taken
+off for an import to watch arrive, and nothing else about it has changed: it
+is stopped from the same place, stopping keeps every file that landed, and a
+restart of SAND still ends it.
+
+The dialog also says where the files are going. Above the button it names the
+clouds an import lands on and how they are cut — the vault's default, as
+before — and **Change** opens the picker an upload has, which clouds and how
+many of them a file needs, for the one import that should go somewhere else.
+It is a choice for that import alone; the vault's default is still set in its
+settings. The server took the choice already, so a file fetched from a machine
+had every say over where it lands that one dragged into the browser has — the
+dialog just never asked.
+
 ### A long upload no longer stops at the half-hour
 
 Uploading a large tree through the browser — hours of batches — stopped

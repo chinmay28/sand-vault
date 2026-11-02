@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chinmay28/sand-vault/internal/archive"
 	sandsftp "github.com/chinmay28/sand-vault/internal/sftp"
 )
 
@@ -113,6 +114,51 @@ func TestImportFolderKeepsItsShape(t *testing.T) {
 	}
 	if v.manifest.ByPath("/media/elsewhere.txt") != nil {
 		t.Error("a file outside the selection was imported")
+	}
+}
+
+// An import that names its clouds lands on those clouds and no others, cut
+// the way it asked — the same say an upload has, which is what the dialog's
+// picker sends.
+func TestImportLandsOnTheCloudsItNames(t *testing.T) {
+	v, _ := newTestVault(t, 3)
+	src, root := testSource(t, "vps")
+	added, err := v.AddSource(context.Background(), src)
+	if err != nil {
+		t.Fatalf("AddSource: %v", err)
+	}
+	ids := providerIDs(t, v)
+	seed(t, filepath.Join(root, "chosen.txt"), "two clouds only")
+
+	summary, err := v.ImportFromSource(context.Background(), MainScope, added.ID, ImportRequest{
+		Paths:    []string{"chosen.txt"},
+		Dest:     "/",
+		Accounts: []string{ids[2], ids[0]},
+		Scheme:   archive.Scheme{Data: 2, Total: 2},
+	})
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if summary.Imported != 1 {
+		t.Fatalf("summary: %+v", summary)
+	}
+
+	entry := v.manifest.ByPath("/chosen.txt")
+	if entry == nil {
+		t.Fatal("nothing stored at /chosen.txt")
+	}
+	if entry.DataShards != 2 || entry.TotalShards != 2 {
+		t.Errorf("cut %d-of-%d, want 2-of-2", entry.DataShards, entry.TotalShards)
+	}
+	on := map[string]bool{}
+	for _, shard := range entry.Shards {
+		on[shard.ProviderID] = true
+	}
+	if len(on) != 2 || !on[ids[0]] || !on[ids[2]] {
+		t.Errorf("shards on %v, want the two clouds named and no other", on)
+	}
+	if got := read(t, v, "/chosen.txt"); got != "two clouds only" {
+		t.Errorf("stored %q, want the file's contents", got)
 	}
 }
 
