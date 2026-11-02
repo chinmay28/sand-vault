@@ -373,3 +373,226 @@ func equal(a, b []string) bool {
 	}
 	return true
 }
+
+// Two machines running under one name bump one counter, so neither copy can
+// be trusted to be "later": the pull combines rather than adopts, and says
+// what is wrong.
+func TestMachinesSharingANameCombineRatherThanAdopt(t *testing.T) {
+	one, _ := newTestVaultOn(t, "raspberrypi", 3)
+	two := secondMachine(t, one, "raspberrypi")
+
+	storeAt(t, one, "on-one.txt", "one")
+	// The second machine's push lands over the first's: neither knows of the
+	// other yet. The first machine's file is still in its own vault file,
+	// which is what the next pull works from.
+	storeAt(t, two, "on-two.txt", "two")
+
+	// Same clock, different write time: the first machine sees the collision
+	// and combines rather than taking the copy as its own later version —
+	// which would have dropped on-one.txt from every index there is.
+	report := pull(t, one)
+	want := []string{"on-one.txt", "on-two.txt"}
+	if got := rootNames(t, one); !equal(got, want) {
+		t.Fatalf("the first machine lists %v, want %v — its own file was dropped", got, want)
+	}
+	if !strings.Contains(strings.Join(report.Warnings, "\n"), "SAND_INSTANCE") {
+		t.Errorf("the pull did not say the name is shared: %v", report.Warnings)
+	}
+	// Ahead under the shared counter: the second machine combines too.
+	pull(t, two)
+	if got := rootNames(t, two); !equal(got, want) {
+		t.Errorf("the second machine lists %v, want %v", got, want)
+	}
+	// And the echo stops: a combine that combines nothing is not pushed.
+	pushes := pushCount(one)
+	pull(t, one)
+	pull(t, two)
+	pull(t, one)
+	if pushCount(one) != pushes {
+		t.Error("two machines under one name keep pushing the same index back and forth")
+	}
+	if !one.hasCompany() || !two.hasCompany() {
+		t.Error("a machine that found its name shared does not count as having company")
+	}
+}
+
+// A sub vault deleted on one machine is let go of on the other, open or not.
+func TestASubVaultDeletedOnOneMachineIsDroppedOnTheOther(t *testing.T) {
+	pc, _ := newTestVaultOn(t, "pc", 3)
+	pi := secondMachine(t, pc, "pi")
+
+	id := createSubVault(t, pc, "Taxes", subPassword)
+	pc.AwaitBackupSync()
+	pull(t, pi)
+	if err := pi.UnlockSubVault(id, subPassword); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := pc.DeleteSubVault(context.Background(), id, true); err != nil {
+		t.Fatal(err)
+	}
+	pc.AwaitBackupSync()
+
+	pull(t, pi)
+	subs, _ := pi.SubVaults()
+	if len(subs) != 0 {
+		t.Errorf("the pi still lists %+v", subs)
+	}
+	pi.mu.RLock()
+	records, open := len(pi.store.SubVaults), len(pi.subs)
+	pi.mu.RUnlock()
+	if records != 0 || open != 0 {
+		t.Errorf("the pi holds %d record(s) and %d open sub vault(s), want none", records, open)
+	}
+	// And it does not come back on the pc's next pull.
+	pull(t, pc)
+	subs, _ = pc.SubVaults()
+	if len(subs) != 0 {
+		t.Errorf("the deleted sub vault came back on the pc: %+v", subs)
+	}
+}
+
+// Disconnecting an account another machine still reaches leaves the shared
+// index's records alone: the parts are exactly where they say, readable there.
+func TestDisconnectingAnAccountAPeerReachesKeepsItsRecords(t *testing.T) {
+	pc, _ := newTestVaultOn(t, "pc", 3)
+	e := storeAt(t, pc, "shared.txt", "shared")
+	cfgs, _ := pc.Providers()
+	gone := cfgs[0].ID
+
+	pc.mu.Lock()
+	pc.manifest.Instances["pi"] = &Instance{Name: "pi", LastSeen: time.Now(), Accounts: []string{gone}}
+	pc.mu.Unlock()
+
+	if err := pc.RemoveProvider(gone, true); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := pc.Entry(e.ID)
+	if len(after.Shards) != 3 {
+		t.Errorf("the file keeps %d shard record(s), want all 3 — the pi still reaches the account", len(after.Shards))
+	}
+	if left, _ := pc.Providers(); len(left) != 2 {
+		t.Errorf("%d accounts connected, want 2", len(left))
+	}
+
+	// Without a peer reaching it, the records go as they always did — and
+	// so do those of the account disconnected earlier, which no machine
+	// reaches any more.
+	pc.mu.Lock()
+	delete(pc.manifest.Instances, "pi")
+	pc.mu.Unlock()
+	if err := pc.RemoveProvider(cfgs[1].ID, true); err != nil {
+		t.Fatal(err)
+	}
+	after, _ = pc.Entry(e.ID)
+	if len(after.Shards) != 1 {
+		t.Errorf("the file keeps %d shard record(s), want only the connected account's", len(after.Shards))
+	}
+}
+
+// A copy written by a build from before machines shared an index carries no
+// clock and no tombstones, and is never combined in: it would bring back
+// every file deleted since.
+func TestACopyWithoutAClockIsLeftAlone(t *testing.T) {
+	deleted := row("deleted-since", "/", "old.txt", t0)
+	stale := index(nil, deleted, row("kept", "/", "kept.txt", t0))
+	stale.UpdatedAt = t0
+	current := index(map[string]uint64{"pc": 3}, row("kept", "/", "kept.txt", t0))
+	current.UpdatedAt = t2
+
+	merged, rep := mergeIndexesAs(current, stale, looksShared(current, stale, "pc"))
+	if rep.Outcome != MergeAhead || len(merged.Entries) != 1 {
+		t.Errorf("an old copy was folded in: %+v, %d rows", rep, len(merged.Entries))
+	}
+}
+
+// Two copies with one clock and two write times are two machines under one
+// name; a copy ahead of this machine under its own counter is the same.
+func TestLooksSharedReadsTheClocks(t *testing.T) {
+	a := index(map[string]uint64{"pi": 2})
+	a.UpdatedAt = t1
+	b := index(map[string]uint64{"pi": 2})
+	b.UpdatedAt = t2
+	if !looksShared(a, b, "pi") {
+		t.Error("equal clocks and different write times did not read as a shared name")
+	}
+	b.UpdatedAt = t1
+	if looksShared(a, b, "pi") {
+		t.Error("the same copy twice read as a shared name")
+	}
+	c := index(map[string]uint64{"pi": 3})
+	if !looksShared(a, c, "pi") {
+		t.Error("a copy ahead under this machine's own name did not read as shared")
+	}
+	d := index(map[string]uint64{"pi": 2, "pc": 1})
+	d.UpdatedAt = t2
+	if looksShared(a, d, "pi") {
+		t.Error("another machine's ordinary later write read as a shared name")
+	}
+}
+
+// Saving a local account's settings from a machine claims the disk for it,
+// changed or not — the way back for a machine that changed its name.
+func TestSavingALocalAccountsSettingsClaimsItForThisMachine(t *testing.T) {
+	v, _ := newTestVaultOn(t, "old-name", 1)
+	cfgs, _ := v.Providers()
+	v.SetInstance("new-name")
+
+	statuses, _ := v.ProviderStatuses(context.Background())
+	if statuses[0].Elsewhere != "old-name" {
+		t.Fatalf("after the rename the disk reads %+v, want elsewhere=old-name", statuses[0])
+	}
+	updated, err := v.UpdateProvider(context.Background(), cfgs[0].ID, ProviderEdit{
+		Options: map[string]string{"path": cfgs[0].Option("path")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Host != "new-name" {
+		t.Errorf("after saving, the disk carries host %q, want new-name", updated.Host)
+	}
+}
+
+// A machine that wrote the index a moment ago may be storing a file right
+// now, and the sweep waits it out.
+func TestOrphanSweepWaitsOutARecentPeerWrite(t *testing.T) {
+	v, _ := newTestVaultOn(t, "pc", 3)
+	v.SetArchiveSettleWindow(15 * time.Minute)
+	v.mu.Lock()
+	v.manifest.Instances["pi"] = &Instance{Name: "pi", LastSeen: time.Now()}
+	v.mu.Unlock()
+
+	scan, err := v.ScanForOrphans(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scan.Blocked) == 0 || !strings.Contains(scan.Blocked[0], "pi") {
+		t.Errorf("the sweep is not blocked by the pi's recent write: %v", scan.Blocked)
+	}
+
+	v.mu.Lock()
+	v.manifest.Instances["pi"].LastSeen = time.Now().Add(-time.Hour)
+	v.mu.Unlock()
+	scan, _ = v.ScanForOrphans(context.Background())
+	if len(scan.Blocked) != 0 {
+		t.Errorf("an hour of quiet still blocks the sweep: %v", scan.Blocked)
+	}
+}
+
+// Moving a folder leaves the old path deleted and the new one not.
+func TestMovingAFolderTombstonesThePathItLeaves(t *testing.T) {
+	m := newManifest()
+	if err := m.Mkdir("/a/b"); err != nil {
+		t.Fatal(err)
+	}
+	m.moveFolder("/a", "/c")
+	if _, ok := m.FolderTombstones["/a"]; !ok {
+		t.Error("the folder moved away from is not marked deleted")
+	}
+	if _, ok := m.FolderTombstones["/a/b"]; !ok {
+		t.Error("the subfolder moved away from is not marked deleted")
+	}
+	if _, ok := m.FolderTombstones["/c"]; ok {
+		t.Error("the folder moved to is marked deleted")
+	}
+}

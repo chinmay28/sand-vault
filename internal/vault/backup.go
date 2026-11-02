@@ -423,14 +423,13 @@ func (v *Vault) SyncManifestBackup(ctx context.Context, force bool) ([]string, e
 		v.mu.RUnlock()
 		return nil, nil
 	}
-	peers := v.hasPeersLocked()
 	v.mu.RUnlock()
 
 	// Another machine writes these copies too. What it wrote since the last
 	// pull is folded in first, so this push carries both machines' changes
 	// rather than putting this one's over the other's. A copy this vault
 	// cannot open is left to the guard below. See sync.go.
-	if peers && !force {
+	if !force && v.hasCompany() {
 		if _, err := v.pullIndex(ctx, false); err != nil && !errors.Is(err, ErrLocked) {
 			log.Printf("could not fold in the other machines' index before pushing: %v", err)
 		}

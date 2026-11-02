@@ -496,6 +496,14 @@ function ImportReport({ report: initial, onClose }) {
         ))}
       </div>
 
+      {report.elsewhere > 0 && (
+        <Banner tone="info">
+          <strong>{report.elsewhere.toLocaleString()} file(s)</strong> have their parts on disks that
+          live with the other machine running this vault. They are greyed out here and read there;
+          everything on the clouds opens from either machine.
+        </Banner>
+      )}
+
       {!complete && (
         <Banner tone="warn">
           <strong>{report.lost.toLocaleString()} file(s)</strong> cannot be opened yet.
@@ -570,6 +578,9 @@ function AccountRow({ account, config, providers, loading, onRepaired, onReconci
   const colour = accountColor(account.id)
   const glyph = KIND_ICONS[account.kind] || '☁'
   const settled = fixed || account.status === 'connected'
+  /* A disk on the machine the kit came from, which goes on running the
+     vault: nothing to repair here, and the row says where it is. */
+  const elsewhere = !fixed && account.status === 'elsewhere'
 
   /* The dialog says the settings were accepted, which is not the same claim as
      "this account is working now" — so the row asks the account itself, and
@@ -648,7 +659,7 @@ function AccountRow({ account, config, providers, loading, onRepaired, onReconci
           <span style={{ fontFamily: FONT.mono, fontSize: '11.5px', color: COLORS.text }}>
             {account.name}
           </span>
-          {!settled && account.detail && (
+          {!settled && !elsewhere && account.detail && (
             <span style={{
               fontFamily: FONT.sans, fontSize: '10.5px', color: COLORS.textMuted,
               overflowWrap: 'anywhere',
@@ -659,8 +670,13 @@ function AccountRow({ account, config, providers, loading, onRepaired, onReconci
         {settled && (
           <span style={{ fontFamily: FONT.sans, fontSize: '11px', color: COLORS.success }}>✓ connected</span>
         )}
-        {!settled && checking && <Spinner size={13} />}
-        {!settled && !checking && (account.repair === 'retry' || !account.repair) && (
+        {elsewhere && (
+          <span title={account.detail} style={{ fontFamily: FONT.sans, fontSize: '11px', color: COLORS.textMuted }}>
+            ⇢ on {account.detail.replace(/^lives on ([^;]+);.*$/, '$1')}
+          </span>
+        )}
+        {!settled && !elsewhere && checking && <Spinner size={13} />}
+        {!settled && !elsewhere && !checking && (account.repair === 'retry' || !account.repair) && (
           /* No repair named means the account could not even be restored into
              the vault, so there is nothing to open a dialog on — but there is
              still something to try, and a row with neither a button nor a word

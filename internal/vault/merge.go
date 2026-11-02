@@ -112,6 +112,20 @@ const (
 	clocksConcurrent            // each has writes the other has not seen
 )
 
+// looksShared reports whether a copy was written by another machine running
+// under this machine's name. Only this machine bumps its own counter, so a
+// copy ahead of it there was written by someone else answering to the name;
+// and two copies with the same clock and different write times are two
+// writes counted as one, which is the same thing seen from the other side.
+func looksShared(local, remote *Manifest, self string) bool {
+	if remote.Clock[self] > local.Clock[self] {
+		return true
+	}
+	return len(local.Clock) > 0 && len(remote.Clock) > 0 &&
+		compareClocks(local.Clock, remote.Clock) == clocksEqual &&
+		!remote.UpdatedAt.IsZero() && !remote.UpdatedAt.Equal(local.UpdatedAt)
+}
+
 // compareClocks orders two vector clocks. A missing counter is zero.
 func compareClocks(a, b map[string]uint64) clockOrder {
 	aAhead, bAhead := false, false
@@ -227,7 +241,31 @@ func pruneTombstones(stones map[string]time.Time, now time.Time) {
 // unioned whatever the outcome — it is the one thing worth taking from a copy
 // that is otherwise behind.
 func mergeIndexes(local, remote *Manifest) (*Manifest, MergeReport) {
+	return mergeIndexesAs(local, remote, false)
+}
+
+// mergeIndexesAs is mergeIndexes with a say over the clocks: with combineAnyway
+// set the rows are combined whatever the clocks say.
+//
+// For the one case the clocks cannot be trusted. Two machines opening the
+// vault under the same name — two Raspberry Pis both called raspberrypi —
+// bump the same counter, so each reads the other's copy as simply a later or
+// earlier version of its own. Taking the other's "later" copy whole would drop
+// every row this machine has written since: the files are on the accounts and
+// in no index. Combining instead keeps both sides' rows, deletes included, at
+// the cost of the deterministic ordering the clocks would have given.
+func mergeIndexesAs(local, remote *Manifest, combineAnyway bool) (*Manifest, MergeReport) {
 	order := compareClocks(local.Clock, remote.Clock)
+	switch {
+	case len(remote.Clock) == 0 && len(local.Clock) > 0:
+		// A copy with no clock was written by a build from before machines
+		// shared an index. It cannot be newer than anything this build has
+		// written, and it carries no tombstones, so combining it would bring
+		// back every file deleted since it was written. Left alone.
+		order = clockAfter
+	case combineAnyway:
+		order = clocksConcurrent
+	}
 
 	var merged *Manifest
 	var report MergeReport
@@ -371,9 +409,30 @@ func combine(local, remote *Manifest, report *MergeReport) *Manifest {
 	if out.Rekey == nil {
 		out.Rekey = remote.Rekey
 	}
-	out.SubVaults = mergeSubVaultMetas(local.SubVaults, remote.SubVaults)
+	out.SubVaults = withoutDeletedSubVaults(
+		mergeSubVaultMetas(local.SubVaults, remote.SubVaults), out.Tombstones)
 	out.StaleParts = mergeStaleParts(local.StaleParts, remote.StaleParts)
 	return &out
+}
+
+// withoutDeletedSubVaults drops the records of sub vaults a tombstone names.
+// Deleting a sub vault writes its ID into the same tombstones the files use
+// (DeleteSubVault): the IDs are UUIDs and cannot collide, and a sub vault
+// deleted on one machine has had its parts erased exactly as a file has.
+func withoutDeletedSubVaults(metas []*SubVaultMeta, stones map[string]time.Time) []*SubVaultMeta {
+	if len(stones) == 0 || len(metas) == 0 {
+		return metas
+	}
+	kept := metas[:0:0]
+	for _, meta := range metas {
+		if meta == nil {
+			continue
+		}
+		if _, deleted := stones[meta.ID]; !deleted {
+			kept = append(kept, meta)
+		}
+	}
+	return kept
 }
 
 // resolveCollisions gives the later of two rows at one path the name an upload

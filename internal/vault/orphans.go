@@ -519,6 +519,20 @@ func (v *Vault) scanForOrphansOn(ctx context.Context, providerID string) (*Orpha
 	// Applied after the listings rather than during them, because one of the
 	// reasons is a fact about the whole vault rather than about one account.
 	blocked := orphanGuard(owned, scan.Accounts)
+	// Another machine that wrote the index a moment ago is a machine that
+	// may be storing a file right now, and that file's parts are on the
+	// accounts with no row in any copy of the index yet — this process's
+	// in-flight register (inflight.go) cannot see them. The same settling
+	// window it gives its own uploads is given to the other machine's, and
+	// the sweep waits it out.
+	if window := v.flights.settleWindow(); window > 0 {
+		if recent := v.peersWroteWithin(window); len(recent) > 0 {
+			blocked = append(blocked, fmt.Sprintf(
+				"%s wrote the index within the last %s and may be storing a file right now, whose "+
+					"parts would read here as abandoned — wait until every machine has been quiet "+
+					"that long, then scan again", strings.Join(recent, ", "), window))
+		}
+	}
 	scan.Blocked = blocked
 	for i := range found {
 		if len(blocked) > 0 {

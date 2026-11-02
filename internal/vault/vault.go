@@ -165,6 +165,10 @@ type Vault struct {
 	// index from the accounts (see sync.go). A leaf lock, taken alone.
 	syncMu   sync.Mutex
 	lastSync time.Time
+	// nameShared is set once a pull finds another machine writing the index
+	// under this machine's own name, which the register cannot show. See
+	// noteSharedName.
+	nameShared bool
 
 	// backupMu guards the foreign-backup guard's memory of which accounts
 	// have been checked and warned about, below. A leaf lock: nothing is
@@ -1444,6 +1448,15 @@ func (v *Vault) UpdateProvider(ctx context.Context, id string, edit ProviderEdit
 		if err != nil {
 			return provider.Config{}, err
 		}
+		// Saving a local account's settings from this machine, changed or
+		// not, says its folder is here: the ping below proves it, and the
+		// account is this machine's from then on. This is how a disk that
+		// moved between machines, or a machine that changed its name, is
+		// claimed back — Edit, then Save.
+		if provider.IsLocal(after.Kind) && after.Host != v.instance {
+			after.Host = v.instance
+			reconnected = true
+		}
 		if !provider.SameOptions(before.Options, merged) {
 			after.Options = merged
 			reconnected = true
@@ -1755,6 +1768,27 @@ func (v *Vault) RemoveProvider(id string, force bool) error {
 		}
 		v.store.DefaultAccounts = kept
 	}
+	// The index is shared with every machine that opens this vault, and the
+	// records below are what those machines read files by. An account that
+	// another machine still reaches is being disconnected from this machine
+	// alone: its config goes, and nothing the other machine depends on does.
+	// The parts are exactly where the records say, readable there. So a
+	// record is kept for every account that is still connected here or
+	// still reached by another machine.
+	keep := make(map[string]bool, len(surviving))
+	for acct := range surviving {
+		keep[acct] = true
+	}
+	for _, peer := range v.peersLocked() {
+		for _, acct := range peer.Accounts {
+			keep[acct] = true
+		}
+	}
+	if keep[id] {
+		v.forgetProvider(id)
+		return v.persistLocked()
+	}
+
 	// And the replication policy, for the same reason.
 	v.pruneReplicationLocked(surviving)
 
@@ -1767,7 +1801,7 @@ func (v *Vault) RemoveProvider(id string, force bool) error {
 		for _, e := range m.Entries {
 			kept := e.Shards[:0]
 			for _, s := range e.Shards {
-				if surviving[s.ProviderID] {
+				if keep[s.ProviderID] {
 					kept = append(kept, s)
 				}
 			}
@@ -1780,7 +1814,7 @@ func (v *Vault) RemoveProvider(id string, force bool) error {
 			if r := e.Replica; r != nil {
 				keptShards := make([]Shard, 0, len(r.Shards))
 				for _, s := range r.Shards {
-					if surviving[s.ProviderID] {
+					if keep[s.ProviderID] {
 						keptShards = append(keptShards, s)
 					}
 				}

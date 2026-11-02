@@ -46,6 +46,12 @@ const (
 	// KitAccountUnreachable is everything else: network, DNS, a bucket that
 	// has gone. Retrying later, or Reconcile, picks it up.
 	KitAccountUnreachable = "unreachable"
+
+	// KitAccountElsewhere: a local account that lives on the machine the kit
+	// came from, which goes on running the vault (KitImportOptions.Sibling).
+	// Not a fault, and not this machine's to repair: files whose parts are
+	// on it are read there.
+	KitAccountElsewhere = "elsewhere"
 )
 
 // What would put a failed account right. The status says what is wrong; this
@@ -122,7 +128,13 @@ type KitImportReport struct {
 	Bytes            int64 `json:"bytes"`
 	RecoverableBytes int64 `json:"recoverable_bytes"`
 	Lost             int   `json:"lost"`
-	LostBytes        int64 `json:"lost_bytes"`
+
+	// Elsewhere counts the files this machine cannot open only because their
+	// parts are on disks that live on the machine the kit came from, which
+	// goes on running the vault (KitImportOptions.Sibling). They are read
+	// there, and are neither recoverable here nor lost.
+	Elsewhere int   `json:"elsewhere,omitempty"`
+	LostBytes int64 `json:"lost_bytes"`
 
 	Missing          []MissingFile    `json:"missing,omitempty"`
 	MissingTruncated int              `json:"missing_truncated,omitempty"`
@@ -539,6 +551,11 @@ func (v *Vault) restoreKitAccounts(ctx context.Context, kit *Kit) []KitAccountRe
 // probeRestored asks one restored account whether it is reachable, and tells
 // the three interesting failures apart so each can be offered as one button.
 func (v *Vault) probeRestored(ctx context.Context, cfg provider.Config) (status, detail, pathOption string) {
+	// A disk on the machine the kit came from, when that machine goes on
+	// running the vault. Its path is not expected here and is not tried.
+	if v.livesElsewhere(cfg) {
+		return KitAccountElsewhere, fmt.Sprintf("lives on %s; files with parts on it are read there", cfg.Host), ""
+	}
 	// A path-configured backend is worth checking before the backend is even
 	// built: "your folder is not on this machine" is a far better sentence
 	// than whatever a filesystem error says, and it is the commonest failure
@@ -575,7 +592,7 @@ func (v *Vault) probeRestored(ctx context.Context, cfg provider.Config) (status,
 // decides whether the button says "sign in again" or "fix settings".
 func repairFor(cfg provider.Config, status string) string {
 	switch status {
-	case KitAccountConnected:
+	case KitAccountConnected, KitAccountElsewhere:
 		return ""
 	case KitAccountNeedsPath:
 		return KitRepairPath
@@ -904,12 +921,25 @@ func (v *Vault) discoverKitShards(ctx context.Context, report *KitImportReport) 
 		folderSet[f] = true
 	}
 
+	v.mu.RLock()
+	away := map[string]bool{}
+	for _, cfg := range v.providers {
+		if v.livesElsewhere(cfg) {
+			away[cfg.ID] = true
+		}
+	}
+	v.mu.RUnlock()
+
 	for _, entry := range entries {
-		reachable := 0
+		reachable, elsewhere := 0, 0
 		var lost lostShards
 
 		for _, shard := range entry.Shards {
 			switch cfg, found := holders[shard.Key]; {
+			case away[shard.ProviderID]:
+				// On a disk that lives with the other machine running this
+				// vault: not here, and not missing.
+				elsewhere++
 			case found:
 				claimed[shard.Key] = true
 				if cfg.ID != shard.ProviderID {
@@ -946,6 +976,10 @@ func (v *Vault) discoverKitShards(ctx context.Context, report *KitImportReport) 
 		if reachable >= entry.Scheme().Data {
 			report.Recoverable++
 			report.RecoverableBytes += entry.Size
+			continue
+		}
+		if reachable+elsewhere >= entry.Scheme().Data {
+			report.Elsewhere++
 			continue
 		}
 		report.Lost++

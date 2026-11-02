@@ -1227,6 +1227,10 @@ func (v *Vault) DeleteSubVault(ctx context.Context, id string, force bool) ([]st
 		}
 	}
 	v.manifest.SubVaults = metas
+	// Written down as deleted, so another machine opening this vault lets go
+	// of it too rather than reading its own copy of the record as a sub
+	// vault this machine has yet to hear of. See merge.go.
+	v.manifest.tombstone(id)
 
 	delete(v.subs, id)
 	err := v.persistLocked()

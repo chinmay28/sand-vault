@@ -1506,7 +1506,20 @@ rows are combined (`mergeIndexes`):
 
 Thumbnail packs follow their `UpdatedAt`; the per-file and per-folder records
 (film details, repositories, automations, folder art) merge by key with the
-local value standing and drop with the file they describe. A combined index is a
+local value standing and drop with the file they describe. A sub vault deleted
+on one machine writes its ID into the same tombstones, and the other machine
+lets go of its record (shutting it if open); a folder moved away from leaves a
+tombstone at the old path. Three guards keep the clocks honest: a copy with no
+clock at all was written by an older build and is left alone (it carries no
+tombstones, so combining it would bring back every file deleted since); a copy
+that is ahead of this machine under *its own* counter, or that has the same
+clock and a different write time, was written by another machine running under
+the same name — two Raspberry Pis both called `raspberrypi` — and is combined
+rather than taken whole, with a warning to set `SAND_INSTANCE` on one of them;
+and a combine that changed no row is written quietly rather than pushed, so two
+such machines do not trade the same index back and forth. Disconnecting an
+account on one machine prunes no shard record that another machine still
+reaches: the config goes, the records stay, and the parts are read there. A combined index is a
 version no machine had, so it is this machine's write: stamped, counted in the
 clock, and pushed. An adopted copy is written to the vault file and nothing
 more, since counting it as a write would have the other machine take it back as

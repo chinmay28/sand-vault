@@ -1302,8 +1302,13 @@ func TestKitImportAsASecondInstanceSharesTheVault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ImportKit as a second instance: %v", err)
 	}
-	if !report.Sibling || report.Files != 1 {
-		t.Errorf("report %+v", report)
+	if !report.Sibling || report.Files != 1 || report.Elsewhere != 1 || report.Lost != 0 {
+		t.Errorf("report %+v, want the one file counted as readable elsewhere, not lost", report)
+	}
+	for _, a := range report.Accounts {
+		if a.Status != KitAccountElsewhere {
+			t.Errorf("account %s reads %q, want elsewhere — its disk is the pc's", a.Name, a.Status)
+		}
 	}
 	pi.AwaitBackupSync()
 

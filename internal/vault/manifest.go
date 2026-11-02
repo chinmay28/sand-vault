@@ -713,6 +713,22 @@ func (m *Manifest) moveFolder(oldDir, newDir string) func() {
 	// recorded as one — it may have existed only because files sat under it.
 	folders = append(folders, newDir)
 	m.Folders = dedupeFolders(folders)
+	// The paths left behind are deleted folders to another machine's copy,
+	// and the paths arrived at are not, whatever an earlier remove said.
+	now := time.Now().UTC()
+	still := map[string]bool{}
+	for _, f := range m.Folders {
+		still[f] = true
+		delete(m.FolderTombstones, f)
+	}
+	for _, f := range previousFolders {
+		if !still[f] {
+			if m.FolderTombstones == nil {
+				m.FolderTombstones = map[string]time.Time{}
+			}
+			m.FolderTombstones[f] = now
+		}
+	}
 
 	// A thumbnail pack records nothing about which folder it belongs to; the
 	// folder is the key it is filed under. So the pictures travel with the

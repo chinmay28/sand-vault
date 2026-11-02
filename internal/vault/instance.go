@@ -199,6 +199,19 @@ func (v *Vault) peersLocked() []*Instance {
 // caller holds at least the read lock.
 func (v *Vault) hasPeersLocked() bool { return len(v.peersLocked()) > 0 }
 
+// peerReachesLocked reports whether another machine's register entry lists
+// the account. The caller holds at least the read lock.
+func (v *Vault) peerReachesLocked(id string) bool {
+	for _, peer := range v.peersLocked() {
+		for _, have := range peer.Accounts {
+			if have == id {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // registerSelfLocked writes this machine into the index's register: now, and
 // the accounts it can reach. Called on every index write, under the write
 // lock, so the register is as current as the index it travels in.

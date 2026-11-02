@@ -446,6 +446,10 @@ func printKitImportReport(r *vault.KitImportReport) {
 	// a clean import can still carry a stale shard record naming an account
 	// nothing was lost to, and "0 file(s) cannot be opened yet" followed by an
 	// empty list is a sentence that alarms and then explains nothing.
+	if r.Elsewhere > 0 {
+		fmt.Printf("\n  %d file(s) have their parts on disks that live with the other machine\n", r.Elsewhere)
+		fmt.Printf("  running this vault; they are read there.\n")
+	}
 	if r.Lost > 0 {
 		fmt.Printf("\n  %d file(s) cannot be opened yet. Connect these and run\n", r.Lost)
 		fmt.Printf("  'sand vault recover --resume':\n")

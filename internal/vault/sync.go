@@ -116,12 +116,12 @@ func (v *Vault) SyncDue(now time.Time) bool {
 		v.mu.RUnlock()
 		return false
 	}
-	interval := LoneSyncInterval
-	if v.hasPeersLocked() {
-		interval = PeerSyncInterval
-	}
 	v.mu.RUnlock()
 
+	interval := LoneSyncInterval
+	if v.hasCompany() {
+		interval = PeerSyncInterval
+	}
 	last := v.LastSync()
 	return last.IsZero() || now.Sub(last) >= interval
 }
@@ -258,7 +258,20 @@ func (v *Vault) foldCopies(copies []cloudCopy, report *SyncReport, push bool) er
 	current := v.manifest
 	adopted, merged, register := false, false, false
 	for _, c := range copies {
-		next, rep := mergeIndexes(current, c.snapshot.Manifest)
+		// Only this machine bumps its own counter. A copy that is ahead of
+		// this machine under its own name was written by another machine
+		// running under the same name, whose copy must never be taken whole
+		// — see mergeIndexesAs.
+		shared := looksShared(current, c.snapshot.Manifest, v.instance)
+		if shared {
+			v.noteSharedName(c.account.Name)
+			report.Warnings = append(report.Warnings, fmt.Sprintf(
+				"another machine writes this vault's index under this machine's name, %q (its copy "+
+					"was read from %s) — set SAND_INSTANCE to a different name on one of them; "+
+					"until then every pull combines the two indexes rather than taking the newer",
+				v.instance, c.account.Name))
+		}
+		next, rep := mergeIndexesAs(current, c.snapshot.Manifest, shared)
 		switch rep.Outcome {
 		case MergeAdopted:
 			adopted = true
@@ -270,14 +283,29 @@ func (v *Vault) foldCopies(copies []cloudCopy, report *SyncReport, push bool) er
 			// The copy may name key generations and sub vaults this machine
 			// has not got; what its rows need comes with them.
 			v.adoptKeysLocked(c.snapshot)
+			// The metas this machine holds for its sub vaults are not lost to
+			// a copy that does not list them — unless the copy says the sub
+			// vault was deleted, in which case it is gone here too.
+			next.SubVaults = withoutDeletedSubVaults(
+				mergeSubVaultMetas(next.SubVaults, current.SubVaults),
+				laterOf(current.Tombstones, next.Tombstones))
 			v.adoptSubVaultsLocked(c.snapshot, next)
-			// The register's own view of this machine is the register's; the
-			// metas this machine holds for its sub vaults are not lost to a
-			// copy that does not list them.
-			next.SubVaults = mergeSubVaultMetas(next.SubVaults, current.SubVaults)
+			v.dropDeletedSubVaultsLocked(next)
 		}
 		report.Renamed = append(report.Renamed, rep.Renamed...)
 		current = next
+	}
+
+	report.Added, report.Removed, report.Updated = diffRows(before, current)
+	// A combine that combined nothing — the same rows on both sides, under
+	// clocks that merely disagreed — is not a version anybody lacks. Two
+	// machines sharing a name would otherwise each take the other's push as
+	// news, bump, push, and so on every few minutes forever.
+	rowsChanged := report.Added+report.Removed+report.Updated > 0 || len(report.Renamed) > 0 ||
+		!equalStrings(before.Folders, current.Folders)
+	if merged && !rowsChanged {
+		merged = false
+		adopted = adopted || compareClocks(before.Clock, current.Clock) != clocksEqual
 	}
 
 	switch {
@@ -290,7 +318,6 @@ func (v *Vault) foldCopies(copies []cloudCopy, report *SyncReport, push bool) er
 	default:
 		report.Outcome = MergeCurrent
 	}
-	report.Added, report.Removed, report.Updated = diffRows(before, current)
 
 	// A machine the register has never heard of announces itself: one write
 	// of its own, so the other machines learn of it — and of which accounts
@@ -360,6 +387,72 @@ func (v *Vault) adoptKeysLocked(snapshot *Snapshot) {
 	})
 }
 
+// dropDeletedSubVaultsLocked lets go of the sealed records of sub vaults the
+// merged index no longer lists — deleted on another machine, their parts
+// erased there. An open one is shut: its keys came out of this process's
+// memory and go back the same way, and there is nothing left for them to
+// open. The caller holds the write lock.
+func (v *Vault) dropDeletedSubVaultsLocked(merged *Manifest) {
+	listed := map[string]bool{}
+	for _, meta := range merged.SubVaults {
+		if meta != nil {
+			listed[meta.ID] = true
+		}
+	}
+	kept := v.store.SubVaults[:0]
+	for _, rec := range v.store.SubVaults {
+		if _, deleted := merged.Tombstones[rec.ID]; deleted && !listed[rec.ID] {
+			if sub, open := v.subs[rec.ID]; open {
+				sub.zero()
+				delete(v.subs, rec.ID)
+			}
+			continue
+		}
+		kept = append(kept, rec)
+	}
+	v.store.SubVaults = kept
+}
+
+// noteSharedName remembers that another machine writes under this one's name,
+// so the scheduler and the push treat the vault as having company even though
+// the register cannot show it (see SyncDue and SyncManifestBackup).
+func (v *Vault) noteSharedName(account string) {
+	v.syncMu.Lock()
+	defer v.syncMu.Unlock()
+	if !v.nameShared {
+		log.Printf("another machine writes this vault's index under this machine's name %q "+
+			"(seen on %s) — set SAND_INSTANCE to a different name on one of them", v.instance, account)
+	}
+	v.nameShared = true
+}
+
+// hasCompany reports whether another machine is known to write this index:
+// one in the register, or one writing under this machine's own name.
+func (v *Vault) hasCompany() bool {
+	v.mu.RLock()
+	peers := v.hasPeersLocked()
+	v.mu.RUnlock()
+	v.syncMu.Lock()
+	defer v.syncMu.Unlock()
+	return peers || v.nameShared
+}
+
+// peersWroteWithin names the other machines that wrote the index within the
+// window, most recent first — the machines whose uploads in flight right now
+// an orphan scan cannot see. Empty on a vault with no company.
+func (v *Vault) peersWroteWithin(window time.Duration) []string {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	var out []string
+	now := time.Now()
+	for _, peer := range v.peersLocked() {
+		if now.Sub(peer.LastSeen) < window {
+			out = append(out, peer.Name)
+		}
+	}
+	return out
+}
+
 // adoptSubVaultsLocked takes the sealed records of sub vaults the merged index
 // lists and this vault file does not hold — sub vaults made on another
 // machine, which appear here shut. A record this machine already holds is
@@ -411,4 +504,17 @@ func (v *Vault) pullBeforeScan(ctx context.Context) string {
 	return fmt.Sprintf("this vault is also open on %s: a file being uploaded there right now has "+
 		"parts on the accounts and no row in the index yet, and would show here as parts no file "+
 		"wants — sweep only while the other machine is idle", strings.Join(names, ", "))
+}
+
+// equalStrings reports whether two lists hold the same strings in order.
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

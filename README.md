@@ -1786,10 +1786,15 @@ inside of a sub vault, which appears on the other machine shut and is yours to
 open there with its own password. Changing the vault password on one machine
 means re-joining the others from a fresh kit.
 
-One caution: an orphan sweep reasons from the index, and a file being uploaded
-on the other machine at that moment has parts on the clouds and no row in any
-copy yet. The scan pulls first and says so; sweep when the other machine is
-idle.
+Three cautions. An orphan sweep reasons from the index, and a file being
+uploaded on the other machine at that moment has parts on the clouds and no
+row in any copy yet; the scan pulls first, and the sweep is refused while any
+other machine has written within the last fifteen minutes. Machines are told
+apart by hostname, so two that share one — two Raspberry Pis both called
+`raspberrypi` — are warned about and have their indexes combined rather than
+compared; set `SAND_INSTANCE` on one of them. And a machine that changes its
+name leaves its own disks looking like another machine's: open the account,
+*Edit*, *Save*, and the disk is claimed back.
 
 ## Losing the vault file
 

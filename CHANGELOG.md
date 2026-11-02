@@ -33,7 +33,13 @@ with a note naming the machine that can read them — from the index, so the
 listing costs nothing more. `GET /api/vault/instances` lists the machines,
 `POST /api/vault/sync` pulls, the vault status carries `instance` and `peers`,
 a listing carries `unreachable`, and an account carries `host` and
-`elsewhere`. See §3.17 of the architecture document for the rules.
+`elsewhere`. Two machines that share a hostname are warned about and have
+their indexes combined rather than compared; a copy written by an older
+build is left alone; disconnecting an account another machine still reaches
+keeps its records; a sub vault deleted on one machine is let go of on the
+other; and the orphan sweep is refused while another machine has written
+within the last fifteen minutes. See §3.17 of the architecture document for
+the rules.
 
 ### A failed upload says which cloud refused it and what to do next
 
