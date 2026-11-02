@@ -586,6 +586,12 @@ export default function FileBrowser({
 
   const listProps = {
     previousKey: listing?.previous_key,
+    /* The files this machine cannot read on its own — too few parts on clouds
+       it reaches, a disk on another machine holding the rest — and for each,
+       which other machine can. From the index, never from a cloud, so the
+       row can grey itself out at no cost. Absent on a vault that runs on one
+       machine. */
+    unreachable: listing?.unreachable,
     /* Whether files in this folder get a second copy, and which subfolders
        do: what a row's menu needs to say "replicate" or "stop". */
     replicate: listing?.replicate,
@@ -1167,7 +1173,7 @@ function EntryTable({
   entries, thumbs, tracked, movies, films, mobile, providers, selecting, selected,
   onToggle, onSelectAll, onSelectNone,
   onNavigate, onPreview, onInspect, onFilm, onRefresh, onError,
-  vault, subVaults, previousKey, replicate, replicatedFolders,
+  vault, subVaults, previousKey, replicate, replicatedFolders, unreachable,
 }) {
   const all = entries.length > 0 && entries.every((entry) => selected.has(entry.key))
   /* One template for the whole table, headings included: a film folder's rows
@@ -1259,12 +1265,13 @@ function EntryTable({
           hasThumb={thumbs.has(entry.file.id)}
           tracked={tracked.has(entry.file.id)}
           film={movies[entry.file.id]}
+          reach={unreachable?.[entry.file.id]}
           columns={columns}
           selecting={selecting}
           selected={selected.has(entry.key)}
           onSelect={(checked, event) => onToggle(entry, checked, event)}
           onPreview={() => onPreview(entry.file, thumbs.has(entry.file.id), movies[entry.file.id])}
-          onInspect={() => onInspect(entry.file)}
+          onInspect={() => onInspect(entry.file, unreachable?.[entry.file.id])}
           onFilm={filmAction(films, movies, entry.file, onFilm)}
           onRefresh={onRefresh}
           onError={onError}
@@ -1277,7 +1284,7 @@ function EntryTable({
 function EntryGrid({
   entries, thumbs, tracked, movies, films, mobile, providers, selecting, selected, onToggle,
   onNavigate, onPreview, onInspect, onFilm, onRefresh, onError,
-  vault, subVaults, replicate, replicatedFolders,
+  vault, subVaults, replicate, replicatedFolders, unreachable,
 }) {
   /* Posters are two-by-three and photographs are not, so the shape belongs to
      the folder rather than to the tile: one shape per grid keeps the rows level
@@ -1324,12 +1331,13 @@ function EntryGrid({
           hasThumb={thumbs.has(entry.file.id)}
           tracked={tracked.has(entry.file.id)}
           film={movies[entry.file.id]}
+          reach={unreachable?.[entry.file.id]}
           aspect={aspect}
           selecting={selecting}
           selected={selected.has(entry.key)}
           onSelect={(checked, event) => onToggle(entry, checked, event)}
           onPreview={() => onPreview(entry.file, thumbs.has(entry.file.id), movies[entry.file.id])}
-          onInspect={() => onInspect(entry.file)}
+          onInspect={() => onInspect(entry.file, unreachable?.[entry.file.id])}
           onFilm={filmAction(films, movies, entry.file, onFilm)}
           onRefresh={onRefresh}
           onError={onError}

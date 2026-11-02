@@ -588,6 +588,9 @@ function AccountCard({ provider, providers, isDefault, resuming, onRemove, onCha
 
   const online = result ? result.ok : provider.online
   const errorText = result && !result.ok ? result.error : provider.error
+  /* A disk plugged into another machine that opens this vault. Not pinged
+     from here, so neither green nor red: the card says where it is. */
+  const elsewhere = provider.elsewhere
   const space = usageBreakdown(provider)
 
   return (
@@ -642,13 +645,13 @@ function AccountCard({ provider, providers, isDefault, resuming, onRemove, onCha
             }}>default</span>
         )}
         <span
-          title={online ? 'Reachable' : errorText || 'Unreachable'}
+          title={elsewhere ? `On ${elsewhere}` : online ? 'Reachable' : errorText || 'Unreachable'}
           style={{
             width: '7px',
             height: '7px',
             borderRadius: '50%',
             flexShrink: 0,
-            background: online ? COLORS.success : COLORS.error,
+            background: elsewhere ? COLORS.textMuted : online ? COLORS.success : COLORS.error,
           }}
         />
       </div>
@@ -678,7 +681,12 @@ function AccountCard({ provider, providers, isDefault, resuming, onRemove, onCha
           </div>
         )}
         <UsageLine provider={provider} />
-        {!online && errorText && (
+        {elsewhere && (
+          <div title="A local folder is reachable only from the machine it is plugged into; files whose parts are on it are greyed out here and readable there" style={{ color: COLORS.textDim }}>
+            ⇢ on {elsewhere} — reachable from that machine
+          </div>
+        )}
+        {!online && !elsewhere && errorText && (
           <div style={{ color: COLORS.error, wordBreak: 'break-word' }}>{errorText}</div>
         )}
       </div>

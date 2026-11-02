@@ -1227,6 +1227,22 @@ func (v *Vault) DeleteSubVault(ctx context.Context, id string, force bool) ([]st
 		}
 	}
 	v.manifest.SubVaults = metas
+	// Written down as deleted, so another machine opening this vault lets go
+	// of it too rather than reading its own copy of the record as a sub
+	// vault this machine has yet to hear of. See merge.go.
+	v.manifest.tombstone(id)
+	// What another machine stored into this sub vault reaches this machine
+	// only through the inventory it pushes (mergeSubVaultMetas): anything
+	// stored there since this machine last pulled is not in the inventory
+	// being erased below. Said now, while those parts are still on the
+	// accounts for that machine's own scan to find.
+	for _, peer := range v.peersLocked() {
+		lentWarnings = append(lentWarnings, fmt.Sprintf(
+			"files stored into this sub vault on %s since this machine last pulled were not "+
+				"known here and were not erased; that machine lets go of the sub vault at its next "+
+				"pull, and its scan finds those parts as abandoned",
+			peer.Name))
+	}
 
 	delete(v.subs, id)
 	err := v.persistLocked()

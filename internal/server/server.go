@@ -334,6 +334,10 @@ func (s *Server) Handler() (http.Handler, error) {
 		// How far apart the pushes of the index are kept, so a burst of
 		// changes is a few of them rather than one per change.
 		"POST /api/vault/backup/delay": s.handleVaultBackupDelay,
+		// The machines that open this vault, and a pull of the index they
+		// share. See handlers_instances.go.
+		"GET /api/vault/instances": s.handleInstances,
+		"POST /api/vault/sync":     s.handleSync,
 
 		// How this machine is sized: the profile, the machine it is taken
 		// to be, and every knob derived from that or set by hand. Not under
@@ -782,6 +786,9 @@ func (s *Server) Start() error {
 	// And the second copies the replication policy asks for, made one at a
 	// time at its pace, and nothing while locked — see replicationLoop.
 	go s.replicationLoop()
+	// And what the other machines opening this vault wrote to the index,
+	// pulled on its schedule, and nothing while locked — see syncLoop.
+	go s.syncLoop()
 
 	addr := net.JoinHostPort(s.Bind, fmt.Sprint(s.Port))
 	v, _ := s.Vault()
@@ -1026,6 +1033,11 @@ func vaultErrorResponse(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusUnauthorized, "vault is locked", "LOCKED")
 	case errors.Is(err, vault.ErrWrongPassword):
 		writeError(w, http.StatusUnauthorized, "wrong password", "WRONG_PASSWORD")
+	case errors.Is(err, vault.ErrNotTheVaultsPassword):
+		// 400 with its own code: the request is for a second instance and
+		// the password given is not the vault's, which the kit dialog turns
+		// into a hint on the password field rather than a general failure.
+		writeError(w, http.StatusBadRequest, err.Error(), "NOT_THE_VAULTS_PASSWORD")
 	case errors.Is(err, vault.ErrNotInitialized):
 		writeError(w, http.StatusNotFound, "no vault has been created yet", "NO_VAULT")
 	case errors.Is(err, vault.ErrSubVaultLocked):

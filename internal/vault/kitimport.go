@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -45,6 +46,12 @@ const (
 	// KitAccountUnreachable is everything else: network, DNS, a bucket that
 	// has gone. Retrying later, or Reconcile, picks it up.
 	KitAccountUnreachable = "unreachable"
+
+	// KitAccountElsewhere: a local account that lives on the machine the kit
+	// came from, which goes on running the vault (KitImportOptions.Sibling).
+	// Not a fault, and not this machine's to repair: files whose parts are
+	// on it are read there.
+	KitAccountElsewhere = "elsewhere"
 )
 
 // What would put a failed account right. The status says what is wrong; this
@@ -95,6 +102,11 @@ type KitAccountResult struct {
 
 // KitImportReport describes what an import did, or would do.
 type KitImportReport struct {
+	// Sibling says this machine joined the vault as a second instance rather
+	// than replacing it: the vault key is shared, and the copies of the index
+	// on the accounts were folded in rather than claimed (KitImportOptions).
+	Sibling bool `json:"sibling,omitempty"`
+
 	KitID      string    `json:"kit_id"`
 	KitCreated time.Time `json:"kit_created_at"`
 
@@ -116,7 +128,13 @@ type KitImportReport struct {
 	Bytes            int64 `json:"bytes"`
 	RecoverableBytes int64 `json:"recoverable_bytes"`
 	Lost             int   `json:"lost"`
-	LostBytes        int64 `json:"lost_bytes"`
+
+	// Elsewhere counts the files this machine cannot open only because their
+	// parts are on disks that live on the machine the kit came from, which
+	// goes on running the vault (KitImportOptions.Sibling). They are read
+	// there, and are neither recoverable here nor lost.
+	Elsewhere int   `json:"elsewhere,omitempty"`
+	LostBytes int64 `json:"lost_bytes"`
 
 	Missing          []MissingFile    `json:"missing,omitempty"`
 	MissingTruncated int              `json:"missing_truncated,omitempty"`
@@ -174,7 +192,28 @@ type KitImportOptions struct {
 	// SkipCloudIndex leaves phase 4 out — no newer index is fetched, and the
 	// kit's own is installed. What "skip" on the password-changed prompt does.
 	SkipCloudIndex bool
+
+	// Sibling makes this machine a second instance of the vault the kit came
+	// from rather than its replacement: the vault still runs where the kit
+	// was exported, and this machine is to open it too. See instance.go.
+	//
+	// What that takes is one vault key on both machines, because the copies
+	// of the index on the accounts are sealed under it and each machine
+	// reads what the other writes. So the kit's own key-derivation salt is
+	// kept rather than a fresh one minted, and Password has to be the vault's
+	// own — the import checks that it derives the key the kit carries, and
+	// refuses otherwise. The copies on the accounts are then this vault's
+	// own already, and are folded in rather than overwritten.
+	Sibling bool
 }
+
+// ErrNotTheVaultsPassword is returned when a kit is imported as a second
+// instance under a password other than the vault's own: the two machines have
+// to derive the same vault key, or neither can read what the other writes.
+var ErrNotTheVaultsPassword = errors.New(
+	"a second instance has to use the vault's own password — this one does not open the copies " +
+		"of the index the other machine writes; to start afresh under a new password, import the " +
+		"kit as a recovery instead")
 
 // ReadKitZip pulls kit.sand out of a recovery kit archive.
 //
@@ -244,9 +283,10 @@ func (v *Vault) ImportKit(ctx context.Context, kit *Kit, opts KitImportOptions) 
 	defer v.holdKeys()()
 
 	// --- Phase 1: mint the vault, adopt the kit's keys ----------------------
-	if err := v.adoptKit(kit, opts.Password); err != nil {
+	if err := v.adoptKit(kit, opts.Password, opts.Sibling); err != nil {
 		return nil, err
 	}
+	report.Sibling = opts.Sibling
 
 	// --- Phase 2: reconnect every account, keeping its id -------------------
 	report.Accounts = v.restoreKitAccounts(ctx, kit)
@@ -273,7 +313,7 @@ func (v *Vault) ImportKit(ctx context.Context, kit *Kit, opts KitImportOptions) 
 		}
 	}
 
-	if err := v.installKitIndex(snapshot); err != nil {
+	if err := v.installKitIndex(snapshot, opts.Sibling); err != nil {
 		return nil, err
 	}
 
@@ -289,9 +329,14 @@ func (v *Vault) ImportKit(ctx context.Context, kit *Kit, opts KitImportOptions) 
 	// Every account should carry the current index under the current password,
 	// and the guard against clobbering a foreign backup has to stop being
 	// armed against this vault. Same closing move as handleRecoveryRun.
+	//
+	// A second instance does not claim the accounts: the copies there are its
+	// own vault's already, and the other machine is still writing them. Its
+	// push folds them in first, the way every push of a shared index does,
+	// and announces this machine to the register.
 	v.releaseBackups()
 	v.AwaitBackupSync()
-	if warns, err := v.SyncManifestBackup(ctx, true); err != nil {
+	if warns, err := v.SyncManifestBackup(ctx, !opts.Sibling); err != nil {
 		if !errors.Is(err, ErrBackupRefused) {
 			report.Warnings = append(report.Warnings,
 				"the recovered index could not be copied back to the accounts: "+err.Error())
@@ -340,7 +385,7 @@ func (v *Vault) refuseKitOverwrite(replace bool) error {
 
 // adoptKit creates the vault under the new password and installs everything
 // the kit carries except the manifest and the accounts.
-func (v *Vault) adoptKit(kit *Kit, password string) error {
+func (v *Vault) adoptKit(kit *Kit, password string, sibling bool) error {
 	dataKey, err := base64.StdEncoding.DecodeString(kit.Snapshot.DataKey)
 	if err != nil || len(dataKey) != DataKeySize {
 		return fmt.Errorf("this kit carries no usable data key")
@@ -363,12 +408,37 @@ func (v *Vault) adoptKit(kit *Kit, password string) error {
 	if err != nil {
 		return err
 	}
+	if sibling {
+		// The same salt as the vault this is to be a second instance of, so
+		// the same password derives the same vault key — the one the copies
+		// of the index on the accounts are sealed under.
+		sf.KDF = kit.KDF
+	}
 
 	params, salt, err := sf.KDF.toArgon2()
 	if err != nil {
 		return err
 	}
 	vaultKey := crypto.DeriveKey(password, salt, params)
+	if sibling {
+		carried, err := kit.VaultKeyBytes()
+		if err != nil {
+			crypto.ZeroBytes(vaultKey)
+			return fmt.Errorf("this kit carries no vault key, so this machine cannot join as a second instance: %w", err)
+		}
+		same := subtle.ConstantTimeCompare(carried, vaultKey) == 1
+		crypto.ZeroBytes(carried)
+		if !same {
+			crypto.ZeroBytes(vaultKey)
+			return ErrNotTheVaultsPassword
+		}
+		// A key derived with the kit's salt seals a check the fresh store
+		// did not write; written again under the key that will open it.
+		if sf.Check, err = seal(vaultKey, []byte(checkPlaintext)); err != nil {
+			crypto.ZeroBytes(vaultKey)
+			return err
+		}
+	}
 
 	// The kit's keys, not the fresh ones newStore just minted: these are what
 	// the parts already sitting on the accounts were encrypted under.
@@ -403,8 +473,9 @@ func (v *Vault) adoptKit(kit *Kit, password string) error {
 
 	// The copies on the accounts are sealed under the lost vault's key, which
 	// is not this one, so the foreign-backup guard has to stand aside for
-	// exactly this vault's next push.
-	sf.BackupNeedsForce = !sf.ManifestBackupDisabled
+	// exactly this vault's next push. A second instance has that very key,
+	// and the copies are its own.
+	sf.BackupNeedsForce = !sf.ManifestBackupDisabled && !sibling
 
 	settings := &vaultSettings{MovieAPIKey: kit.MovieAPIKey}
 	if !settings.empty() {
@@ -480,6 +551,11 @@ func (v *Vault) restoreKitAccounts(ctx context.Context, kit *Kit) []KitAccountRe
 // probeRestored asks one restored account whether it is reachable, and tells
 // the three interesting failures apart so each can be offered as one button.
 func (v *Vault) probeRestored(ctx context.Context, cfg provider.Config) (status, detail, pathOption string) {
+	// A disk on the machine the kit came from, when that machine goes on
+	// running the vault. Its path is not expected here and is not tried.
+	if v.livesElsewhere(cfg) {
+		return KitAccountElsewhere, fmt.Sprintf("lives on %s; files with parts on it are read there", cfg.Host), ""
+	}
 	// A path-configured backend is worth checking before the backend is even
 	// built: "your folder is not on this machine" is a far better sentence
 	// than whatever a filesystem error says, and it is the commonest failure
@@ -516,7 +592,7 @@ func (v *Vault) probeRestored(ctx context.Context, cfg provider.Config) (status,
 // decides whether the button says "sign in again" or "fix settings".
 func repairFor(cfg provider.Config, status string) string {
 	switch status {
-	case KitAccountConnected:
+	case KitAccountConnected, KitAccountElsewhere:
 		return ""
 	case KitAccountNeedsPath:
 		return KitRepairPath
@@ -716,7 +792,14 @@ func (v *Vault) cloudIndexWithPassword(
 // A snapshot taken off a cloud after a password change describes files on a
 // generation this vault has not got, so its keys are unioned in rather than
 // replacing what adoptKit installed.
-func (v *Vault) installKitIndex(snapshot *Snapshot) error {
+//
+// What the index says about the machines that open the vault comes across for
+// a second instance and not for a replacement: a recovered vault starts its
+// own register, where listing the machine that died would have it pulled
+// before every push for as long as the vault lives. The clock and the
+// tombstones come across either way — they are what a fold on another machine
+// compares against, and dropping them would read every row as new.
+func (v *Vault) installKitIndex(snapshot *Snapshot, sibling bool) error {
 	retired, err := snapshotRetiredKeys(snapshot)
 	if err != nil {
 		return err
@@ -755,7 +838,14 @@ func (v *Vault) installKitIndex(snapshot *Snapshot) error {
 	// own history would send a sub vault's shard records somewhere they are
 	// not.
 	manifest.AccountRemap = nil
+	manifest.Clock = snapshot.Manifest.Clock
+	manifest.Tombstones = snapshot.Manifest.Tombstones
+	manifest.FolderTombstones = snapshot.Manifest.FolderTombstones
+	if sibling {
+		manifest.Instances = snapshot.Manifest.Instances
+	}
 	v.manifest = manifest
+	v.indexFP = fingerprints(manifest)
 
 	// The generation the snapshot is on becomes the active one, and anything
 	// this vault already held that the snapshot does not name is kept beside
@@ -831,12 +921,25 @@ func (v *Vault) discoverKitShards(ctx context.Context, report *KitImportReport) 
 		folderSet[f] = true
 	}
 
+	v.mu.RLock()
+	away := map[string]bool{}
+	for _, cfg := range v.providers {
+		if v.livesElsewhere(cfg) {
+			away[cfg.ID] = true
+		}
+	}
+	v.mu.RUnlock()
+
 	for _, entry := range entries {
-		reachable := 0
+		reachable, elsewhere := 0, 0
 		var lost lostShards
 
 		for _, shard := range entry.Shards {
 			switch cfg, found := holders[shard.Key]; {
+			case away[shard.ProviderID]:
+				// On a disk that lives with the other machine running this
+				// vault: not here, and not missing.
+				elsewhere++
 			case found:
 				claimed[shard.Key] = true
 				if cfg.ID != shard.ProviderID {
@@ -873,6 +976,10 @@ func (v *Vault) discoverKitShards(ctx context.Context, report *KitImportReport) 
 		if reachable >= entry.Scheme().Data {
 			report.Recoverable++
 			report.RecoverableBytes += entry.Size
+			continue
+		}
+		if reachable+elsewhere >= entry.Scheme().Data {
+			report.Elsewhere++
 			continue
 		}
 		report.Lost++

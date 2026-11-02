@@ -241,6 +241,10 @@ func (s *Server) handleKitImport(w http.ResponseWriter, r *http.Request) {
 		Replace:        r.FormValue("replace") == "true" || r.FormValue("replace") == "1",
 		OldPassword:    r.FormValue("old_password"),
 		SkipCloudIndex: r.FormValue("skip_cloud_index") == "true" || r.FormValue("skip_cloud_index") == "1",
+		// This machine joins the vault the kit came from, which goes on
+		// running where it was exported, rather than replacing it. See
+		// vault.KitImportOptions.Sibling.
+		Sibling: r.FormValue("sibling") == "true" || r.FormValue("sibling") == "1",
 	})
 	if err != nil {
 		vaultErrorResponse(w, err)

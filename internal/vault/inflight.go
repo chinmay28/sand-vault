@@ -69,6 +69,14 @@ func (f *archiveFlights) clock() time.Time {
 	return time.Now()
 }
 
+// settleWindow is the window, read under the lock, for a caller that does not
+// hold it.
+func (f *archiveFlights) settleWindow() time.Duration {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.window()
+}
+
 func (f *archiveFlights) window() time.Duration {
 	switch {
 	case f.settle < 0:

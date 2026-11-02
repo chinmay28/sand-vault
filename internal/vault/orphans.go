@@ -410,6 +410,12 @@ func (v *Vault) scanForOrphans(ctx context.Context) (*OrphanScan, error) {
 // answer, because an empty answer here reads as "that cloud holds nothing of
 // yours", which is not what happened.
 func (v *Vault) scanForOrphansOn(ctx context.Context, providerID string) (*OrphanScan, error) {
+	// What another machine stored since the last pull is not in this index
+	// yet, and would be read here as parts no file wants. Pulled first, so
+	// the index the scan reasons from is as current as the accounts can make
+	// it; what is in flight on the other machine right now is said below.
+	peerWarning := v.pullBeforeScan(ctx)
+
 	v.mu.RLock()
 	if v.dataKey == nil {
 		v.mu.RUnlock()
@@ -452,6 +458,9 @@ func (v *Vault) scanForOrphansOn(ctx context.Context, providerID string) (*Orpha
 		// the state a machine that has just been reinstalled is in — and the
 		// state a half-finished import leaves the most spools behind in.
 		Leftovers: v.ScanForLeftovers(),
+	}
+	if peerWarning != "" {
+		scan.Warnings = append(scan.Warnings, peerWarning)
 	}
 	if len(listings) == 0 {
 		return scan, nil
@@ -510,6 +519,27 @@ func (v *Vault) scanForOrphansOn(ctx context.Context, providerID string) (*Orpha
 	// Applied after the listings rather than during them, because one of the
 	// reasons is a fact about the whole vault rather than about one account.
 	blocked := orphanGuard(owned, scan.Accounts)
+	// Another machine that wrote the index a moment ago is a machine that
+	// may be storing a file right now, and that file's parts are on the
+	// accounts with no row in any copy of the index yet — this process's
+	// in-flight register (inflight.go) cannot see them. The same settling
+	// window it gives its own uploads is given to the other machine's, and
+	// the sweep waits it out.
+	//
+	// The window is the settle window plus the longest a push may be held
+	// back: another machine's last write is known here only once it has
+	// been pushed, and a machine pacing its pushes an hour apart has up to
+	// an hour of files in its vault file that no copy carries yet.
+	if settle := v.flights.settleWindow(); settle > 0 {
+		window := settle + MaxBackupDelay
+		if recent := v.peersWroteWithin(window); len(recent) > 0 {
+			blocked = append(blocked, fmt.Sprintf(
+				"%s wrote the index within the last %s and may have stored files since that no copy "+
+					"of the index carries yet, whose parts would read here as abandoned — wait until "+
+					"every machine has been quiet that long, then scan again",
+				strings.Join(recent, ", "), window))
+		}
+	}
 	scan.Blocked = blocked
 	for i := range found {
 		if len(blocked) > 0 {

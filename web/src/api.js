@@ -245,6 +245,14 @@ export const api = {
      afternoon of signing back in before the password they still remember does
      anything. A kit never touches a cloud, so it can. */
   kitStatus: () => request('/api/vault/kit'),
+
+  /* The machines that open this vault — this one first, each with when it
+     last wrote the index and which accounts it reaches — and a pull of the
+     index they share. The pull reads one small object from every cloud and
+     folds the copies in; the listing then shows what the other machine
+     stored. See internal/vault/sync.go. */
+  instances: () => request('/api/vault/instances'),
+  syncIndex: () => request('/api/vault/sync', { method: 'POST' }),
   /* Builds a kit and hands back the archive with the code that opens it.
 
      Not request(), because the body is a zip and the code rides in a header:
@@ -290,7 +298,7 @@ export const api = {
 
      An account that will not connect never stops this: it comes back in the
      report as a button rather than as an error. */
-  importKit: ({ file, secret, password, replace = false, oldPassword = '', skipCloudIndex = false }) => {
+  importKit: ({ file, secret, password, replace = false, oldPassword = '', skipCloudIndex = false, sibling = false }) => {
     const form = new FormData()
     form.append('kit', file)
     form.append('secret', secret)
@@ -298,6 +306,9 @@ export const api = {
     if (replace) form.append('replace', 'true')
     if (oldPassword) form.append('old_password', oldPassword)
     if (skipCloudIndex) form.append('skip_cloud_index', 'true')
+    /* This machine joins the vault the kit came from, which goes on running
+       there, rather than replacing it; the password has to be the vault's. */
+    if (sibling) form.append('sibling', 'true')
     return request('/api/vault/kit/import', { method: 'POST', formData: form })
   },
   /* The fire drill: every credential in the kit pinged, its index checked

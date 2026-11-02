@@ -122,6 +122,12 @@ type CloudHealth struct {
 	Error     string    `json:"error,omitempty"`
 	CheckedAt time.Time `json:"checked_at,omitzero"`
 
+	// Elsewhere names the machine this account lives on when it is not this
+	// one. Such an account is never pinged from here, and is counted as
+	// neither healthy nor unhealthy: the figure is about the clouds this
+	// machine can reach. See instance.go.
+	Elsewhere string `json:"elsewhere,omitempty"`
+
 	// Took is how long the answer took, in milliseconds. Kept because a cloud
 	// that answers in eleven seconds is on its way to being a cloud that does
 	// not answer, and that is visible here before it is visible anywhere else.
@@ -194,6 +200,11 @@ type HealthReport struct {
 	Unhealthy int `json:"unhealthy"`
 	Unchecked int `json:"unchecked"`
 	Warnings  int `json:"warnings,omitempty"`
+
+	// Elsewhere counts the accounts that live on another machine opening this
+	// vault, which are none of the above: not asked from here, and not this
+	// machine's to worry about.
+	Elsewhere int `json:"elsewhere,omitempty"`
 
 	// CheckedAt is when the last sweep of *every* account finished — the "as
 	// of" on the figure. A single account tested on its own updates that
@@ -307,6 +318,10 @@ func (v *Vault) CheckClouds(ctx context.Context) (HealthReport, error) {
 	schedule := v.healthScheduleLocked()
 	v.mu.RUnlock()
 
+	// A drive plugged in since the unlock is claimed here, so it is pinged
+	// below rather than reported as living nowhere until the next sign-in.
+	v.claimLocalAccounts(ctx)
+
 	found := v.pingAll(ctx, configs)
 	// A sweep the caller cut short has found nothing out. Its pings came back
 	// with the caller's cancellation, not with an answer, and a backend that
@@ -319,6 +334,7 @@ func (v *Vault) CheckClouds(ctx context.Context) (HealthReport, error) {
 		return v.reportFor(configs, schedule), ctx.Err()
 	}
 	recovered := v.recordSweep(time.Now(), found)
+	v.claimAnswered(found)
 
 	// An account that was down and is answering again may be holding things
 	// the vault owes it a write for — above all a copy of the index sealed
@@ -392,6 +408,14 @@ func (v *Vault) pingAll(ctx context.Context, configs []provider.Config) []CloudH
 	var wg sync.WaitGroup
 	for i, cfg := range configs {
 		found[i] = CloudHealth{ID: cfg.ID, Name: cfg.Name, Kind: cfg.Kind, Checked: true}
+		if v.livesElsewhere(cfg) {
+			// A disk on another machine is not asked, and is not down.
+			v.mu.RLock()
+			found[i].Elsewhere = v.awayLocked(cfg)
+			v.mu.RUnlock()
+			found[i].CheckedAt = time.Now()
+			continue
+		}
 
 		wg.Add(1)
 		go func(i int, cfg provider.Config) {
@@ -540,6 +564,8 @@ func (v *Vault) reportFor(configs []provider.Config, schedule HealthSchedule) He
 		}
 
 		switch {
+		case one.Elsewhere != "":
+			report.Elsewhere++
 		case !one.Checked:
 			report.Unchecked++
 		case one.Healthy:
@@ -565,6 +591,9 @@ func (v *Vault) reportFor(configs []provider.Config, schedule HealthSchedule) He
 
 func healthRank(c CloudHealth) int {
 	switch {
+	case c.Elsewhere != "":
+		// Another machine's business: after everything that is this one's.
+		return 4
 	case c.Checked && !c.Healthy:
 		return 0
 	case c.DiskWarning != "":
@@ -607,6 +636,7 @@ func healthFromStatuses(statuses []ProviderStatus) []CloudHealth {
 			Checked:   true,
 			Healthy:   st.Online,
 			Error:     st.Error,
+			Elsewhere: st.Elsewhere,
 			CheckedAt: now,
 		})
 	}

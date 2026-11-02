@@ -91,6 +91,15 @@ type Config struct {
 	Options map[string]string `json:"options"`
 	AddedAt time.Time         `json:"added_at"`
 
+	// Host names the machine a Local account (Spec.Local) lives on — the
+	// instance that connected it, by the name the vault runs under there
+	// (see vault.InstanceName). Empty on every cloud account, and on a local
+	// account connected before machines had names, which the first unlock on
+	// the machine that can see its folder fills in. Another machine opening
+	// the same vault reads a Host that is not its own as "not here", and says
+	// so instead of trying the path.
+	Host string `json:"host,omitempty"`
+
 	// Color is the account's colour in the browser — the stripe down its card
 	// and every part badge for a file it holds. Empty means nobody has chosen
 	// one and the UI picks; a "#rrggbb" string is a choice, and it stays put as
@@ -645,9 +654,27 @@ type Spec struct {
 	// protoncli.go.
 	SignInLink *SignInLinkSpec `json:"sign_in_link,omitempty"`
 
+	// Local says an account on this backend is reached through the machine
+	// SAND runs on rather than over the network — a directory on it, a folder
+	// a desktop client keeps in step, a program installed on it — and so can
+	// be reached only from the machine it was connected on. Another machine
+	// opening the same vault treats such an account as living elsewhere: it
+	// does not ping it, and it does not count its parts as parts it can read.
+	// See Config.Host and IsLocal.
+	Local bool `json:"local,omitempty"`
+
 	// Order sorts the backends in the connect dialog: the ones you sign in to
 	// first, then the ones needing credentials, then the ones on disk.
 	Order int `json:"-"`
+}
+
+// IsLocal reports whether accounts of this kind live on one machine (see
+// Spec.Local). A kind this build does not know is taken to be a cloud, which
+// is the answer that changes nothing: its parts are counted the way they
+// always were.
+func IsLocal(kind Kind) bool {
+	spec, ok := SpecFor(kind)
+	return ok && spec.Local
 }
 
 // SignInLinkSpec describes a sign-in the browser watches rather than performs.
