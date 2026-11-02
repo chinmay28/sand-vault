@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from './api'
+import { keepScreenAwake } from './wakelock'
 
 /* Every style in this app is inline, so there is no stylesheet to hang an
    @media block off. Layout that has to change shape on a phone — the two-pane
@@ -76,4 +77,15 @@ export const MOBILE_QUERY = '(max-width: 860px)'
 
 export function useIsMobile() {
   return useMediaQuery(MOBILE_QUERY)
+}
+
+/* Keeps the screen from timing out while `active` is true — for an upload,
+   which outlasts any screen's own timeout and dies with the machine when a
+   laptop goes to sleep. Nothing is held once it is false again, or once the
+   component is gone; see wakelock.js for what is and is not promised. */
+export function useScreenAwake(active) {
+  useEffect(() => {
+    if (!active) return undefined
+    return keepScreenAwake()
+  }, [active])
 }

@@ -165,6 +165,19 @@ func (r *uploadResult) fail(err error, stage vault.UploadStage) {
 	r.FailedParts = ue.Failures
 }
 
+// uploadTimeout is the ceiling on scattering one upload request: the body has
+// fully arrived by the time it starts, so it covers the splitting, encrypting
+// and sending of every file in the batch to three clouds, and nothing else.
+//
+// Generous for the reason the remote transfer timeout is: a batch is a quarter
+// of a gigabyte of somebody's photographs, or a single film of two, leaving
+// over a home connection for clouds that answer at their own pace, and half an
+// hour — what this was — is what a slow evening takes rather than what a hung
+// provider takes. The request's own context still ends it the moment the
+// browser gives up, so the ceiling only ever cuts short a batch the browser is
+// still waiting on.
+const uploadTimeout = 6 * time.Hour
+
 func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 	maxUpload := s.MaxUploadSize
 	if maxUpload <= 0 {
@@ -230,7 +243,7 @@ func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := contextWithTimeout(r, 30*time.Minute)
+	ctx, cancel := contextWithTimeout(r, uploadTimeout)
 	defer cancel()
 
 	v, _ := s.Vault()

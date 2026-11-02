@@ -5,6 +5,7 @@ import { sortFiles, sortFolders, sortHits, useViewPrefs } from '../view'
 import { ActionSheet, Banner, Button, Empty, Modal, Spinner } from './ui'
 import { UploadDestination, RelocateClouds } from './CloudSelect'
 import { makeThumbnails } from '../thumbs'
+import { useScreenAwake } from '../hooks'
 import {
   batchBytes, batchPicks, describeFailure, describePicks, describeRetimes, describeSkips, emptyDirs,
   picksFromDrop, picksFromInput, totalBytes,
@@ -80,6 +81,11 @@ export default function FileBrowser({
      for itself in the meantime. */
   const [reading, setReading] = useState(false)
   const dragDepth = useRef(0)
+  /* For as long as anything is going up, the screen is asked to stay on. A
+     folder takes an evening, a screen times out in minutes, and on a laptop
+     the timeout is followed by sleep — which stops the batch in flight dead
+     and strands the rest. Let go the moment the last card is gone. */
+  useScreenAwake(uploads.length > 0)
   // Where the last tick was put, so a shift-click has a range to reach back to.
   const anchor = useRef(null)
 

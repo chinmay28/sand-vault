@@ -2495,7 +2495,13 @@ pipe the password on stdin.
   with the rest of what the vault itself is set to; re-encrypts every stored
   file onto the new key, and offers to finish the job later if you defer it or
   an account was unreachable
-- **Auto-lock** — the vault re-locks after the idle timeout
+- **Auto-lock** — the vault re-locks after the idle timeout. Idle means
+  nobody is using it: a request still running — an upload batch of a folder
+  that takes all evening — is use for as long as it runs, and the poll of the
+  clouds' standing a tab makes every minute on its own is not, so a tab left
+  open does not keep the vault unlocked. While an upload is going the
+  page asks the system to keep the screen on, since a laptop that locks its
+  screen and sleeps sends nothing
 
 The UI loads no external fonts, scripts or styles. Opening your vault makes zero
 third-party requests — including in a folder with film details on, since the
