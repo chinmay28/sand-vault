@@ -35,11 +35,15 @@ import (
 //
 // The rules, for a row by ID when the clocks have diverged:
 //
-//   - On both sides: the later stamp wins, ties to this machine's copy.
-//   - On one side only, and the other side has a tombstone for it: gone. The
-//     machine that deleted it erased its parts; keeping the row would list a
-//     file that opens to an error. A tombstone always wins, however the
-//     stamps compare — the parts are not coming back.
+//   - On both sides: the later stamp wins, ties to this machine's copy — for
+//     where the file is filed. Where its bytes are follows the later
+//     placement stamp (Entry.PlacedAt), so a rename here and a re-encryption
+//     there both stand; see mergeRow.
+//   - On one side only, and the other side has a tombstone for it later than
+//     the row's stamp: gone. The machine that deleted it erased its parts;
+//     keeping the row would list a file that opens to an error. A row stamped
+//     after the tombstone is a row that came back — a file moved out to a sub
+//     vault and back again — and stands; the tombstone goes with it.
 //   - On one side only, and no tombstone: kept. It is a file the other side
 //     has not heard of yet.
 //
@@ -162,7 +166,19 @@ func compareClocks(a, b map[string]uint64) clockOrder {
 func entryFingerprint(e *Entry) uint64 {
 	plain := *e
 	plain.IndexedAt = time.Time{}
-	data, err := json.Marshal(&plain)
+	plain.PlacedAt = time.Time{}
+	return hashJSON(&plain)
+}
+
+// placementFingerprint is the row's placement in one number — where the bytes
+// are and how they were cut, nothing about where the file is filed.
+func placementFingerprint(e *Entry) uint64 {
+	p := e.placement()
+	return hashJSON(&p)
+}
+
+func hashJSON(v any) uint64 {
+	data, err := json.Marshal(v)
 	if err != nil {
 		// Marshal of a struct of plain fields cannot fail; if it somehow
 		// did, a fingerprint nothing else has makes the row read as changed,
@@ -174,11 +190,21 @@ func entryFingerprint(e *Entry) uint64 {
 	return h.Sum64()
 }
 
-// fingerprints is every row's fingerprint, by ID.
-func fingerprints(m *Manifest) map[string]uint64 {
-	out := make(map[string]uint64, len(m.Entries))
+// rowPrints is every row's fingerprint, by ID — the whole row, and its
+// placement alone.
+type rowPrints struct {
+	all, placement map[string]uint64
+}
+
+// fingerprints takes every row's fingerprints.
+func fingerprints(m *Manifest) rowPrints {
+	out := rowPrints{
+		all:       make(map[string]uint64, len(m.Entries)),
+		placement: make(map[string]uint64, len(m.Entries)),
+	}
 	for _, e := range m.Entries {
-		out[e.ID] = entryFingerprint(e)
+		out.all[e.ID] = entryFingerprint(e)
+		out.placement[e.ID] = placementFingerprint(e)
 	}
 	return out
 }
@@ -197,17 +223,27 @@ func (v *Vault) stampIndexLocked(now time.Time) {
 	if m == nil {
 		return
 	}
-	next := make(map[string]uint64, len(m.Entries))
+	next := rowPrints{
+		all:       make(map[string]uint64, len(m.Entries)),
+		placement: make(map[string]uint64, len(m.Entries)),
+	}
 	for _, e := range m.Entries {
-		fp := entryFingerprint(e)
-		next[e.ID] = fp
-		switch was, known := v.indexFP[e.ID]; {
-		case v.indexFP == nil:
+		fp, pfp := entryFingerprint(e), placementFingerprint(e)
+		next.all[e.ID], next.placement[e.ID] = fp, pfp
+		if v.indexFP.all == nil {
 			if e.IndexedAt.IsZero() {
 				e.IndexedAt = now
 			}
-		case !known || was != fp:
+			if e.PlacedAt.IsZero() {
+				e.PlacedAt = now
+			}
+			continue
+		}
+		if was, known := v.indexFP.all[e.ID]; !known || was != fp {
 			e.IndexedAt = now
+		}
+		if was, known := v.indexFP.placement[e.ID]; !known || was != pfp {
+			e.PlacedAt = now
 		}
 	}
 	v.indexFP = next
@@ -329,17 +365,13 @@ func combine(local, remote *Manifest, report *MergeReport) *Manifest {
 		l, r := byLocal[id], byRemote[id]
 		switch {
 		case l != nil && r != nil:
-			if r.stamp().After(l.stamp()) {
-				out.Entries = append(out.Entries, r)
-			} else {
-				out.Entries = append(out.Entries, l)
-			}
+			out.Entries = append(out.Entries, mergeRow(l, r))
 		case l != nil:
-			if _, deleted := remote.Tombstones[id]; !deleted {
+			if stone, deleted := remote.Tombstones[id]; !deleted || !stone.After(l.stamp()) {
 				out.Entries = append(out.Entries, l)
 			}
 		default:
-			if _, deleted := local.Tombstones[id]; !deleted {
+			if stone, deleted := local.Tombstones[id]; !deleted || !stone.After(r.stamp()) {
 				out.Entries = append(out.Entries, r)
 			}
 		}
@@ -433,6 +465,28 @@ func withoutDeletedSubVaults(metas []*SubVaultMeta, stones map[string]time.Time)
 		}
 	}
 	return kept
+}
+
+// mergeRow is one row changed on both machines. The later write stands —
+// and the two halves of the row are judged apart: where the file is filed and
+// what it is called follow the later IndexedAt, where its bytes are follows
+// the later PlacedAt. A rename on one machine and a re-encryption, relocation
+// or conversion on the other would otherwise end with one whole row over the
+// other: the rename's row, pointing at parts the re-placement erased, while
+// the parts it wrote belong to nothing and are swept. Neither input is written
+// to; a row that takes the other's placement is a copy.
+func mergeRow(l, r *Entry) *Entry {
+	base, other := l, r
+	if r.stamp().After(l.stamp()) {
+		base, other = r, l
+	}
+	if !other.placedStamp().After(base.placedStamp()) {
+		return base
+	}
+	merged := *base
+	merged.setPlacement(other.placement())
+	merged.PlacedAt = other.PlacedAt
+	return &merged
 }
 
 // resolveCollisions gives the later of two rows at one path the name an upload
@@ -618,23 +672,69 @@ func mergeThumbs(local, remote map[string]*ThumbPack) map[string]*ThumbPack {
 	return out
 }
 
-// mergeSubVaultMetas unions the main vault's records of its sub vaults by ID,
-// this machine's standing where both have one.
+// mergeSubVaultMetas unions the main vault's records of its sub vaults by ID.
+// Where both machines hold one, this machine's label and dates stand and the
+// two inventories are unioned, archive by archive.
+//
+// The union is what keeps a sweep honest. A sub vault's section does not
+// travel between machines, so the only account of what a sub vault holds that
+// another machine ever gets is this inventory — and the inventory a machine
+// holds for a sub vault that is shut there is frozen at whatever it last took
+// from a copy. The orphan scan reads the inventory as the sub vault's claim on
+// its parts; a machine that kept its own stale, shorter inventory over the
+// other's would read every file the other machine stored in the sub vault as
+// parts no file wants, and erase them. A union can only overstate what a sub
+// vault owns, which costs a sweep an archive and never a file.
 func mergeSubVaultMetas(local, remote []*SubVaultMeta) []*SubVaultMeta {
 	if len(remote) == 0 {
 		return local
 	}
-	have := map[string]bool{}
-	out := append([]*SubVaultMeta(nil), local...)
+	byID := map[string]*SubVaultMeta{}
+	out := make([]*SubVaultMeta, 0, len(local)+len(remote))
 	for _, meta := range local {
-		have[meta.ID] = true
+		if meta == nil {
+			continue
+		}
+		copied := *meta
+		copied.Inventory = append([]InventoryItem(nil), meta.Inventory...)
+		byID[meta.ID] = &copied
+		out = append(out, &copied)
 	}
 	for _, meta := range remote {
-		if meta != nil && !have[meta.ID] {
+		if meta == nil {
+			continue
+		}
+		mine, ok := byID[meta.ID]
+		if !ok {
 			out = append(out, meta)
+			continue
+		}
+		have := map[string]bool{}
+		for _, item := range mine.Inventory {
+			have[item.ArchiveID] = true
+		}
+		for _, item := range meta.Inventory {
+			if !have[item.ArchiveID] {
+				mine.Inventory = append(mine.Inventory, item)
+				have[item.ArchiveID] = true
+			}
+		}
+		for _, key := range meta.BorrowedKeys {
+			if !containsString(mine.BorrowedKeys, key) {
+				mine.BorrowedKeys = append(mine.BorrowedKeys, key)
+			}
 		}
 	}
 	return out
+}
+
+func containsString(list []string, want string) bool {
+	for _, s := range list {
+		if s == want {
+			return true
+		}
+	}
+	return false
 }
 
 // mergeStaleParts unions two lists of stray parts, one record per part.
@@ -660,7 +760,7 @@ func mergeStaleParts(local, remote []*StalePart) []*StalePart {
 
 // diffRows counts the rows gained, lost and changed between two indexes.
 func diffRows(before, after *Manifest) (added, removed, updated int) {
-	was := fingerprints(before)
+	was := fingerprints(before).all
 	now := map[string]bool{}
 	for _, e := range after.Entries {
 		now[e.ID] = true

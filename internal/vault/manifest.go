@@ -99,6 +99,16 @@ type Entry struct {
 	// see merge.go. Zero on a row written before machines could share an
 	// index, which merges as if stamped when the file was created.
 	IndexedAt time.Time `json:"indexed_at,omitzero"`
+
+	// PlacedAt is when the row's placement was last written differently —
+	// its parts, its replica, the key and code they were cut with: a
+	// re-encryption, a relocation, a conversion, a replica made or dropped.
+	// Stamped the way IndexedAt is, from a fingerprint of those fields alone.
+	// It is what lets a merge take a rename from one machine and a
+	// re-placement from the other for the same row, rather than one whole row
+	// over the other and with it a placement whose parts the other machine
+	// has erased. See placement and merge.go.
+	PlacedAt time.Time `json:"placed_at,omitzero"`
 }
 
 // stamp is when the row was last written differently, for the merge: its
@@ -108,6 +118,47 @@ func (e *Entry) stamp() time.Time {
 		return e.CreatedAt
 	}
 	return e.IndexedAt
+}
+
+// placedStamp is when the row's placement was last written differently: its
+// PlacedAt, or its stamp on a row from before placements were stamped.
+func (e *Entry) placedStamp() time.Time {
+	if e.PlacedAt.IsZero() {
+		return e.stamp()
+	}
+	return e.PlacedAt
+}
+
+// placement is the half of a row that says where the file's bytes are and
+// how they were cut, as the merge moves it between two versions of the row.
+// Everything else on a row — where it is filed, what it is called, its dates,
+// its replication choice — is the other half.
+type rowPlacement struct {
+	Size        int64
+	Hash        string
+	ArchiveID   string
+	KeyID       string
+	Shards      []Shard
+	ChunkSize   int64
+	ChunkCount  int
+	DataShards  int
+	TotalShards int
+	Replica     *Replica
+}
+
+func (e *Entry) placement() rowPlacement {
+	return rowPlacement{
+		Size: e.Size, Hash: e.Hash, ArchiveID: e.ArchiveID, KeyID: e.KeyID, Shards: e.Shards,
+		ChunkSize: e.ChunkSize, ChunkCount: e.ChunkCount,
+		DataShards: e.DataShards, TotalShards: e.TotalShards, Replica: e.Replica,
+	}
+}
+
+// setPlacement writes a placement onto a row.
+func (e *Entry) setPlacement(p rowPlacement) {
+	e.Size, e.Hash, e.ArchiveID, e.KeyID, e.Shards = p.Size, p.Hash, p.ArchiveID, p.KeyID, p.Shards
+	e.ChunkSize, e.ChunkCount = p.ChunkSize, p.ChunkCount
+	e.DataShards, e.TotalShards, e.Replica = p.DataShards, p.TotalShards, p.Replica
 }
 
 // Scheme is the erasure code this file's shards were cut with. A file recorded

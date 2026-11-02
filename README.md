@@ -1783,13 +1783,16 @@ on either machine is lost to the race: it is in that machine's own vault file,
 and the next pull carries it over. What does not travel: account credentials
 (a cloud connected on one machine is connected on the other by hand), and the
 inside of a sub vault, which appears on the other machine shut and is yours to
-open there with its own password. Changing the vault password on one machine
-means re-joining the others from a fresh kit.
+open there with its own password — so deleting a sub vault on one machine
+deletes it everywhere, and files another machine stored into it since you last
+pulled are not counted by that delete. Changing the vault password on one
+machine means re-joining the others from a fresh kit.
 
 Three cautions. An orphan sweep reasons from the index, and a file being
 uploaded on the other machine at that moment has parts on the clouds and no
-row in any copy yet; the scan pulls first, and the sweep is refused while any
-other machine has written within the last fifteen minutes. Machines are told
+row in any copy yet; the scan pulls first, and the sweep is refused until every
+other machine has been quiet for an hour and a quarter — the longest a push can
+be held back, plus the settling window. Machines are told
 apart by hostname, so two that share one — two Raspberry Pis both called
 `raspberrypi` — are warned about and have their indexes combined rather than
 compared; set `SAND_INSTANCE` on one of them. And a machine that changes its

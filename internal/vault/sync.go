@@ -290,20 +290,28 @@ func (v *Vault) foldCopies(copies []cloudCopy, report *SyncReport, push bool) er
 				mergeSubVaultMetas(next.SubVaults, current.SubVaults),
 				laterOf(current.Tombstones, next.Tombstones))
 			v.adoptSubVaultsLocked(c.snapshot, next)
-			v.dropDeletedSubVaultsLocked(next)
 		}
 		report.Renamed = append(report.Renamed, rep.Renamed...)
 		current = next
 	}
 
 	report.Added, report.Removed, report.Updated = diffRows(before, current)
-	// A combine that combined nothing — the same rows on both sides, under
-	// clocks that merely disagreed — is not a version anybody lacks. Two
-	// machines sharing a name would otherwise each take the other's push as
-	// news, bump, push, and so on every few minutes forever.
-	rowsChanged := report.Added+report.Removed+report.Updated > 0 || len(report.Renamed) > 0 ||
-		!equalStrings(before.Folders, current.Folders)
-	if merged && !rowsChanged {
+
+	// Whether the copies on the accounts lack anything this machine now
+	// holds, judged against the freshest copy read: rows, folders, or this
+	// machine's own entry in the register. That, and not whether this
+	// machine gained anything, is what decides whether the result is pushed.
+	// Another machine's push lands over this one's whenever the two did not
+	// know of each other yet, and what it covered — a file stored here, this
+	// machine's register entry — is then in this vault file and in no copy
+	// until this machine pushes again. A combine that leaves the copies
+	// lacking nothing, on the other hand, is not pushed: two machines sharing
+	// a name would otherwise each take the other's push as news, bump, push,
+	// and so on every few minutes forever.
+	freshest := copies[len(copies)-1].snapshot.Manifest
+	a, r, u := diffRows(freshest, current)
+	behind := a+r+u > 0 || !equalStrings(freshest.Folders, current.Folders)
+	if merged && !behind {
 		merged = false
 		adopted = adopted || compareClocks(before.Clock, current.Clock) != clocksEqual
 	}
@@ -319,11 +327,13 @@ func (v *Vault) foldCopies(copies []cloudCopy, report *SyncReport, push bool) er
 		report.Outcome = MergeCurrent
 	}
 
-	// A machine the register has never heard of announces itself: one write
-	// of its own, so the other machines learn of it — and of which accounts
-	// it reaches — from its first pull rather than from its first change. A
-	// machine that only ever reads would otherwise stay invisible.
-	join := current.Instances[v.instance] == nil
+	// A machine the copies do not list announces itself: one write of its
+	// own, so the other machines learn of it — and of which accounts it
+	// reaches — from its first pull rather than from its first change. A
+	// machine that only ever reads would otherwise stay invisible, and one
+	// whose entry another machine's push covered would stay forgotten. So
+	// does a machine holding rows the copies lack, whatever the clocks said.
+	join := current.Instances[v.instance] == nil || freshest.Instances[v.instance] == nil || behind
 
 	if !merged && !adopted && !register && !join {
 		return nil
@@ -345,12 +355,37 @@ func (v *Vault) foldCopies(copies []cloudCopy, report *SyncReport, push bool) er
 	// is the write that announces this machine. An adopted copy, or a
 	// register that merely learned of a machine, is written down and
 	// nothing more.
+	// The records of sub vaults the merged index no longer lists go in the
+	// same write — and are let go of in memory only once the write has
+	// landed, so a disk that refuses leaves memory and file agreeing.
+	dropped, records := v.droppedSubVaultRecordsLocked(current)
+	previousRecords := v.store.SubVaults
+	v.store.SubVaults = records
+	// An open one leaves the set of open sub vaults before the write — the
+	// write re-seals every open sub vault's record into the file, and would
+	// put a dropped one straight back — but keeps its keys until the write
+	// has landed, so a disk that refuses can have it back as it was.
+	shut := map[string]*subVault{}
+	for _, id := range dropped {
+		if sub, open := v.subs[id]; open {
+			shut[id] = sub
+			delete(v.subs, id)
+		}
+	}
+
 	stamp := merged || join
 	how := indexWrite{stamp: stamp, push: stamp && push}
 	if err := v.persistIndexLocked(how); err != nil {
 		v.manifest = before
 		v.indexFP = fingerprints(before)
+		v.store.SubVaults = previousRecords
+		for id, sub := range shut {
+			v.subs[id] = sub
+		}
 		return fmt.Errorf("writing the merged index: %w", err)
+	}
+	for _, sub := range shut {
+		sub.zero()
 	}
 	return nil
 }
@@ -387,30 +422,31 @@ func (v *Vault) adoptKeysLocked(snapshot *Snapshot) {
 	})
 }
 
-// dropDeletedSubVaultsLocked lets go of the sealed records of sub vaults the
-// merged index no longer lists — deleted on another machine, their parts
-// erased there. An open one is shut: its keys came out of this process's
-// memory and go back the same way, and there is nothing left for them to
-// open. The caller holds the write lock.
-func (v *Vault) dropDeletedSubVaultsLocked(merged *Manifest) {
+// droppedSubVaultRecordsLocked works out which sealed records go with a
+// merged index: those of sub vaults it no longer lists and names as deleted —
+// deleted on another machine, their parts erased there, open here or not.
+// Deleting a sub vault is deleting the whole of it, and the deleting machine
+// is told (DeleteSubVault) that what other machines stored into it since
+// they last pulled was not counted. It returns the IDs and the records to
+// keep; the caller writes the index and only then shuts any of them that is
+// open, so a disk that refuses the write leaves memory and file agreeing.
+// The caller holds the write lock.
+func (v *Vault) droppedSubVaultRecordsLocked(merged *Manifest) (dropped []string, kept []subVaultRecord) {
 	listed := map[string]bool{}
 	for _, meta := range merged.SubVaults {
 		if meta != nil {
 			listed[meta.ID] = true
 		}
 	}
-	kept := v.store.SubVaults[:0]
+	kept = make([]subVaultRecord, 0, len(v.store.SubVaults))
 	for _, rec := range v.store.SubVaults {
 		if _, deleted := merged.Tombstones[rec.ID]; deleted && !listed[rec.ID] {
-			if sub, open := v.subs[rec.ID]; open {
-				sub.zero()
-				delete(v.subs, rec.ID)
-			}
+			dropped = append(dropped, rec.ID)
 			continue
 		}
 		kept = append(kept, rec)
 	}
-	v.store.SubVaults = kept
+	return dropped, kept
 }
 
 // noteSharedName remembers that another machine writes under this one's name,

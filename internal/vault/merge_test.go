@@ -120,9 +120,10 @@ func TestMergeHonoursTombstones(t *testing.T) {
 	pc := index(map[string]uint64{"pc": 2, "pi": 1}, kept, row("new", "/", "new.txt", t1))
 	pc.Tombstones = map[string]time.Time{"gone": t1}
 	pi := index(map[string]uint64{"pc": 1, "pi": 2}, kept, gone)
-	// The pi renamed the file the pc deleted, after the delete: the delete
-	// still wins, because the parts are gone.
-	gone.Name, gone.IndexedAt = "renamed.txt", t2
+	// The pi renamed the file before the pc deleted it: the delete wins,
+	// because the parts are gone. (A rename after the delete is the row
+	// coming back — TestARowStampedAfterItsTombstoneComesBack.)
+	gone.Name, gone.IndexedAt = "renamed.txt", t0
 
 	for name, pair := range map[string][2]*Manifest{"pc": {pc, pi}, "pi": {pi, pc}} {
 		merged, _ := mergeIndexes(pair[0], pair[1])
@@ -340,5 +341,100 @@ func TestTombstonesArePrunedAfterTheirLifetime(t *testing.T) {
 	}
 	if _, ok := stones["stale"]; ok {
 		t.Error("a tombstone past its lifetime was kept")
+	}
+}
+
+// A file moved out to a sub vault and back again is a row that came back
+// after its tombstone: the row stands, the tombstone goes. (A deletion that
+// came after the row's last write still wins.)
+func TestARowStampedAfterItsTombstoneComesBack(t *testing.T) {
+	back := row("f", "/", "back.txt", t2)
+	local := index(map[string]uint64{"pc": 2, "pi": 1}, back)
+	remote := index(map[string]uint64{"pc": 1, "pi": 2})
+	remote.Tombstones = map[string]time.Time{"f": t1}
+
+	for name, pair := range map[string][2]*Manifest{"pc": {local, remote}, "pi": {remote, local}} {
+		merged, _ := mergeIndexes(pair[0], pair[1])
+		if len(merged.Entries) != 1 {
+			t.Errorf("on the %s: the row that came back after its tombstone was dropped", name)
+		}
+		if _, still := merged.Tombstones["f"]; still {
+			t.Errorf("on the %s: the stale tombstone was kept, to delete the row on the next fold", name)
+		}
+	}
+
+	// Deleted after its last write: the tombstone wins.
+	old := row("g", "/", "old.txt", t0)
+	local = index(map[string]uint64{"pc": 2, "pi": 1}, old)
+	remote = index(map[string]uint64{"pc": 1, "pi": 2})
+	remote.Tombstones = map[string]time.Time{"g": t1}
+	merged, _ := mergeIndexes(local, remote)
+	if len(merged.Entries) != 0 {
+		t.Error("a row deleted after its last write survived the fold")
+	}
+}
+
+// A rename on one machine and a re-placement on the other both stand: the
+// row is filed as the rename says and its bytes are where the re-placement
+// put them.
+func TestMergeTakesTheRenameFromOneSideAndThePlacementFromTheOther(t *testing.T) {
+	renamed := row("f", "/", "renamed.txt", t2)
+	renamed.PlacedAt = t0
+	replaced := row("f", "/", "f.txt", t1)
+	replaced.ArchiveID = "new-archive"
+	replaced.Shards = []Shard{{Part: 1, ProviderID: "x", Key: "new-archive-p1"}, {Part: 2, ProviderID: "y", Key: "new-archive-p2"}}
+	replaced.PlacedAt = t1
+
+	for name, pair := range map[string][2]*Entry{"pc": {renamed, replaced}, "pi": {replaced, renamed}} {
+		got := mergeRow(pair[0], pair[1])
+		if got.Name != "renamed.txt" {
+			t.Errorf("on the %s: filed as %q, want the later rename", name, got.Name)
+		}
+		if got.ArchiveID != "new-archive" || len(got.Shards) != 2 || !got.PlacedAt.Equal(t1) {
+			t.Errorf("on the %s: placement %q with %d shards placed %s, want the re-placement", name, got.ArchiveID, len(got.Shards), got.PlacedAt)
+		}
+	}
+	if renamed.ArchiveID == "new-archive" || replaced.Name == "renamed.txt" {
+		t.Error("the merge wrote into one of its inputs")
+	}
+}
+
+// The placement stamp moves only when the placement does.
+func TestIndexWriteStampsThePlacementApart(t *testing.T) {
+	v, _ := newTestVault(t, 3)
+	ctx := t.Context()
+	e, _, err := v.Upload(ctx, MainScope, "/", "a.txt", []byte("a"), UploadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	placed, indexed := e.PlacedAt, e.IndexedAt
+	if placed.IsZero() {
+		t.Fatal("a new row has no placement stamp")
+	}
+	time.Sleep(5 * time.Millisecond)
+	if _, err := v.Move(ctx, e.ID, "/", "b.txt"); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := v.Entry(e.ID)
+	if !after.PlacedAt.Equal(placed) {
+		t.Errorf("a rename moved the placement stamp %s → %s", placed, after.PlacedAt)
+	}
+	if !after.IndexedAt.After(indexed) {
+		t.Error("a rename did not move the row stamp")
+	}
+}
+
+// Two machines' inventories of one sub vault are unioned, never one kept
+// over the other: the inventory is a sub vault's claim on its parts, and a
+// shorter one would have a sweep erase the other machine's files.
+func TestSubVaultInventoriesAreUnioned(t *testing.T) {
+	mine := &SubVaultMeta{ID: "s", Label: "Taxes", Inventory: []InventoryItem{{ArchiveID: "a"}}}
+	theirs := &SubVaultMeta{ID: "s", Label: "Tax", Inventory: []InventoryItem{{ArchiveID: "a"}, {ArchiveID: "b"}}}
+	merged := mergeSubVaultMetas([]*SubVaultMeta{mine}, []*SubVaultMeta{theirs})
+	if len(merged) != 1 || len(merged[0].Inventory) != 2 || merged[0].Label != "Taxes" {
+		t.Errorf("merged %+v, want one sub vault, this machine's label, both archives", merged[0])
+	}
+	if len(mine.Inventory) != 1 {
+		t.Error("the union wrote into this machine's own record")
 	}
 }

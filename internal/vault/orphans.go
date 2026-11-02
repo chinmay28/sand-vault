@@ -525,12 +525,19 @@ func (v *Vault) scanForOrphansOn(ctx context.Context, providerID string) (*Orpha
 	// in-flight register (inflight.go) cannot see them. The same settling
 	// window it gives its own uploads is given to the other machine's, and
 	// the sweep waits it out.
-	if window := v.flights.settleWindow(); window > 0 {
+	//
+	// The window is the settle window plus the longest a push may be held
+	// back: another machine's last write is known here only once it has
+	// been pushed, and a machine pacing its pushes an hour apart has up to
+	// an hour of files in its vault file that no copy carries yet.
+	if settle := v.flights.settleWindow(); settle > 0 {
+		window := settle + MaxBackupDelay
 		if recent := v.peersWroteWithin(window); len(recent) > 0 {
 			blocked = append(blocked, fmt.Sprintf(
-				"%s wrote the index within the last %s and may be storing a file right now, whose "+
-					"parts would read here as abandoned — wait until every machine has been quiet "+
-					"that long, then scan again", strings.Join(recent, ", "), window))
+				"%s wrote the index within the last %s and may have stored files since that no copy "+
+					"of the index carries yet, whose parts would read here as abandoned — wait until "+
+					"every machine has been quiet that long, then scan again",
+				strings.Join(recent, ", "), window))
 		}
 	}
 	scan.Blocked = blocked

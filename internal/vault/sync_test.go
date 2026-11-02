@@ -574,12 +574,21 @@ func TestOrphanSweepWaitsOutARecentPeerWrite(t *testing.T) {
 		t.Errorf("the sweep is not blocked by the pi's recent write: %v", scan.Blocked)
 	}
 
+	// The window covers the settle window and the longest a push may be
+	// held back, so an hour is not yet quiet enough and two hours is.
 	v.mu.Lock()
 	v.manifest.Instances["pi"].LastSeen = time.Now().Add(-time.Hour)
 	v.mu.Unlock()
 	scan, _ = v.ScanForOrphans(context.Background())
+	if len(scan.Blocked) == 0 {
+		t.Error("an hour of quiet, inside the longest backup delay, did not block the sweep")
+	}
+	v.mu.Lock()
+	v.manifest.Instances["pi"].LastSeen = time.Now().Add(-2 * time.Hour)
+	v.mu.Unlock()
+	scan, _ = v.ScanForOrphans(context.Background())
 	if len(scan.Blocked) != 0 {
-		t.Errorf("an hour of quiet still blocks the sweep: %v", scan.Blocked)
+		t.Errorf("two hours of quiet still blocks the sweep: %v", scan.Blocked)
 	}
 }
 
@@ -598,5 +607,95 @@ func TestMovingAFolderTombstonesThePathItLeaves(t *testing.T) {
 	}
 	if _, ok := m.FolderTombstones["/c"]; ok {
 		t.Error("the folder moved to is marked deleted")
+	}
+}
+
+// A file stored into a sub vault on one machine is not swept as an orphan
+// by the other, whose own copy of the inventory never saw it.
+func TestOrphanScanOwnsTheOtherMachinesSubVaultFiles(t *testing.T) {
+	pc, _ := newTestVaultOn(t, "pc", 3)
+	pi := secondMachine(t, pc, "pi")
+	id := createSubVault(t, pc, "Taxes", subPassword)
+	pc.AwaitBackupSync()
+	pull(t, pi) // the pi now holds the sub vault shut, with an empty inventory
+
+	if _, _, err := pc.Upload(context.Background(), Scope(id), "/", "return.pdf", []byte("1040"), UploadOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	pc.AwaitBackupSync()
+
+	scan, err := pi.ScanForOrphans(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scan.Found {
+		t.Errorf("the pi's scan would sweep the pc's sub vault file: %+v", scan.Items)
+	}
+}
+
+// Deleting a sub vault deletes the whole of it, on every machine, open there
+// or not — and the deleting machine is told what it could not count.
+func TestADeletedSubVaultIsShutOnTheOtherMachineToo(t *testing.T) {
+	pc, _ := newTestVaultOn(t, "pc", 3)
+	pi := secondMachine(t, pc, "pi")
+	id := createSubVault(t, pc, "Taxes", subPassword)
+	pc.AwaitBackupSync()
+	pull(t, pi)
+	pull(t, pc) // so the pc knows of the pi
+	if err := pi.UnlockSubVault(id, subPassword); err != nil {
+		t.Fatal(err)
+	}
+
+	warnings, err := pc.DeleteSubVault(context.Background(), id, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(warnings, "\n"), "pi") {
+		t.Errorf("the delete did not say what the pi may have stored was not counted: %v", warnings)
+	}
+	pc.AwaitBackupSync()
+
+	pull(t, pi)
+	subs, _ := pi.SubVaults()
+	pi.mu.RLock()
+	records, open := len(pi.store.SubVaults), len(pi.subs)
+	pi.mu.RUnlock()
+	if len(subs) != 0 || records != 0 || open != 0 {
+		t.Errorf("the pi still has the deleted sub vault: %d listed, %d record(s), %d open", len(subs), records, open)
+	}
+}
+
+// A push from a machine that does not know of this one yet lands over this
+// one's copy; what it covered — a file stored here, this machine's own entry
+// in the register — is pushed again at this machine's next pull, even when
+// that pull brought nothing new in.
+func TestAPullRepushesWhatAnotherMachinesPushCovered(t *testing.T) {
+	pc, _ := newTestVaultOn(t, "pc", 3)
+	pi := secondMachine(t, pc, "pi")
+
+	// The pi stores a file (and announces itself); the pc, knowing nothing
+	// of the pi, writes its own copy over it.
+	storeAt(t, pi, "on-pi.txt", "pi")
+	pc.mu.Lock()
+	err := pc.persistLocked()
+	pc.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pc.AwaitBackupSync()
+
+	// The pi's pull brings nothing in, and still puts its file and its entry
+	// back on the accounts.
+	report := pull(t, pi)
+	if report.Added != 0 {
+		t.Fatalf("the pi's pull gained %d rows, want none", report.Added)
+	}
+	pull(t, pc)
+	if got := rootNames(t, pc); !equal(got, []string{"on-pi.txt"}) {
+		t.Errorf("the pc lists %v, want the pi's file", got)
+	}
+	insts, _ := pc.Instances()
+	if len(insts) != 2 {
+		t.Errorf("the pc's register: %+v, want the pi in it", insts)
 	}
 }

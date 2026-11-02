@@ -57,7 +57,7 @@ type Vault struct {
 	// indexFP is every main-index row's fingerprint as of the last write, by
 	// ID — what stampIndexLocked compares against to find the rows this write
 	// changed. Rebuilt whenever an index is adopted whole. See merge.go.
-	indexFP map[string]uint64
+	indexFP rowPrints
 
 	// settings is the sealed preferences section: the film database key, and
 	// anything else that is a secret rather than a knob. nil while locked, like
@@ -694,7 +694,7 @@ func (v *Vault) lockLocked() {
 	v.retired = nil
 	v.providers = nil
 	v.manifest = nil
-	v.indexFP = nil
+	v.indexFP = rowPrints{}
 	v.settings = nil
 	v.subs = nil
 

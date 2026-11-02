@@ -37,8 +37,12 @@ a listing carries `unreachable`, and an account carries `host` and
 their indexes combined rather than compared; a copy written by an older
 build is left alone; disconnecting an account another machine still reaches
 keeps its records; a sub vault deleted on one machine is let go of on the
-other; and the orphan sweep is refused while another machine has written
-within the last fifteen minutes. See §3.17 of the architecture document for
+other; and the orphan sweep is refused until every other machine has been quiet
+for longer than a push can be held back. A rename on one machine and a
+re-encryption of the same file on the other both stand, a file moved out
+to a sub vault and back is not taken for a deleted one, and two machines'
+records of a sub vault's contents are combined rather than one kept over
+the other. See §3.17 of the architecture document for
 the rules.
 
 ### A failed upload says which cloud refused it and what to do next

@@ -1488,15 +1488,25 @@ a later version of the other — in which case the later one is taken whole — 
 whether both machines have written since they last agreed, in which case the
 rows are combined (`mergeIndexes`):
 
-- A row on both sides: the later stamp wins. Every row carries `IndexedAt`,
-  set by the index write itself for exactly the rows whose contents changed
-  since the last write (`stampIndexLocked` compares a fingerprint of each row
-  against the last write's), so no code path through the package can forget to
-  stamp.
-- A row on one side only, with a tombstone for it on the other: gone. Deleting
-  a file records its ID in `Manifest.Tombstones` for ninety days; the machine
-  that deleted it erased its parts, so a tombstone wins however the stamps
-  compare. Explicit folders have tombstones of their own.
+- A row on both sides: the later stamp wins — in two halves. Every row carries
+  `IndexedAt`, set by the index write itself for exactly the rows whose
+  contents changed since the last write (`stampIndexLocked` compares a
+  fingerprint of each row against the last write's), so no code path through
+  the package can forget to stamp; and `PlacedAt`, set the same way from a
+  fingerprint of the placement alone (parts, replica, key, code). Where the
+  file is filed follows the later `IndexedAt`; where its bytes are follows the
+  later `PlacedAt` (`mergeRow`). A rename on one machine and a re-encryption,
+  relocation or conversion on the other therefore both stand, where one whole
+  row over the other would have left the rename pointing at parts the
+  re-placement had erased and the parts it wrote owned by nothing.
+- A row on one side only, with a tombstone for it on the other that is later
+  than the row's stamp: gone. Deleting a file records its ID in
+  `Manifest.Tombstones` for ninety days; the machine that deleted it erased its
+  parts. A row stamped after the tombstone is a row that came back — moved out
+  to a sub vault and back again — and stands, and the tombstone goes with it;
+  a rename made after a delete it had not yet heard of brings the row back too,
+  pointing at erased parts, which the health check reports and a second delete
+  clears. Explicit folders have tombstones of their own.
 - A row on one side only and no tombstone: kept — a file the other side has not
   heard of.
 - Two rows that end up at one path — each machine uploaded a `notes.txt` to the
@@ -1506,9 +1516,16 @@ rows are combined (`mergeIndexes`):
 
 Thumbnail packs follow their `UpdatedAt`; the per-file and per-folder records
 (film details, repositories, automations, folder art) merge by key with the
-local value standing and drop with the file they describe. A sub vault deleted
-on one machine writes its ID into the same tombstones, and the other machine
-lets go of its record (shutting it if open); a folder moved away from leaves a
+local value standing and drop with the file they describe. The main vault's
+records of its sub vaults merge by ID with their inventories unioned, archive
+by archive: a sub vault's section does not travel, so the inventory is the only
+account of what it holds another machine ever gets, and the orphan scan reads
+it as the sub vault's claim on its parts — a machine keeping its own stale,
+shorter inventory would read every file the other machine stored in the sub
+vault as parts no file wants. A sub vault deleted on one machine writes its ID
+into the same tombstones, and the other machine lets go of its record, open or
+not — the deleting machine is told that what other machines stored into it
+since it last pulled was not counted; a folder moved away from leaves a
 tombstone at the old path. Three guards keep the clocks honest: a copy with no
 clock at all was written by an older build and is left alone (it carries no
 tombstones, so combining it would bring back every file deleted since); a copy
@@ -1516,8 +1533,11 @@ that is ahead of this machine under *its own* counter, or that has the same
 clock and a different write time, was written by another machine running under
 the same name — two Raspberry Pis both called `raspberrypi` — and is combined
 rather than taken whole, with a warning to set `SAND_INSTANCE` on one of them;
-and a combine that changed no row is written quietly rather than pushed, so two
-such machines do not trade the same index back and forth. Disconnecting an
+and a combine is pushed only when the freshest copy read lacks something this
+machine holds — a row, a folder, this machine's own register entry — which is
+what puts back whatever another machine's push covered while the two did not
+yet know of each other, and what stops two such machines trading the same
+index back and forth. Disconnecting an
 account on one machine prunes no shard record that another machine still
 reaches: the config goes, the records stay, and the parts are read there. A combined index is a
 version no machine had, so it is this machine's write: stamped, counted in the
@@ -1534,10 +1554,10 @@ every `LoneSyncInterval` (an hour) until one is, which is what a vault on one
 machine pays to find out that it still is; before every push once another
 machine is known, so that what goes out has what came in folded into it
 (`SyncManifestBackup`); before an orphan scan, which otherwise reads another
-machine's uploads as parts no file wants — the scan also says, when another
-machine is known, that a file being uploaded there right now has parts on the
-accounts and no row in any copy yet, and that the sweep is for a moment when
-the other machine is idle; and on demand (`POST /api/vault/sync`, `sand vault
+machine's uploads as parts no file wants — and the sweep is refused while any
+other machine wrote the index within the settle window plus the longest a push
+may be held back (`MaxBackupDelay`), since a file stored there has parts on the
+accounts and no row in any copy until its push lands; and on demand (`POST /api/vault/sync`, `sand vault
 sync`, the Machines dialog). A machine the register has never heard of
 announces itself at its first pull with one write of its own, so a machine that
 only ever reads is still known to the others. A copy sealed under a password
