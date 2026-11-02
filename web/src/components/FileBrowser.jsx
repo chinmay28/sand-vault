@@ -972,6 +972,11 @@ export default function FileBrowser({
         <MachineTransfer
           path={path}
           vault={vault}
+          /* The clouds an import lands on are an upload's choice, so the
+             dialog is told what the upload dialog is told. */
+          providers={providers}
+          defaults={defaultAccounts}
+          defaultScheme={defaultScheme}
           onClose={() => setImporting(false)}
           /* What arrived is in this folder now, so the listing on screen is no
              longer what is there. */
