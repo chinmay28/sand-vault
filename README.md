@@ -2820,8 +2820,8 @@ the browser calls the second one `report (1).pdf`. None of it shows in a
 listing, because the copies are never side by side — which is exactly why they
 survived.
 
-**Find duplicates** asks the question three ways, and puts all three on screen
-at once, because they are three degrees of certainty about the same thing:
+**Find duplicates** asks the question four ways, and puts them all on screen at
+once, because they are four degrees of certainty about the same thing:
 
 - **Identical** — one SHA-256, which is one file. The vault has hashed every
   file it stores since it stored it, so this is proof rather than a
@@ -2834,6 +2834,12 @@ at once, because they are three degrees of certainty about the same thing:
 - **Similar names** — names a copy marker, a separator or a typo apart. This is
   the one that finds `IMG_0001.jpg` beside `IMG_0001 (1).jpg`, and the one that
   can be wrong.
+- **Same film** — videos that are one film under names that share nothing. It
+  is only offered where the folder holds a video, and it is the one that finds
+  `The.Lord.of.the.Rings.The.Two.Towers.2002.EXTENDED.PROPER.1080p.BluRay.H264.AAC-LAMA.mkv`
+  beside `The Lord of the Rings: The Two Towers (2002).mkv` — which *Similar
+  names* is right to keep apart, since by its rules they are not the same
+  name.
 
 Name matching reduces a name to what a copy of it would share and insists on
 the rest:
@@ -2857,10 +2863,37 @@ the rest:
   names that matched exactly, and the dialog says it happened rather than
   offering the folder as one group of nine thousand duplicates.
 
+Film matching is read off two things the vault already has, and nothing is
+looked up:
+
+- A file matched against the film database (see [Film details](#film-details)) carries that
+  film's id, and two files with one id are one film whatever they are called.
+  A matched file also answers to its stored title, so a matched copy still
+  meets an unmatched one.
+- A file that was never matched is read the way the lookup would read it — the
+  title and year off the name, with the encoding tags, the dots and the leading
+  *The* taken off — so a scene release and a tidy name come to the same film.
+  A name without a year borrows the year the same title was seen with, when
+  there is exactly one: `Dune.mkv` beside `Dune.2021.mkv` is one film, and
+  beside `Dune.1984.mkv` as well it is a question nobody can answer, so it
+  stays out of both.
+- A folder may name a file that could not name itself —
+  `Blade Runner (1982)/title00.mkv` — but only a folder that is a film. Two
+  disc rips in a folder called `unsorted` are not copies of *unsorted*.
+- It crosses extensions, since an `.mkv` and an `.mp4` of one film are the
+  pair to find, and never crosses into subtitles, posters or anything that is
+  not a video.
+
+A film group is named after the film rather than after a copy, and it is a
+resemblance rather than a proof — two encodes are different bytes — so it says
+*same film* rather than *identical* unless the hashes happen to agree.
+
 Each group opens with the copy it suggests keeping already spared: the
 shallowest one with the plainest name, so `report.pdf` in the folder you are
-standing in beats `report (2).pdf` three folders down. It is a suggestion — every
-row is a tick of its own, **Keep one** puts a group back the way it started, and
+standing in beats `report (2).pdf` three folders down. A film group is the
+exception and keeps the **largest** copy, since that is usually the better
+encode — a 4 GB Blu-ray rip is not a spare of its 800 MB download. It is a
+suggestion — every row is a tick of its own, **Keep one** puts a group back the way it started, and
 **Skip** drops a group entirely. A group where every copy ends up ticked is
 allowed and is called out in as many words, because it is the one way this
 dialog could take the last copy of something.
@@ -2869,13 +2902,13 @@ What is ticked goes one of two ways: **Delete** hands it to the same
 confirmation the delete button uses, or **Select** ticks it in the file browser
 and hands it to the selection bar — usually the better answer, since a copy you
 are not sure about belongs in a folder called something else rather than in no
-folder at all. Ticks are kept across all three questions, so a file ticked under
+folder at all. Ticks are kept across all four questions, so a file ticked under
 *Similar names* is still ticked when you switch to *Identical*.
 
 It takes a read of its own — `GET /api/folders/duplicates` — rather than the
 survey, because hashes are the whole of what it needs and none of the other four
 tools wants one per file. Like the survey it walks the index in memory,
-decrypts nothing and contacts no account; all three answers come back from that
+decrypts nothing and contacts no account; all four answers come back from that
 one walk, so comparing them costs nothing.
 
 ---
@@ -2936,7 +2969,7 @@ one walk, so comparing them costs nothing.
 | GET | `/api/folders/stats?path=` | What one folder holds, counted rather than listed: files and bytes at or below it, folders under it, what the parts weigh across the accounts, which clouds they are on, files short a part, newest change. What the folder menu shows |
 | POST | `/api/folders/zip` | Plan a folder as one zip — `{path, vault}` → the link to save it from, what it will be called, and how many files and bytes it holds. Refused with `NEEDS_CONVERSION` while any file under it is still in the pre-chunking format |
 | GET | `/zip/{token}/{name}` | Stream that archive (no session; the token is the credential, good for twelve hours of disuse like a stream link's and voided by a lock; an expired one answers with a page saying so). Built as it is sent, one chunk at a time, stored rather than deflated, so its size is not known up front |
-| GET | `/api/folders/duplicates?path=` | Which files under a folder are copies of each other, asked three ways in one walk: the same bytes, the same size, or names a copy marker apart |
+| GET | `/api/folders/duplicates?path=` | Which files under a folder are copies of each other, asked four ways in one walk: the same bytes, the same size, names a copy marker apart, or videos that are one film under different names |
 | GET · POST | `/api/folders/art?path=` | Which file's thumbnail a folder is drawn with, and what else it could be (`id` to pick one, `""` for none) |
 | POST · DELETE | `/api/folders` | Create / delete folders |
 | POST | `/api/folders/move` | Move a folder, and everything under it, `from` one path `to` another |

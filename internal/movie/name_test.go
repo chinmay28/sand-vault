@@ -106,6 +106,59 @@ func TestParseIn(t *testing.T) {
 	}
 }
 
+// TitleKey is what the duplicate finder compares, so it has to bring a scene
+// release and a tidy name to the same key and keep two films apart.
+func TestTitleKey(t *testing.T) {
+	same := [][2]string{
+		{"The Lord of the Rings The Two Towers", "The Lord of the Rings: The Two Towers"},
+		{"The Lord of the Rings The Two Towers", "Lord of the Rings - The Two Towers"},
+		{"Wall E", "WALL-E"},
+		{"Charlottes Web", "Charlotte's Web"},
+		{"A Quiet Place", "Quiet Place"},
+	}
+	for _, pair := range same {
+		if TitleKey(pair[0]) != TitleKey(pair[1]) {
+			t.Errorf("%q and %q key differently: %q vs %q",
+				pair[0], pair[1], TitleKey(pair[0]), TitleKey(pair[1]))
+		}
+	}
+
+	differ := [][2]string{
+		{"The Two Towers", "The Return of the King"},
+		{"Alien", "Aliens"},
+		{"Dune Part Two", "Dune"},
+	}
+	for _, pair := range differ {
+		if TitleKey(pair[0]) == TitleKey(pair[1]) {
+			t.Errorf("%q and %q key the same: %q", pair[0], pair[1], TitleKey(pair[0]))
+		}
+	}
+
+	// An article is dropped, not a title that is one: a film called "The" or
+	// "A" — and there is one — keeps its name.
+	if got := TitleKey("The"); got != "the" {
+		t.Errorf("TitleKey(%q) = %q, want the word kept", "The", got)
+	}
+	if got := TitleKey(""); got != "" {
+		t.Errorf("TitleKey(%q) = %q, want empty", "", got)
+	}
+}
+
+// Weak is what keeps a track number off a disc from being called a film, and
+// it is part of the contract now that the duplicate finder leans on it.
+func TestGuessWeak(t *testing.T) {
+	for _, title := range []string{"", "movie", "Title00", "VTS_01_1", "0002", "01 02"} {
+		if !(Guess{Title: title}).Weak() {
+			t.Errorf("%q is not reported as weak", title)
+		}
+	}
+	for _, title := range []string{"1917", "2012", "300", "Nosferatu", "holiday video"} {
+		if (Guess{Title: title}).Weak() {
+			t.Errorf("%q is reported as weak", title)
+		}
+	}
+}
+
 func TestGuessString(t *testing.T) {
 	if got := (Guess{Title: "The Thing", Year: 1982}).String(); got != "The Thing (1982)" {
 		t.Errorf("String() = %q", got)

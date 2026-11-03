@@ -24,8 +24,8 @@ import { FolderRepos } from './FolderRepos'
      · Empty folders — remove the ones holding nothing, however deep.
      · Remove by type — erase every .txt, or every .nfo, under this folder.
      · Select by type — pick them all instead, and use the selection bar.
-     · Duplicates  — the copies of things, by their bytes, their size or their
-                     names. See Duplicates.jsx.
+     · Duplicates  — the copies of things, by their bytes, their size, their
+                     names or the film they are. See Duplicates.jsx.
 
    Two are standing instructions rather than one-off jobs, and that is the whole
    difference between the halves: the six above happen when you press them, and

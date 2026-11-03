@@ -14,20 +14,26 @@ import { BulkDelete } from './BulkActions'
    listing, because the copies are never side by side — which is exactly why
    they survived.
 
-   So the question is asked three ways, and all three are on screen at once
-   because they are three different degrees of certainty about the same thing:
+   So the question is asked four ways, and all four are on screen at once
+   because they are four different degrees of certainty about the same thing:
 
      · Identical      — one SHA-256, which is one file. Proof, not a guess.
      · Same size      — the same number of bytes, which is what somebody
                         actually says out loud, and which catches the pair whose
-                        hash the vault never recorded. Weakest of the three.
+                        hash the vault never recorded. Weakest of the four.
      · Similar names  — names a copy marker, a separator or a typo apart. The
                         one that finds IMG_0001.jpg beside IMG_0001 (1).jpg, and
                         the one that can be wrong.
+     · Same film      — videos that are one film under names that share
+                        nothing: a scene release beside a tidy title, an
+                        extended cut beside the theatrical one, an .mkv beside
+                        an .mp4. Read off the stored film match where there is
+                        one and off the name where there is not; nothing is
+                        looked up. Only offered where the folder holds videos.
 
    Nothing here is ever only a guess, though, because a name group still says
    whether the bytes underneath it agree — a group marked "identical" is proven
-   whichever question found it. That is the whole reason the three arrive
+   whichever question found it. That is the whole reason the four arrive
    together from one read: switching between them is how you use this, and a
    size match worth a second look should not cost another walk of the index.
 
@@ -37,8 +43,8 @@ import { BulkDelete } from './BulkActions'
    better answer, because a copy you are not sure about belongs in a folder
    called something else rather than in no folder at all. */
 
-/* Which of the three, and what is in each. Buttons rather than a dropdown: the
-   counts on them are half the answer, and reading all three at once is the
+/* Which of the four, and what is in each. Buttons rather than a dropdown: the
+   counts on them are half the answer, and reading them all at once is the
    point. */
 const WAYS = [
   {
@@ -56,7 +62,19 @@ const WAYS = [
     label: 'Similar names',
     hint: 'Names a copy marker, a separator or a typo apart. Numbers have to match exactly — IMG_0001 and IMG_0002 are two photographs, not two copies — and an extension is never crossed, so a film is never grouped with its subtitles.',
   },
+  {
+    key: 'film',
+    label: 'Same film',
+    hint: 'Videos that are one film under names that share nothing — a scene release beside a tidy title, an extended cut beside the theatrical one, an .mkv beside an .mp4. Read off the film match where a folder has one and off the name where it does not; nothing is looked up. The largest copy is the one suggested for keeping, since it is usually the better encode.',
+  },
 ]
+
+/* The questions worth offering for this folder: all four where it holds a
+   video, three where it does not. A folder of documents has no films in it to
+   be copies of each other, and a tab that always says "none" is noise. */
+function waysFor(found) {
+  return WAYS.filter((w) => w.key !== 'film' || found.videos > 0)
+}
 
 export function DuplicatesTool({ path, vault, onClose, onDone, onSelect }) {
   const [found, setFound] = useState(null)
@@ -87,11 +105,12 @@ export function DuplicatesTool({ path, vault, onClose, onDone, onSelect }) {
 
 function Found({ found, vault, onClose, onDone, onSelect }) {
   const mobile = useIsMobile()
-  /* Which question is being read. It opens on whichever of the three found
+  const ways = useMemo(() => waysFor(found), [found])
+  /* Which question is being read. It opens on whichever of them found
      something, strongest first: landing on an empty "Identical" in a vault
      whose duplicates are all name matches would read as "there are none". */
   const [way, setWay] = useState(() => (
-    WAYS.find((w) => found[w.key].groups.length > 0)?.key || 'content'))
+    ways.find((w) => found[w.key].groups.length > 0)?.key || 'content'))
   /* What is ticked, by file ID, across every question at once — so switching
      between them does not quietly drop what was chosen under the last one, and
      a file found twice is ticked once. It starts as every copy but the one each
@@ -148,7 +167,7 @@ function Found({ found, vault, onClose, onDone, onSelect }) {
     return <BulkDelete items={confirming} vault={vault} onClose={onClose} onDone={onDone} />
   }
 
-  const asked = WAYS.find((w) => w.key === way)
+  const asked = ways.find((w) => w.key === way)
 
   return (
     <Modal
@@ -157,7 +176,7 @@ function Found({ found, vault, onClose, onDone, onSelect }) {
       onClose={onClose}
       width={620}
     >
-      <Ways found={found} way={way} onChange={setWay} />
+      <Ways found={found} ways={ways} way={way} onChange={setWay} />
 
       <p style={{
         margin: '0 0 14px', fontFamily: FONT.sans, fontSize: '11px',
@@ -168,7 +187,7 @@ function Found({ found, vault, onClose, onDone, onSelect }) {
         <Banner tone="info">
           Nothing under this folder answers to that. {found.scanned} file
           {found.scanned === 1 ? ' was' : 's were'} looked at, at every depth
-          below — try one of the other two.
+          below — try one of the others.
         </Banner>
       ) : (
         <>
@@ -225,8 +244,8 @@ function Found({ found, vault, onClose, onDone, onSelect }) {
         lineHeight: 1.6, color: chosen.length ? COLORS.textDim : COLORS.textMuted,
       }}>
         {chosen.length === 0
-          ? 'Nothing is ticked. Tick the copies you are done with, under any of the three questions — a tick made under one is still there under the others.'
-          : `${chosen.length} file${chosen.length === 1 ? '' : 's'} ticked, ${formatBytes(bytes)}, counted across all three questions rather than just this one.`}
+          ? 'Nothing is ticked. Tick the copies you are done with, under any of the questions — a tick made under one is still there under the others.'
+          : `${chosen.length} file${chosen.length === 1 ? '' : 's'} ticked, ${formatBytes(bytes)}, counted across every question rather than just this one.`}
       </div>
 
       <Footer mobile={mobile}>
@@ -246,9 +265,9 @@ function Found({ found, vault, onClose, onDone, onSelect }) {
   )
 }
 
-/* Every copy but the one each group suggests keeping, under all three
-   questions — which is what the dialog opens with ticked, and the answer for
-   most of these. A file found under two questions is one tick.
+/* Every copy but the one each group suggests keeping, under every question —
+   which is what the dialog opens with ticked, and the answer for most of
+   these. A file found under two questions is one tick.
 
    A file any group suggests keeping is never ticked to begin with, even where
    another question has it down as a spare: the two questions can disagree about
@@ -274,10 +293,10 @@ function spares(found) {
   return out
 }
 
-function Ways({ found, way, onChange }) {
+function Ways({ found, ways, way, onChange }) {
   return (
-    <div style={{ display: 'flex', gap: '6px', marginBottom: '10px' }}>
-      {WAYS.map((w) => {
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '10px' }}>
+      {ways.map((w) => {
         const set = found[w.key]
         const on = way === w.key
         return (
@@ -288,7 +307,7 @@ function Ways({ found, way, onChange }) {
             aria-pressed={on}
             title={w.hint}
             style={{
-              flex: 1,
+              flex: '1 1 120px',
               minHeight: '44px',
               padding: '5px 8px',
               display: 'flex', flexDirection: 'column', gap: '2px',
@@ -348,11 +367,19 @@ function Tally({ set, scanned }) {
 
    The suggestion is the shallowest copy with the plainest name — "report.pdf"
    in the folder you are standing in beats "report (2).pdf" three folders down —
-   and it is only a suggestion: every row is a tick of its own, and Keep one
-   puts the ticks back the way they started if a group has been worked over. */
+   except for a film, where it is the largest copy, since that is usually the
+   better encode. Either way it is only a suggestion: every row is a tick of
+   its own, and Keep one puts the ticks back the way they started if a group
+   has been worked over.
+
+   A group is named after the copy it keeps, unless the question can do better:
+   a film group is named after the film, because "The.Lord.of.the.Rings.The.
+   Two.Towers.2002.EXTENDED.PROPER.1080p.BluRay.H264.AAC-LAMA.mkv" is not what
+   anybody calls it. */
 function Group({ group, base, ticked, onToggle, onSkip, onSpare }) {
   const mobile = useIsMobile()
   const keeper = group.files.find((f) => f.keep) || group.files[0]
+  const name = group.title || keeper.name
 
   return (
     <div style={{ borderBottom: `1px solid ${COLORS.border}` }}>
@@ -364,11 +391,11 @@ function Group({ group, base, ticked, onToggle, onSkip, onSpare }) {
           flex: '1 1 110px', minWidth: 0,
           fontFamily: FONT.mono, fontSize: '11.5px', color: COLORS.text,
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-        }} title={keeper.name}>{keeper.name}</span>
+        }} title={name}>{name}</span>
 
         {group.certain
           ? <Tag tone={COLORS.success}>identical</Tag>
-          : <Tag tone={COLORS.warn}>alike</Tag>}
+          : <Tag tone={COLORS.warn}>{group.title ? 'same film' : 'alike'}</Tag>}
 
         <span style={{
           flexShrink: 0, fontFamily: FONT.mono, fontSize: '11px', color: COLORS.textMuted,

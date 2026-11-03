@@ -40,6 +40,36 @@ func (g Guess) String() string {
 	return g.Title
 }
 
+// TitleKey reduces a title to what two spellings of one film share, so that
+// two names can be asked whether they mean the same film without asking the
+// database: lower case, letters and digits, single spaces, and no leading
+// article. "The.Lord.of.the.Rings.The.Two.Towers", "The Lord of the Rings: The
+// Two Towers" and "Lord of the Rings - The Two Towers" all come to one key.
+//
+// It is a comparison key and nothing else — never shown, never searched for.
+// The article goes because it is the one word a tidy name and a scene name
+// most often disagree about, and because the key is only ever compared with
+// the year beside it, which is what keeps "Thing" and "The Thing" from being
+// a worry: two films a word apart in the same year are rarer than two spellings
+// of one.
+func TitleKey(title string) string {
+	// Apostrophes vanish rather than splitting a word, as they do in clean:
+	// a stored title keeps its "Charlotte's" and a parsed one has lost it.
+	title = strings.Map(func(r rune) rune {
+		if r == '\'' || r == '’' || r == '`' {
+			return -1
+		}
+		return r
+	}, title)
+	key := normalizeTitle(title)
+	for _, article := range []string{"the ", "a ", "an "} {
+		if rest, ok := strings.CutPrefix(key, article); ok && rest != "" {
+			return rest
+		}
+	}
+	return key
+}
+
 // releaseTags are the tokens that describe how a file was encoded rather than
 // what it holds. Everything from the first of them onwards is dropped when the
 // name carries no year to cut at instead.
@@ -151,7 +181,7 @@ func ParseIn(dir, name string) Guess {
 	fromFile := Parse(name)
 	fromDir := Parse(path.Base(strings.TrimSuffix(dir, "/")))
 
-	if weak(fromFile) {
+	if fromFile.Weak() {
 		// Nothing on the file and nothing on the folder: better an empty guess
 		// than a search for "0002" — a lookup leaves this machine, and a query
 		// nobody could answer is not worth sending.
@@ -169,10 +199,10 @@ func ParseIn(dir, name string) Guess {
 	return fromFile
 }
 
-// weak reports whether a guess is too thin to search on: nothing at all, a
-// name that describes the medium rather than the film, or a number that is a
-// track off a disc rather than a title.
-func weak(g Guess) bool {
+// Weak reports whether a guess is too thin to search on — or to call a film by:
+// nothing at all, a name that describes the medium rather than the film, or a
+// number that is a track off a disc rather than a title.
+func (g Guess) Weak() bool {
 	title := strings.TrimSpace(g.Title)
 	if title == "" {
 		return true

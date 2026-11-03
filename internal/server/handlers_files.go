@@ -1715,9 +1715,10 @@ func (s *Server) handleFolderStats(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleFolderDuplicates answers which files under a folder are copies of each
-// other — by content, by size, and by name, all three from one walk.
+// other — by content, by size, by name, and by which film they are, all four
+// from one walk.
 //
-// Three answers to one request because they are three readings of the same
+// Four answers to one request because they are four readings of the same
 // question and switching between them is the whole of using it: a pair that is
 // only a size match is worth a second look, and finding that out should not
 // cost another walk of the index. It reads and nothing else; erasing a copy is
