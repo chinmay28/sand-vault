@@ -12,6 +12,30 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### Find duplicates knows a film by any name
+
+**Find duplicates** asks a fourth question in a folder that holds videos:
+**Same film**. `The.Lord.of.the.Rings.The.Two.Towers.2002.EXTENDED.PROPER.1080p.BluRay.H264.AAC-LAMA.mkv`
+and `The Lord of the Rings: The Two Towers (2002).mkv` are the same film, and
+*Similar names* was right to keep them apart — by its rules they are forty
+edits apart with different numbers in them, not a copy marker or a typo. So
+the new question reads each video the way the film lookup does, title and year
+off the name with the encoding tags and the dots taken off, and brings a scene
+release and a tidy name to one group. A file the film database already matched
+answers to that match too, so two files with one film id are one film whatever
+they are called, and a matched copy still meets an unmatched one. Nothing is
+looked up: it is read off the index, like the other three.
+
+A film group is named after the film rather than after a copy, crosses
+extensions — an `.mkv` and an `.mp4` of one film are the pair to find — and
+never reaches into subtitles or posters. It suggests keeping the **largest**
+copy rather than the plainest-named one, since that is usually the better
+encode, and it says *same film* rather than *identical* unless the hashes
+happen to agree. The traps are kept out of it: `Dune.mkv` beside `Dune.1984.mkv`
+and `Dune.2021.mkv` joins neither, two disc rips in a folder called `unsorted`
+are not copies of *unsorted*, and a folder with no video in it is not offered
+the question at all.
+
 ### An import keeps going on its own, and says which clouds it lands on
 
 **Keep going if I close this page** now starts ticked. The page was the

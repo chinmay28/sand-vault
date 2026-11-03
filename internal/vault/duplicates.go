@@ -17,9 +17,8 @@ import (
 // a listing, because the copies are never side by side — that is precisely why
 // they survived.
 //
-// So this asks the question three ways, from weakest evidence to strongest,
-// because they are three different questions and a person clearing a drawer
-// wants all three:
+// So this asks the question four ways, because they are four different
+// questions and a person clearing a drawer wants all of them:
 //
 //   - By content — the same SHA-256, which is the same bytes. Not a guess: two
 //     files with one hash are one file, whatever they are called and wherever
@@ -32,8 +31,12 @@ import (
 //     separator or a typo. This is the one that finds "IMG_0001.jpg" beside
 //     "IMG_0001 (1).jpg", and the one that can be wrong, so it never stands
 //     alone: each group carries the sizes and says whether the bytes agree.
+//   - By film — videos that are one film under names that share nothing: a
+//     scene release beside a tidy title, an extended cut beside the theatrical
+//     one, an .mkv beside an .mp4. Read off the stored film match where there
+//     is one and off the name where there is not; see duplicatefilms.go.
 //
-// All three are read-only, and nothing here removes anything. Like the rest of
+// All four are read-only, and nothing here removes anything. Like the rest of
 // the organizer (see organize.go) the answer is a plan the browser then runs
 // over DELETE /api/files/{id} — or hands to the selection bar — one item at a
 // time, so a run that stalls has erased exactly what it says it erased.
@@ -80,6 +83,11 @@ type DuplicateGroup struct {
 	// name. It is the difference between "delete four of these" and "look at
 	// these five".
 	Certain bool `json:"certain"`
+
+	// Title is what the group is, where the question can say: the film, for a
+	// group of copies of one. Empty for the other questions, which have nothing
+	// to call a group but the copy it suggests keeping.
+	Title string `json:"title,omitempty"`
 }
 
 // DuplicateSet is one way of asking, with what it came to.
@@ -107,9 +115,9 @@ type DuplicateSet struct {
 	Crowded int `json:"crowded"`
 }
 
-// Duplicates is all three questions about one folder, answered from one walk.
+// Duplicates is all four questions about one folder, answered from one walk.
 //
-// All three rather than the one that was asked for, because they are cheap next
+// All four rather than the one that was asked for, because they are cheap next
 // to the walk itself and because switching between them is the whole of using
 // this: a group that is only a size match is worth a second look, and finding
 // that out should not cost another request.
@@ -121,12 +129,18 @@ type Duplicates struct {
 	// finds, so scattered is the only way this looks.
 	Scanned int `json:"scanned"`
 
+	// Videos is how many of those the film question was asked of. Zero is the
+	// browser's cue not to offer that question at all: a folder of documents
+	// has no films in it to be copies of each other.
+	Videos int `json:"videos"`
+
 	Content DuplicateSet `json:"content"`
 	Size    DuplicateSet `json:"size"`
 	Name    DuplicateSet `json:"name"`
+	Film    DuplicateSet `json:"film"`
 }
 
-// Duplicates finds the copies under a folder, three ways.
+// Duplicates finds the copies under a folder, four ways.
 func (v *Vault) Duplicates(scope Scope, dir string) (*Duplicates, error) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
@@ -142,6 +156,8 @@ func (v *Vault) Duplicates(scope Scope, dir string) (*Duplicates, error) {
 	}
 
 	files := make([]DuplicateFile, 0)
+	clues := make([]filmClue, 0)
+	videos := 0
 	for _, e := range m.Descendants(dir) {
 		files = append(files, DuplicateFile{
 			ID:    e.ID,
@@ -152,14 +168,20 @@ func (v *Vault) Duplicates(scope Scope, dir string) (*Duplicates, error) {
 			Depth: depthUnder(e.Dir, dir),
 			Hash:  e.Hash,
 		})
+		clues = append(clues, filmClueOf(e, m.Movies[e.ID]))
+		if IsVideo(e) {
+			videos++
+		}
 	}
 
 	return &Duplicates{
 		Path:    dir,
 		Scanned: len(files),
+		Videos:  videos,
 		Content: byContent(files),
 		Size:    bySize(files),
 		Name:    byName(files),
+		Film:    byFilm(files, clues),
 	}, nil
 }
 
@@ -209,6 +231,13 @@ func bySize(files []DuplicateFile) DuplicateSet {
 // collect turns buckets into groups, dropping every bucket holding one file —
 // which is most of them, and none of which is a duplicate of anything.
 func collect(files []DuplicateFile, by map[string][]int, order []string, key func(string) string) DuplicateSet {
+	return collectWith(files, by, order, key, nil)
+}
+
+// collectWith is collect with a say in which copy each group suggests keeping.
+// prefer(a, b) reports that a should survive over b; where it has no opinion
+// either way the usual order decides, and nil is no opinion at all.
+func collectWith(files []DuplicateFile, by map[string][]int, order []string, key func(string) string, prefer func(a, b DuplicateFile) bool) DuplicateSet {
 	out := DuplicateSet{Groups: []DuplicateGroup{}}
 	for _, k := range order {
 		idx := by[k]
@@ -219,7 +248,7 @@ func collect(files []DuplicateFile, by map[string][]int, order []string, key fun
 		for _, i := range idx {
 			group.Files = append(group.Files, files[i])
 		}
-		out.Groups = append(out.Groups, finish(group))
+		out.Groups = append(out.Groups, finish(group, prefer))
 	}
 	rank(&out)
 	return out
@@ -228,15 +257,24 @@ func collect(files []DuplicateFile, by map[string][]int, order []string, key fun
 // finish orders a group around the copy worth keeping and counts what the rest
 // come to.
 //
-// The survivor is the shallowest copy, then the one with the plainest name, and
-// then whichever sorts first — which is to say "report.pdf" in the folder you
-// are standing in beats "report (2).pdf" three folders down, and the answer
-// never depends on the order the index happened to be walked in. It is a
-// suggestion and nothing more: every row can be ticked or unticked, and the
-// keeper can be moved to any file in the group.
-func finish(group DuplicateGroup) DuplicateGroup {
+// The survivor is whatever the question prefers, if it prefers anything; then
+// the shallowest copy, then the one with the plainest name, and then whichever
+// sorts first — which is to say "report.pdf" in the folder you are standing in
+// beats "report (2).pdf" three folders down, and the answer never depends on
+// the order the index happened to be walked in. It is a suggestion and nothing
+// more: every row can be ticked or unticked, and the keeper can be moved to any
+// file in the group.
+func finish(group DuplicateGroup, prefer func(a, b DuplicateFile) bool) DuplicateGroup {
 	sort.SliceStable(group.Files, func(i, j int) bool {
 		a, b := group.Files[i], group.Files[j]
+		if prefer != nil {
+			if prefer(a, b) {
+				return true
+			}
+			if prefer(b, a) {
+				return false
+			}
+		}
 		if a.Depth != b.Depth {
 			return a.Depth < b.Depth
 		}

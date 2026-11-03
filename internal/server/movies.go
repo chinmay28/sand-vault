@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path"
 	"sort"
 	"strings"
 
@@ -47,22 +46,11 @@ func (s *Server) movieClient() (*movie.Client, error) {
 	return &movie.Client{Key: key, BaseURL: s.MovieBaseURL, ImageBaseURL: s.MovieImageBaseURL}, nil
 }
 
-// isVideo reports whether a file is worth asking the film database about.
-//
-// Deliberately generous, and by extension rather than by type: a .mkv usually
-// arrives with no recognised MIME type at all — Go's built-in table stops at
-// the handful of web formats — and it is the single most likely thing in a
-// films folder.
+// isVideo reports whether a file is worth asking the film database about. It
+// is the vault's own test, so that what the lookup matches and what the
+// duplicate finder calls a film are the same set of files.
 func isVideo(entry *vault.Entry) bool {
-	if strings.HasPrefix(strings.ToLower(entry.MIME), "video/") {
-		return true
-	}
-	switch strings.ToLower(path.Ext(entry.Name)) {
-	case ".mkv", ".mp4", ".m4v", ".mov", ".avi", ".wmv", ".flv", ".mpg", ".mpeg",
-		".m2ts", ".ts", ".webm", ".ogv", ".divx", ".vob", ".iso", ".3gp":
-		return true
-	}
-	return false
+	return vault.IsVideo(entry)
 }
 
 // MatchResult is what happened to one file.
