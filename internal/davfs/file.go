@@ -84,13 +84,14 @@ type uploadResult struct {
 	err      error
 }
 
-// newWriteFile begins storing a file. A non-nil prefix is read into the upload
-// ahead of anything written, which is how appending works: the file already
-// stored goes in first, the new bytes follow, and neither is held in memory.
+// newWriteFile begins storing a file into the vault scope names. A non-nil
+// prefix is read into the upload ahead of anything written, which is how
+// appending works: the file already stored goes in first, the new bytes follow,
+// and neither is held in memory.
 //
 // expected is the number of bytes the caller will write before closing, or -1
 // if that is not known; it counts only what is written, not the prefix.
-func newWriteFile(ctx context.Context, v *vault.Vault, dir, base string, prefix io.Reader, expected int64) *writeFile {
+func newWriteFile(ctx context.Context, v *vault.Vault, scope vault.Scope, dir, base string, prefix io.Reader, expected int64) *writeFile {
 	pr, pw := io.Pipe()
 	f := &writeFile{name: base, ctx: ctx, expected: expected, pw: pw, done: make(chan uploadResult, 1)}
 
@@ -102,7 +103,7 @@ func newWriteFile(ctx context.Context, v *vault.Vault, dir, base string, prefix 
 	go func() {
 		// PUT to a path that already holds a file replaces it, which is what
 		// WebDAV means by it.
-		entry, warnings, err := v.UploadStream(ctx, mainVault, dir, base, source, vault.UploadOptions{Overwrite: true})
+		entry, warnings, err := v.UploadStream(ctx, scope, dir, base, source, vault.UploadOptions{Overwrite: true})
 		// Draining matters when the upload gives up early: without it the
 		// handler's io.Copy would block forever on a pipe nobody reads.
 		if err != nil {

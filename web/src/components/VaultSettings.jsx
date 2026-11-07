@@ -217,7 +217,9 @@ export default function VaultSettings({
         <Setting
           icon="🔒"
           label="Sub vaults"
-          hint="Sealed under their own passwords, and never on a mounted drive"
+          hint={webdav?.path
+            ? 'Sealed under their own passwords, each with a drive address of its own'
+            : 'Sealed under their own passwords'}
           status={subVaults.length === 0
             ? 'None'
             : `${subVaults.length}, ${subVaults.filter((s) => s.unlocked).length} open`}
@@ -326,6 +328,7 @@ export default function VaultSettings({
           subVaultShown={subVaultShown}
           onToggleSubVaults={onToggleSubVaults}
           onToggleSubVault={onToggleSubVault}
+          webdav={webdav}
           zIndex={CHILD_Z}
           onClose={close}
           onChanged={onChanged}

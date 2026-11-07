@@ -130,7 +130,7 @@ func (fs *FileSystem) expectedSize(ctx context.Context, clean string) int64 {
 		default:
 			return -1
 		}
-		entry, err := fs.Vault.EntryByPath(mainVault, source)
+		entry, err := fs.Vault.EntryByPath(fs.scope, source)
 		if err != nil {
 			return -1
 		}
@@ -168,8 +168,8 @@ func (fs *FileSystem) setAside(ctx context.Context, info *requestInfo, clean str
 	asideName := fmt.Sprintf(".%s.sand-replaced-%s", base, hex.EncodeToString(nonce[:]))
 	asidePath := path.Join(dir, asideName)
 
-	if fs.Vault.FolderExists(mainVault, clean) {
-		if err := fs.Vault.MoveFolder(ctx, mainVault, clean, asidePath); err != nil {
+	if fs.Vault.FolderExists(fs.scope, clean) {
+		if err := fs.Vault.MoveFolder(ctx, fs.scope, clean, asidePath); err != nil {
 			return vaultError(err)
 		}
 		info.mu.Lock()
@@ -178,7 +178,7 @@ func (fs *FileSystem) setAside(ctx context.Context, info *requestInfo, clean str
 		return nil
 	}
 
-	entry, err := fs.Vault.EntryByPath(mainVault, clean)
+	entry, err := fs.Vault.EntryByPath(fs.scope, clean)
 	if err != nil {
 		return vaultError(err)
 	}
@@ -212,8 +212,8 @@ func (fs *FileSystem) finishReplacement(info *requestInfo, landed bool) {
 	if landed {
 		var err error
 		if isDir {
-			_, err = fs.Vault.Rmdir(ctx, mainVault, aside, true, nil)
-		} else if entry, lookup := fs.Vault.EntryByPath(mainVault, aside); lookup == nil {
+			_, err = fs.Vault.Rmdir(ctx, fs.scope, aside, true, nil)
+		} else if entry, lookup := fs.Vault.EntryByPath(fs.scope, aside); lookup == nil {
 			_, err = fs.Vault.Delete(ctx, entry.ID)
 		} else {
 			err = lookup
@@ -224,8 +224,8 @@ func (fs *FileSystem) finishReplacement(info *requestInfo, landed bool) {
 		return
 	}
 
-	occupied := fs.Vault.FolderExists(mainVault, info.dst)
-	if _, err := fs.Vault.EntryByPath(mainVault, info.dst); err == nil {
+	occupied := fs.Vault.FolderExists(fs.scope, info.dst)
+	if _, err := fs.Vault.EntryByPath(fs.scope, info.dst); err == nil {
 		occupied = true
 	}
 	if occupied {
@@ -236,8 +236,8 @@ func (fs *FileSystem) finishReplacement(info *requestInfo, landed bool) {
 
 	var err error
 	if isDir {
-		err = fs.Vault.MoveFolder(ctx, mainVault, aside, info.dst)
-	} else if entry, lookup := fs.Vault.EntryByPath(mainVault, aside); lookup == nil {
+		err = fs.Vault.MoveFolder(ctx, fs.scope, aside, info.dst)
+	} else if entry, lookup := fs.Vault.EntryByPath(fs.scope, aside); lookup == nil {
 		_, base := split(info.dst)
 		_, err = fs.Vault.Move(ctx, entry.ID, "", base)
 	} else {

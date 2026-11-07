@@ -82,8 +82,9 @@ export default function App() {
   const [unlockingSub, setUnlockingSub] = useState(null)
   /* Which sub vaults show up in the file list. A view preference, kept in this
      browser: it decides what is drawn and nothing else. A locked sub vault
-     stays locked whether it is drawn or not, and no setting puts one on a
-     mounted drive.
+     stays locked whether it is drawn or not, and no setting puts one on the
+     vault's mounted drive — a sub vault's own share is opened by its own
+     password, never by this page.
 
      Two halves, because "show them" was never one answer for everybody: the
      sub vault you want in front of you at the root is rarely the same one you

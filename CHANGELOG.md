@@ -12,6 +12,36 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### Mount a sub vault as a drive of its own
+
+`sand serve --webdav` now serves a WebDAV share per sub vault, beside the
+vault's: `/dav/` is the vault, and `/sub/Taxes/` is the sub vault called Taxes.
+Each opens with **its own password** and shows **that sub vault and nothing
+else** — the rest of the vault is not under it, no other sub vault is, and a
+move whose destination is another share is refused. So a sub vault can be
+mounted on one machine, or handed to one person, with the rest of the vault out
+of that mount's reach, while the app — which has the vault password — still
+lists every sub vault and opens each with its password as before. The vault's
+own share is unchanged and still never shows a sub vault, locked or open.
+
+A sub vault is named in the address by its name, case ignored, or by its ID;
+**Vault settings → Sub vaults** offers each row's address with a copy button,
+and *Mount as a drive* explains which password it takes. Mounting a locked sub
+vault opens it, the way mounting the vault's share unlocks a locked vault, so
+the mount outlives whoever opened the sub vault in the app; what it cannot do
+is unlock the vault around it, and while the vault is locked the share says so
+(503) rather than asking for a password that could not help. A name no sub
+vault has is answered exactly as a wrong password is, so the shares do not
+volunteer which sub vaults exist. `--webdav-sub-path` moves them off `/sub`;
+the server refuses a path inside the vault share's, or the other way round,
+since a sub vault under `/dav/` would shadow a main-vault folder of the same
+name.
+
+Underneath, unlocking a sub vault that is already open now checks the
+password rather than answering yes to anything — harmless while the only
+caller had just typed it into the app, and not once a password arrives on
+every request of a mounted share.
+
 ### Find duplicates knows a film by any name
 
 **Find duplicates** asks a fourth question in a folder that holds videos:

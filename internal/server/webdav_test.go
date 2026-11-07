@@ -257,3 +257,200 @@ func jsonRequest(method, path, body string) *http.Request {
 	req.Header.Set("Content-Type", "application/json")
 	return req
 }
+
+// The sub vaults' shares come and go with the vault's: off together, on
+// together, and beside each other rather than nested.
+func TestSubVaultSharesAreServedBesideTheVaultShare(t *testing.T) {
+	dir := t.TempDir()
+	s := &Server{VaultPath: filepath.Join(dir, "vault.sand")}
+	handler, err := s.Handler()
+	if err != nil {
+		t.Fatalf("Handler: %v", err)
+	}
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest("PROPFIND", "/sub/Taxes/", nil))
+	if w.Code == http.StatusUnauthorized || w.Code == http.StatusServiceUnavailable || w.Code == http.StatusMultiStatus {
+		t.Errorf("a sub vault share answered on a server that did not enable WebDAV: %d", w.Code)
+	}
+
+	s = &Server{VaultPath: filepath.Join(dir, "vault.sand"), WebDAV: true}
+	handler, err = s.Handler()
+	if err != nil {
+		t.Fatalf("Handler: %v", err)
+	}
+	v, _ := s.Vault()
+	if err := v.Init("a perfectly ordinary password", vault.PolicyStrict); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Cleanup(v.AwaitBackupSync)
+	if _, err := v.CreateSubVault("Taxes", "the sub vault's own password"); err != nil {
+		t.Fatalf("CreateSubVault: %v", err)
+	}
+
+	// A sub vault's share asks for its password; the root of the shares names
+	// nothing.
+	for _, path := range []string{"/sub/Taxes", "/sub/Taxes/", "/sub/Taxes/Papers/"} {
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, httptest.NewRequest("PROPFIND", path, nil))
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("PROPFIND %s = %d, want 401 from the share's auth", path, w.Code)
+		}
+		if got := w.Header().Get("WWW-Authenticate"); got == "" {
+			t.Errorf("PROPFIND %s returned no Basic challenge", path)
+		}
+	}
+	for _, path := range []string{"/sub", "/sub/"} {
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, httptest.NewRequest("PROPFIND", path, nil))
+		if w.Code != http.StatusNotFound {
+			t.Errorf("PROPFIND %s = %d, want 404", path, w.Code)
+		}
+	}
+
+	// And with the vault locked the share is unavailable rather than asking
+	// for a password that could not help.
+	v.Lock()
+	w = httptest.NewRecorder()
+	req := httptest.NewRequest("PROPFIND", "/sub/Taxes/", nil)
+	req.SetBasicAuth("anyone", "the sub vault's own password")
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("PROPFIND on a sub vault share while the vault is locked = %d, want 503", w.Code)
+	}
+}
+
+func TestWebDAVSubPrefixIsConfigurable(t *testing.T) {
+	dir := t.TempDir()
+	s := &Server{
+		VaultPath:       filepath.Join(dir, "vault.sand"),
+		WebDAV:          true,
+		WebDAVSubPrefix: "vaults/",
+	}
+	if got := s.webdavSubPrefix(); got != "/vaults" {
+		t.Errorf("webdavSubPrefix() = %q, want %q", got, "/vaults")
+	}
+	handler, err := s.Handler()
+	if err != nil {
+		t.Fatalf("Handler: %v", err)
+	}
+	v, _ := s.Vault()
+	if err := v.Init("a perfectly ordinary password", vault.PolicyStrict); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Cleanup(v.AwaitBackupSync)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest("PROPFIND", "/vaults/Taxes/", nil))
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("PROPFIND on the configured sub vault prefix = %d, want 401", w.Code)
+	}
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest("PROPFIND", "/sub/Taxes/", nil))
+	if w.Code == http.StatusUnauthorized {
+		t.Errorf("the default sub vault prefix still answers after being moved: %d", w.Code)
+	}
+}
+
+// One share's prefix inside the other's would have a folder in one shadow the
+// other, so the server refuses to start that way rather than serving a
+// surprise.
+func TestWebDAVPrefixesMayNotNest(t *testing.T) {
+	for _, tc := range []struct{ main, sub string }{
+		{"/dav", "/dav"},
+		{"/dav", "/dav/sub"},
+		{"/sub/vault", "/sub"},
+		{"dav/", "/dav/"},
+	} {
+		dir := t.TempDir()
+		s := &Server{
+			VaultPath:       filepath.Join(dir, "vault.sand"),
+			WebDAV:          true,
+			WebDAVPrefix:    tc.main,
+			WebDAVSubPrefix: tc.sub,
+		}
+		if _, err := s.Handler(); err == nil {
+			t.Errorf("Handler accepted the share at %q with the sub vault shares at %q", tc.main, tc.sub)
+		}
+	}
+
+	// Sharing a leading run of letters is not nesting.
+	dir := t.TempDir()
+	s := &Server{
+		VaultPath:       filepath.Join(dir, "vault.sand"),
+		WebDAV:          true,
+		WebDAVPrefix:    "/dav",
+		WebDAVSubPrefix: "/dav-sub",
+	}
+	if _, err := s.Handler(); err != nil {
+		t.Errorf("Handler refused /dav beside /dav-sub: %v", err)
+	}
+}
+
+// The browser draws a mount line per sub vault from the status, so the status
+// has to say where each one's share is — by label where the label can be a
+// path segment, and by ID where it cannot.
+func TestVaultStatusReportsTheSubVaultShares(t *testing.T) {
+	dir := t.TempDir()
+	s := &Server{VaultPath: filepath.Join(dir, "vault.sand"), WebDAV: true}
+	handler, err := s.Handler()
+	if err != nil {
+		t.Fatalf("Handler: %v", err)
+	}
+	v, _ := s.Vault()
+	if err := v.Init("a perfectly ordinary password", vault.PolicyStrict); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Cleanup(v.AwaitBackupSync)
+
+	plain, err := v.CreateSubVault("Taxes", "one")
+	if err != nil {
+		t.Fatalf("CreateSubVault: %v", err)
+	}
+	spaced, err := v.CreateSubVault("Tax Papers", "two")
+	if err != nil {
+		t.Fatalf("CreateSubVault: %v", err)
+	}
+	slashed, err := v.CreateSubVault("2024/2025", "three")
+	if err != nil {
+		t.Fatalf("CreateSubVault: %v", err)
+	}
+
+	token, err := s.sessions.issue()
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	req := httptest.NewRequest("GET", "/api/vault", nil)
+	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	var status struct {
+		WebDAV *struct {
+			Path      string            `json:"path"`
+			SubVaults map[string]string `json:"sub_vaults"`
+		} `json:"webdav"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&status); err != nil {
+		t.Fatalf("decoding the status: %v", err)
+	}
+	if status.WebDAV == nil {
+		t.Fatal("the status does not mention the share")
+	}
+	want := map[string]string{
+		plain.ID:   "/sub/Taxes/",
+		spaced.ID:  "/sub/Tax%20Papers/",
+		slashed.ID: "/sub/" + slashed.ID + "/",
+	}
+	for id, path := range want {
+		if got := status.WebDAV.SubVaults[id]; got != path {
+			t.Errorf("share path for %s = %q, want %q", id, got, path)
+		}
+	}
+
+	// And nothing about them to a stranger.
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest("GET", "/api/vault", nil))
+	if strings.Contains(w.Body.String(), "sub_vaults") || strings.Contains(w.Body.String(), "Taxes") {
+		t.Errorf("an unauthenticated status mentions the sub vault shares: %s", w.Body.String())
+	}
+}

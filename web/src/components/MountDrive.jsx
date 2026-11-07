@@ -5,6 +5,12 @@ import { Banner, CopyField, Modal } from './ui'
 /* The vault as a drive. `sand serve --webdav` puts the same files behind a
    WebDAV share, and this is where someone finds out how to open it.
 
+   With `subVault` set it is one sub vault as a drive instead: the same server
+   serves a share per sub vault at an address of its own, which that sub
+   vault's password opens — not the vault's — and which presents the sub vault
+   and nothing else. The address comes from the server, which decides how the
+   sub vault is named in it.
+
    The address is built from the page's own origin rather than from anything the
    server reports about itself. Whatever host this app was reached on is the one
    that reaches it — a name the server guessed for itself might resolve nowhere
@@ -50,14 +56,16 @@ const STEPS = [
   },
 ]
 
-export default function MountDrive({ path, onClose, zIndex }) {
+export default function MountDrive({ path, subVault, onClose, zIndex }) {
   const url = mountURL(path)
   const plaintext = isPlaintext(window.location.origin)
 
   return (
     <Modal
-      title="Mount as a drive"
-      subtitle="Open the vault in a file manager or a player instead of the browser"
+      title={subVault ? `Mount ${subVault.label} as a drive` : 'Mount as a drive'}
+      subtitle={subVault
+        ? 'Open this sub vault on its own in a file manager or a player'
+        : 'Open the vault in a file manager or a player instead of the browser'}
       onClose={onClose}
       width={560}
       zIndex={zIndex}
@@ -65,13 +73,31 @@ export default function MountDrive({ path, onClose, zIndex }) {
       <CopyField
         label="Address"
         value={url}
-        help="Sign in with any username and your vault password."
+        help={subVault
+          ? 'Sign in with any username and this sub vault’s own password. Your vault password does not open it.'
+          : 'Sign in with any username and your vault password.'}
       />
+
+      {subVault && (
+        <p style={{
+          fontFamily: FONT.sans,
+          fontSize: '12px',
+          lineHeight: 1.6,
+          color: COLORS.textMuted,
+          margin: '10px 0 0',
+        }}>
+          This drive is {subVault.label} and nothing else: the rest of the vault
+          is not under it, and the vault’s own drive still never shows what is
+          in here. A locked sub vault is opened by mounting it — the password
+          the drive sends is the one that opens it — and the vault itself has
+          to be unlocked for the drive to answer at all.
+        </p>
+      )}
 
       {plaintext && (
         <Banner tone="warn">
-          This address is plain HTTP, and a mounted share sends your vault
-          password on <strong>every</strong> request rather than once at
+          This address is plain HTTP, and a mounted share sends {subVault ? 'the' : 'your vault'}
+          {' '}password on <strong>every</strong> request rather than once at
           sign-in. Put TLS in front of SAND — Tailscale Serve, or the nginx
           template in the repo — and mount the <code>https://</code> address
           instead.

@@ -1613,11 +1613,14 @@ file is on a key the vault holds somewhere" already existed for password
 changes, so it carries sub vaults with almost nothing added — including
 deferring re-encryption, which is what makes assignment instant.
 
-**Never on a WebDAV mount.** Not while locked, and not while unlocked either.
-`internal/davfs` is pinned to `MainScope` by a constant, so the guarantee holds
-by construction rather than by every call site remembering it. A mounted drive
-is a folder every process running as you can read; what goes in a sub vault is
-what should not be reachable that way.
+**Never on the vault's WebDAV mount.** Not while locked, and not while unlocked
+either. A `davfs.FileSystem` is fixed to one scope when it is built and never
+reads one off a request, and the share at `/dav` is built over `MainScope`, so
+the guarantee holds by construction rather than by every call site remembering
+it. A mounted drive is a folder every process running as you can read; what
+goes in a sub vault is what should not be reachable *with the main password*
+that way. What a sub vault has instead is a share of its own at `/sub/<name>/`,
+built over its scope and opened by its own password — see §9.4.
 
 #### What the main password can see
 
@@ -3029,6 +3032,40 @@ it is split and what encrypts it are all still decided in `internal/vault`.
 **Authentication is the vault password over HTTP Basic**, and the username is
 not checked: a vault has one owner (§15), so a name would distinguish nothing
 and pretending otherwise invites treating it as a second secret.
+
+**A sub vault has a share of its own**, at `/sub/<name>/` beside the vault's,
+served by `davfs.SubVaultShares` whenever the vault's share is. The address
+names the sub vault by label (case ignored) or by ID, resolved through
+`Vault.LookupSubVault` on every request; the share behind it is an `Endpoint`
+built over `NewScoped(v, Scope(id))`, so it presents that sub vault and nothing
+else — the main vault is not under it, no other sub vault is, and a `MOVE` whose
+`Destination` is another share fails the library's prefix check. The vault's
+share at `/dav` is unchanged and still never shows a sub vault. The two sit
+beside each other rather than nested because a sub vault called `Films` under
+`/dav/` would shadow a folder called `Films` in the main vault; `Handler` refuses
+to build with one prefix inside the other.
+
+Its password is the sub vault's own. The verifier is the same HMAC-keyed
+minute-long memory as the vault share's, over two functions instead of the
+vault: *is it open* (`SubVaultUnlocked`) and *check this, opening it if shut*
+(`UnlockSubVault`, which since this feature verifies the password against an
+already-open sub vault rather than answering yes to anything). A correct
+password against a shut sub vault opens it, for the reason the vault's share
+unlocks the vault. What it cannot do is unlock the vault around it — the
+sub vault's parts are on accounts the vault password seals — so while the
+vault is locked the share answers 503 rather than 401, so a client does not
+sit in a password loop. A name that is no sub vault's is answered exactly as a
+wrong password is, so which sub vaults exist cannot be read off the status
+code; the root `/sub/` lists nothing.
+
+One `webdav.Handler` is built per address rather than per sub vault, because
+the library writes its `Prefix` into every `href` it answers and so has to be
+told the exact path asked for — but every address of one sub vault shares one
+`LockSystem`, so a file locked under the label is locked under the ID too. A
+rename leaves the old address answering as an unknown name; two sub vaults
+renamed past each other are noticed, because each cached endpoint remembers
+which sub vault it was built for and is rebuilt when the name resolves to
+another.
 
 Basic auth is stateless, so the password arrives on *every* request and a
 playing film sends hundreds. Verifying each one properly is a 64 MB Argon2id

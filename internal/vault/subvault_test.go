@@ -1026,3 +1026,66 @@ func TestPasswordChangeWithAnUnmigratedAssignment(t *testing.T) {
 		t.Fatalf("Fetch: %v", err)
 	}
 }
+
+// An unlock of a sub vault that is already open still checks the password. It
+// used to answer yes to anything once the sub vault was open, which is not a
+// thing to do once a password can arrive from outside the app — a mounted
+// share sends one on every request.
+func TestUnlockOfAnOpenSubVaultStillChecksThePassword(t *testing.T) {
+	v, _ := newTestVault(t, 3)
+	id := createSubVault(t, v, "Taxes", subPassword)
+	if !v.SubVaultUnlocked(id) {
+		t.Fatal("a freshly created sub vault should be open")
+	}
+
+	if err := v.UnlockSubVault(id, testPassword); !errors.Is(err, ErrWrongPassword) {
+		t.Fatalf("UnlockSubVault with the main password on an open sub vault = %v, want ErrWrongPassword", err)
+	}
+	if err := v.UnlockSubVault(id, "not it either"); !errors.Is(err, ErrWrongPassword) {
+		t.Fatalf("UnlockSubVault with a wrong password on an open sub vault = %v, want ErrWrongPassword", err)
+	}
+	if !v.SubVaultUnlocked(id) {
+		t.Fatal("a refused unlock shut the sub vault")
+	}
+
+	// The right password is a yes, and the sub vault is left as it was —
+	// with what has been stored into it since it was opened.
+	if _, _, err := v.Upload(t.Context(), Scope(id), "/", "p60.pdf", []byte("a payslip"), UploadOptions{}); err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if err := v.UnlockSubVault(id, subPassword); err != nil {
+		t.Fatalf("UnlockSubVault with the right password on an open sub vault: %v", err)
+	}
+	if _, err := v.EntryByPath(Scope(id), "/p60.pdf"); err != nil {
+		t.Errorf("re-verifying an open sub vault lost what was stored in it: %v", err)
+	}
+}
+
+// A sub vault answers to its ID and to its label with case ignored, and to
+// nothing else; and the names are the main index's, so the vault has to be
+// open and the sub vault does not.
+func TestLookupSubVaultByIDOrLabel(t *testing.T) {
+	v, _ := newTestVault(t, 3)
+	id := createSubVault(t, v, "Tax Papers", subPassword)
+	if err := v.LockSubVault(id); err != nil {
+		t.Fatalf("LockSubVault: %v", err)
+	}
+
+	for _, name := range []string{id, "Tax Papers", "tax papers", "TAX PAPERS"} {
+		got, err := v.LookupSubVault(name)
+		if err != nil || got != id {
+			t.Errorf("LookupSubVault(%q) = %q, %v; want the sub vault's ID", name, got, err)
+		}
+	}
+	if _, err := v.LookupSubVault("Receipts"); !errors.Is(err, ErrNoSubVault) {
+		t.Errorf("LookupSubVault of a name no sub vault has = %v, want ErrNoSubVault", err)
+	}
+	if _, err := v.LookupSubVault(""); !errors.Is(err, ErrNoSubVault) {
+		t.Errorf("LookupSubVault of an empty name = %v, want ErrNoSubVault", err)
+	}
+
+	v.Lock()
+	if _, err := v.LookupSubVault("Tax Papers"); !errors.Is(err, ErrLocked) {
+		t.Errorf("LookupSubVault on a locked vault = %v, want ErrLocked", err)
+	}
+}

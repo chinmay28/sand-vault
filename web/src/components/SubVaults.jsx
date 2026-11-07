@@ -3,6 +3,7 @@ import { COLORS, FONT, formatBytes } from '../theme'
 import { api } from '../api'
 import { Banner, Button, ConfirmDialog, Input, Modal, PasswordInput, Spinner } from './ui'
 import ImportVault, { FoundVaults, useForeignVaults } from './ImportVault'
+import MountDrive from './MountDrive'
 
 /* A sub vault is a vault inside the vault, with a password of its own.
 
@@ -12,16 +13,20 @@ import ImportVault, { FoundVaults, useForeignVaults } from './ImportVault'
    vault shows what the main vault is allowed to know about it (a name, a file
    count, how much it is taking up on the accounts) and nothing else.
 
-   None of this appears on a WebDAV mount, locked or unlocked. That is worth
-   saying out loud in the panel rather than only in the docs: it is the reason
-   somebody would put a file here rather than in a folder. */
+   None of this appears on the vault's own WebDAV mount, locked or unlocked.
+   That is worth saying out loud in the panel rather than only in the docs: it
+   is the reason somebody would put a file here rather than in a folder. What a
+   sub vault has instead, when the server serves shares at all, is a share of
+   its own — an address its own password opens, presenting it and nothing else
+   — and each row offers that address. */
 
 export default function SubVaults({
   subVaults = [], showSubVaults, subVaultShown, onToggleSubVaults, onToggleSubVault = () => {},
-  zIndex = 110, onClose, onChanged, onOpen,
+  webdav, zIndex = 110, onClose, onChanged, onOpen,
 }) {
   const [creating, setCreating] = useState(false)
   const [unlocking, setUnlocking] = useState(null)
+  const [mounting, setMounting] = useState(null)
   const [changing, setChanging] = useState(null)
   const [deleting, setDeleting] = useState(null)
   const [importing, setImporting] = useState(null)
@@ -67,8 +72,9 @@ export default function SubVaults({
     >
       <p style={note}>
         A sub vault is sealed under a password of its own. Your vault password lists
-        it and cannot open it — and nothing inside one ever appears on a mounted
-        drive, whether it is open or not.
+        it and cannot open it — and nothing inside one ever appears on the vault's
+        mounted drive, whether it is open or not.
+        {webdav?.sub_vaults && ' Each has a drive address of its own instead, which only its own password opens.'}
       </p>
 
       {error && <Banner tone="error" onDismiss={() => setError(null)}>{error}</Banner>}
@@ -138,6 +144,13 @@ export default function SubVaults({
                 ) : (
                   <Button size="sm" onClick={() => setUnlocking(sub)}>Unlock</Button>
                 )}
+                {/* Its own share, when the server serves shares at all. Offered
+                    locked or unlocked: the mount is what opens it, with its own
+                    password, and never with the one that opened this page. */}
+                {webdav?.sub_vaults?.[sub.id] && (
+                  <Button size="sm" variant="ghost" onClick={() => setMounting(sub)}
+                    title="Mount this sub vault as a drive, with its own password">💾</Button>
+                )}
                 <Button size="sm" variant="ghost" onClick={() => setDeleting(sub)}
                   title="Delete this sub vault and erase everything in it">🗑</Button>
               </span>
@@ -151,7 +164,7 @@ export default function SubVaults({
       {/* Where they are drawn, which is a preference of this browser rather
           than a property of the vault. It changes what the file list shows and
           nothing else: a locked sub vault stays locked whether it is ticked or
-          not, and no setting puts one on a mounted drive.
+          not, and no setting puts one on the vault's mounted drive.
 
           This one answers for all of them at once. With some ticked and some
           not it draws mixed rather than empty — an unticked box over a vault
@@ -235,6 +248,14 @@ export default function SubVaults({
           sub={deleting}
           onClose={() => setDeleting(null)}
           onDeleted={() => { const id = deleting.id; setDeleting(null); onChanged(id) }}
+        />
+      )}
+      {mounting && (
+        <MountDrive
+          path={webdav?.sub_vaults?.[mounting.id]}
+          subVault={mounting}
+          zIndex={zIndex + 10}
+          onClose={() => setMounting(null)}
         />
       )}
     </Modal>
