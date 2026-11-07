@@ -12,6 +12,23 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### Stray parts scans in the background, and shows how far it is
+
+**Vault settings → Stray parts** used to be one request that answered at the
+end: a spinner and a sentence, for as long as the slowest cloud took to list
+itself, and closing the dialog cancelled the lot. The scan now runs on the
+server's own clock. Open the panel and it starts one — or joins the one
+already going — and draws a bar that counts clouds as they answer, names the
+ones it is still waiting on, and keeps time. Close it and the scan carries
+on; come back and it is either still going, with the bar where it had got
+to, or finished, with what it found and when. A result stays on offer for a
+quarter of an hour before the panel runs a fresh scan on opening, and
+**Scan again** runs one at any time. Locking the vault stops a running scan
+and drops the result, since it was read with the keys that are leaving.
+
+The bar counts clouds rather than seconds because clouds are the only unit
+there is: each one answers its listing all at once, so a bar creeping along
+on a timer would be pretending to know how long the slowest will take.
 ### Mount a sub vault as a drive of its own
 
 `sand serve --webdav` now serves a WebDAV share per sub vault, beside the

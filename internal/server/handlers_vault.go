@@ -234,6 +234,10 @@ func (s *Server) handleVaultLock(w http.ResponseWriter, r *http.Request) {
 	// that carried on would find no key to write the index with. The parts
 	// of the file in flight finish their round either way.
 	s.erasures.stopAll()
+	// And the stray-parts scan: what it found names file paths and was read
+	// with the keys that are leaving, and one still running would finish
+	// for nobody.
+	s.strayScans.stopAll()
 	v.Lock()
 	clearSessionCookie(w, isSecureRequest(r))
 

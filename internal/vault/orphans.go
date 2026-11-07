@@ -311,7 +311,56 @@ type OrphanScan struct {
 //
 // Nothing is deleted, nothing is written, and the vault is not modified.
 func (v *Vault) ScanForOrphans(ctx context.Context) (*OrphanScan, error) {
-	scan, err := v.scanForOrphans(ctx)
+	return v.ScanForOrphansWith(ctx, OrphanScanOptions{})
+}
+
+// OrphanScanProgress is where a scan has got to, as reported to whoever is
+// drawing it.
+//
+// The unit is a root: one account's parts folder, or its replica folder. A
+// listing is one call to the account that answers all at once, so there is
+// nothing finer to count — and counting roots is honest in a way counting
+// seconds would not be, since the scan takes exactly as long as the slowest
+// cloud and nothing here knows which that will be. Waiting names them, so a
+// bar stuck at two of three can say who it is waiting on.
+type OrphanScanProgress struct {
+	// Stage is what the scan is doing right now, in order: ScanStagePulling
+	// while the shared index is fetched from the other machines this vault is
+	// open on (skipped when there are none), ScanStageListing while the
+	// accounts are being asked, and ScanStageJudging once every one has
+	// answered and what they hold is being weighed against the index.
+	Stage string `json:"stage"`
+
+	// Roots is how many roots the scan is listing, and Listed how many have
+	// answered — with a listing or with a refusal; either way that root is
+	// done. Both are zero before the listing stage.
+	Roots  int `json:"roots"`
+	Listed int `json:"listed"`
+
+	// Waiting names the roots whose listing has not come back yet.
+	Waiting []string `json:"waiting,omitempty"`
+}
+
+// The stages of a scan, in the order they happen. See OrphanScanProgress.
+const (
+	ScanStagePulling = "pulling"
+	ScanStageListing = "listing"
+	ScanStageJudging = "judging"
+)
+
+// OrphanScanOptions is what a caller can ask of a scan beyond the answer.
+type OrphanScanOptions struct {
+	// OnProgress is called as the scan moves: once per stage, and once more
+	// each time a root answers. Called from the scan's own goroutines, one
+	// call at a time, with a value the receiver may keep. Nil is fine.
+	OnProgress func(OrphanScanProgress)
+}
+
+// ScanForOrphansWith is ScanForOrphans, reporting where it has got to as it
+// goes — for the browser, where the scan runs on without the page that
+// started it and the page that comes back wants to know how far it is.
+func (v *Vault) ScanForOrphansWith(ctx context.Context, opts OrphanScanOptions) (*OrphanScan, error) {
+	scan, err := v.scanForOrphansOn(ctx, "", opts.OnProgress)
 	if err != nil {
 		return nil, err
 	}
@@ -372,7 +421,7 @@ type StrayScan struct {
 // scanForOrphansOn for what a scan of one account can and cannot see. An ID no
 // connected account carries is ErrNoAccount.
 func (v *Vault) ScanForStrays(ctx context.Context, providerID string) (*StrayScan, error) {
-	scan, err := v.scanForOrphansOn(ctx, providerID)
+	scan, err := v.scanForOrphansOn(ctx, providerID, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -391,7 +440,7 @@ func (v *Vault) ScanForStrays(ctx context.Context, providerID string) (*StraySca
 // scanForOrphans is ScanForOrphans with every row it found, however many that
 // is.
 func (v *Vault) scanForOrphans(ctx context.Context) (*OrphanScan, error) {
-	return v.scanForOrphansOn(ctx, "")
+	return v.scanForOrphansOn(ctx, "", nil)
 }
 
 // scanForOrphansOn is the scan over one connected account's parts folder when
@@ -409,11 +458,25 @@ func (v *Vault) scanForOrphans(ctx context.Context) (*OrphanScan, error) {
 // An ID no connected account carries is ErrNoAccount rather than an empty
 // answer, because an empty answer here reads as "that cloud holds nothing of
 // yours", which is not what happened.
-func (v *Vault) scanForOrphansOn(ctx context.Context, providerID string) (*OrphanScan, error) {
+func (v *Vault) scanForOrphansOn(ctx context.Context, providerID string, onProgress func(OrphanScanProgress)) (*OrphanScan, error) {
+	report := func(at OrphanScanProgress) {
+		if onProgress != nil {
+			onProgress(at)
+		}
+	}
+
 	// What another machine stored since the last pull is not in this index
 	// yet, and would be read here as parts no file wants. Pulled first, so
 	// the index the scan reasons from is as current as the accounts can make
 	// it; what is in flight on the other machine right now is said below.
+	// Said as a stage of its own only when there is somebody to pull from —
+	// a vault open on one machine goes straight to the listing.
+	v.mu.RLock()
+	peers := v.hasPeersLocked()
+	v.mu.RUnlock()
+	if peers {
+		report(OrphanScanProgress{Stage: ScanStagePulling})
+	}
 	peerWarning := v.pullBeforeScan(ctx)
 
 	v.mu.RLock()
@@ -476,6 +539,16 @@ func (v *Vault) scanForOrphansOn(ctx context.Context, providerID string) (*Orpha
 	seen := map[stalePartKey]bool{}
 	listed := map[string]bool{}
 
+	// Where the listing has got to, kept under mu with the rest and handed
+	// out as a copy, so a receiver that holds on to one is not watching it
+	// change. The order of Waiting is the order the roots were taken in,
+	// which is the order the accounts are connected in.
+	progress := OrphanScanProgress{Stage: ScanStageListing, Roots: len(listings)}
+	for _, listing := range listings {
+		progress.Waiting = append(progress.Waiting, listing.name())
+	}
+	report(progress.copy())
+
 	for _, listing := range listings {
 		wg.Add(1)
 		go func(listing orphanListing) {
@@ -484,6 +557,9 @@ func (v *Vault) scanForOrphansOn(ctx context.Context, providerID string) (*Orpha
 
 			mu.Lock()
 			defer mu.Unlock()
+			progress.Listed++
+			progress.Waiting = without(progress.Waiting, listing.name())
+			report(progress.copy())
 			scan.Accounts = append(scan.Accounts, account)
 			found = append(found, archives...)
 			loose = append(loose, strays...)
@@ -500,6 +576,8 @@ func (v *Vault) scanForOrphansOn(ctx context.Context, providerID string) (*Orpha
 		}(listing)
 	}
 	wg.Wait()
+	progress.Stage = ScanStageJudging
+	report(progress.copy())
 
 	// A part on record that a complete listing of its account did not show
 	// is gone — erased by hand, by the account's own tools, or by a sweep
@@ -638,6 +716,35 @@ type orphanListing struct {
 	replicas bool
 }
 
+// name is the root as the scan reports it: the account's name, with the
+// replica folder said in words so that a row is never read as the parts
+// folder by anything that shows only names.
+func (l orphanListing) name() string {
+	if l.replicas {
+		return l.cfg.Name + " (replicas)"
+	}
+	return l.cfg.Name
+}
+
+// copy is the progress as it stands, with a Waiting of its own.
+func (p OrphanScanProgress) copy() OrphanScanProgress {
+	out := p
+	out.Waiting = append([]string(nil), p.Waiting...)
+	return out
+}
+
+// without is names with the first occurrence of name taken out. Two roots can
+// share a name — two accounts called the same thing — and each answer takes
+// one of them off the list.
+func without(names []string, name string) []string {
+	for i, have := range names {
+		if have == name {
+			return append(names[:i:i], names[i+1:]...)
+		}
+	}
+	return names
+}
+
 // orphanListingsLocked is every root the scan lists: each connected account
 // at its parts folder, judged against owned, and each account that keeps a
 // replica folder at that folder too, judged against the replica archives the
@@ -693,11 +800,8 @@ func (v *Vault) scanAccountForOrphans(
 		Kind:       string(cfg.Kind),
 		Replicas:   listing.replicas,
 	}
-	if listing.replicas {
-		// Said in the name as well as the flag, so a row is never read as
-		// the parts folder by anything that shows only names.
-		account.Name = cfg.Name + " (replicas)"
-	}
+	// Said in the name as well as the flag — see orphanListing.name.
+	account.Name = listing.name()
 
 	p, err := v.buildProvider(cfg)
 	if err != nil {
@@ -1488,7 +1592,7 @@ type ReattachOptions struct {
 // until they are asked. Nothing else changes: the verdict per shard comes from
 // the index, and the write is the same write.
 func (v *Vault) ReattachShards(ctx context.Context, opts ReattachOptions) (*ReattachReport, error) {
-	scan, err := v.scanForOrphansOn(ctx, opts.ProviderID)
+	scan, err := v.scanForOrphansOn(ctx, opts.ProviderID, nil)
 	if err != nil {
 		return nil, err
 	}

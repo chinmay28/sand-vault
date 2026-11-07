@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/chinmay28/sand-vault/internal/provider"
@@ -1504,5 +1506,90 @@ func TestReattachScopedToOneAccountLeavesTheOthersMislaid(t *testing.T) {
 	// as holding nothing — on a dry run as much as a real one.
 	if _, err := v.ReattachShards(ctx, ReattachOptions{ProviderID: "no-such-account", DryRun: true}); !errors.Is(err, ErrNoAccount) {
 		t.Errorf("an unknown account answered with %v, want ErrNoAccount", err)
+	}
+}
+
+// The scan reports a root at a time, which is the only unit it has: one
+// listing is one call that answers all at once. What a bar can be told is how
+// many roots there are, how many have answered, and who is still being waited
+// on — and the last of those has to be right for an account that refuses as
+// much as for one that answers, since a refusal ends the wait just the same.
+func TestOrphanScanReportsEachRootAsItAnswers(t *testing.T) {
+	ctx := context.Background()
+	v, _ := newTestVault(t, 3)
+
+	// A fourth account that cannot be listed at all. It still has to be
+	// counted off, or a bar would wait on it forever.
+	v.mu.Lock()
+	v.providers = append(v.providers, provider.Config{
+		ID:   "offline-account",
+		Kind: provider.Kind("a-backend-this-build-does-not-have"),
+		Name: "unreachable-cloud",
+	})
+	v.mu.Unlock()
+
+	var mu sync.Mutex
+	var seen []OrphanScanProgress
+	_, err := v.ScanForOrphansWith(ctx, OrphanScanOptions{
+		OnProgress: func(at OrphanScanProgress) {
+			mu.Lock()
+			seen = append(seen, at)
+			mu.Unlock()
+		},
+	})
+	if err != nil {
+		t.Fatalf("ScanForOrphansWith: %v", err)
+	}
+
+	// One report to open the listing, one per root, one to say the judging
+	// has begun. No pull stage: this vault is open on one machine.
+	if len(seen) != 1+4+1 {
+		t.Fatalf("got %d reports, want 6: %+v", len(seen), seen)
+	}
+	first := seen[0]
+	if first.Stage != ScanStageListing || first.Roots != 4 || first.Listed != 0 {
+		t.Errorf("the listing opened on %+v, want stage %q, 0 of 4", first, ScanStageListing)
+	}
+	if len(first.Waiting) != 4 || !slices.Contains(first.Waiting, "unreachable-cloud") {
+		t.Errorf("waiting on %v at the start, want all four roots by name", first.Waiting)
+	}
+	for i := 1; i <= 4; i++ {
+		at := seen[i]
+		if at.Stage != ScanStageListing || at.Roots != 4 || at.Listed != i {
+			t.Errorf("report %d = %+v, want %d of 4 listed", i, at, i)
+		}
+		if len(at.Waiting) != 4-i {
+			t.Errorf("report %d still waits on %v, want %d names", i, at.Waiting, 4-i)
+		}
+	}
+	last := seen[5]
+	if last.Stage != ScanStageJudging || last.Listed != 4 || len(last.Waiting) != 0 {
+		t.Errorf("the scan closed on %+v, want stage %q with nothing waited on", last, ScanStageJudging)
+	}
+
+	// Each report is the receiver's to keep: the one that said three were
+	// waiting still says so once the scan has moved on.
+	if len(seen[1].Waiting) != 3 {
+		t.Errorf("an earlier report was changed under the receiver: %v", seen[1].Waiting)
+	}
+
+	// Replica roots are counted off by their own name, and a scan asked for
+	// nothing but the answer reports nothing at all.
+	if _, err := v.ScanForOrphansWith(ctx, OrphanScanOptions{}); err != nil {
+		t.Fatalf("ScanForOrphansWith without a listener: %v", err)
+	}
+}
+
+func TestWithoutTakesOneNameAndLeavesTheRest(t *testing.T) {
+	names := []string{"a", "b", "a"}
+	got := without(names, "a")
+	if !slices.Equal(got, []string{"b", "a"}) {
+		t.Errorf("without(a) = %v, want [b a]", got)
+	}
+	if !slices.Equal(names, []string{"a", "b", "a"}) {
+		t.Errorf("the list given was changed: %v", names)
+	}
+	if got := without([]string{"b"}, "zzz"); !slices.Equal(got, []string{"b"}) {
+		t.Errorf("without a name that is not there = %v, want [b]", got)
 	}
 }

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { api } from './api'
 import { keepScreenAwake } from './wakelock'
 
@@ -69,6 +69,62 @@ function useErasing(ask, active, deps) {
   }, [active, ...deps])
 
   return at
+}
+
+/* How long a finished stray-parts scan is taken as the answer when the panel
+   opens, rather than being run again. A page that was closed mid-scan and
+   comes back wants the result it was waiting on, not a second listing of
+   every cloud; a page opened an hour later wants to know what is true now. */
+export const STRAY_SCAN_FRESH_MS = 15 * 60 * 1000
+
+/* The stray-parts scan, as a page sees it: the run that is going, or the last
+   one that ran, polled while it is going.
+
+   The scan lives on the server rather than in a request (see
+   api.strayScanStart), so this is a view of it and nothing more. `status` is
+   null until the server has been asked once, then whatever it answered — an
+   empty run when nothing has been asked since the vault was unlocked. It is
+   re-asked every 800ms while `status.running`, and left standing once it is
+   not. `start` begins a scan or joins the one already going; `refresh` asks
+   again without starting anything. Failures of the polling itself are kept
+   quiet — the scan reports its own in `status.error`, and a missed poll is
+   answered by the next one. */
+export function useStrayScan() {
+  const [status, setStatus] = useState(null)
+  const [error, setError] = useState(null)
+
+  const refresh = useCallback(async () => {
+    try {
+      setStatus(await api.strayScanStatus())
+    } catch (err) {
+      setError(err.message)
+    }
+  }, [])
+
+  const start = useCallback(async () => {
+    setError(null)
+    try {
+      setStatus(await api.strayScanStart())
+    } catch (err) {
+      setError(err.message)
+    }
+  }, [])
+
+  useEffect(() => { refresh() }, [refresh])
+
+  const running = !!status?.running
+  const runID = status?.id
+  useEffect(() => {
+    if (!running) return undefined
+    let live = true
+    const poll = () => api.strayScanStatus()
+      .then((fresh) => { if (live) setStatus(fresh) })
+      .catch(() => {})
+    const timer = setInterval(poll, 800)
+    return () => { live = false; clearInterval(timer) }
+  }, [running, runID])
+
+  return { status, error, start, refresh }
 }
 
 /* Where the two-pane layout gives up: a 286px sidebar plus a file table whose
