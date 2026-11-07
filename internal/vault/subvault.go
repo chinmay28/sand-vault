@@ -81,6 +81,11 @@ type SubVaultInfo struct {
 	// KeyID names the generation this sub vault seals new files under, for
 	// the same reason Stats.KeyID does, and is only told while it is open.
 	KeyID string `json:"key_id,omitempty"`
+
+	// Defaults is where uploads into this sub vault go unless they choose
+	// otherwise: its own default clouds, or the vault's when it has none.
+	// Only told while it is open, because its own choice is sealed with it.
+	Defaults *Defaults `json:"defaults,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -405,6 +410,8 @@ func (v *Vault) SubVaults() ([]SubVaultInfo, error) {
 		if sub, ok := v.subs[meta.ID]; ok {
 			info.Unlocked = true
 			info.KeyID = sub.dataKeyID
+			d := v.scopeDefaultsLocked(sub)
+			info.Defaults = &d
 			info.Files = len(sub.manifest.Entries)
 			for _, e := range sub.manifest.Entries {
 				for _, sh := range e.Shards {
@@ -559,6 +566,14 @@ func (v *Vault) applyAccountRemapLocked(sub *subVault) bool {
 	}
 	for _, e := range sub.manifest.Entries {
 		rewrite(e.Shards)
+	}
+	// The sub vault's own default clouds name accounts too, and would
+	// otherwise be read as naming none that are connected.
+	for i, id := range sub.manifest.DefaultAccounts {
+		if to, ok := v.manifest.AccountRemap[id]; ok {
+			sub.manifest.DefaultAccounts[i] = to
+			changed = true
+		}
 	}
 	for _, pack := range sub.manifest.Thumbs {
 		if pack != nil {

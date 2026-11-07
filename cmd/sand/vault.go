@@ -486,16 +486,23 @@ three clouds going away, and two of them together still rebuild the file.
 With no default set, each file picks its own three at random, so a large vault
 still spreads over everything connected instead of filling the same three.
 'sand put --scheme' overrides the code per upload, as --accounts does the
-clouds.`,
+clouds.
+
+With --in, the same is set for one sub vault and the uploads made into it. A sub
+vault follows the vault's default until it is given its own, and --clear puts it
+back to following the vault's:
+
+  sand vault defaults --in Taxes usb-drive r2-cold nextcloud
+  sand vault defaults --in Taxes --clear`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			v, err := openVault(cmd)
+			v, scope, err := openVaultIn(cmd)
 			if err != nil {
 				return err
 			}
 			defer closeVault(v)
 
 			if len(args) == 0 && !clear && scheme == "" {
-				return printDefaultAccounts(v)
+				return printDefaultsIn(v, scope)
 			}
 			if clear && (len(args) > 0 || scheme != "") {
 				return fmt.Errorf("--clear takes no accounts and no scheme")
@@ -514,16 +521,24 @@ clouds.`,
 			// it — so the accounts already stored stand in, which is what
 			// "change the code, keep the clouds" means.
 			if len(chosen) == 0 && !clear {
-				chosen = v.DefaultAccounts()
+				current, err := v.DefaultsIn(scope)
+				if err != nil {
+					return err
+				}
+				chosen = current.Accounts
 			}
-			if err := v.SetDefaults(chosen, cut); err != nil {
+			if err := v.SetDefaultsIn(scope, chosen, cut); err != nil {
 				return err
 			}
 			if clear {
-				fmt.Println("Default cleared — each upload now picks its accounts at random.")
+				if scope.Main() {
+					fmt.Println("Default cleared — each upload now picks its accounts at random.")
+				} else {
+					fmt.Println("Default cleared — uploads into this sub vault now follow the vault's default.")
+				}
 				return nil
 			}
-			return printDefaultAccounts(v)
+			return printDefaultsIn(v, scope)
 		},
 	}
 
@@ -533,12 +548,19 @@ clouds.`,
 	return cmd
 }
 
-// printDefaultAccounts names the vault's default accounts, resolving the
-// stored IDs against what is connected so the output reads like the rest of
-// the CLI rather than like the index.
-func printDefaultAccounts(v *vault.Vault) error {
-	defaults := v.DefaultAccounts()
-	if len(defaults) == 0 {
+// printDefaultsIn names a vault's default accounts, resolving the stored IDs
+// against what is connected so the output reads like the rest of the CLI
+// rather than like the index. A sub vault that follows the vault's says so
+// before listing them.
+func printDefaultsIn(v *vault.Vault, scope vault.Scope) error {
+	d, err := v.DefaultsIn(scope)
+	if err != nil {
+		return err
+	}
+	if d.Inherited {
+		fmt.Println("No default of its own — this sub vault follows the vault's.")
+	}
+	if len(d.Accounts) == 0 {
 		fmt.Println("No default set — each upload picks its accounts at random.")
 		return nil
 	}
@@ -549,15 +571,15 @@ func printDefaultAccounts(v *vault.Vault) error {
 	}
 	// The code before the clouds, because it is the line that says what the
 	// list underneath actually comes to.
-	scheme := v.DefaultScheme()
-	if scheme == (archive.Scheme{}) {
-		scheme, _ = archive.SchemeFor(len(defaults))
+	scheme, err := archive.ParseScheme(d.Scheme)
+	if d.Scheme == "" || err != nil {
+		scheme, _ = archive.SchemeFor(len(d.Accounts))
 	}
 	if scheme != (archive.Scheme{}) {
 		fmt.Printf("%s — stores %.2gx, %d can go dark, %d must collude\n",
 			scheme, scheme.Storage(), scheme.Tolerance(), scheme.Data)
 	}
-	for _, id := range defaults {
+	for _, id := range d.Accounts {
 		name := id
 		for _, cfg := range configs {
 			if cfg.ID == id {

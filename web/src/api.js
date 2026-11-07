@@ -52,6 +52,13 @@ export const api = {
      scheme clears that half and hands the code back to the count. */
   setDefaultAccounts: (accounts, scheme = '') =>
     request('/api/vault/defaults', { method: 'POST', body: { accounts, scheme } }),
+  /* The same, for one open sub vault and the uploads made into it. A sub vault
+     follows the vault's default until it has its own; an empty list clears its
+     own and puts it back to following the vault's. */
+  setSubVaultDefaults: (id, accounts, scheme = '') =>
+    request(`/api/subvaults/${encodeURIComponent(id)}/defaults`, {
+      method: 'POST', body: { accounts, scheme },
+    }),
   /* Changing the password rotates the key the stored parts are encrypted
      under, and every file has to be rebuilt onto the new one. With a plan —
      so many bytes a day, or full_speed — the call comes back as soon as the

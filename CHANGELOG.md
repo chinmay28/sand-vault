@@ -12,6 +12,26 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### A sub vault can choose its own default clouds
+
+Every upload into a sub vault used to land on the vault's default clouds,
+because which accounts a file went to was treated as a question about storage
+and the same for every vault in the file. A sub vault can now **override** that
+with default clouds — and a default scheme — of its own. Until it is given one
+it follows the vault's, exactly as before; once set, uploads into it that do not
+choose for themselves go there, and the vault's default is untouched. Clearing
+it puts the sub vault back to following the vault's.
+
+The choice is kept inside the sub vault's own index, sealed under its password,
+so the main password learns nothing about which clouds it favours. It is set
+with the ☁ on an open sub vault's row in **Vault settings → Sub vaults**, by
+ticking *Make this the default for …* in the upload dialog while inside one, with
+`sand vault defaults --in Taxes …`, or with `GET` and `POST
+/api/subvaults/{id}/defaults`, which answer with `inherited` saying whose
+default is in force. An account disconnected while the sub vault is shut is
+pruned from its default when it is next opened, by the same rule a disconnect
+applies to the vault's; one pruned too far follows the vault's again.
+
 ### Stray parts scans in the background, and shows how far it is
 
 **Vault settings → Stray parts** used to be one request that answered at the

@@ -527,8 +527,20 @@ const unknownNoteStyle = {
    `picks` is what was chosen rather than a list of files — see upload.js — so a
    folder can be named as the folder it is instead of as the four hundred files
    inside it. */
+/* Saves a standing default where it belongs: the vault's, or one sub vault's
+   own when `vault` names one. */
+export function saveDefaults(vault, accounts, scheme) {
+  return vault
+    ? api.setSubVaultDefaults(vault, accounts, scheme)
+    : api.setDefaultAccounts(accounts, scheme)
+}
+
+/* `vault` is the sub vault the upload goes into, if any, with `vaultLabel` its
+   name: ticking "make this the default" then sets that sub vault's own default
+   rather than the whole vault's. */
 export function UploadDestination({
-  picks, path, providers, defaults, defaultScheme, onUpload, onClose, onChanged,
+  picks, path, providers, defaults, defaultScheme, vault = '', vaultLabel = '',
+  onUpload, onClose, onChanged,
 }) {
   const [selected, setSelected] = useState(() => initialSelection(providers, defaults))
   // The vault's own default is where the threshold starts, so an upload that
@@ -570,7 +582,7 @@ export function UploadDestination({
       // Saved first: an upload that fails should not also lose the choice the
       // user just made about where their files live from now on.
       if (remember) {
-        await api.setDefaultAccounts(selected, named ? schemeName(scheme) : '')
+        await saveDefaults(vault, selected, named ? schemeName(scheme) : '')
         onChanged?.()
       }
       onUpload(selected, named ? schemeName(scheme) : '')
@@ -638,7 +650,9 @@ export function UploadDestination({
           disabled={!usableCut(selected.length, scheme)}
           style={{ accentColor: COLORS.accent, width: '15px', height: '15px', minHeight: 0 }}
         />
-        Make this the default for the whole vault{named ? ` — ${schemeName(scheme)}` : ''}
+        {vault
+          ? `Make this the default for ${vaultLabel || 'this sub vault'}`
+          : 'Make this the default for the whole vault'}{named ? ` — ${schemeName(scheme)}` : ''}
       </label>
 
       <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
@@ -659,8 +673,16 @@ export function UploadDestination({
 
 /* The same choice, made once for the whole vault: which clouds, and how they
    are cut. Both are stored together, because a code is only a default while
-   clouds as wide as it are named under it. */
-export function DefaultClouds({ providers, defaults, defaultScheme, onClose, onChanged, zIndex }) {
+   clouds as wide as it are named under it.
+
+   With `vault` naming a sub vault it is that sub vault's own default instead,
+   for the uploads made into it. `inherited` says what it has now is the
+   vault's, and clearing it goes back to following the vault's rather than to
+   a pick per upload. */
+export function DefaultClouds({
+  providers, defaults, defaultScheme, vault = '', vaultLabel = '', inherited = false,
+  onClose, onChanged, zIndex,
+}) {
   const [selected, setSelected] = useState(() => (defaults || []).filter(
     (id) => providers.some((p) => p.id === id)))
   const [threshold, setThreshold] = useState(() => parseScheme(defaultScheme)?.data ?? null)
@@ -682,7 +704,7 @@ export function DefaultClouds({ providers, defaults, defaultScheme, onClose, onC
     setBusy(true)
     setError(null)
     try {
-      await api.setDefaultAccounts(accounts, cut)
+      await saveDefaults(vault, accounts, cut)
       onChanged()
       onClose()
     } catch (err) {
@@ -693,8 +715,11 @@ export function DefaultClouds({ providers, defaults, defaultScheme, onClose, onC
 
   return (
     <Modal
-      title="Default clouds"
-      subtitle="Where uploads go unless they choose otherwise. Every upload can still pick its own."
+      title={vault ? `Default clouds — ${vaultLabel || 'sub vault'}` : 'Default clouds'}
+      subtitle={vault
+        ? `Where uploads into ${vaultLabel || 'this sub vault'} go unless they choose otherwise.${
+          inherited ? ' It follows the vault\'s default until you save one of its own.' : ''}`
+        : 'Where uploads go unless they choose otherwise. Every upload can still pick its own.'}
       onClose={busy ? undefined : onClose}
       width={460}
       zIndex={zIndex}
@@ -725,8 +750,12 @@ export function DefaultClouds({ providers, defaults, defaultScheme, onClose, onC
         color: COLORS.textMuted,
         lineHeight: 1.6,
       }}>
-        With no default, each file picks {PARTS_PER_FILE} clouds of its own at random — which is
-        what spreads a vault evenly over more than {PARTS_PER_FILE} accounts. Saving one fixes both
+        {vault
+          ? <>A sub vault's own default stands in for the vault's, for the files put into it and
+            nowhere else. It is sealed with the sub vault, so the main password does not learn
+            which clouds it favours.</>
+          : <>With no default, each file picks {PARTS_PER_FILE} clouds of its own at random — which is
+            what spreads a vault evenly over more than {PARTS_PER_FILE} accounts.</>} Saving one fixes both
         halves: which clouds every upload goes to, and how many of them it takes to rebuild a file.
         An upload can still override either, and changing this leaves everything already stored cut
         the way it was.
@@ -734,7 +763,7 @@ export function DefaultClouds({ providers, defaults, defaultScheme, onClose, onC
 
       <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
         <Button type="button" variant="ghost" onClick={() => save([], '')} disabled={busy}>
-          Pick per upload
+          {vault ? "Follow the vault's" : 'Pick per upload'}
         </Button>
         <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>Cancel</Button>
         <Button

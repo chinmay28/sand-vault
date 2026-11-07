@@ -324,6 +324,7 @@ export default function VaultSettings({
       {open === 'subvaults' && (
         <SubVaults
           subVaults={subVaults}
+          providers={providers}
           showSubVaults={showSubVaults}
           subVaultShown={subVaultShown}
           onToggleSubVaults={onToggleSubVaults}

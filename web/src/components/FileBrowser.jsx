@@ -97,6 +97,11 @@ export default function FileBrowser({
   // What to call the root crumb. A sub vault's tree is not below the main
   // vault's, so the trail has to say which one you are walking.
   const vaultLabel = vault ? (subVaults.find((s) => s.id === vault)?.label || 'Sub vault') : ''
+  /* Where an upload here goes unless it chooses: a sub vault's own default
+     clouds where it has them, the vault's where it follows those. */
+  const scopeDefaults = vault ? subVaults.find((s) => s.id === vault)?.defaults : null
+  const uploadDefaults = scopeDefaults ? (scopeDefaults.default_accounts || []) : defaultAccounts
+  const uploadScheme = scopeDefaults ? (scopeDefaults.default_scheme || '') : defaultScheme
   /* Where a selection could be sent. Standing in the main vault that is every
      open sub vault; standing inside one it is the way back out. A locked sub
      vault is never a target — the move has to write into its index. */
@@ -960,8 +965,10 @@ export default function FileBrowser({
           picks={pending}
           path={path}
           providers={providers}
-          defaults={defaultAccounts}
-          defaultScheme={defaultScheme}
+          defaults={uploadDefaults}
+          defaultScheme={uploadScheme}
+          vault={vault}
+          vaultLabel={vaultLabel}
           onClose={() => setPending(null)}
           onChanged={onRefresh}
           onUpload={(accounts, scheme) => { setPending(null); uploadFiles(pending, accounts, scheme) }}
@@ -975,8 +982,8 @@ export default function FileBrowser({
           /* The clouds an import lands on are an upload's choice, so the
              dialog is told what the upload dialog is told. */
           providers={providers}
-          defaults={defaultAccounts}
-          defaultScheme={defaultScheme}
+          defaults={uploadDefaults}
+          defaultScheme={uploadScheme}
           onClose={() => setImporting(false)}
           /* What arrived is in this folder now, so the listing on screen is no
              longer what is there. */

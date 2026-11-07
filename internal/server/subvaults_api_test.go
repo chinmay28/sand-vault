@@ -401,3 +401,73 @@ func TestDiscardingAVaultOnAnAccountThatIsNotThere(t *testing.T) {
 		t.Fatalf("discard on an unknown account = %d %v, want it refused", w.Code, body)
 	}
 }
+
+// A sub vault's default clouds, over the wire: it follows the vault's until it
+// is given its own, uploads into it go there, and clearing it follows the
+// vault's again.
+func TestSubVaultDefaultsOverrideTheVaults(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("a vault password", 6)
+	ids := c.providerIDs()
+	id := c.createSub("Taxes", apiSubPassword)
+
+	if w, body := c.json(http.MethodPost, "/api/vault/defaults", map[string]any{
+		"accounts": ids[:3],
+	}); w.Code != http.StatusOK {
+		t.Fatalf("set vault defaults: %d %v", w.Code, body)
+	}
+
+	w, body := c.json(http.MethodGet, "/api/subvaults/"+id+"/defaults", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get sub vault defaults: %d %v", w.Code, body)
+	}
+	if inherited, _ := body["inherited"].(bool); !inherited {
+		t.Fatalf("a sub vault with no default of its own should inherit: %v", body)
+	}
+
+	w, body = c.json(http.MethodPost, "/api/subvaults/"+id+"/defaults", map[string]any{
+		"accounts": ids[3:],
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("set sub vault defaults: %d %v", w.Code, body)
+	}
+	if inherited, _ := body["inherited"].(bool); inherited {
+		t.Fatalf("a sub vault with its own default reported inheriting: %v", body)
+	}
+
+	file := c.uploadInto(id, "private.txt", "/", []byte("very secret"))
+	own := map[string]bool{ids[3]: true, ids[4]: true, ids[5]: true}
+	shards, _ := file["shards"].([]any)
+	if len(shards) == 0 {
+		t.Fatalf("upload reported no shards: %v", file)
+	}
+	for _, s := range shards {
+		pid, _ := s.(map[string]any)["provider_id"].(string)
+		if !own[pid] {
+			t.Errorf("a part landed on %s, outside the sub vault's default", pid)
+		}
+	}
+
+	// The vault's own default is untouched.
+	_, status := c.json(http.MethodGet, "/api/vault", nil)
+	stats := status["stats"].(map[string]any)
+	if got, _ := stats["default_accounts"].([]any); len(got) != 3 || got[0] != ids[0] {
+		t.Errorf("vault default became %v", got)
+	}
+
+	// Cleared, it follows the vault's again.
+	w, body = c.json(http.MethodPost, "/api/subvaults/"+id+"/defaults", map[string]any{"accounts": []string{}})
+	if w.Code != http.StatusOK {
+		t.Fatalf("clear sub vault defaults: %d %v", w.Code, body)
+	}
+	if inherited, _ := body["inherited"].(bool); !inherited {
+		t.Errorf("a cleared sub vault default should inherit: %v", body)
+	}
+
+	// Shut, it answers with the code that asks for its password.
+	c.json(http.MethodPost, "/api/subvaults/"+id+"/lock", nil)
+	w, body = c.json(http.MethodGet, "/api/subvaults/"+id+"/defaults", nil)
+	if code, _ := body["code"].(string); code != "SUB_VAULT_LOCKED" {
+		t.Errorf("defaults of a shut sub vault = %d %v, want SUB_VAULT_LOCKED", w.Code, body)
+	}
+}
