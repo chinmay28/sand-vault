@@ -89,67 +89,87 @@ export default function SubVaults({
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', margin: '12px 0' }}>
         {subVaults.map((sub) => (
+          /* Two lines rather than one: who it is, then what you can do with
+             it. An open sub vault has up to six controls, and on one line with
+             the name they left a phone no room for the name at all — and
+             pushed the last of them off the edge. The controls wrap among
+             themselves; the name keeps the whole width above them. */
           <div
             key={sub.id}
             style={{
               display: 'flex',
-              alignItems: 'center',
-              gap: '10px',
+              flexDirection: 'column',
+              gap: '8px',
               padding: '10px 12px',
               background: COLORS.surfaceRaised,
               border: `1px solid ${sub.unlocked ? COLORS.accentDim || COLORS.border : COLORS.border}`,
               borderRadius: '8px',
+              minWidth: 0,
             }}
           >
-            {/* Whether this one is drawn at the top of the vault. Its own
-                answer: the reason to have a sub vault at the root where you
-                can reach it is not a reason to have every one of them named
-                on screen. */}
-            <ShowTick
-              checked={shown(sub)}
-              label={`Show ${sub.label} at the top of the vault`}
-              onChange={(next) => onToggleSubVault(sub.id, next)}
-            />
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
+              {/* Whether this one is drawn at the top of the vault. Its own
+                  answer: the reason to have a sub vault at the root where you
+                  can reach it is not a reason to have every one of them named
+                  on screen. */}
+              <ShowTick
+                checked={shown(sub)}
+                label={`Show ${sub.label} at the top of the vault`}
+                onChange={(next) => onToggleSubVault(sub.id, next)}
+              />
 
-            <span aria-hidden="true" style={{ fontSize: '15px', opacity: 0.8 }}>
-              {sub.unlocked ? '🔓' : '🔒'}
-            </span>
-
-            <span style={{ flex: 1, minWidth: 0 }}>
-              <span style={{
-                display: 'block',
-                fontFamily: FONT.mono,
-                fontSize: '12px',
-                fontWeight: 600,
-                color: COLORS.text,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}>{sub.label}</span>
-              <span style={{ display: 'block', fontFamily: FONT.mono, fontSize: '9px', color: COLORS.textMuted, marginTop: '2px' }}>
-                {/* The figures come from the inventory while it is shut, so they
-                    do not drop to zero the moment it is locked. */}
-                {sub.files} file{sub.files === 1 ? '' : 's'} · {formatBytes(sub.stored_bytes || 0)} stored
-                {sub.pending_migration > 0 && ` · ${sub.pending_migration} still on an old key`}
+              <span aria-hidden="true" style={{ fontSize: '15px', opacity: 0.8, flexShrink: 0 }}>
+                {sub.unlocked ? '🔓' : '🔒'}
               </span>
-            </span>
 
-            {busy === sub.id ? <Spinner /> : (
-              <span style={{ display: 'flex', gap: '4px', flexShrink: 0 }}>
+              <span style={{ flex: 1, minWidth: 0 }}>
+                <span style={{
+                  display: 'block',
+                  fontFamily: FONT.mono,
+                  fontSize: '12px',
+                  fontWeight: 600,
+                  color: COLORS.text,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}>{sub.label}</span>
+                <span style={{
+                  display: 'block',
+                  fontFamily: FONT.mono,
+                  fontSize: '10px',
+                  color: COLORS.textMuted,
+                  marginTop: '2px',
+                  lineHeight: 1.4,
+                }}>
+                  {/* The figures come from the inventory while it is shut, so they
+                      do not drop to zero the moment it is locked. */}
+                  {sub.files} file{sub.files === 1 ? '' : 's'} · {formatBytes(sub.stored_bytes || 0)} stored
+                  {sub.pending_migration > 0 && ` · ${sub.pending_migration} still on an old key`}
+                  {sub.unlocked && sub.defaults && (sub.defaults.inherited
+                    ? ' · vault\'s default clouds'
+                    : ` · ${sub.defaults.default_accounts?.length || 0} clouds of its own`)}
+                </span>
+              </span>
+
+              {busy === sub.id && <Spinner />}
+            </div>
+
+            {busy !== sub.id && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', alignItems: 'center' }}>
                 {sub.unlocked ? (
                   <>
-                    <Button size="sm" variant="ghost" onClick={() => onOpen(sub)}>Open</Button>
+                    <Button size="sm" onClick={() => onOpen(sub)}>Open</Button>
                     <Button size="sm" variant="ghost" onClick={() => lock(sub)}>Lock</Button>
-                    <Button size="sm" variant="ghost" onClick={() => setChanging(sub)}
-                      title="Change this sub vault's password">🔑</Button>
                     {/* Its own default clouds, which only an open sub vault
                         can tell or change: the choice is sealed with it. */}
                     {providers.length > 0 && (
                       <Button size="sm" variant="ghost" onClick={() => setClouds(sub)}
                         title={sub.defaults?.inherited
                           ? 'Default clouds — following the vault\'s'
-                          : 'Default clouds — its own'}>☁</Button>
+                          : 'Default clouds — its own'}>Clouds</Button>
                     )}
+                    <Button size="sm" variant="ghost" onClick={() => setChanging(sub)}
+                      title="Change this sub vault's password" aria-label="Change password">🔑</Button>
                   </>
                 ) : (
                   <Button size="sm" onClick={() => setUnlocking(sub)}>Unlock</Button>
@@ -159,11 +179,16 @@ export default function SubVaults({
                     password, and never with the one that opened this page. */}
                 {webdav?.sub_vaults?.[sub.id] && (
                   <Button size="sm" variant="ghost" onClick={() => setMounting(sub)}
-                    title="Mount this sub vault as a drive, with its own password">💾</Button>
+                    title="Mount this sub vault as a drive, with its own password"
+                    aria-label="Mount as a drive">💾</Button>
                 )}
+                {/* Pushed to the far end, away from Open, so the one control that
+                    erases things is never the one next to the one you meant. */}
                 <Button size="sm" variant="ghost" onClick={() => setDeleting(sub)}
-                  title="Delete this sub vault and erase everything in it">🗑</Button>
-              </span>
+                  style={{ marginLeft: 'auto' }}
+                  title="Delete this sub vault and erase everything in it"
+                  aria-label="Delete sub vault">🗑</Button>
+              </div>
             )}
           </div>
         ))}
