@@ -422,15 +422,34 @@ func (v *Vault) SetDefaults(ids []string, scheme archive.Scheme) error {
 		return ErrLocked
 	}
 
+	chosen, stored, err := v.checkDefaultsLocked(ids, scheme)
+	if err != nil {
+		return err
+	}
+	previousAccounts, previousScheme := v.store.DefaultAccounts, v.store.DefaultScheme
+	v.store.DefaultAccounts, v.store.DefaultScheme = chosen, stored
+	if err := v.persistLocked(); err != nil {
+		v.store.DefaultAccounts, v.store.DefaultScheme = previousAccounts, previousScheme
+		return err
+	}
+	return nil
+}
+
+// checkDefaultsLocked validates a default selection against what is connected
+// and returns it in the form it is stored in: the accounts, nil for none, and
+// the scheme written "k-of-n" only where the count would not have named it by
+// itself. It is the whole of SetDefaults' judgement, shared with a sub vault's
+// own defaults so the two cannot come to disagree about what a default is.
+func (v *Vault) checkDefaultsLocked(ids []string, scheme archive.Scheme) ([]string, string, error) {
 	chosen := make([]string, 0, len(ids))
 	seen := map[string]bool{}
 	for _, id := range ids {
 		cfg, ok := v.configForLocked(id)
 		if !ok {
-			return fmt.Errorf("no connected account with id %s", id)
+			return nil, "", fmt.Errorf("no connected account with id %s", id)
 		}
 		if seen[id] {
-			return fmt.Errorf("%s is listed twice — every shard of a file goes to a different account", cfg.Name)
+			return nil, "", fmt.Errorf("%s is listed twice — every shard of a file goes to a different account", cfg.Name)
 		}
 		seen[id] = true
 		chosen = append(chosen, id)
@@ -441,25 +460,25 @@ func (v *Vault) SetDefaults(ids []string, scheme archive.Scheme) error {
 		// A code with no accounts under it is half a preference. The width it
 		// names is the number of clouds it wants, and there are none to check
 		// it against.
-		return fmt.Errorf(
+		return nil, "", fmt.Errorf(
 			"%s names %d accounts to cut across — choose them, or clear the scheme to let each "+
 				"upload's own count settle it", scheme, scheme.Total)
 	case named:
 		if err := scheme.Check(); err != nil {
-			return err
+			return nil, "", err
 		}
 		if len(chosen) != scheme.Total {
-			return fmt.Errorf(
+			return nil, "", fmt.Errorf(
 				"%s is cut across %d accounts and %d were chosen — pick %d, or change the scheme",
 				scheme, scheme.Total, len(chosen), scheme.Total)
 		}
 	default:
 		if !ValidSpread(len(chosen)) {
-			return ErrSpread(len(chosen))
+			return nil, "", ErrSpread(len(chosen))
 		}
 	}
 	if len(chosen) > 0 && len(chosen) < archive.MinPartsToRestore {
-		return fmt.Errorf(
+		return nil, "", fmt.Errorf(
 			"choose at least %d accounts, so that a file still has a second place to be rebuilt from",
 			archive.MinPartsToRestore)
 	}
@@ -475,14 +494,7 @@ func (v *Vault) SetDefaults(ids []string, scheme archive.Scheme) error {
 	if named && scheme != mustSchemeFor(len(chosen)) {
 		stored = scheme.String()
 	}
-
-	previousAccounts, previousScheme := v.store.DefaultAccounts, v.store.DefaultScheme
-	v.store.DefaultAccounts, v.store.DefaultScheme = chosen, stored
-	if err := v.persistLocked(); err != nil {
-		v.store.DefaultAccounts, v.store.DefaultScheme = previousAccounts, previousScheme
-		return err
-	}
-	return nil
+	return chosen, stored, nil
 }
 
 // mustSchemeFor is the code a count of accounts names, or the zero value where
@@ -493,6 +505,40 @@ func mustSchemeFor(accounts int) archive.Scheme {
 		return archive.Scheme{}
 	}
 	return scheme
+}
+
+// pruneDefaults is what is left of a default once some of its accounts have
+// gone, as reported by connected.
+//
+// A default scheme is a statement about a width, so losing an account takes the
+// width away with it: 3-of-5 has nothing to say about the four that are left.
+// The scheme goes rather than the accounts, because the accounts are the half
+// the user can see going. What is left has to still name a scheme — a default of
+// six that loses one account becomes a default of three rather than of five,
+// which is no scheme at all — and too little left is no default at all, rather
+// than every upload landing on one account.
+//
+// A scheme that does not parse is treated as no scheme, the way
+// defaultSchemeLocked treats one.
+func pruneDefaults(accounts []string, scheme string, connected func(string) bool) ([]string, string) {
+	kept := make([]string, 0, len(accounts))
+	for _, id := range accounts {
+		if connected(id) {
+			kept = append(kept, id)
+		}
+	}
+	if scheme != "" {
+		if parsed, err := archive.ParseScheme(scheme); err != nil || parsed.Total != len(kept) {
+			scheme = ""
+		}
+	}
+	for scheme == "" && !ValidSpread(len(kept)) && len(kept) > 0 {
+		kept = kept[:len(kept)-1]
+	}
+	if len(kept) < archive.MinPartsToRestore {
+		return nil, ""
+	}
+	return kept, scheme
 }
 
 // Init creates a new vault sealed under password and leaves it unlocked.
@@ -1741,32 +1787,8 @@ func (v *Vault) RemoveProvider(id string, force bool) error {
 	// A default naming an account that is no longer there would silently
 	// shrink the spread of every upload after this one.
 	if len(v.store.DefaultAccounts) > 0 {
-		kept := make([]string, 0, len(v.store.DefaultAccounts))
-		for _, def := range v.store.DefaultAccounts {
-			if surviving[def] {
-				kept = append(kept, def)
-			}
-		}
-		// A default scheme is a statement about a width, so losing an account
-		// takes the width away with it: 3-of-5 has nothing to say about the four
-		// that are left. The scheme goes rather than the accounts, because the
-		// accounts are the half the user can see going.
-		if scheme := v.defaultSchemeLocked(); scheme != (archive.Scheme{}) && scheme.Total != len(kept) {
-			v.store.DefaultScheme = ""
-		}
-		// What is left has to still name a scheme. A default of six that loses
-		// one account becomes a default of three rather than of five, which is
-		// no scheme at all.
-		for v.store.DefaultScheme == "" && !ValidSpread(len(kept)) && len(kept) > 0 {
-			kept = kept[:len(kept)-1]
-		}
-		if len(kept) < archive.MinPartsToRestore {
-			// Too little left to be a default at all; the per-file random pick
-			// takes over rather than every upload landing on one account.
-			kept = nil
-			v.store.DefaultScheme = ""
-		}
-		v.store.DefaultAccounts = kept
+		v.store.DefaultAccounts, v.store.DefaultScheme = pruneDefaults(
+			v.store.DefaultAccounts, v.store.DefaultScheme, func(id string) bool { return surviving[id] })
 	}
 	// The index is shared with every machine that opens this vault, and the
 	// records below are what those machines read files by. An account that

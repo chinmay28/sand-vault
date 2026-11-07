@@ -281,6 +281,19 @@ type Manifest struct {
 	// learn and no more. See SubVaultMeta.
 	SubVaults []*SubVaultMeta `json:"sub_vaults,omitempty"`
 
+	// DefaultAccounts and DefaultScheme are a sub vault's own default clouds,
+	// standing in for the vault-wide ones (storeFile.DefaultAccounts) for the
+	// uploads made into it. Only ever on a sub vault's index, and empty means
+	// the sub vault has no preference of its own and follows the vault's.
+	//
+	// Here, sealed under the sub vault's password, rather than in the clear
+	// beside the vault's: which accounts a sub vault favours is something about
+	// it the main password has no need to learn. The cost is that a shut sub
+	// vault's default cannot be tidied when an account is disconnected, so it is
+	// tidied when it is read instead. See subdefaults.go.
+	DefaultAccounts []string `json:"default_accounts,omitempty"`
+	DefaultScheme   string   `json:"default_scheme,omitempty"`
+
 	// Rekey is the plan the outstanding re-encryption is following, if a
 	// password change left one: so much a day, these folders first. Only ever
 	// on the main vault's manifest, and only while something is still on the

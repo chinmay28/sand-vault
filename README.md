@@ -816,6 +816,9 @@ two parts and says that the file has no spare, instead of quietly putting the
 third somewhere you did not choose. Disconnecting an account drops it from the
 default.
 
+A [sub vault](#sub-vaults) follows the vault's default until it is given one of
+its own, which then applies to the uploads made into it and nowhere else.
+
 ### Choosing m of n
 
 A file is cut with an **m-of-n** code: n shards, one per cloud, and any m of them
@@ -1476,6 +1479,24 @@ What holds:
   account silently stranding files nobody can see.
 - **There is no recovery for the password.** Not from your vault password, and
   not from a `manifest.sand` — the backups carry a sub vault sealed.
+
+A sub vault can also keep **default clouds of its own**. Until it has them it
+follows the vault's; once set, every upload into it that does not choose for
+itself goes there instead, and the vault's default is left as it was. The choice
+is sealed with the sub vault, so your vault password does not learn which clouds
+it favours — which also means it can only be seen or changed while the sub vault
+is open. In the browser it is the ☁ on an open sub vault's row, or *Make this
+the default for Taxes* in the upload dialog while you are inside it.
+
+```bash
+./sand vault defaults --in Taxes                     # its own, or "follows the vault's"
+./sand vault defaults --in Taxes d1 d2 d3 --scheme 2-of-3
+./sand vault defaults --in Taxes --clear             # back to following the vault's
+```
+
+An account disconnected while a sub vault is shut is dropped from its default
+the next time it is opened, by the same rule as the vault's; one left with too
+few clouds to be a default goes back to following the vault's.
 
 Moving something in is instant: the index changes and the parts stay where they
 are. The files are then re-encrypted onto the destination's own key in the

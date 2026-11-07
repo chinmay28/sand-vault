@@ -279,11 +279,11 @@ func (t *transferTarget) width() int {
 // snapshotTarget takes what a scatter needs from the vault and settles which
 // accounts are in play, before anything is encoded: a selection naming an
 // account that is not connected is a mistake to report, not work to do.
-// The scope decides one thing and one thing only: which data key the parts are
-// sealed under. Where they are allowed to land is a vault-wide question —
-// the policy, the connected accounts and the default selection are the same
-// whichever vault inside the file the bytes belong to, because they are answers
-// about storage rather than about secrecy.
+// The scope decides two things: which data key the parts are sealed under, and
+// which default selection applies when the upload names none — a sub vault may
+// keep default clouds of its own (see subdefaults.go). The policy and the
+// connected accounts are the same whichever vault inside the file the bytes
+// belong to, because they are answers about storage rather than about secrecy.
 func (v *Vault) snapshotTarget(scope Scope, sp spread) (*transferTarget, error) {
 	if sp.scheme != (archive.Scheme{}) {
 		if err := sp.check(sp.scheme); err != nil {
@@ -315,9 +315,9 @@ func (v *Vault) snapshotTarget(scope Scope, sp spread) (*transferTarget, error) 
 		dataKey:       dataKey,
 		policy:        v.store.Policy,
 		scheme:        sp.scheme,
-		fallback:      v.defaultSchemeLocked(),
 	}
-	defaults := append([]string(nil), v.store.DefaultAccounts...)
+	defaults, fallback := v.defaultsForLocked(scope)
+	t.fallback = fallback
 	configs := append([]provider.Config(nil), v.providers...)
 	v.mu.RUnlock()
 

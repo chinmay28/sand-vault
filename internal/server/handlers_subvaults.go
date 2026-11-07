@@ -114,6 +114,48 @@ func (s *Server) handleSubVaultRename(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"id": r.PathValue("id"), "label": req.Label})
 }
 
+// handleSubVaultDefaults answers where uploads into a sub vault go unless they
+// choose otherwise: its own default clouds, or the vault's, with inherited
+// saying which.
+func (s *Server) handleSubVaultDefaults(w http.ResponseWriter, r *http.Request) {
+	v, _ := s.Vault()
+	d, err := v.DefaultsIn(vault.Scope(r.PathValue("id")))
+	if err != nil {
+		vaultErrorResponse(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, d)
+}
+
+// handleSubVaultSetDefaults gives a sub vault default clouds of its own. The
+// body is the vault's own defaults request, judged the same way; an empty one
+// clears the sub vault's choice and puts it back to following the vault's.
+func (s *Server) handleSubVaultSetDefaults(w http.ResponseWriter, r *http.Request) {
+	var req defaultAccountsRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
+		return
+	}
+	scheme, err := parseSchemeField(req.Scheme)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "BAD_SCHEME")
+		return
+	}
+
+	v, _ := s.Vault()
+	scope := vault.Scope(r.PathValue("id"))
+	if err := v.SetDefaultsIn(scope, req.Accounts, scheme); err != nil {
+		vaultErrorResponse(w, err)
+		return
+	}
+	d, err := v.DefaultsIn(scope)
+	if err != nil {
+		vaultErrorResponse(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, d)
+}
+
 // handleSubVaultPassword changes one sub vault's password and rotates the key
 // its files are stored under.
 //

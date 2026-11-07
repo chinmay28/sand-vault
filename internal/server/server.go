@@ -520,6 +520,8 @@ func (s *Server) Handler() (http.Handler, error) {
 		"PATCH /api/subvaults/{id}":         s.handleSubVaultRename,
 		"POST /api/subvaults/{id}/password": s.handleSubVaultPassword,
 		"POST /api/subvaults/{id}/migrate":  s.handleSubVaultMigrate,
+		"GET /api/subvaults/{id}/defaults":  s.handleSubVaultDefaults,
+		"POST /api/subvaults/{id}/defaults": s.handleSubVaultSetDefaults,
 		"DELETE /api/subvaults/{id}":        s.handleSubVaultDelete,
 
 		// Moving a file or a folder from one vault inside the file to another.

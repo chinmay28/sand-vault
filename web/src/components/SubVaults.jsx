@@ -4,6 +4,7 @@ import { api } from '../api'
 import { Banner, Button, ConfirmDialog, Input, Modal, PasswordInput, Spinner } from './ui'
 import ImportVault, { FoundVaults, useForeignVaults } from './ImportVault'
 import MountDrive from './MountDrive'
+import { DefaultClouds } from './CloudSelect'
 
 /* A sub vault is a vault inside the vault, with a password of its own.
 
@@ -22,12 +23,13 @@ import MountDrive from './MountDrive'
 
 export default function SubVaults({
   subVaults = [], showSubVaults, subVaultShown, onToggleSubVaults, onToggleSubVault = () => {},
-  webdav, zIndex = 110, onClose, onChanged, onOpen,
+  providers = [], webdav, zIndex = 110, onClose, onChanged, onOpen,
 }) {
   const [creating, setCreating] = useState(false)
   const [unlocking, setUnlocking] = useState(null)
   const [mounting, setMounting] = useState(null)
   const [changing, setChanging] = useState(null)
+  const [clouds, setClouds] = useState(null)
   const [deleting, setDeleting] = useState(null)
   const [importing, setImporting] = useState(null)
   const [busy, setBusy] = useState(null)
@@ -140,6 +142,14 @@ export default function SubVaults({
                     <Button size="sm" variant="ghost" onClick={() => lock(sub)}>Lock</Button>
                     <Button size="sm" variant="ghost" onClick={() => setChanging(sub)}
                       title="Change this sub vault's password">🔑</Button>
+                    {/* Its own default clouds, which only an open sub vault
+                        can tell or change: the choice is sealed with it. */}
+                    {providers.length > 0 && (
+                      <Button size="sm" variant="ghost" onClick={() => setClouds(sub)}
+                        title={sub.defaults?.inherited
+                          ? 'Default clouds — following the vault\'s'
+                          : 'Default clouds — its own'}>☁</Button>
+                    )}
                   </>
                 ) : (
                   <Button size="sm" onClick={() => setUnlocking(sub)}>Unlock</Button>
@@ -226,6 +236,19 @@ export default function SubVaults({
             onChanged()
             onOpen(sub)
           }}
+        />
+      )}
+      {clouds && (
+        <DefaultClouds
+          providers={providers}
+          defaults={clouds.defaults?.default_accounts || []}
+          defaultScheme={clouds.defaults?.default_scheme || ''}
+          inherited={!!clouds.defaults?.inherited}
+          vault={clouds.id}
+          vaultLabel={clouds.label}
+          zIndex={zIndex + 10}
+          onClose={() => setClouds(null)}
+          onChanged={() => onChanged()}
         />
       )}
       {changing && (
