@@ -16,12 +16,13 @@ import (
 
 func serveCmd() *cobra.Command {
 	var (
-		port         int
-		bind         string
-		idleTimeout  time.Duration
-		webdav       bool
-		webdavPrefix string
-		profile      string
+		port            int
+		bind            string
+		idleTimeout     time.Duration
+		webdav          bool
+		webdavPrefix    string
+		webdavSubPrefix string
+		profile         string
 	)
 
 	cmd := &cobra.Command{
@@ -29,13 +30,14 @@ func serveCmd() *cobra.Command {
 		Short: "Start the local web server and file browser",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s := &server.Server{
-				Bind:         bind,
-				Port:         port,
-				VaultPath:    vaultPath(cmd),
-				IdleTimeout:  idleTimeout,
-				WebDAV:       webdav,
-				WebDAVPrefix: webdavPrefix,
-				Profile:      profile,
+				Bind:            bind,
+				Port:            port,
+				VaultPath:       vaultPath(cmd),
+				IdleTimeout:     idleTimeout,
+				WebDAV:          webdav,
+				WebDAVPrefix:    webdavPrefix,
+				WebDAVSubPrefix: webdavSubPrefix,
+				Profile:         profile,
 			}
 			return s.Start()
 		},
@@ -56,6 +58,10 @@ func serveCmd() *cobra.Command {
 		"also serve the vault as a WebDAV share, for mounting in a file manager or player")
 	cmd.Flags().StringVar(&webdavPrefix, "webdav-path", server.DefaultWebDAVPrefix,
 		"URL path to mount the WebDAV share under")
+	// Beside the vault's share rather than under it: a sub vault's name under
+	// /dav/ would shadow a folder of the same name in the main vault.
+	cmd.Flags().StringVar(&webdavSubPrefix, "webdav-sub-path", server.DefaultWebDAVSubPrefix,
+		"URL path the sub vaults' WebDAV shares sit under, one per sub vault at <path>/<name>/, each behind its own password")
 	// How the machine is sized. Normally left to machine.json beside the
 	// vault, which Settings → This machine writes; the flag pins it from
 	// the unit file for a box that is deliberately run as something it is

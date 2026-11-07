@@ -372,9 +372,9 @@ func TestCorrectPasswordUnlocksALockedVault(t *testing.T) {
 // password being checked again.
 func TestVerifierDoesNotCacheThroughALock(t *testing.T) {
 	v := newTestVault(t)
-	auth, err := newVerifier(v, DefaultVerifyTTL)
+	auth, err := mainVaultVerifier(v, DefaultVerifyTTL)
 	if err != nil {
-		t.Fatalf("newVerifier: %v", err)
+		t.Fatalf("mainVaultVerifier: %v", err)
 	}
 
 	if err := auth.check(testPassword); err != nil {
@@ -401,9 +401,9 @@ func TestVerifierDoesNotCacheThroughALock(t *testing.T) {
 
 func TestVerifierRemembersAcrossCalls(t *testing.T) {
 	v := newTestVault(t)
-	auth, err := newVerifier(v, DefaultVerifyTTL)
+	auth, err := mainVaultVerifier(v, DefaultVerifyTTL)
 	if err != nil {
-		t.Fatalf("newVerifier: %v", err)
+		t.Fatalf("mainVaultVerifier: %v", err)
 	}
 
 	if err := auth.check(testPassword); err != nil {
@@ -434,9 +434,9 @@ func TestVerifierRemembersAcrossCalls(t *testing.T) {
 // password.
 func TestVerifierDoesNotHoldThePassword(t *testing.T) {
 	v := newTestVault(t)
-	auth, err := newVerifier(v, DefaultVerifyTTL)
+	auth, err := mainVaultVerifier(v, DefaultVerifyTTL)
 	if err != nil {
-		t.Fatalf("newVerifier: %v", err)
+		t.Fatalf("mainVaultVerifier: %v", err)
 	}
 	if err := auth.check(testPassword); err != nil {
 		t.Fatalf("check: %v", err)
@@ -695,9 +695,11 @@ func TestOpenFileAppendsToANewFile(t *testing.T) {
 	}
 }
 
-// A sub vault is never on the share. Not while locked, and not while unlocked
-// either — the adapter is pinned to the main vault by a constant, so there is
-// no request that can ask for a different scope and no setting that changes it.
+// A sub vault is never on the vault's own share. Not while locked, and not
+// while unlocked either — the adapter is fixed to the main vault when it is
+// built, so there is no request that can ask it for a different scope and no
+// setting that changes it. A sub vault has a share of its own, behind its own
+// password (see subvaults_test.go); this one never reaches it.
 //
 // This is the guarantee somebody puts a file in a sub vault for. A mounted
 // drive is a folder every process running as that user can read, that a backup

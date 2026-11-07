@@ -1462,8 +1462,11 @@ not any more sealed than a ticked one.
 
 What holds:
 
-- **Never on a WebDAV mount.** Not while locked, and not while unlocked either.
-  There is no setting for this; the share only ever sees the main vault.
+- **Never on the vault's WebDAV mount.** Not while locked, and not while
+  unlocked either. There is no setting for this; that share only ever sees the
+  main vault. A sub vault has a drive address of its own instead — see
+  [Mount a sub vault on its own](#mount-a-sub-vault-on-its-own) — which only
+  its own password opens, and which shows that sub vault and nothing else.
 - **A password change on your vault does not touch it.** Its section is sealed
   under its own password, so it is carried across untouched.
 - **Your vault password reveals the name and nothing else.** Not a path, not a
@@ -2297,7 +2300,7 @@ sand find receipt
 
 ```
 sand serve [--port 8123] [--bind 0.0.0.0] [--idle-timeout 30m] [--vault PATH] [--profile auto|pi5|workstation|custom]
-           [--webdav] [--webdav-path /dav]
+           [--webdav] [--webdav-path /dav] [--webdav-sub-path /sub]
 ```
 
 On start it reads whatever memory limit it is running under — the systemd unit's
@@ -3121,6 +3124,51 @@ To play *one* file in a player you don't need the share at all — see [Stream a
 file to VLC](#stream-a-file-to-vlc), which works on a plain `sand serve` and
 hands over a link rather than your password. The share is for browsing the whole
 vault from outside the browser.
+
+### Mount a sub vault on its own
+
+The share at `/dav/` is the main vault and never a sub vault — not while a sub
+vault is locked, and not while it is open in the app either. Each sub vault has
+a share of its own instead, beside the vault's:
+
+```
+https://host:8123/dav/           the vault         — opens with your vault password
+https://host:8123/sub/Taxes/     the sub vault     — opens with its own password
+```
+
+Mount it with **any username** and **that sub vault's password**. Your vault
+password does not open it, and its password does not open `/dav/`. The drive
+you get is the sub vault and nothing else: the rest of the vault is not under
+it, no other sub vault is, and a move whose destination is another share is
+refused. So a sub vault mounted on one machine — or handed to one person — has
+the rest of the vault out of its reach, while the app, which has your vault
+password, still lists every sub vault and opens each with its password exactly
+as before.
+
+A sub vault is named in the address by its name, case ignored, or by its ID
+(`sand sub ls` shows both); a name with a slash in it is only reachable by ID.
+**Vault settings → Sub vaults** offers each row's address with a copy button.
+Renaming a sub vault moves its share to the new name.
+
+Mounting a **locked** sub vault opens it — the password the drive sends is the
+one that opens it — so the mount outlives whoever opened the sub vault in the
+app, in the same way the vault's own share brings a locked vault back. What it
+cannot do is unlock the vault around it: a sub vault's files live on accounts
+your vault password seals. While the vault is locked a sub vault's share answers
+*503 Service Unavailable* rather than asking for a password that could not
+help; unlock the vault in the app, or mount `/dav/`, and it answers.
+
+`--webdav-sub-path` moves the shares somewhere other than `/sub`. They sit
+beside the vault's share rather than under it, because a sub vault called
+`Films` under `/dav/` would shadow a folder called `Films` in the main vault;
+the server refuses to start with one path inside the other.
+
+> [!NOTE]
+> The reason a sub vault is kept off the vault's share holds for its own share
+> too: a mounted drive is a folder every process running as that user can read,
+> that a backup agent will copy elsewhere, and that stays mounted after you have
+> walked away. Mounting a sub vault is choosing that exposure for that sub vault
+> — and only that one.
 
 Jellyfin and Plex want a real filesystem rather than a URL, so they need a FUSE
 mount — not built yet.

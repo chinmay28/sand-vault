@@ -87,9 +87,11 @@
 #   HOST             bind address            (default: 0.0.0.0 — see the warning below)
 #   SAND_WEBDAV      1 | 0                   also serve the vault as a mountable
 #                    WebDAV share at /dav (default: 0). Mount it with any
-#                    username and the vault password. It sends that password on
-#                    every request rather than once at sign-in, so put TLS in
-#                    front before turning it on anywhere but loopback.
+#                    username and the vault password. Each sub vault gets a
+#                    share of its own at /sub/<name>/, opened by that sub
+#                    vault's password and showing it alone. A share sends its
+#                    password on every request rather than once at sign-in, so
+#                    put TLS in front before turning it on anywhere but loopback.
 #
 # PORT, HOST, SAND_WEBDAV, SAND_USER, SAND_PREFIX, SAND_DATA_DIR and
 # SAND_MOUNT_ROOTS are remembered. On an upgrade, leaving one unset keeps
@@ -675,6 +677,7 @@ printf '  %-10s %s\n' "vault"    "$VAULT_PATH"
 printf '  %-10s %s\n' "service"  "${SERVICE_NAME}.service (user: $SVC_USER)"
 printf '  %-10s %s\n' "listen"   "http://$HOST:$PORT"
 [ "$WEBDAV" = 1 ] && printf '  %-10s %s\n' "webdav"   "http://$HOST:$PORT/dav/"
+[ "$WEBDAV" = 1 ] && printf '  %-10s %s\n' "sub vaults" "http://$HOST:$PORT/sub/<name>/"
 
 # Run npm/git/go as the service user so the tree stays owned by them, and so the
 # build matches the runtime account. Falls back to plain exec before the user exists.

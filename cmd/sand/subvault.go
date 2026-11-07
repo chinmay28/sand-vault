@@ -32,9 +32,12 @@ func subVaultCmd() *cobra.Command {
 password. It is sealed under a password of its own and nothing else, so the
 main password lists it and cannot open it.
 
-It never appears on a WebDAV mount — not while locked, and not while unlocked
-either. A mounted drive is a folder every process running as you can read; what
-goes in a sub vault is what should not be reachable that way.
+It never appears on the vault's WebDAV share — not while locked, and not while
+unlocked either. A mounted drive is a folder every process running as you can
+read; what goes in a sub vault is what should not be reachable with the main
+password that way. With 'sand serve --webdav' a sub vault has a share of its
+own instead, at /sub/<name>/, which its own password opens and which presents
+the sub vault and nothing else.
 
 Use --in on the ordinary commands to work inside one:
 

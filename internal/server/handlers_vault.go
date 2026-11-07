@@ -3,6 +3,8 @@ package server
 import (
 	"errors"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/chinmay28/sand-vault/internal/archive"
@@ -58,6 +60,37 @@ type vaultStatus struct {
 // not resolve anywhere else.
 type webdavStatus struct {
 	Path string `json:"path"`
+
+	// SubVaults is the path of each sub vault's own share, by sub vault ID —
+	// the one its own password opens, presenting that sub vault and nothing
+	// else. Worked out here rather than in the browser so that how a sub
+	// vault is named in the address is decided in one place: by its label,
+	// unless the label cannot be one path segment, and then by its ID.
+	SubVaults map[string]string `json:"sub_vaults,omitempty"`
+}
+
+// subVaultSharePaths maps each sub vault to the path its share answers at.
+func (s *Server) subVaultSharePaths(subs []vault.SubVaultInfo) map[string]string {
+	if len(subs) == 0 {
+		return nil
+	}
+	paths := make(map[string]string, len(subs))
+	for _, sub := range subs {
+		paths[sub.ID] = s.webdavSubPrefix() + "/" + url.PathEscape(subVaultShareName(sub)) + "/"
+	}
+	return paths
+}
+
+// subVaultShareName is what names a sub vault in its share's address: the
+// label, which is what a file manager will call the mounted volume, unless
+// it cannot stand as one path segment — a slash in it, or a name the path
+// syntax reserves — in which case the ID, which the share also answers to.
+func subVaultShareName(sub vault.SubVaultInfo) string {
+	label := sub.Label
+	if label == "" || label == "." || label == ".." || strings.ContainsAny(label, "/\\") {
+		return sub.ID
+	}
+	return label
 }
 
 // unlockedStatus describes a vault that the caller has just been given access
@@ -89,7 +122,10 @@ func (s *Server) unlockedStatus(v *vault.Vault) vaultStatus {
 		status.Peers = len(instances) - 1
 	}
 	if s.WebDAV {
-		status.WebDAV = &webdavStatus{Path: s.webdavPrefix() + "/"}
+		status.WebDAV = &webdavStatus{
+			Path:      s.webdavPrefix() + "/",
+			SubVaults: s.subVaultSharePaths(status.SubVaults),
+		}
 	}
 	return status
 }

@@ -70,6 +70,14 @@ type Server struct {
 	// DefaultWebDAVPrefix.
 	WebDAVPrefix string
 
+	// WebDAVSubPrefix is the path the sub vaults' shares sit under, one
+	// segment each: a sub vault called Taxes is mounted at
+	// WebDAVSubPrefix/Taxes/, with its own password. Served whenever WebDAV
+	// is. Empty uses DefaultWebDAVSubPrefix. It must not lie inside
+	// WebDAVPrefix or contain it, since a folder in one share would then
+	// shadow the other.
+	WebDAVSubPrefix string
+
 	// MovieBaseURL and MovieImageBaseURL point the film lookup somewhere other
 	// than the real database. Empty — which is everything but a test — means
 	// the addresses in internal/movie, and a test that left them empty would be
@@ -138,10 +146,18 @@ type Server struct {
 	// dav is the share, when one is served. It is asked whether a request is
 	// still running before the vault is locked for being idle.
 	dav *davfs.Endpoint
+
+	// subdav is the sub vaults' shares, served beside dav, and asked the same
+	// question.
+	subdav *davfs.SubVaultShares
 }
 
 // DefaultWebDAVPrefix is where the share is mounted unless told otherwise.
 const DefaultWebDAVPrefix = "/dav"
+
+// DefaultWebDAVSubPrefix is where the sub vaults' shares sit unless told
+// otherwise: one share per sub vault, at /sub/<name>/.
+const DefaultWebDAVSubPrefix = "/sub"
 
 // DefaultPort is the port `sand serve` binds unless told otherwise.
 const DefaultPort = 8123
@@ -252,7 +268,11 @@ func (s *Server) Handler() (http.Handler, error) {
 
 	// --- WebDAV: the vault as a mountable share, off unless asked for -----
 	if s.WebDAV {
-		prefix := s.webdavPrefix()
+		prefix, subPrefix := s.webdavPrefix(), s.webdavSubPrefix()
+		if webdavPrefixesCollide(prefix, subPrefix) {
+			return nil, fmt.Errorf("the WebDAV share at %s and the sub vault shares at %s would shadow each other; "+
+				"give them paths neither of which lies inside the other", prefix, subPrefix)
+		}
 		dav, err := davfs.Handler(v, davfs.Options{
 			Prefix:     prefix,
 			Realm:      "SAND Vault",
@@ -266,6 +286,20 @@ func (s *Server) Handler() (http.Handler, error) {
 		// prefix, and everything inside it arrives with the trailing slash.
 		mux.Handle(prefix, dav)
 		mux.Handle(prefix+"/", dav)
+
+		// And one share per sub vault, each behind its own password, beside
+		// the vault's rather than under it: a sub vault's name under /dav/
+		// would shadow a folder of the same name in the main vault. The
+		// vault's share still never shows a sub vault; this is how a sub
+		// vault is mounted on its own, with the rest of the vault out of
+		// reach of that mount. See davfs.SubVaultShares.
+		s.subdav = davfs.SubVaultHandler(v, davfs.Options{
+			Prefix:     subPrefix,
+			Realm:      "SAND Vault",
+			OnActivity: s.noteExternalActivity,
+		})
+		mux.Handle(subPrefix, s.subdav)
+		mux.Handle(subPrefix+"/", s.subdav)
 	}
 
 	// --- Public: no session required -------------------------------------
@@ -804,6 +838,8 @@ func (s *Server) Start() error {
 	if s.WebDAV {
 		log.Printf("WebDAV share at http://%s%s/ — mount it with any username and the vault password",
 			addr, s.webdavPrefix())
+		log.Printf("sub vault shares at http://%s%s/<name>/ — mount one with any username and that sub vault's own password",
+			addr, s.webdavSubPrefix())
 		if warnsOnBind(s.Bind) {
 			log.Print("WARNING: WebDAV sends the vault password on every single request, " +
 				"not once at sign-in, so serving it without TLS exposes the password far " +
@@ -911,14 +947,30 @@ func (s *Server) autoLockLoop() {
 // webdavPrefix is the path the share is mounted under, normalized to have a
 // leading slash and no trailing one.
 func (s *Server) webdavPrefix() string {
-	prefix := s.WebDAVPrefix
+	return normalizeWebDAVPrefix(s.WebDAVPrefix, DefaultWebDAVPrefix)
+}
+
+// webdavSubPrefix is the path the sub vaults' shares sit under, normalized
+// the same way.
+func (s *Server) webdavSubPrefix() string {
+	return normalizeWebDAVPrefix(s.WebDAVSubPrefix, DefaultWebDAVSubPrefix)
+}
+
+func normalizeWebDAVPrefix(prefix, fallback string) string {
 	if prefix == "" {
-		prefix = DefaultWebDAVPrefix
+		prefix = fallback
 	}
 	if !strings.HasPrefix(prefix, "/") {
 		prefix = "/" + prefix
 	}
 	return strings.TrimSuffix(prefix, "/")
+}
+
+// webdavPrefixesCollide reports whether two normalized mount paths are the
+// same or one lies inside the other — in which case the routes for one would
+// take requests meant for a folder in the other.
+func webdavPrefixesCollide(a, b string) bool {
+	return a == b || strings.HasPrefix(a, b+"/") || strings.HasPrefix(b, a+"/")
 }
 
 // noteExternalActivity records that something without a browser session — the
@@ -939,6 +991,9 @@ func (s *Server) noteExternalActivity() {
 // would take the keys out from under it.
 func (s *Server) externalActive() bool {
 	if s.dav != nil && s.dav.InFlight() > 0 {
+		return true
+	}
+	if s.subdav != nil && s.subdav.InFlight() > 0 {
 		return true
 	}
 

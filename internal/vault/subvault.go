@@ -34,9 +34,10 @@ import (
 // vaults with almost nothing added — including deferring the re-encryption that
 // a password change or an assignment implies.
 //
-// It never appears on a WebDAV mount. Not while locked, and not while unlocked
-// either: the share is pinned to the main vault, so the only way to see inside a
-// sub vault is to be looking at the app.
+// It is never on the vault's WebDAV share. Not while locked, and not while
+// unlocked either: that share is pinned to the main vault. A sub vault has a
+// share of its own instead, at its own address and behind its own password,
+// which presents the sub vault and nothing else — see internal/davfs.
 
 // Scope names which vault inside the file an operation addresses. The zero
 // value is the main vault, which is what every call site that predates sub
@@ -481,14 +482,18 @@ func (v *Vault) CreateSubVault(label, password string) (SubVaultInfo, error) {
 // It costs a full Argon2id pass, exactly as the main vault's does, which is
 // what makes guessing expensive — and exactly why nothing on a hot path should
 // be calling it to test whether a password is right.
+//
+// A sub vault that is already open has the password checked all the same, and
+// a wrong one is refused. An unlock used to answer yes to anything once the sub
+// vault was open, which was harmless while the only caller had just typed the
+// password into the app, and is not once a password can arrive from outside it
+// — a mounted share sends one on every request, and a request that found the
+// sub vault open must not be let through on the strength of that alone.
 func (v *Vault) UnlockSubVault(id, password string) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.dataKey == nil {
 		return ErrLocked
-	}
-	if _, already := v.subs[id]; already {
-		return nil
 	}
 
 	rec, ok := v.subVaultRecordLocked(id)
@@ -498,6 +503,13 @@ func (v *Vault) UnlockSubVault(id, password string) error {
 	sub, err := unsealSubVault(rec, password)
 	if err != nil {
 		return err
+	}
+	if _, already := v.subs[id]; already {
+		// Verified, and nothing to adopt: the keys in memory are the ones
+		// that just came out of the record, and the index in memory may be
+		// ahead of the one on disk.
+		sub.zero()
+		return nil
 	}
 	v.subs[id] = sub
 
@@ -663,6 +675,32 @@ func (v *Vault) SubVaultUnlocked(id string) bool {
 	defer v.mu.RUnlock()
 	_, ok := v.subs[id]
 	return ok
+}
+
+// LookupSubVault finds a sub vault by either of the names it answers to: its
+// ID, or its label with case ignored. It is the resolution the CLI's --in and
+// a share's address both make, and it needs the vault open — the labels are
+// in the main index — but not the sub vault.
+func (v *Vault) LookupSubVault(name string) (string, error) {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	if v.dataKey == nil {
+		return "", ErrLocked
+	}
+	// The ID first, so that a label which happens to spell another sub
+	// vault's ID — not a thing anyone does, but not a thing to leave to
+	// iteration order either — resolves the same way every time.
+	for _, meta := range v.manifest.SubVaults {
+		if meta.ID == name {
+			return meta.ID, nil
+		}
+	}
+	for _, meta := range v.manifest.SubVaults {
+		if strings.EqualFold(meta.Label, name) {
+			return meta.ID, nil
+		}
+	}
+	return "", fmt.Errorf("%w: %s", ErrNoSubVault, name)
 }
 
 // RenameSubVault changes what a sub vault is called. The name is metadata the
