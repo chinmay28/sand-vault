@@ -199,6 +199,22 @@ export const api = {
      connected account carries is a 404, not an empty answer. */
   strayScan: ({ providerId = '' } = {}) =>
     request(`/api/vault/orphans/strays${providerId ? `?provider=${encodeURIComponent(providerId)}` : ''}`),
+  /* orphanScan() as a job of its own, for the settings panel.
+
+     orphanScan() is one request that answers at the end, and closing the page
+     cancels it — fine for the banner, which nobody is waiting on, and wrong
+     for a panel somebody opened to be told the answer, since the answer is a
+     listing of every account and a slow cloud makes that minutes. This starts
+     the same scan on the server's own clock and answers at once with the run:
+     {id, running, started_at, progress}. A second start while one is running
+     joins it rather than listing everything twice. Poll strayScanStatus() for
+     where it has got to — progress is {stage, roots, listed, waiting} — and,
+     once running is false, for what it found under `scan` (or why it could
+     not, under `error`). The result waits there until the next scan replaces
+     it or the vault is locked. No run at all answers with no id, which is
+     what a fresh unlock looks like. See useStrayScan. */
+  strayScanStart: () => request('/api/vault/orphans/scan', { method: 'POST' }),
+  strayScanStatus: () => request('/api/vault/orphans/scan'),
   /* The third thing the same scan turns up, and the only one that is not about
      a cloud at all.
 

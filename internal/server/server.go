@@ -119,6 +119,11 @@ type Server struct {
 	// handlers_orphans.go.
 	erases *eraseWatch
 
+	// strayScans is the settings panel's scan of every account, run apart
+	// from the request that asked for it so the page can be closed and come
+	// back to the result — see orphan_scan.go.
+	strayScans *scanWatch
+
 	// erasures is where the deletes running right now say how far they have
 	// got — the relocation watch's shape, for the same two readers: a progress
 	// bar, and a delete that was detached from the page that started it. See
@@ -256,6 +261,9 @@ func (s *Server) Handler() (http.Handler, error) {
 	}
 	if s.erases == nil {
 		s.erases = newEraseWatch()
+	}
+	if s.strayScans == nil {
+		s.strayScans = newScanWatch()
 	}
 	if s.erasures == nil {
 		s.erasures = newEraseRuns()
@@ -409,6 +417,12 @@ func (s *Server) Handler() (http.Handler, error) {
 		"GET /api/vault/orphans/erasing":   s.handleOrphanErasing,
 		"POST /api/vault/orphans/reattach": s.handleOrphanReattach,
 		"GET /api/vault/orphans/strays":    s.handleStrayScan,
+		// The settings panel's scan of every account, run on its own so the
+		// page that asked can be closed and come back to it. POST starts one
+		// or joins the one running; GET says how far it is, then what it
+		// found. See orphan_scan.go.
+		"POST /api/vault/orphans/scan": s.handleStrayScanStart,
+		"GET /api/vault/orphans/scan":  s.handleStrayScanStatus,
 		// The same question asked of the one disk SAND writes to itself. An
 		// interrupted upload leaves its spool in the vault's own directory at
 		// the full size of the file it was sending, and nothing goes back for
@@ -930,6 +944,12 @@ func (s *Server) autoLockLoop() {
 		if s.sessions.sweep() > 0 || s.externalActive() || s.transfers.running() > 0 || s.relocations.running() > 0 || s.erasures.running() > 0 {
 			continue
 		}
+		// A stray-parts scan somebody started and walked away from is use
+		// too: it says so as each cloud answers, but says nothing while it
+		// waits on the slowest one, and that wait is the whole of it.
+		if s.strayScans.running() {
+			continue
+		}
 		// A replica half-made would be erased and started again on the next
 		// unlock, which is the budget spent twice.
 		if v.ReplicationKeepsBusy() {
@@ -937,9 +957,10 @@ func (s *Server) autoLockLoop() {
 		}
 		v.Lock()
 		// Every stream and zip link was minted against the keys that just
-		// left memory.
+		// left memory, and so was what the last stray-parts scan found.
 		s.streams.clear()
 		s.zips.clear()
+		s.strayScans.stopAll()
 		log.Print("vault auto-locked after idle timeout")
 	}
 }

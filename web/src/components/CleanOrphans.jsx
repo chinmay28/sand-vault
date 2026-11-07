@@ -1,8 +1,8 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { COLORS, FONT, accountColor, formatBytes } from '../theme'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { COLORS, FONT, accountColor, formatBytes, formatDate } from '../theme'
 import { api } from '../api'
-import { useOrphanEraseProgress } from '../hooks'
-import { Banner, Button, Modal, Spinner } from './ui'
+import { STRAY_SCAN_FRESH_MS, useOrphanEraseProgress, useStrayScan } from '../hooks'
+import { Banner, Button, LoadProgress, Modal, Spinner } from './ui'
 import ReattachShards from './ReattachShards'
 import CleanLeftovers from './CleanLeftovers'
 
@@ -292,10 +292,25 @@ export default function CleanOrphans({ scan: initialScan, zIndex = 100, onClose,
    held that no file in this vault needs — and because it costs a directory
    read, which is nothing beside the listings. */
 export function StrayParts({ zIndex = 100, onClose, onChanged }) {
-  const [scan, setScan] = useState(null)
-  const [busy, setBusy] = useState(true)
-  const [error, setError] = useState(null)
+  const { status, error: askError, start } = useStrayScan()
   const [open, setOpen] = useState(null)
+
+  /* The scan runs on the server rather than in this dialog (see
+     api.strayScanStart), which is what lets it be closed mid-scan and come
+     back to the answer. So opening it is not "scan" but "what is there?":
+     a scan still going is watched, one that finished a moment ago is shown,
+     and only when there is neither — or the last one is old enough to be
+     news from another hour — is a fresh one started. Decided once, from the
+     first answer, so a poll arriving later does not decide again. */
+  const decided = useRef(false)
+  useEffect(() => {
+    if (decided.current || status === null) return
+    decided.current = true
+    if (status.running) return
+    const finished = status.finished_at ? Date.parse(status.finished_at) : NaN
+    const fresh = status.scan && Number.isFinite(finished) && Date.now() - finished < STRAY_SCAN_FRESH_MS
+    if (!fresh) start()
+  }, [status, start])
 
   /* Whether the panel that was open changed anything. Closing one that did
      puts this back in front of a scan that is now wrong, so the scan is run
@@ -303,32 +318,25 @@ export function StrayParts({ zIndex = 100, onClose, onChanged }) {
      than spending another listing to confirm them. */
   const acted = useRef(false)
 
-  const rescan = useCallback(async () => {
-    setError(null)
-    setBusy(true)
-    try {
-      setScan(await api.orphanScan())
-    } catch (err) {
-      setScan(null)
-      setError(err.message)
-    } finally {
-      setBusy(false)
-    }
-  }, [])
-
-  useEffect(() => { rescan() }, [rescan])
-
   const back = () => {
     setOpen(null)
     if (!acted.current) return
     acted.current = false
-    rescan()
+    start()
   }
 
   const done = () => {
     acted.current = true
     onChanged?.()
   }
+
+  const running = !!status?.running
+  const scan = !running ? status?.scan : null
+  const error = askError || (!running ? status?.error : null)
+  /* Until the first answer, nothing is known — not even whether a scan is
+     going — and the bar below is drawn for that too, so the dialog never
+     opens on a blank. */
+  const busy = status === null || running
 
   if (open === 'sweep' && scan) {
     return <CleanOrphans scan={scan} zIndex={zIndex} onClose={back} onSwept={done} />
@@ -359,17 +367,7 @@ export function StrayParts({ zIndex = 100, onClose, onChanged }) {
     >
       {error && <Banner tone="error">{error}</Banner>}
 
-      {busy && (
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: '10px',
-          padding: '18px 2px', fontFamily: FONT.sans, fontSize: '12px', color: COLORS.textMuted,
-        }}>
-          <Spinner size={14} />
-          Asking every connected cloud what it is holding, and this machine what SAND has left in
-          the vault’s own folder. The clouds are a full listing per account, so it takes about as
-          long as the slowest of them.
-        </div>
-      )}
+      {busy && <ScanProgress status={status} />}
 
       {!busy && scan && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '16px' }}>
@@ -456,15 +454,107 @@ export function StrayParts({ zIndex = 100, onClose, onChanged }) {
               <span style={preText}>{scan.blocked.map((reason) => `• ${reason}`).join('\n')}</span>
             </Banner>
           )}
+
+          {/* When the answer is from, because it may not be from just now: a
+              scan that finished while this dialog was closed is shown as it
+              is rather than run again. */}
+          {status?.finished_at && (
+            <div style={{
+              fontFamily: FONT.mono, fontSize: '10px', color: COLORS.textMuted, textAlign: 'right',
+            }}>
+              Scanned {formatDate(status.finished_at)}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* A scan that came back with nothing but an error has nothing to show
+          above; the button below is the way to try again. */}
+      {!busy && !scan && !error && (
+        <div style={{ ...paragraph, marginBottom: '16px' }}>
+          Nothing has been scanned yet.
         </div>
       )}
 
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' }}>
-        <Button variant="ghost" onClick={rescan} disabled={busy}>Scan again</Button>
+        <Button variant="ghost" onClick={start} disabled={busy}>Scan again</Button>
         <Button variant="ghost" onClick={onClose}>Done</Button>
       </div>
     </Modal>
   )
+}
+
+/* How far the scan has got, drawn from what the server last said about it.
+
+   The unit is a cloud, because that is the only unit there is: one account
+   answers its listing all at once, so there is nothing finer to count, and a
+   bar that crept along on a timer would be pretending to know how long the
+   slowest cloud will take. What can be said honestly is how many clouds have
+   answered, which are still being waited on, and how long it has been — and
+   that closing the dialog does not stop any of it. */
+function ScanProgress({ status }) {
+  const at = status?.progress
+  const startedAt = status?.started_at ? Date.parse(status.started_at) : NaN
+
+  /* Ticks once a second, only so the elapsed time moves between polls. */
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [])
+  const elapsed = Number.isFinite(startedAt) ? formatElapsed(now - startedAt) : ''
+
+  let label
+  let detail
+  let fraction = null
+  if (!status) {
+    label = 'Asking what is already known…'
+  } else if (at?.stage === 'pulling') {
+    label = 'Fetching the shared index from the other machines this vault is open on…'
+    detail = elapsed
+  } else if (at?.stage === 'listing' && at.roots > 0) {
+    label = `${at.listed} of ${at.roots} cloud${at.roots === 1 ? '' : 's'} answered`
+      + (elapsed ? ` · ${elapsed}` : '')
+    detail = at.waiting?.length > 0 ? `Waiting on ${nameSome(at.waiting)}` : ''
+    fraction = at.listed / at.roots
+  } else if (at?.stage === 'judging') {
+    label = 'Every cloud has answered — weighing what they hold against the index…'
+    detail = elapsed
+    fraction = 1
+  } else {
+    label = 'Asking every connected cloud what it is holding…'
+    detail = elapsed
+  }
+
+  return (
+    <div style={{
+      display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px',
+      padding: '18px 2px 22px',
+    }}>
+      <LoadProgress label={label} detail={detail} fraction={fraction} width={440} />
+      <p style={{ ...paragraph, margin: 0, textAlign: 'center', maxWidth: '440px' }}>
+        Each cloud is a full listing of what it holds, so this takes about as long as the slowest
+        of them. You can close this: the scan carries on, and what it finds will be here when
+        you come back.
+      </p>
+    </div>
+  )
+}
+
+/* Up to three names, and a count for the rest: the bar has one line for this. */
+function nameSome(names) {
+  if (names.length <= 3) return names.join(', ')
+  return `${names.slice(0, 3).join(', ')} and ${names.length - 3} more`
+}
+
+/* 0:07, 1:42, 1:03:09 — the shape a stopwatch shows, since that is what this is. */
+function formatElapsed(ms) {
+  const total = Math.max(0, Math.floor(ms / 1000))
+  const hours = Math.floor(total / 3600)
+  const minutes = Math.floor((total % 3600) / 60)
+  const seconds = total % 60
+  const pad = (n) => String(n).padStart(2, '0')
+  return hours > 0 ? `${hours}:${pad(minutes)}:${pad(seconds)}` : `${minutes}:${pad(seconds)}`
 }
 
 /* One thing the listing turned up, and the button for the panel that deals

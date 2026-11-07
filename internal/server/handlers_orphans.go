@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -44,12 +45,41 @@ func (s *Server) handleOrphanScan(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, scan)
 }
 
-// strayScanTimeout bounds a listing of one account, and the reattach that
-// re-lists it. A full scan gets two minutes across every account at once; one
-// account is given longer on its own, because the cloud somebody picks out of
-// the list is as likely as not the biggest one they have, and a listing that
-// is cut off reads as "nothing there", which is the one wrong answer.
-const strayScanTimeout = 10 * time.Minute
+// handleStrayScanStart starts the settings panel's scan of every account,
+// detached from this request, or joins the one already running.
+//
+// 202 with the run when it started one, 200 with the run when there was one
+// to join — the question is the same question, and two listings of every
+// account at once would answer it no better. Where the scan has got to and
+// what it found are read from handleStrayScanStatus. See orphan_scan.go for
+// why this is a job and GET /api/vault/orphans is not.
+func (s *Server) handleStrayScanStart(w http.ResponseWriter, r *http.Request) {
+	v, _ := s.Vault()
+	status, started := s.strayScans.start(func(ctx context.Context, onProgress func(vault.OrphanScanProgress)) (*vault.OrphanScan, error) {
+		return v.ScanForOrphansWith(ctx, vault.OrphanScanOptions{
+			OnProgress: func(at vault.OrphanScanProgress) {
+				onProgress(at)
+				// A scan with nobody watching is still use, and without
+				// saying so the idle timer would lock the vault out from
+				// under it — which stops the scan and drops what it found.
+				s.noteExternalActivity()
+			},
+		})
+	}, strayScanTimeout)
+	code := http.StatusOK
+	if started {
+		code = http.StatusAccepted
+	}
+	writeJSON(w, code, status)
+}
+
+// handleStrayScanStatus answers with the scan that is running, and where it
+// has got to, or the last one that ran, and what it found. No run at all is
+// an ordinary answer rather than an error: it is what a fresh unlock looks
+// like, and the page that asked starts one.
+func (s *Server) handleStrayScanStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.strayScans.status())
+}
 
 // handleStrayScan reports the shards of files still in the tree that one
 // connected account — `?provider=`, or every account without it — is holding
