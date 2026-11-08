@@ -4103,6 +4103,60 @@ class TestMislaidShards:
         expect(page.get_by_text(re.compile(r"1 shard recorded again"))).to_be_visible(timeout=30000)
 
 
+    def test_the_repair_carries_on_with_the_dialog_closed(self, page, sand_bin, tmp_path, spawn_server):
+        """The repair is a listing of every cloud before its one write, and on a
+        slow cloud that is minutes. It runs on the server, so the dialog draws
+        a bar while it goes and can be closed; the strip over the file list
+        takes over the bar, and says what was recorded once it lands.
+
+        A local folder lists in an instant, so the run is held "in progress"
+        here by answering the polls for it — with its real id — until the test
+        lets the real answer through.
+        """
+        self.build_vault(sand_bin, tmp_path, "mislaid-background")
+        self.unlock(page, spawn_server("mislaid-background"))
+
+        held = {"id": None}
+        progress = {"stage": "listing", "roots": 3, "listed": 1, "waiting": ["ms-b", "ms-c"]}
+
+        def hold(route):
+            response = route.fetch()
+            body = response.json()
+            if route.request.method == "POST":
+                held["id"] = body.get("id")
+            if body.get("id") and body.get("id") == held["id"]:
+                body = {**body, "running": True, "progress": progress}
+                body.pop("result", None)
+                body.pop("finished_at", None)
+            route.fulfill(response=response, json=body)
+
+        page.route("**/api/vault/orphans/reattaching", hold)
+
+        expect(page.get_by_text(re.compile(r"nothing pointing at"))).to_be_visible(timeout=30000)
+        page.get_by_role("button", name="Put them back").click()
+        page.get_by_role("button", name=re.compile(r"^Put 1 shard back")).click()
+
+        # A bar counting clouds, the ones still waited on, and the promise
+        # that closing stops nothing.
+        dialog = page.get_by_role("dialog", name="Putting the parts back")
+        expect(dialog).to_be_visible(timeout=15000)
+        expect(dialog.get_by_text(re.compile(r"1 of 3 clouds answered"))).to_be_visible()
+        expect(dialog.get_by_text(re.compile(r"Waiting on ms-b, ms-c"))).to_be_visible()
+        expect(dialog.get_by_text(re.compile(r"You can close this"))).to_be_visible()
+        dialog.get_by_text("Close", exact=True).click()
+
+        # The strip over the file list carries it from there.
+        strip = page.get_by_role("progressbar", name=re.compile(r"1 of 3 clouds answered"))
+        expect(page.get_by_text("Putting mislaid parts back")).to_be_visible(timeout=5000)
+        expect(strip).to_be_visible()
+
+        # Let it land: the strip says what was recorded, once.
+        page.unroute("**/api/vault/orphans/reattaching")
+        expect(page.get_by_text(re.compile(r"Mislaid parts put back\. 1 shard recorded again"))).to_be_visible(
+            timeout=15000)
+        expect(page.get_by_text("Putting mislaid parts back")).to_have_count(0)
+
+
 class TestCloudHealthLine:
     """Whether the clouds are still answering, said at the foot of the panel.
 

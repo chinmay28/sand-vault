@@ -124,6 +124,12 @@ type Server struct {
 	// back to the result — see orphan_scan.go.
 	strayScans *scanWatch
 
+	// reattaches is the repair that records mislaid parts back, run the same
+	// way for the same reason: it is a listing of every account first, and a
+	// page closed halfway must not take the repair with it. See
+	// handleReattachStart.
+	reattaches *reattachWatch
+
 	// erasures is where the deletes running right now say how far they have
 	// got — the relocation watch's shape, for the same two readers: a progress
 	// bar, and a delete that was detached from the page that started it. See
@@ -264,6 +270,9 @@ func (s *Server) Handler() (http.Handler, error) {
 	}
 	if s.strayScans == nil {
 		s.strayScans = newScanWatch()
+	}
+	if s.reattaches == nil {
+		s.reattaches = newReattachWatch()
 	}
 	if s.erasures == nil {
 		s.erasures = newEraseRuns()
@@ -423,6 +432,12 @@ func (s *Server) Handler() (http.Handler, error) {
 		// found. See orphan_scan.go.
 		"POST /api/vault/orphans/scan": s.handleStrayScanStart,
 		"GET /api/vault/orphans/scan":  s.handleStrayScanStatus,
+		// The reattach, run the same way: POST starts one (or joins the one
+		// running for the same cloud), GET says how far it is, then what it
+		// recorded. POST /api/vault/orphans/reattach above stays for scripts
+		// that want the answer in one request.
+		"POST /api/vault/orphans/reattaching": s.handleReattachStart,
+		"GET /api/vault/orphans/reattaching":  s.handleReattachStatus,
 		// The same question asked of the one disk SAND writes to itself. An
 		// interrupted upload leaves its spool in the vault's own directory at
 		// the full size of the file it was sending, and nothing goes back for
@@ -949,7 +964,7 @@ func (s *Server) autoLockLoop() {
 		// A stray-parts scan somebody started and walked away from is use
 		// too: it says so as each cloud answers, but says nothing while it
 		// waits on the slowest one, and that wait is the whole of it.
-		if s.strayScans.running() {
+		if s.strayScans.running() || s.reattaches.running() {
 			continue
 		}
 		// A replica half-made would be erased and started again on the next
@@ -963,6 +978,7 @@ func (s *Server) autoLockLoop() {
 		s.streams.clear()
 		s.zips.clear()
 		s.strayScans.stopAll()
+		s.reattaches.stopAll()
 		log.Print("vault auto-locked after idle timeout")
 	}
 }

@@ -216,12 +216,29 @@ export const api = {
      {id, running, started_at, progress}. A second start while one is running
      joins it rather than listing everything twice. Poll strayScanStatus() for
      where it has got to — progress is {stage, roots, listed, waiting} — and,
-     once running is false, for what it found under `scan` (or why it could
+     once running is false, for what it found under `result` (or why it could
      not, under `error`). The result waits there until the next scan replaces
      it or the vault is locked. No run at all answers with no id, which is
      what a fresh unlock looks like. See useStrayScan. */
   strayScanStart: () => request('/api/vault/orphans/scan', { method: 'POST' }),
   strayScanStatus: () => request('/api/vault/orphans/scan'),
+  /* reattachShards() as a job of its own, for the dialog.
+
+     The repair is a listing of every account (or of the one named) before its
+     one write, so on a slow cloud it is minutes — and closing the page used to
+     cancel it, recording nothing. This starts it on the server's own clock and
+     answers at once with the run: {id, running, scope, started_at, progress}.
+     A second start for the same cloud joins it; one for a different cloud
+     while it runs is a 409. Poll reattachStatus() for where it has got to —
+     progress is the scan's {stage, roots, listed, waiting}, with a last stage
+     of "recording" — and, once running is false, for the report under
+     `result` (or why there is none, under `error`). See useReattach. */
+  reattachStart: ({ providerId = '' } = {}) =>
+    request('/api/vault/orphans/reattaching', {
+      method: 'POST',
+      body: providerId ? { provider_id: providerId } : {},
+    }),
+  reattachStatus: () => request('/api/vault/orphans/reattaching'),
   /* The third thing the same scan turns up, and the only one that is not about
      a cloud at all.
 

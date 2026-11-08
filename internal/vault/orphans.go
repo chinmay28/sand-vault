@@ -346,6 +346,11 @@ const (
 	ScanStagePulling = "pulling"
 	ScanStageListing = "listing"
 	ScanStageJudging = "judging"
+
+	// ScanStageRecording is a reattach's own last stage, after the listing
+	// has been judged: the records are being written back and the index
+	// saved. Nothing else reports it.
+	ScanStageRecording = "recording"
 )
 
 // OrphanScanOptions is what a caller can ask of a scan beyond the answer.
@@ -1556,6 +1561,13 @@ type ReattachOptions struct {
 
 	// DryRun asks what would be written back without the index being touched.
 	DryRun bool
+
+	// OnProgress is called as the reattach moves, with the scan's own reports
+	// while the accounts are listed and judged (see OrphanScanOptions), then
+	// once with ScanStageRecording when there is something to write back.
+	// Called one call at a time, with a value the receiver may keep. Nil is
+	// fine.
+	OnProgress func(OrphanScanProgress)
 }
 
 // ReattachShards writes back the index records for shards that are sitting on a
@@ -1592,7 +1604,7 @@ type ReattachOptions struct {
 // until they are asked. Nothing else changes: the verdict per shard comes from
 // the index, and the write is the same write.
 func (v *Vault) ReattachShards(ctx context.Context, opts ReattachOptions) (*ReattachReport, error) {
-	scan, err := v.scanForOrphansOn(ctx, opts.ProviderID, nil)
+	scan, err := v.scanForOrphansOn(ctx, opts.ProviderID, opts.OnProgress)
 	if err != nil {
 		return nil, err
 	}
@@ -1621,6 +1633,13 @@ func (v *Vault) ReattachShards(ctx context.Context, opts ReattachOptions) (*Reat
 		report.Files = len(files)
 		sort.Strings(report.Skipped)
 		return report, nil
+	}
+
+	// The listing was the whole of the wait; this is a pass over the index
+	// and one save. Said anyway, so a bar that reached every cloud does not
+	// sit at "weighing" while the index is written.
+	if opts.OnProgress != nil {
+		opts.OnProgress(OrphanScanProgress{Stage: ScanStageRecording})
 	}
 
 	v.mu.Lock()

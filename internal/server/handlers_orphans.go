@@ -55,7 +55,7 @@ func (s *Server) handleOrphanScan(w http.ResponseWriter, r *http.Request) {
 // why this is a job and GET /api/vault/orphans is not.
 func (s *Server) handleStrayScanStart(w http.ResponseWriter, r *http.Request) {
 	v, _ := s.Vault()
-	status, started := s.strayScans.start(func(ctx context.Context, onProgress func(vault.OrphanScanProgress)) (*vault.OrphanScan, error) {
+	status, outcome := s.strayScans.start("", func(ctx context.Context, onProgress func(vault.OrphanScanProgress)) (*vault.OrphanScan, error) {
 		return v.ScanForOrphansWith(ctx, vault.OrphanScanOptions{
 			OnProgress: func(at vault.OrphanScanProgress) {
 				onProgress(at)
@@ -67,7 +67,7 @@ func (s *Server) handleStrayScanStart(w http.ResponseWriter, r *http.Request) {
 		})
 	}, strayScanTimeout)
 	code := http.StatusOK
-	if started {
+	if outcome == jobStarted {
 		code = http.StatusAccepted
 	}
 	writeJSON(w, code, status)
