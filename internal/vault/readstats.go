@@ -73,6 +73,14 @@ type readStats struct {
 	// the write rather than leaving a file appearing behind it.
 	saving sync.WaitGroup
 
+	// locked is set while the vault is locked, and only transfers look at
+	// it. A read cannot happen without the key, but a Put can — an index
+	// backup still in flight when the vault was locked — and counting it into
+	// the emptied recorder would make it look like the history in memory is
+	// the whole of it, which a lock-screen password change would then write
+	// over the file that actually is. See setLocked.
+	locked bool
+
 	// tail tracks the goroutines still recording what the losers of a decided
 	// race eventually did. Nothing waits on it in the app — the reader is long
 	// gone by then — but a test that asserts on the losing side has to.
@@ -92,6 +100,15 @@ type readBucket struct {
 	Races      int64                  `json:"races"`
 	Shortfalls int64                  `json:"shortfalls"`
 	Accounts   map[string]*readCounts `json:"accounts"`
+
+	// Transfers is what moved to and from each account, whatever moved it —
+	// see transferstats.go. Absent from a history written before it was kept,
+	// which reads as nothing having moved.
+	Transfers map[string]*transferCounts `json:"transfers,omitempty"`
+
+	// Loads is how fast whole files — or chunks of them — were opened and
+	// stored, by kind of file. See throughput.go.
+	Loads map[string]*loadCounts `json:"loads,omitempty"`
 }
 
 func (b *readBucket) counterFor(id string) *readCounts {
@@ -163,6 +180,12 @@ func (b *readBucket) add(other *readBucket) {
 	b.Shortfalls += other.Shortfalls
 	for id, counts := range other.Accounts {
 		b.counterFor(id).add(counts)
+	}
+	for id, counts := range other.Transfers {
+		b.transfersFor(id).add(counts)
+	}
+	for kind, counts := range other.Loads {
+		b.loadsFor(kind).add(counts)
 	}
 }
 
@@ -368,6 +391,18 @@ func lostOutcome(f shardFetch) readOutcome {
 	}
 }
 
+// setLocked says whether the vault is locked: Lock sets it once the history
+// is saved and dropped, and loading the history on the way back in clears it.
+// While it is set, transfers are not counted.
+func (s *readStats) setLocked(locked bool) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.locked = locked
+}
+
 func (s *readStats) reset() {
 	if s == nil {
 		return
@@ -514,26 +549,9 @@ func (s *readStats) report(window ReadWindow, connected []provider.Config, now t
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	report := ReadReport{Window: window, Since: s.since}
-
-	var summed readBucket
-	var spans []readSpan
-	if window == WindowAll {
-		summed.add(&s.total)
-		// All time is the total, which outlives the daily buckets; the shape
-		// of it is whatever days are still kept.
-		spans = s.spansLocked(s.dayKeysLocked(""), now)
-		report.Days = len(s.days)
-	} else {
-		from, prefix := windowStart(window, now)
-		report.From = from
-		keys := s.dayKeysLocked(prefix)
-		for _, key := range keys {
-			summed.add(s.days[key])
-		}
-		spans = s.spansLocked(keys, now)
-		report.Days = len(keys)
-	}
+	w := s.windowLocked(window, now)
+	report := ReadReport{Window: window, Since: s.since, From: w.from, Days: w.days}
+	summed, spans := w.summed, w.spans
 
 	report.Races = summed.Races
 	report.Shortfalls = summed.Shortfalls
@@ -570,6 +588,38 @@ func (s *readStats) report(window ReadWindow, connected []provider.Config, now t
 		return a.ProviderID < b.ProviderID
 	})
 	return report
+}
+
+// windowSum is a window's figures summed out of the daily buckets, with the
+// spans its trend is drawn over. Shared by every report built from the
+// history, so the read board and the transfer board cannot disagree about
+// where "this month" starts.
+type windowSum struct {
+	summed readBucket
+	spans  []readSpan
+	from   time.Time
+	days   int
+}
+
+func (s *readStats) windowLocked(window ReadWindow, now time.Time) windowSum {
+	var w windowSum
+	if window == WindowAll {
+		w.summed.add(&s.total)
+		// All time is the total, which outlives the daily buckets; the shape
+		// of it is whatever days are still kept.
+		w.spans = s.spansLocked(s.dayKeysLocked(""), now)
+		w.days = len(s.days)
+		return w
+	}
+	from, prefix := windowStart(window, now)
+	w.from = from
+	keys := s.dayKeysLocked(prefix)
+	for _, key := range keys {
+		w.summed.add(s.days[key])
+	}
+	w.spans = s.spansLocked(keys, now)
+	w.days = len(keys)
+	return w
 }
 
 // readSpan is one column of a trend: the days it covers, and where they fall.
@@ -719,16 +769,22 @@ func (s *readStats) mergeAccount(from, into string) bool {
 	return moved
 }
 
-// moveCounts adds one account's tally in a bucket onto another's and drops
-// the first. Reports whether there was one.
+// moveCounts adds one account's tally in a bucket — its reads and its
+// transfers — onto another's and drops the first. Reports whether there was
+// one.
 func moveCounts(b *readBucket, from, into string) bool {
-	counts, ok := b.Accounts[from]
-	if !ok {
-		return false
+	moved := false
+	if counts, ok := b.Accounts[from]; ok {
+		b.counterFor(into).add(counts)
+		delete(b.Accounts, from)
+		moved = true
 	}
-	b.counterFor(into).add(counts)
-	delete(b.Accounts, from)
-	return true
+	if counts, ok := b.Transfers[from]; ok {
+		b.transfersFor(into).add(counts)
+		delete(b.Transfers, from)
+		moved = true
+	}
+	return moved
 }
 
 // disconnectedNamed lists the account IDs the history holds figures for that

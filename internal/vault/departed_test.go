@@ -265,6 +265,9 @@ func TestReattachRecognisesAnUnreadAccountQuietly(t *testing.T) {
 	if _, _, err := v.Upload(ctx, MainScope, "/", "unread.txt", []byte("never read"), UploadOptions{}); err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
+	// The upload's own traffic, index backup included, is history too; let it
+	// land before forgetting so the account goes into the cycle with none.
+	v.AwaitBackupSync()
 	forgetReads(t, v)
 	cycleAccount(t, v, "back")
 	if len(v.manifest.Departed) != 1 {

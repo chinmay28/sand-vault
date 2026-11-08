@@ -723,6 +723,7 @@ func (v *Vault) lockLocked() {
 	// about to be wiped along with everything else.
 	v.flushReadHistoryLocked()
 	v.reads.reset()
+	v.reads.setLocked(true)
 
 	crypto.ZeroBytes(v.vaultKey)
 	crypto.ZeroBytes(v.dataKey)

@@ -492,7 +492,7 @@ func (v *Vault) SyncManifestBackup(ctx context.Context, force bool) ([]string, e
 					}
 					return
 				}
-				err = p.Put(ctx, BackupKey, blob)
+				err = v.meteredPut(ctx, p, cfg, BackupKey, blob)
 			}
 			if err != nil {
 				mu.Lock()
@@ -570,7 +570,7 @@ func (v *Vault) guardForeignBackup(ctx context.Context, p provider.Provider, cfg
 		return nil
 	}
 
-	existing, err := p.Get(ctx, BackupKey)
+	existing, err := v.meteredGet(ctx, p, cfg, BackupKey)
 	if errors.Is(err, provider.ErrNotFound) {
 		v.markBackupChecked(cfg.ID)
 		return nil

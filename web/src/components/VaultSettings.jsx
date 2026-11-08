@@ -454,7 +454,7 @@ function kitStatusTone(kit) {
    the reason to open this menu is to read one of them — "which clouds am I
    defaulting to", "did I ever set that key" — and a line with nothing to
    report leaves the column empty rather than filling it with a verb. */
-function Setting({ icon, label, hint, status, tone, onClick }) {
+export function Setting({ icon, label, hint, status, tone, onClick }) {
   const [hover, setHover] = useState(false)
 
   return (

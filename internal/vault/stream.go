@@ -161,6 +161,9 @@ func (v *Vault) spool(r io.Reader) (*os.File, int64, [32]byte, error) {
 // onScattered may be nil, and is the only way anything watching a long upload
 // learns it is moving. See UploadOptions.OnScattered for what it counts.
 func (v *Vault) scatterStream(ctx context.Context, scope Scope, name string, src io.ReaderAt, size int64, hash [32]byte, sp spread, chunkSize uint32, onScattered func(done, size int64)) (placement, error) {
+	// Timed from here to the last shard written, for the speed figures:
+	// what storing a file of this kind costs end to end. See throughput.go.
+	started := time.Now()
 	target, err := v.snapshotTarget(scope, sp)
 	if err != nil {
 		return placement{}, failedAt(UploadPlacing, err)
@@ -234,6 +237,7 @@ func (v *Vault) scatterStream(ctx context.Context, scope Scope, name string, src
 		return out, err
 	}
 
+	v.reads.loaded(kindOfName(name), loadStore, size, time.Since(started))
 	return out, nil
 }
 

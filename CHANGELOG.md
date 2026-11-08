@@ -12,6 +12,35 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### Statistics: read race, transfers, throughput and a storage breakdown
+
+The **Read speed** tile at the foot of the accounts drawer is now
+**Statistics**, which opens a list of four panels, each with today's figure on
+its line:
+
+- **Read race** — what was *Read speed*, renamed so it is not mistaken for
+  throughput: which cloud answers a read first, and in how many milliseconds.
+- **Transfers** — new. How much has been sent *in* to each cloud and fetched
+  *out* of it, over today, this month, this year or all time: uploads, reads,
+  moves between clouds, conversions and the index backup all count. A share bar
+  per direction, the vault's traffic across the window, and per cloud both
+  directions with objects moved and failed calls. Served by
+  `GET /api/transfers?window=…`; kept in the read history's sealed sidecar, so
+  it survives a restart, and *Forget history* clears it with the reads.
+- **Throughput** — new. Average speeds in Mbps: the vault's opening and storing
+  speed, the same by kind of file (images, videos, documents, and the rest),
+  and each cloud's own upload and download speed. Served by
+  `GET /api/throughput?window=…`, from timings kept in the same history.
+- **Storage breakdown** — new. A pie of the capacity of every cloud that knows
+  its size — SAND's parts per cloud, other files, free, out of reach — with
+  capacity, used, free, SAND's parts and stored-per-byte overhead, SAND's parts
+  by cloud, and every cloud fullest-first. Drawn from the figures the drawer
+  already holds; nothing is asked of any cloud.
+
+A history written by this version carries `transfers` and `loads` sections per
+day; an older build still opens it, ignoring those sections — and dropping
+them the next time it saves.
+
 ### A reconnected cloud keeps its read history
 
 Disconnecting a cloud and connecting the same storage back made it a new
