@@ -1,7 +1,9 @@
-import React, { useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { COLORS, FONT, accountColor, formatBytes } from '../theme'
-import { api } from '../api'
+import { useReattach } from '../hooks'
+import { claimReattachRun } from '../reattach'
 import { Banner, Button, Modal, Spinner } from './ui'
+import ScanProgress from './ScanProgress'
 
 /* Shards of your files, sitting on a cloud with nothing pointing at them.
 
@@ -23,26 +25,58 @@ import { Banner, Button, Modal, Spinner } from './ui'
 
    `providerId` and `cloud` arrive together when the scan was of one cloud (see
    MissingParts): the repair is then pointed at that account alone, and the
-   dialog says whose parts it is talking about. */
+   dialog says whose parts it is talking about.
+
+   The repair runs on the server, not in this dialog (see api.reattachStart):
+   it lists every account before its one write, which on a slow cloud is
+   minutes, and closing the page used to cancel it. So the button starts a
+   run and the dialog draws it — a bar counting clouds as they answer — and
+   can be closed while it goes. The strip over the file list (ReattachRuns)
+   carries it from there. Opened while a run is already going, the dialog
+   follows that run rather than offering to start another. */
 export default function ReattachShards({ scan, providerId = '', cloud = '', zIndex = 100, onClose, onDone }) {
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState(null)
-  const [report, setReport] = useState(null)
+  const { status, error: startError, start } = useReattach()
+  const [starting, setStarting] = useState(false)
+  const [dismissed, setDismissed] = useState(null)
+
+  /* The run this dialog is drawing: any run found going, from the first
+     answer on, including the one its own button started. Claimed while it is
+     drawn, so the strip over the file list leaves it to the dialog. */
+  const [watching, setWatching] = useState(null)
+  useEffect(() => {
+    if (status?.running && status.id !== watching) setWatching(status.id)
+  }, [status, watching])
+  useEffect(() => claimReattachRun(watching), [watching])
+
+  const watched = watching && status?.id === watching ? status : null
+  const running = !!watched?.running
+  const report = watched && !running ? watched.result : null
+  const runError = watched && !running ? watched.error : null
+  /* A failure to start, or the run this dialog drew ending in one — shown
+     until dismissed, or until the next press puts it behind it. */
+  const failure = startError || runError
+  const error = failure && failure !== dismissed ? failure : null
+  const busy = starting || running || status === null
+
+  /* The index changed, once, when the run this dialog drew landed. */
+  const told = useRef(null)
+  useEffect(() => {
+    if (!report || told.current === watching) return
+    told.current = watching
+    onDone?.()
+  }, [report, watching, onDone])
 
   const rows = (scan?.strays || []).filter((row) => row.reattachable)
   const withheld = (scan?.strays || []).filter((row) => !row.reattachable)
   const bytes = rows.reduce((sum, row) => sum + (row.bytes || 0), 0)
 
   const run = async () => {
-    setError(null)
-    setBusy(true)
+    setDismissed(runError)
+    setStarting(true)
     try {
-      setReport(await api.reattachShards({ providerId }))
-      onDone?.()
-    } catch (err) {
-      setError(err.message)
+      await start({ providerId })
     } finally {
-      setBusy(false)
+      setStarting(false)
     }
   }
 
@@ -84,15 +118,42 @@ export default function ReattachShards({ scan, providerId = '', cloud = '', zInd
     )
   }
 
+  if (running) {
+    /* A run pointed somewhere else than this dialog was opened about is
+       still the one to watch — two at once would list the same clouds twice
+       — but it is said, so the bar is not taken for this cloud's. */
+    const elsewhere = (watched.scope || '') !== providerId
+    return (
+      <Modal
+        title="Putting the parts back"
+        subtitle={elsewhere
+          ? 'A repair started elsewhere is already running — this follows it.'
+          : `Listing ${cloud || 'your clouds'}, then recording what is there. No data moves.`}
+        onClose={onClose}
+        width={600}
+        zIndex={zIndex}
+      >
+        <ScanProgress
+          status={watched}
+          start="Asking the clouds what they are holding…"
+          note="The parts are found by listing each cloud, so this takes about as long as the slowest of them. You can close this, or the page: the repair carries on, and the file list updates when it lands."
+        />
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <Button variant="ghost" onClick={onClose}>Close</Button>
+        </div>
+      </Modal>
+    )
+  }
+
   return (
     <Modal
       title="Parts your files have lost track of"
       subtitle={`Still on ${cloud || 'your clouds'}, still readable — the index just stopped naming them.`}
-      onClose={busy ? undefined : onClose}
+      onClose={starting ? undefined : onClose}
       width={600}
       zIndex={zIndex}
     >
-      {error && <Banner tone="error" onDismiss={() => setError(null)}>{error}</Banner>}
+      {error && <Banner tone="error" onDismiss={() => setDismissed(error)}>{error}</Banner>}
 
       <p style={paragraph}>
         Disconnecting a cloud drops the records that named it, so the vault never claims to reach
@@ -128,10 +189,10 @@ export default function ReattachShards({ scan, providerId = '', cloud = '', zInd
       )}
 
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', flexWrap: 'wrap' }}>
-        <Button variant="ghost" onClick={onClose} disabled={busy}>Not now</Button>
+        <Button variant="ghost" onClick={onClose} disabled={starting}>Not now</Button>
         <Button variant="primary" onClick={run} disabled={busy || rows.length === 0}>
           {busy ? <Spinner size={12} color={COLORS.bg} /> : null}
-          {busy ? 'Recording…' : `Put ${rows.length} shard${rows.length === 1 ? '' : 's'} back`}
+          {starting ? 'Starting…' : `Put ${rows.length} shard${rows.length === 1 ? '' : 's'} back`}
         </Button>
       </div>
     </Modal>

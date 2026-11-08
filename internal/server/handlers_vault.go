@@ -238,6 +238,10 @@ func (s *Server) handleVaultLock(w http.ResponseWriter, r *http.Request) {
 	// with the keys that are leaving, and one still running would finish
 	// for nobody.
 	s.strayScans.stopAll()
+	// A reattach is cancelled the same way. Cut off while it is listing, it
+	// writes nothing; once it is writing it holds the vault's own lock, so
+	// the lock below waits for that save rather than cutting it in half.
+	s.reattaches.stopAll()
 	v.Lock()
 	clearSessionCookie(w, isSecureRequest(r))
 

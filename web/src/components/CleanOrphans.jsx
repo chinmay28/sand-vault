@@ -2,7 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { COLORS, FONT, accountColor, formatBytes, formatDate } from '../theme'
 import { api } from '../api'
 import { STRAY_SCAN_FRESH_MS, useOrphanEraseProgress, useStrayScan } from '../hooks'
-import { Banner, Button, LoadProgress, Modal, Spinner } from './ui'
+import { Banner, Button, Modal, Spinner } from './ui'
+import ScanProgress from './ScanProgress'
 import ReattachShards from './ReattachShards'
 import CleanLeftovers from './CleanLeftovers'
 
@@ -308,7 +309,7 @@ export function StrayParts({ zIndex = 100, onClose, onChanged }) {
     decided.current = true
     if (status.running) return
     const finished = status.finished_at ? Date.parse(status.finished_at) : NaN
-    const fresh = status.scan && Number.isFinite(finished) && Date.now() - finished < STRAY_SCAN_FRESH_MS
+    const fresh = status.result && Number.isFinite(finished) && Date.now() - finished < STRAY_SCAN_FRESH_MS
     if (!fresh) start()
   }, [status, start])
 
@@ -331,7 +332,7 @@ export function StrayParts({ zIndex = 100, onClose, onChanged }) {
   }
 
   const running = !!status?.running
-  const scan = !running ? status?.scan : null
+  const scan = !running ? status?.result : null
   const error = askError || (!running ? status?.error : null)
   /* Until the first answer, nothing is known — not even whether a scan is
      going — and the bar below is drawn for that too, so the dialog never
@@ -367,7 +368,12 @@ export function StrayParts({ zIndex = 100, onClose, onChanged }) {
     >
       {error && <Banner tone="error">{error}</Banner>}
 
-      {busy && <ScanProgress status={status} />}
+      {busy && (
+        <ScanProgress
+          status={status}
+          note="Each cloud is a full listing of what it holds, so this takes about as long as the slowest of them. You can close this: the scan carries on, and what it finds will be here when you come back."
+        />
+      )}
 
       {!busy && scan && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '16px' }}>
@@ -482,79 +488,6 @@ export function StrayParts({ zIndex = 100, onClose, onChanged }) {
       </div>
     </Modal>
   )
-}
-
-/* How far the scan has got, drawn from what the server last said about it.
-
-   The unit is a cloud, because that is the only unit there is: one account
-   answers its listing all at once, so there is nothing finer to count, and a
-   bar that crept along on a timer would be pretending to know how long the
-   slowest cloud will take. What can be said honestly is how many clouds have
-   answered, which are still being waited on, and how long it has been — and
-   that closing the dialog does not stop any of it. */
-function ScanProgress({ status }) {
-  const at = status?.progress
-  const startedAt = status?.started_at ? Date.parse(status.started_at) : NaN
-
-  /* Ticks once a second, only so the elapsed time moves between polls. */
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1000)
-    return () => clearInterval(timer)
-  }, [])
-  const elapsed = Number.isFinite(startedAt) ? formatElapsed(now - startedAt) : ''
-
-  let label
-  let detail
-  let fraction = null
-  if (!status) {
-    label = 'Asking what is already known…'
-  } else if (at?.stage === 'pulling') {
-    label = 'Fetching the shared index from the other machines this vault is open on…'
-    detail = elapsed
-  } else if (at?.stage === 'listing' && at.roots > 0) {
-    label = `${at.listed} of ${at.roots} cloud${at.roots === 1 ? '' : 's'} answered`
-      + (elapsed ? ` · ${elapsed}` : '')
-    detail = at.waiting?.length > 0 ? `Waiting on ${nameSome(at.waiting)}` : ''
-    fraction = at.listed / at.roots
-  } else if (at?.stage === 'judging') {
-    label = 'Every cloud has answered — weighing what they hold against the index…'
-    detail = elapsed
-    fraction = 1
-  } else {
-    label = 'Asking every connected cloud what it is holding…'
-    detail = elapsed
-  }
-
-  return (
-    <div style={{
-      display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px',
-      padding: '18px 2px 22px',
-    }}>
-      <LoadProgress label={label} detail={detail} fraction={fraction} width={440} />
-      <p style={{ ...paragraph, margin: 0, textAlign: 'center', maxWidth: '440px' }}>
-        Each cloud is a full listing of what it holds, so this takes about as long as the slowest
-        of them. You can close this: the scan carries on, and what it finds will be here when
-        you come back.
-      </p>
-    </div>
-  )
-}
-
-/* Up to three names, and a count for the rest: the bar has one line for this. */
-function nameSome(names) {
-  if (names.length <= 3) return names.join(', ')
-  return `${names.slice(0, 3).join(', ')} and ${names.length - 3} more`
-}
-
-/* 0:07, 1:42, 1:03:09 — the shape a stopwatch shows, since that is what this is. */
-function formatElapsed(ms) {
-  const total = Math.max(0, Math.floor(ms / 1000))
-  const hours = Math.floor(total / 3600)
-  const minutes = Math.floor((total % 3600) / 60)
-  const seconds = total % 60
-  const pad = (n) => String(n).padStart(2, '0')
-  return hours > 0 ? `${hours}:${pad(minutes)}:${pad(seconds)}` : `${minutes}:${pad(seconds)}`
 }
 
 /* One thing the listing turned up, and the button for the panel that deals

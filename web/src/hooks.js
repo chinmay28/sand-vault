@@ -90,39 +90,72 @@ export const STRAY_SCAN_FRESH_MS = 15 * 60 * 1000
    quiet — the scan reports its own in `status.error`, and a missed poll is
    answered by the next one. */
 export function useStrayScan() {
+  return useServerJob(api.strayScanStatus, api.strayScanStart, 'sand:stray-scan')
+}
+
+/* The reattach, as a page sees it — the same view as useStrayScan, of the
+   repair that records mislaid parts back (see api.reattachStart). `start`
+   takes {providerId}. */
+export function useReattach() {
+  return useServerJob(api.reattachStatus, api.reattachStart, 'sand:reattach')
+}
+
+/* A job the server runs apart from any request (see jobWatch on the server):
+   `ask` answers its status, `begin` starts one or joins the one going. Both
+   must be stable functions. `status` is null until the first answer, then
+   whatever the server said — {id, running, scope, started_at, finished_at,
+   progress, result, error}, or an empty run when nothing has been asked. It
+   is re-asked every 800ms while running and left standing once it is not.
+   `start(...args)` passes its arguments to `begin`. Failures of the polling
+   itself are kept quiet; the job reports its own in `status.error`, and a
+   failure to start is `error`.
+
+   `channel` names a window event fired whenever one of the page's views
+   starts a run, so every other view of the same job asks again and starts
+   watching it — a strip over the file list hears about a run a dialog began,
+   and goes on drawing it after the dialog is closed. */
+function useServerJob(ask, begin, channel) {
   const [status, setStatus] = useState(null)
   const [error, setError] = useState(null)
 
   const refresh = useCallback(async () => {
     try {
-      setStatus(await api.strayScanStatus())
+      setStatus(await ask())
     } catch (err) {
       setError(err.message)
     }
-  }, [])
+  }, [ask])
 
-  const start = useCallback(async () => {
+  const start = useCallback(async (...args) => {
     setError(null)
     try {
-      setStatus(await api.strayScanStart())
+      setStatus(await begin(...args))
+      window.dispatchEvent(new Event(channel))
     } catch (err) {
       setError(err.message)
+      // Whatever is going on the server now is still worth showing — a
+      // refused start is usually another run in the way.
+      refresh()
     }
-  }, [])
+  }, [begin, refresh])
 
   useEffect(() => { refresh() }, [refresh])
+  useEffect(() => {
+    window.addEventListener(channel, refresh)
+    return () => window.removeEventListener(channel, refresh)
+  }, [channel, refresh])
 
   const running = !!status?.running
   const runID = status?.id
   useEffect(() => {
     if (!running) return undefined
     let live = true
-    const poll = () => api.strayScanStatus()
+    const poll = () => ask()
       .then((fresh) => { if (live) setStatus(fresh) })
       .catch(() => {})
     const timer = setInterval(poll, 800)
     return () => { live = false; clearInterval(timer) }
-  }, [running, runID])
+  }, [ask, running, runID])
 
   return { status, error, start, refresh }
 }

@@ -12,6 +12,25 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### Putting mislaid parts back carries on with the page closed
+
+*Put N shards back* was one request that answered at the end: a spinner saying
+*Recording…* for as long as the slowest cloud took to list itself, and closing
+the dialog — or the page — cancelled it, so nothing was recorded and the files
+went on saying they were short of a part. It now runs on the server, the way the
+stray-parts scan does: the dialog draws a bar that counts clouds as they answer
+and names the ones still being waited on, and can be closed. A strip over the
+file list carries the bar from there, says what was recorded once it lands, and
+refreshes the listing; a page opened while it is still going picks it up.
+
+`POST /api/vault/orphans/reattaching` starts one (`provider_id` to list one
+account) or joins the one going for the same account — one for a different
+account is a `409` — and `GET` says how far it is, then what it recorded.
+`POST /api/vault/orphans/reattach` still answers in one request for scripts.
+Locking the vault cancels a run that is still listing and drops its report.
+The stray-parts scan's `GET /api/vault/orphans/scan` now carries what it found
+under `result` rather than `scan`, the same field the reattach uses.
+
 ### A sub vault can choose its own default clouds
 
 Every upload into a sub vault used to land on the vault's default clouds,

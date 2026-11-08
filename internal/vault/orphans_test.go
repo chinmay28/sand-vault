@@ -1593,3 +1593,58 @@ func TestWithoutTakesOneNameAndLeavesTheRest(t *testing.T) {
 		t.Errorf("without a name that is not there = %v, want [b]", got)
 	}
 }
+
+// A reattach says where it has got to the way a scan does — listing, then
+// judging — and then once more as it writes, which is the stage nothing but a
+// reattach reports. A dry run writes nothing, so it never says it is.
+func TestReattachReportsItsStagesAndRecordsLast(t *testing.T) {
+	ctx := context.Background()
+	v, _ := newTestVault(t, 3)
+	if _, _, err := v.Upload(ctx, MainScope, "/", "mislaid.txt", []byte("a spare part to find"), UploadOptions{}); err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	accounts, err := v.Providers()
+	if err != nil {
+		t.Fatalf("Providers: %v", err)
+	}
+	victim := accounts[0]
+	if err := v.RemoveProvider(victim.ID, true); err != nil {
+		t.Fatalf("RemoveProvider: %v", err)
+	}
+	if _, err := v.AddProvider(ctx, provider.Config{Kind: provider.KindLocal, Name: "back-again", Options: victim.Options}); err != nil {
+		t.Fatalf("AddProvider: %v", err)
+	}
+
+	stagesOf := func(dryRun bool) ([]string, *ReattachReport) {
+		t.Helper()
+		var stages []string
+		report, err := v.ReattachShards(ctx, ReattachOptions{
+			DryRun: dryRun,
+			OnProgress: func(at OrphanScanProgress) {
+				if len(stages) == 0 || stages[len(stages)-1] != at.Stage {
+					stages = append(stages, at.Stage)
+				}
+			},
+		})
+		if err != nil {
+			t.Fatalf("ReattachShards(dryRun=%v): %v", dryRun, err)
+		}
+		return stages, report
+	}
+
+	stages, _ := stagesOf(true)
+	for _, stage := range stages {
+		if stage == ScanStageRecording {
+			t.Fatalf("a dry run said it was recording: %v", stages)
+		}
+	}
+
+	stages, report := stagesOf(false)
+	if report.Shards != 1 {
+		t.Fatalf("recorded %d shard(s), want 1", report.Shards)
+	}
+	want := []string{ScanStageListing, ScanStageJudging, ScanStageRecording}
+	if strings.Join(stages, ",") != strings.Join(want, ",") {
+		t.Errorf("stages = %v, want %v", stages, want)
+	}
+}
