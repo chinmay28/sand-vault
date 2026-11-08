@@ -111,8 +111,6 @@ export function healthSummary(health) {
     return {
       tone: COLORS.warn,
       line: health.warnings === 1 ? '1 disk warning' : `${health.warnings} disk warnings`,
-      // The line does not say how many there are, so the line under it does.
-      count: cloudCount(health.accounts),
     }
   }
   if (health.checked_at) {
@@ -130,7 +128,7 @@ export function healthSummary(health) {
       note: notes.length ? notes.join(' · ') : null,
     }
   }
-  return { tone: COLORS.textMuted, line: 'Not checked yet', count: cloudCount(health.accounts) }
+  return { tone: COLORS.textMuted, line: 'Not checked yet' }
 }
 
 /* "1 cloud", "17 clouds" — every connected account, wherever it is asked from. */
@@ -209,11 +207,12 @@ export function CloudHealthLine({ health, onClick }) {
         whiteSpace: 'nowrap',
         color: COLORS.textMuted,
       }}>
-        {summary.note || [
-          summary.count,
-          health.schedule && !health.schedule.enabled ? 'checks off'
-            : checked ? `checked ${checked}` : 'checking hourly',
-        ].filter(Boolean).join(' · ')}
+        {/* No count of clouds here: the line under the figures says how many
+            accounts there are, and saying it twice in one corner is noise —
+            and long enough to push this line off the row it shares with them. */}
+        {summary.note
+          || (health.schedule && !health.schedule.enabled ? 'checks off'
+            : checked ? `checked ${checked}` : 'checking hourly')}
       </span>
     </button>
   )
