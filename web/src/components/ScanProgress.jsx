@@ -14,8 +14,12 @@ import { LoadProgress } from './ui'
 
    `status` is the job's status, or null before the first answer. `note` is the
    paragraph under the bar — the place to say that closing the dialog stops
-   nothing. `start` is the sentence for before the listing has begun. */
-export default function ScanProgress({ status, note, start = 'Asking every connected cloud what it is holding…' }) {
+   nothing. `start` is the sentence for before the listing has begun.
+   `describe(status, elapsed)` replaces the listing's own sentences for a job
+   that counts something else — the sweep counts objects erased. */
+export default function ScanProgress({
+  status, note, start = 'Asking every connected cloud what it is holding…', describe,
+}) {
   const at = status?.progress
   const startedAt = status?.started_at ? Date.parse(status.started_at) : NaN
 
@@ -27,7 +31,9 @@ export default function ScanProgress({ status, note, start = 'Asking every conne
   }, [])
   const elapsed = Number.isFinite(startedAt) ? formatElapsed(now - startedAt) : ''
 
-  const { label, detail, fraction } = describeProgress(status, at, elapsed, start)
+  const { label, detail, fraction } = describe && status
+    ? describe(status, elapsed)
+    : describeProgress(status, at, elapsed, start)
 
   return (
     <div style={{

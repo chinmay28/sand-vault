@@ -242,6 +242,9 @@ func (s *Server) handleVaultLock(w http.ResponseWriter, r *http.Request) {
 	// writes nothing; once it is writing it holds the vault's own lock, so
 	// the lock below waits for that save rather than cutting it in half.
 	s.reattaches.stopAll()
+	// A sweep stops between deletes: what it erased is gone, and running it
+	// again finishes the rest, since what is left is still abandoned.
+	s.sweeps.stopAll()
 	v.Lock()
 	clearSessionCookie(w, isSecureRequest(r))
 

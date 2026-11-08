@@ -10,7 +10,7 @@ import PreviewModal, { ShardInspector } from './components/PreviewModal'
 import RecoverVault from './components/RecoverVault'
 import CleanOrphans from './components/CleanOrphans'
 import EraseRuns from './components/EraseRuns'
-import ReattachRuns from './components/ReattachRuns'
+import BackgroundRuns from './components/BackgroundRuns'
 import ReattachShards from './components/ReattachShards'
 import FilmDetails from './components/FilmDetails'
 import Assistant from './components/Assistant'
@@ -537,11 +537,11 @@ export default function App() {
             finishes. See erase.js. */}
         <EraseRuns mobile={mobile} onChanged={refreshAll} />
 
-        {/* The repair that records mislaid parts back, once its dialog is
-            closed: it runs on the server and carries on without the page, so
-            this is its bar until it lands and the line saying what it did.
-            See ReattachRuns. */}
-        <ReattachRuns mobile={mobile} onChanged={refreshAll} />
+        {/* Putting mislaid parts back and erasing abandoned ones, once their
+            dialog is closed: both run on the server and carry on without the
+            page, so this is their bar until they land and the line saying
+            what they did. See BackgroundRuns. */}
+        <BackgroundRuns mobile={mobile} onChanged={refreshAll} />
 
         {/* Two different pieces of news out of one listing, and the repair
             leads — a file short of a spare part is worth more attention than

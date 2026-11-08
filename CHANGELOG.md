@@ -12,6 +12,24 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### Erasing abandoned parts carries on with the page closed
+
+**Erase N objects** in *Parts nothing points at* was one request that answered
+at the end, and closing the dialog or the page stopped it partway. It now runs
+on the server like the reattach: the dialog draws a bar — *checking every
+cloud once more*, then *erased 3 of 12 objects* — and can be closed, and the
+strip over the file list carries it on and says what was erased when it lands.
+`POST /api/vault/orphans/sweeping` starts one (`targets`, or none for every
+abandoned archive) or joins the one running for the same targets — anything
+else while one runs is a `409` — and `GET` says how far it is, then what it
+erased. `POST /api/vault/orphans` still answers in one request for scripts and
+dry runs. Locking the vault stops a sweep between deletes.
+
+The cloud health line at the foot of the accounts drawer now says how many
+clouds there are when its first line does not — *1 disk warning* over
+*17 clouds · checked 3m ago* — and the health panel opens on *17 clouds
+connected · last checked …*.
+
 ### Putting mislaid parts back carries on with the page closed
 
 *Put N shards back* was one request that answered at the end: a spinner saying

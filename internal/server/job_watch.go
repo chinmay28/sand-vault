@@ -68,7 +68,7 @@ type jobStatus[P, R any] struct {
 	// Result is what a finished job answered with, and Error why it answered
 	// nothing. A run that was stopped — by a lock — is gone altogether rather
 	// than reported.
-	Result *R    `json:"result,omitempty"`
+	Result *R     `json:"result,omitempty"`
 	Error  string `json:"error,omitempty"`
 }
 

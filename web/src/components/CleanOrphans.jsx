@@ -1,9 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { COLORS, FONT, accountColor, formatBytes, formatDate } from '../theme'
 import { api } from '../api'
-import { STRAY_SCAN_FRESH_MS, useOrphanEraseProgress, useStrayScan } from '../hooks'
+import { STRAY_SCAN_FRESH_MS, useOrphanSweep, useStrayScan } from '../hooks'
+import { claimRun } from '../runClaims'
 import { Banner, Button, Modal, Spinner } from './ui'
 import ScanProgress from './ScanProgress'
+import { describeSweep } from './BackgroundRuns'
 import ReattachShards from './ReattachShards'
 import CleanLeftovers from './CleanLeftovers'
 
@@ -26,23 +28,51 @@ import CleanLeftovers from './CleanLeftovers'
 
    Everything the scan refuses to offer is shown all the same, greyed out and
    with its reason beside it. An account another vault has been writing to is
-   the case that matters: its parts look exactly like orphans and are not. */
+   the case that matters: its parts look exactly like orphans and are not.
+
+   The sweep runs on the server, not in this dialog (see api.sweepStart): it
+   lists every account again and then erases object by object, which is
+   minutes on a big vault, and closing the page used to stop it halfway. So
+   the button starts a run and the dialog draws it, and can be closed while it
+   goes; the strip over the file list (BackgroundRuns) carries it from there.
+   Opened while a sweep is already going, the dialog follows that one. */
 export default function CleanOrphans({ scan: initialScan, zIndex = 100, onClose, onSwept }) {
   const [scan, setScan] = useState(initialScan)
   const [excluded, setExcluded] = useState(() => new Set())
-  const [busy, setBusy] = useState(false)
-  const [sweeping, setSweeping] = useState(false)
-  const [error, setError] = useState(null)
-  const [report, setReport] = useState(null)
+  const [rescanning, setRescanning] = useState(false)
+  const [scanError, setScanError] = useState(null)
 
-  /* The sweep is one POST that answers only at the end — for a vault where
-     somebody has been deleting films, minutes of it. The server counts the
-     objects beside the running request, and this is the asking end, polling
-     only while the sweep is in flight. Null until the first answer; a total
-     of 0 means the sweep is still listing every account to decide what goes,
-     which it does before its first delete so that what is erased is what is
-     abandoned now. */
-  const at = useOrphanEraseProgress(sweeping)
+  const { status, error: startError, start } = useOrphanSweep()
+  const [starting, setStarting] = useState(false)
+  const [dismissed, setDismissed] = useState(null)
+
+  /* The run this dialog is drawing: any sweep found going, from the first
+     answer on, including the one its own button started. Claimed while it is
+     drawn, so the strip over the file list leaves it to the dialog. */
+  const [watching, setWatching] = useState(null)
+  useEffect(() => {
+    if (status?.running && status.id !== watching) setWatching(status.id)
+  }, [status, watching])
+  useEffect(() => claimRun('sweep', watching), [watching])
+
+  const watched = watching && status?.id === watching ? status : null
+  const sweeping = !!watched?.running
+  const report = watched && !sweeping ? watched.result : null
+  const runError = watched && !sweeping ? watched.error : null
+  /* A failure to start, a sweep that ended in one, or a rescan that did —
+     shown until dismissed, or until the next press puts it behind it. */
+  const failure = scanError || startError || runError
+  const error = failure && failure !== dismissed ? failure : null
+  const busy = rescanning || starting || sweeping || status === null
+
+  /* What was erased is room on somebody's cloud — said once, when the run
+     this dialog drew landed. */
+  const told = useRef(null)
+  useEffect(() => {
+    if (!report || told.current === watching) return
+    told.current = watching
+    onSwept?.()
+  }, [report, watching, onSwept])
 
   const offered = useMemo(() => (scan?.items || []).filter((item) => item.deletable), [scan])
   const withheld = useMemo(() => (scan?.items || []).filter((item) => !item.deletable), [scan])
@@ -62,9 +92,8 @@ export default function CleanOrphans({ scan: initialScan, zIndex = 100, onClose,
   }
 
   const sweep = async () => {
-    setError(null)
-    setBusy(true)
-    setSweeping(true)
+    setDismissed(failure)
+    setStarting(true)
     try {
       /* Nothing unticked means "all of it", and is sent as an empty list rather
          than as the rows on screen — the list is capped for reading, and naming
@@ -73,28 +102,23 @@ export default function CleanOrphans({ scan: initialScan, zIndex = 100, onClose,
       const targets = excluded.size === 0
         ? []
         : chosen.map((item) => ({ provider_id: item.provider_id, archive_id: item.archive_id }))
-      const result = await api.sweepOrphans({ targets })
-      setReport(result)
-      onSwept?.()
-    } catch (err) {
-      setError(err.message)
+      await start({ targets })
     } finally {
-      setBusy(false)
-      setSweeping(false)
+      setStarting(false)
     }
   }
 
   const rescan = async () => {
-    setError(null)
-    setBusy(true)
+    setScanError(null)
+    setRescanning(true)
     try {
       const fresh = await api.orphanScan()
       setScan(fresh)
       setExcluded(new Set())
     } catch (err) {
-      setError(err.message)
+      setScanError(err.message)
     } finally {
-      setBusy(false)
+      setRescanning(false)
     }
   }
 
@@ -127,15 +151,36 @@ export default function CleanOrphans({ scan: initialScan, zIndex = 100, onClose,
     )
   }
 
+  if (sweeping) {
+    return (
+      <Modal
+        title="Erasing parts nothing points at"
+        subtitle="Listing every cloud once more, then erasing what is still abandoned."
+        onClose={onClose}
+        width={620}
+        zIndex={zIndex}
+      >
+        <ScanProgress
+          status={watched}
+          describe={(run, elapsed) => describeSweep(run.progress, elapsed)}
+          note="Each part is a delete of its own, so a big sweep takes a while. You can close this, or the page: the sweep carries on, and the file list says what it erased when it lands."
+        />
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <Button variant="ghost" onClick={onClose}>Close</Button>
+        </div>
+      </Modal>
+    )
+  }
+
   return (
     <Modal
       title="Parts nothing points at"
       subtitle="Storage your clouds are holding for files this vault no longer has."
-      onClose={busy ? undefined : onClose}
+      onClose={starting ? undefined : onClose}
       width={620}
       zIndex={zIndex}
     >
-      {error && <Banner tone="error" onDismiss={() => setError(null)}>{error}</Banner>}
+      {error && <Banner tone="error" onDismiss={() => setDismissed(error)}>{error}</Banner>}
 
       <p style={paragraph}>
         Deleting a file erases its parts from the clouds holding them — the ones connected at the
@@ -216,47 +261,18 @@ export default function CleanOrphans({ scan: initialScan, zIndex = 100, onClose,
         </Banner>
       )}
 
-      {/* What the button used to hide: how far the erasing has got, against
-          how much there is. The first stretch has no denominator — the sweep
-          lists every account again before its first delete, so that what it
-          erases is what is abandoned now rather than when the scan ran — and
-          saying so beats a bar pretending to know. */}
-      {sweeping && (
-        <div style={{ marginBottom: '16px' }}>
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px',
-            fontFamily: FONT.mono, fontSize: '11.5px', color: COLORS.textDim,
-          }}>
-            <Spinner size={11} />
-            <span>
-              {at?.total > 0
-                ? `Erased ${at.done} of ${at.total} objects`
-                : 'Checking every cloud once more, so what goes is what is abandoned now…'}
-            </span>
-          </div>
-          <div style={{ height: '3px', background: COLORS.border, borderRadius: '2px', overflow: 'hidden' }}>
-            <div style={{
-              height: '100%',
-              width: `${at?.total > 0 ? Math.max(4, Math.min(100, (at.done / at.total) * 100)) : 4}%`,
-              background: COLORS.accent,
-              transition: 'width 0.2s ease',
-            }} />
-          </div>
-        </div>
-      )}
-
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' }}>
         <Button variant="ghost" onClick={rescan} disabled={busy}>Scan again</Button>
         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-          <Button variant="ghost" onClick={onClose} disabled={busy}>Not now</Button>
+          <Button variant="ghost" onClick={onClose} disabled={starting}>Not now</Button>
           <Button
             variant="primary"
             onClick={sweep}
             disabled={busy || chosen.length === 0 || scan?.blocked?.length > 0}
           >
-            {sweeping ? <Spinner size={12} color={COLORS.bg} /> : null}
-            {sweeping
-              ? (at?.total > 0 ? `Erasing ${at.done} of ${at.total}…` : 'Erasing…')
+            {starting ? <Spinner size={12} color={COLORS.bg} /> : null}
+            {starting
+              ? 'Starting…'
               : `Erase ${chosenObjects} object${chosenObjects === 1 ? '' : 's'} · ${formatBytes(chosenBytes)}`}
           </Button>
         </div>

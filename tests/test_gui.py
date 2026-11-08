@@ -3849,6 +3849,53 @@ class TestOrphanedParts:
         page.wait_for_timeout(500)
         assert page.get_by_text(re.compile(r"no file in this vault points at")).count() == 0
 
+    def test_the_sweep_carries_on_with_the_dialog_closed(self, page, sand_bin, tmp_path, spawn_server):
+        """The sweep lists every cloud again and then erases object by object,
+        which on a big vault is minutes. It runs on the server, so the dialog
+        draws a bar and can be closed; the strip over the file list takes the
+        bar over, and says what was erased once it lands.
+
+        Held "in progress" by answering the polls for the real run, as the
+        reattach's test does, until the test lets the real answer through.
+        """
+        clouds = self.build_vault(sand_bin, tmp_path, "orphans-background")
+        before = self.parts_in(clouds[0])
+        self.unlock(page, spawn_server("orphans-background"))
+
+        held = {"id": None}
+        progress = {"done": 3, "total": 12}
+
+        def hold(route):
+            response = route.fetch()
+            body = response.json()
+            if route.request.method == "POST":
+                held["id"] = body.get("id")
+            if body.get("id") and body.get("id") == held["id"]:
+                body = {**body, "running": True, "progress": progress}
+                body.pop("result", None)
+                body.pop("finished_at", None)
+            route.fulfill(response=response, json=body)
+
+        page.route("**/api/vault/orphans/sweeping", hold)
+
+        page.wait_for_selector("text=no file in this vault points at", timeout=30000)
+        page.get_by_role("button", name="Take a look").click()
+        page.get_by_role("button", name=re.compile(r"^Erase 1 object")).click()
+
+        dialog = page.get_by_role("dialog", name="Erasing parts nothing points at")
+        expect(dialog).to_be_visible(timeout=15000)
+        expect(dialog.get_by_text(re.compile(r"Erased 3 of 12 objects"))).to_be_visible()
+        expect(dialog.get_by_text(re.compile(r"You can close this"))).to_be_visible()
+        dialog.get_by_text("Close", exact=True).click()
+
+        expect(page.get_by_role("progressbar", name=re.compile(r"Erasing parts nothing points at: Erased 3 of 12"))
+               ).to_be_visible(timeout=5000)
+
+        page.unroute("**/api/vault/orphans/sweeping")
+        expect(page.get_by_text(re.compile(r"Abandoned parts erased\. 1 object erased across 1 archive"))
+               ).to_be_visible(timeout=15000)
+        assert len(self.parts_in(clouds[0])) == len(before) - 1
+
     def test_the_settings_menu_is_the_way_back_in(self, page, sand_bin, tmp_path, spawn_server):
         """The notice is dismissible, and dismissing it used to be final.
 
