@@ -115,6 +115,13 @@ func copyBucket(b *readBucket) readBucket {
 			out.Accounts[id] = &c
 		}
 	}
+	if len(b.Transfers) > 0 {
+		out.Transfers = make(map[string]*transferCounts, len(b.Transfers))
+		for id, counts := range b.Transfers {
+			c := *counts
+			out.Transfers[id] = &c
+		}
+	}
 	return out
 }
 
@@ -244,6 +251,7 @@ func (s *readStats) maybeFlushLocked(now time.Time) {
 // convenience; refusing to open a vault because last month's figures will not
 // decrypt would be the tail wagging the dog.
 func (v *Vault) loadReadHistoryLocked() {
+	v.reads.setLocked(false)
 	file := openReadHistory(readHistoryPath(v.path), v.dataKey)
 	if file != nil {
 		v.reads.merge(file)

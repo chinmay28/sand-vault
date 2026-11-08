@@ -502,7 +502,7 @@ func (v *Vault) scatter(ctx context.Context, scope Scope, name string, data []by
 
 			p, err := v.buildProvider(cfg)
 			if err == nil {
-				err = p.Put(ctx, key, blob)
+				err = v.meteredPut(ctx, p, cfg, key, blob)
 			}
 			if err != nil {
 				results <- putResult{failed: &ShardFailure{
@@ -644,7 +644,7 @@ func (v *Vault) gather(ctx context.Context, shards []Shard, scheme archive.Schem
 					err: fmt.Errorf("part %d: %w", shard.Part, err)}
 				return
 			}
-			blob, err := p.Get(fetchCtx, shard.Key)
+			blob, err := v.meteredGet(fetchCtx, p, cfg, shard.Key)
 			if err != nil {
 				results <- shardFetch{shard: shard, took: time.Since(started), err: fmt.Errorf(
 					"part %d from %s: %w", shard.Part, cfg.Name, err)}

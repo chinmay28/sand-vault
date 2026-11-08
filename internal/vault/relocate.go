@@ -1122,11 +1122,11 @@ func (v *Vault) copyPart(
 	}
 
 	copyOne := func(ctx context.Context, key string) (int64, error) {
-		blob, err := from.Get(ctx, key)
+		blob, err := v.meteredGet(ctx, from, src, key)
 		if err != nil {
 			return 0, err
 		}
-		if err := to.Put(ctx, key, blob); err != nil {
+		if err := v.meteredPut(ctx, to, dst, key, blob); err != nil {
 			return 0, err
 		}
 		// Per object rather than per part, so a single film — one part, many

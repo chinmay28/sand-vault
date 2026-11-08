@@ -9,7 +9,7 @@ import ConnectCloud from './ConnectCloud'
 import EditAccount from './EditAccount'
 import { DisconnectIcon, EditIcon, StatsIcon, TestIcon } from './Icons'
 import MissingParts from './MissingParts'
-import ReadStats from './ReadStats'
+import Statistics from './Statistics'
 import { RekeyCard } from './Rekey'
 import ReclaimVault from './ReclaimVault'
 import VaultSettings from './VaultSettings'
@@ -185,7 +185,7 @@ export default function AccountsPanel({
   }, [open])
   const [connecting, setConnecting] = useState(() => Boolean(pending && !pending.provider_id))
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [readsOpen, setReadsOpen] = useState(false)
+  const [statsOpen, setStatsOpen] = useState(false)
   const [healthOpen, setHealthOpen] = useState(false)
   const [missingOpen, setMissingOpen] = useState(false)
   const [reclaiming, setReclaiming] = useState(false)
@@ -475,11 +475,13 @@ export default function AccountsPanel({
             hint="password · clouds · recovery kit"
             onClick={() => setSettingsOpen(true)}
           />
+          {/* Read speed, transfers and the storage breakdown, behind one
+              door — see Statistics.jsx. */}
           <ActionTile
-            icon="⏱️"
-            label="Read speed"
-            hint="who answers when a file is rebuilt"
-            onClick={() => setReadsOpen(true)}
+            icon="📊"
+            label="Statistics"
+            hint="read speed · transfers · storage"
+            onClick={() => setStatsOpen(true)}
           />
         </div>
 
@@ -498,7 +500,7 @@ export default function AccountsPanel({
         />
       )}
 
-      {readsOpen && <ReadStats onClose={() => setReadsOpen(false)} />}
+      {statsOpen && <Statistics providers={providers} stats={stats} onClose={() => setStatsOpen(false)} />}
 
       {healthOpen && (
         <CloudHealth

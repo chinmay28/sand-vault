@@ -29,6 +29,23 @@ func (s *Server) handleReadStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"reads": v.ReadStats(window)})
 }
 
+// handleTransferStats answers with how much has been written to and read off
+// each account over a window (internal/vault/transferstats.go). Like the read
+// board it is counters in memory: nothing is asked of any cloud.
+//
+// The history it comes from is the read history, so the forget above clears
+// it too — one history, one button.
+func (s *Server) handleTransferStats(w http.ResponseWriter, r *http.Request) {
+	window, err := vault.ParseReadWindow(r.URL.Query().Get("window"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
+		return
+	}
+
+	v, _ := s.Vault()
+	writeJSON(w, http.StatusOK, map[string]any{"transfers": v.TransferStats(window)})
+}
+
 // handleReadStatsForget erases the history, in memory and on disk.
 //
 // Worth having, and worth confirming before it runs: it is the only thing in

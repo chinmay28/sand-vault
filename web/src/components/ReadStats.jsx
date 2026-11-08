@@ -33,7 +33,7 @@ import { useIsMobile } from '../hooks'
    the index is. */
 
 /* The spans somebody asks about, in the order they widen. */
-const WINDOWS = [
+export const WINDOWS = [
   { key: 'today', label: 'Today' },
   { key: 'month', label: 'Month' },
   { key: 'year', label: 'Year' },
@@ -256,16 +256,17 @@ export default function ReadStats({ onClose }) {
 
       {forgetting && (
         <ConfirmDialog
-          title="Forget the read history?"
-          subtitle="Every window, and the file it is kept in"
+          title="Forget the statistics?"
+          subtitle="Read speed and transfers, every window, and the file they are kept in"
           confirmLabel="Forget it all"
           busy={busy}
           zIndex={130}
           onConfirm={forget}
           onClose={() => setForgetting(false)}
         >
-          This erases what every account has done since counting started — today,
-          this month, this year and all of it — and deletes the file it is kept in.
+          This erases what every account has done since counting started — its
+          reads and everything sent to it or fetched from it, today, this month,
+          this year and all of it — and deletes the file it is kept in.
           Nothing else is touched: no file moves, no account changes, and nothing
           stored on a cloud is affected. Counting starts again from the next read.
         </ConfirmDialog>
@@ -280,7 +281,7 @@ export default function ReadStats({ onClose }) {
    ordered, and which one you are looking at is the single most important thing
    about every figure underneath — so it is a thing you can see rather than a
    thing you have to open. */
-function Tabs({ value, onChange }) {
+export function Tabs({ value, onChange }) {
   return (
     <div role="tablist" aria-label="How far back" style={{
       display: 'flex',
@@ -742,7 +743,7 @@ function TrendLine({ trend, color, name }) {
 /* A swatch and a name, for the share bar's legend. Identity never rests on the
    colour alone: every slice is named here with its figures beside it, so the
    bar is a picture of something the panel has already said in words. */
-function Key({ color, label, value, share }) {
+export function Key({ color, label, value, share }) {
   return (
     <div style={{ display: 'flex', alignItems: 'baseline', gap: '7px' }}>
       <span aria-hidden="true" style={{
@@ -778,7 +779,7 @@ function Key({ color, label, value, share }) {
 }
 
 /* A heading over one section of the panel. */
-function Section({ title, hint, children }) {
+export function Section({ title, hint, children }) {
   return (
     <section style={{ marginTop: '22px' }}>
       <h3 style={{
@@ -797,7 +798,7 @@ function Section({ title, hint, children }) {
 }
 
 /* One number and what it counts, for the row across the top. */
-function Stat({ value, label, tone }) {
+export function Stat({ value, label, tone }) {
   return (
     <div style={{ minWidth: '72px' }}>
       <div style={{
@@ -834,14 +835,14 @@ function formatMS(ms) {
   return `${Math.round(ms * 1000)} µs`
 }
 
-function percent(part, whole) {
+export function percent(part, whole) {
   if (!whole) return '0%'
   const share = (part / whole) * 100
   if (share > 0 && share < 1) return '<1%'
   return `${Math.round(share)}%`
 }
 
-const noteStyle = {
+export const noteStyle = {
   fontFamily: FONT.sans,
   fontSize: '11.5px',
   color: COLORS.textMuted,

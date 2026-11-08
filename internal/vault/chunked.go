@@ -271,7 +271,7 @@ func (v *Vault) putChunkParts(
 
 			p, err := v.buildProvider(cfg)
 			if err == nil {
-				err = p.Put(ctx, key, blob)
+				err = v.meteredPut(ctx, p, cfg, key, blob)
 			}
 
 			mu.Lock()
@@ -376,7 +376,7 @@ func (v *Vault) gatherChunk(ctx context.Context, entry *Entry, index int, config
 					err: fmt.Errorf("part %d: %w", shard.Part, err)}
 				return
 			}
-			blob, err := p.Get(fetchCtx, ChunkShardKey(entry.ArchiveID, index, shard.Part))
+			blob, err := v.meteredGet(fetchCtx, p, cfg, ChunkShardKey(entry.ArchiveID, index, shard.Part))
 			if err != nil {
 				results <- shardFetch{shard: shard, took: time.Since(started),
 					err: fmt.Errorf("part %d from %s: %w", shard.Part, cfg.Name, err)}

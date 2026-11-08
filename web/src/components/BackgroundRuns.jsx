@@ -67,7 +67,7 @@ export function mergedText(merged) {
   const named = merged.map((m) => (m.from_name && m.from_name !== m.into_name
     ? `${m.from_name} is now ${m.into_name}`
     : `${m.into_name} is the ${m.into_name} that was disconnected`))
-  return `${named.join('; ')} — its read history was carried over, so Read speed shows it as one cloud.`
+  return `${named.join('; ')} — its read history was carried over, so Statistics shows it as one cloud.`
 }
 
 /* "12 objects erased across 3 archives, freeing 2.4 MB." */

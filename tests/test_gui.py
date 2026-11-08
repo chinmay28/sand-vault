@@ -2654,7 +2654,10 @@ class TestReadSpeed:
 
     def _open(self, app):
         open_accounts(app)
-        app.get_by_role("button", name=re.compile(r"^Read speed")).click()
+        app.get_by_role("button", name=re.compile(r"^Statistics")).click()
+        menu = app.get_by_role("dialog", name="Statistics")
+        menu.wait_for(timeout=20000)
+        menu.get_by_role("button", name=re.compile(r"^Read speed")).click()
         panel = app.get_by_role("dialog", name="Read speed")
         panel.wait_for(timeout=20000)
         return panel
@@ -2706,6 +2709,66 @@ class TestReadSpeed:
         # Nothing is stored, so a cleared board is a board with no races on it
         # rather than one showing zeroes against the old figures.
         expect(panel.get_by_text("No reads yet")).to_be_visible(timeout=20000)
+
+        app.keyboard.press("Escape")
+        panel.wait_for(state="detached", timeout=20000)
+
+
+class TestStatistics:
+    """Read speed, transfers and the storage breakdown, behind one door.
+
+    The drawer carries a single Statistics tile; the list it opens names each
+    panel with the one figure worth knowing without opening it.
+    """
+
+    def _menu(self, app):
+        open_accounts(app)
+        app.get_by_role("button", name=re.compile(r"^Statistics")).click()
+        menu = app.get_by_role("dialog", name="Statistics")
+        menu.wait_for(timeout=20000)
+        return menu
+
+    def test_the_menu_lists_all_three(self, app):
+        menu = self._menu(app)
+        for name in ("Read speed", "Transfers", "Storage breakdown"):
+            expect(menu.get_by_role("button", name=re.compile("^" + name))).to_be_visible()
+        app.keyboard.press("Escape")
+        menu.wait_for(state="detached", timeout=20000)
+
+    def test_transfers_count_what_an_upload_sent(self, app, tmp_path):
+        source = tmp_path / "sent.txt"
+        source.write_text("sent to every cloud, counted on the way\n" * 50)
+        upload_and_settle(app, source, choose=["ui-one", "ui-two", "ui-three"])
+
+        menu = self._menu(app)
+        menu.get_by_role("button", name=re.compile(r"^Transfers")).click()
+        panel = app.get_by_role("dialog", name="Transfers")
+        panel.wait_for(timeout=20000)
+
+        expect(panel.get_by_text("sent in", exact=True).first).to_be_visible(timeout=20000)
+        for heading in ("Share of the traffic", "By cloud"):
+            expect(panel.get_by_role("heading", name=heading)).to_be_visible()
+        for name in ("ui-one", "ui-two", "ui-three"):
+            expect(panel.get_by_text(name, exact=True).first).to_be_visible()
+
+        # Closing it goes back to the list it was opened from.
+        app.keyboard.press("Escape")
+        panel.wait_for(state="detached", timeout=20000)
+        expect(menu).to_be_visible()
+
+    def test_storage_breakdown_draws_every_cloud(self, app):
+        menu = self._menu(app)
+        menu.get_by_role("button", name=re.compile(r"^Storage breakdown")).click()
+        panel = app.get_by_role("dialog", name="Storage breakdown")
+        panel.wait_for(timeout=20000)
+
+        for heading in ("Overall allocation", "Where the parts are", "Cloud by cloud"):
+            expect(panel.get_by_role("heading", name=heading)).to_be_visible()
+        # A local folder knows the size of the disk it is on, so the pie has
+        # a whole to be a share of.
+        expect(panel.get_by_role("img", name=re.compile(r"used$"))).to_be_visible()
+        for name in ("ui-one", "ui-two", "ui-three"):
+            expect(panel.get_by_text(name, exact=True).first).to_be_visible()
 
         app.keyboard.press("Escape")
         panel.wait_for(state="detached", timeout=20000)

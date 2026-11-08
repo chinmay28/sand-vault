@@ -47,8 +47,10 @@ func newTestVaultOn(t *testing.T, instance string, accounts int) (*Vault, []stri
 	// of any file still stored whole, so let both finish before the temporary
 	// directories they write into are cleaned up. The read history saves itself
 	// on a goroutine too, into the directory the vault file is in.
-	t.Cleanup(v.AwaitBackupSync)
+	// Cleanups run last-registered first, so the read history is awaited
+	// after the backup: a backup landing is a transfer, and may start a save.
 	t.Cleanup(v.AwaitReadHistory)
+	t.Cleanup(v.AwaitBackupSync)
 
 	// An archive stays spoken for a while after its scatter returns (see
 	// inflight.go), and a test that uploads, deletes and scans in the same

@@ -328,7 +328,7 @@ func (v *Vault) fetchLegacyParts(ctx context.Context, entry *Entry, configs map[
 		if err != nil {
 			return nil, fmt.Errorf("part %d: %w", s.shard.Part, err)
 		}
-		blob, err := p.Get(ctx, s.shard.Key)
+		blob, err := v.meteredGet(ctx, p, s.cfg, s.shard.Key)
 		if err != nil {
 			return nil, fmt.Errorf("part %d from %s: %w", s.shard.Part, s.cfg.Name, err)
 		}

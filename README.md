@@ -2392,7 +2392,10 @@ pipe the password on stdin.
   the schedule itself: 15 minutes, hourly, 6 hours, daily, or off. It is a ping
   and nothing else — no listing, no download, no data moved. See [Are the clouds
   still there?](#are-the-clouds-still-there)
-- **Read speed** — beside *Vault settings* at the foot of the sidebar. Opening a
+- **Statistics** — beside *Vault settings* at the foot of the sidebar: one tile
+  that opens a list of three panels, each with today's figure on its line —
+  *Read speed*, *Transfers* and *Storage breakdown*, described below
+- **Read speed** — the first entry under *Statistics*. Opening a
   file is a race between the accounts holding its shards, and the losers are
   never mentioned anywhere else, so a cloud can stop pulling its weight without
   anything looking wrong. This is the scoreboard, in three charts: *share of the
@@ -2409,6 +2412,19 @@ pipe the password on stdin.
   vault, sealed under a key derived from the vault's own, so they survive a
   restart and are readable only while the vault is open. *Forget history* erases
   them, file and all
+- **Transfers** — under *Statistics*: how much has been sent *in* to each cloud
+  and fetched *out* of it, whatever moved it — uploads, reads, moves between
+  clouds, conversions, the index backup. A share bar per direction, a chart of
+  the vault's traffic across the window (in above the line, out below it, on one
+  scale), and a row per cloud with both directions, objects moved and failed
+  calls. Same four tabs as Read speed, kept in the same sealed history and
+  forgotten by the same button
+- **Storage breakdown** — under *Statistics*: a pie of the capacity of every
+  cloud that knows its size, cut into SAND's parts on each cloud, other files,
+  free space and space out of reach; capacity, used, free, SAND's parts and how
+  many bytes are stored per byte in the vault; SAND's parts by cloud; and every
+  cloud fullest-first with the same bar its card draws. Drawn from the figures
+  the drawer already has, so opening it asks nothing of any cloud
 - **Connect dialog** — generated from each backend's own field spec, so new
   backends appear without frontend changes
 - **Browser** — folders, breadcrumbs, drag-and-drop upload with progress.

@@ -1788,10 +1788,32 @@ retired by that change, so it is rewritten before the old one goes). A sidecar
 that will not open is reported and started again rather than treated as damage.
 
 `GET /api/reads?window=today|month|year|all` serves them and **Read speed**,
-beside Vault settings in the accounts drawer, draws them as tabs over three
-charts — share of the shards used, how long each account takes to answer with
-its fastest-to-slowest spread behind it, and what became of every fetch — plus a
-sparkline per account of how its share has moved across the window.
+under **Statistics** beside Vault settings in the accounts drawer, draws them as
+tabs over three charts — share of the shards used, how long each account takes
+to answer with its fastest-to-slowest spread behind it, and what became of every
+fetch — plus a sparkline per account of how its share has moved across the
+window.
+
+**Transfers.** The same buckets also carry each account's traffic
+(`internal/vault/transferstats.go`): bytes and objects sent *in* to it (`Put`)
+and fetched *out* of it (`Get`), and the calls it failed. Every object the vault
+moves goes through `Vault.meteredPut` / `meteredGet` — uploads, the read race,
+moves between clouds, conversions and the index backup — so nothing is counted
+twice and nothing is missed. A cancelled call or a missing object is neither
+traffic nor a failure and is not counted; an account's replica root is counted
+under the account. Transfers are not counted while the vault is locked: a backup
+landing after `Lock` would otherwise leave a lone figure in the emptied recorder,
+which a lock-screen password change would then save over the sealed history.
+`GET /api/transfers?window=…` serves them, with a vault-wide trend across the
+window; `POST /api/reads/forget` forgets them with the reads.
+
+**Storage breakdown**, the third entry under Statistics, is drawn entirely in
+the browser from the account list the drawer already holds — each account's
+reported, counted or declared capacity, its quota, and what the index says SAND
+wrote there, through the same `usageBreakdown` the account cards use: a donut of
+the capacity of every account that knows its size (SAND's parts per cloud,
+other files, free, out of reach), SAND's parts by cloud, and every cloud
+fullest-first.
 
 ### 4.3 Reading at an offset
 
