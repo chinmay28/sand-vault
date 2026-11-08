@@ -12,13 +12,14 @@ tag that shouldn't be published.
 
 ## Unreleased
 
-### Statistics: read speed, transfers, speeds and a storage breakdown
+### Statistics: read race, transfers, throughput and a storage breakdown
 
 The **Read speed** tile at the foot of the accounts drawer is now
 **Statistics**, which opens a list of four panels, each with today's figure on
 its line:
 
-- **Read speed** — unchanged, and now the first entry.
+- **Read race** — what was *Read speed*, renamed so it is not mistaken for
+  throughput: which cloud answers a read first, and in how many milliseconds.
 - **Transfers** — new. How much has been sent *in* to each cloud and fetched
   *out* of it, over today, this month, this year or all time: uploads, reads,
   moves between clouds, conversions and the index backup all count. A share bar
@@ -26,7 +27,7 @@ its line:
   directions with objects moved and failed calls. Served by
   `GET /api/transfers?window=…`; kept in the read history's sealed sidecar, so
   it survives a restart, and *Forget history* clears it with the reads.
-- **Speeds** — new. Average speeds in Mbps: the vault's opening and storing
+- **Throughput** — new. Average speeds in Mbps: the vault's opening and storing
   speed, the same by kind of file (images, videos, documents, and the rest),
   and each cloud's own upload and download speed. Served by
   `GET /api/throughput?window=…`, from timings kept in the same history.

@@ -129,8 +129,8 @@ export default function ReadStats({ onClose }) {
 
   return (
     <Modal
-      title="Read speed"
-      subtitle="Which cloud answers when a file is rebuilt, and how quickly"
+      title="Read race"
+      subtitle="Which cloud answers first when a file is rebuilt, and in how many milliseconds"
       onClose={onClose}
       width={620}
       zIndex={110}
@@ -257,7 +257,7 @@ export default function ReadStats({ onClose }) {
       {forgetting && (
         <ConfirmDialog
           title="Forget the statistics?"
-          subtitle="Read speed and transfers, every window, and the file they are kept in"
+          subtitle="Read race, transfers and throughput, every window, and the file they are kept in"
           confirmLabel="Forget it all"
           busy={busy}
           zIndex={130}

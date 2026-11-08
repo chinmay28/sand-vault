@@ -5,7 +5,11 @@ import { Banner, Empty, Modal, Spinner } from './ui'
 import { Section, Stat, Tabs, noteStyle } from './ReadStats'
 import { useIsMobile } from '../hooks'
 
-/* How fast the vault is, in Mbps.
+/* Throughput: how fast the vault moves data, in Mbps.
+
+   Not the read race (ReadStats.jsx), which is about which cloud answers a
+   read first and in how many milliseconds. This is bandwidth: how many bits a
+   second actually got through.
 
    Three speeds, each answering a different question (internal/vault/
    throughput.go has the long version):
@@ -37,7 +41,7 @@ const KIND_LABELS = {
    is labelled with its arrow as well, so the two never rest on shade alone. */
 const UP_ALPHA = '8c'
 
-export default function SpeedStats({ onClose }) {
+export default function ThroughputStats({ onClose }) {
   const [span, setSpan] = useState('today')
   const [board, setBoard] = useState(null)
   const [error, setError] = useState(null)
@@ -69,7 +73,7 @@ export default function SpeedStats({ onClose }) {
 
   return (
     <Modal
-      title="Speeds"
+      title="Throughput"
       subtitle="How fast files open and store, by kind of file and by cloud, in Mbps"
       onClose={onClose}
       width={620}
@@ -177,7 +181,7 @@ export default function SpeedStats({ onClose }) {
           <span style={{ ...noteStyle, margin: 0 }}>
             {board.since
               ? `Counting since ${formatDate(board.since)}, kept with the read history. `
-                + 'Forget history in Read speed or Transfers clears it too.'
+                + 'Forget history in Read race or Transfers clears it too.'
               : 'Nothing counted yet.'}
           </span>
         </div>

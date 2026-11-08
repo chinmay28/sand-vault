@@ -1787,7 +1787,7 @@ vault is locked and when its password changes (the key it was sealed under is
 retired by that change, so it is rewritten before the old one goes). A sidecar
 that will not open is reported and started again rather than treated as damage.
 
-`GET /api/reads?window=today|month|year|all` serves them and **Read speed**,
+`GET /api/reads?window=today|month|year|all` serves them and **Read race**,
 under **Statistics** beside Vault settings in the accounts drawer, draws them as
 tabs over three charts — share of the shards used, how long each account takes
 to answer with its fastest-to-slowest spread behind it, and what became of every
@@ -1807,7 +1807,7 @@ which a lock-screen password change would then save over the sealed history.
 `GET /api/transfers?window=…` serves them, with a vault-wide trend across the
 window; `POST /api/reads/forget` forgets them with the reads.
 
-**Speeds** (`internal/vault/throughput.go`). `meteredPut`/`meteredGet` also
+**Throughput** (`internal/vault/throughput.go`). `meteredPut`/`meteredGet` also
 time each call, so a cloud's speed is its completed bytes over its completed
 calls' time, per direction. The vault's own speed is timed one level up: from
 the start of a read race to the decoded data (a whole file in `gather`, one

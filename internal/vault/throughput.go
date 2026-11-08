@@ -8,7 +8,9 @@ import (
 	"github.com/chinmay28/sand-vault/internal/provider"
 )
 
-// How fast the vault is, in the units a connection is sold in.
+// Throughput: how fast the vault moves data, in the units a connection is
+// sold in. Not the read race (readstats.go), which is about which cloud answers
+// first and in how many milliseconds; this is bits per second that got through.
 //
 // Three different speeds, because they answer three different questions:
 //

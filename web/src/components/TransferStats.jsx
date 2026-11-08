@@ -7,7 +7,7 @@ import { useIsMobile } from '../hooks'
 
 /* How much has gone to each cloud, and how much has come back off it.
 
-   Read speed is about who is quick. This is about who is busy: every object
+   The read race is about who answers first. This is about who is busy: every object
    the vault has put on an account or fetched off one — uploads, the reads that
    rebuild a file, moves between clouds, conversions, the index backup — summed
    by account and by direction. It is the figure that matters at a provider
@@ -18,7 +18,7 @@ import { useIsMobile } from '../hooks'
    that arrived whole are counted; a fetch the read path cut off once it had
    enough shards moved some bytes, but nothing here can say how many.
 
-   Same windows, same history and same forget as Read speed — the figures are
+   Same windows, same history and same forget as the read race — the figures are
    kept in the same sealed file beside the vault. */
 
 /* The two directions, and how each is drawn. Out wears the account's colour
@@ -53,7 +53,7 @@ export default function TransferStats({ onClose }) {
     }
   }, [span])
 
-  /* Polled while open, like Read speed: an upload or a film playing is moving
+  /* Polled while open, like the read race: an upload or a film playing is moving
      the figures as you watch, and the call is a loopback read of counters. */
   useEffect(() => {
     setBoard(null)
@@ -197,7 +197,7 @@ export default function TransferStats({ onClose }) {
       {forgetting && (
         <ConfirmDialog
           title="Forget the statistics?"
-          subtitle="Read speed and transfers, every window, and the file they are kept in"
+          subtitle="Read race, transfers and throughput, every window, and the file they are kept in"
           confirmLabel="Forget it all"
           busy={busy}
           zIndex={130}
@@ -230,7 +230,7 @@ export function busiest(accounts) {
 }
 
 /* One direction's traffic as a part-to-whole bar, with every slice named
-   underneath. Same shape as Read speed's share bar, and for the same reason:
+   underneath. Same shape as the read race's share bar, and for the same reason:
    the question is what fraction each cloud carried. */
 function DirectionShare({ dir, accounts, total }) {
   const carriers = accounts.filter((a) => a[dir.key] > 0)

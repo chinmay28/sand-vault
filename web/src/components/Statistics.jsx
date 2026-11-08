@@ -5,13 +5,13 @@ import { Modal } from './ui'
 import { Setting } from './VaultSettings'
 import ReadStats from './ReadStats'
 import TransferStats from './TransferStats'
-import SpeedStats, { formatMbps } from './SpeedStats'
+import ThroughputStats, { formatMbps } from './ThroughputStats'
 import StorageBreakdown, { storageTotals } from './StorageBreakdown'
 
 /* What the clouds have been doing with the vault, in one place.
 
-   This was a single tile, Read speed, beside Vault settings. Read speed is one
-   question about the accounts — who answers quickest — and there are two more
+   This was a single tile, Read speed — now Read race — beside Vault settings.
+   That is one question about the accounts — who answers a read first — and there are two more
    that somebody standing in front of their accounts asks just as often: how
    much has moved to and from each of them, and how much room is left on them
    all together. Three tiles would crowd the drawer the way the settings tiles
@@ -26,7 +26,7 @@ export default function Statistics({ providers = [], stats, onClose }) {
   const [open, setOpen] = useState(null)
   const [reads, setReads] = useState(null)
   const [transfers, setTransfers] = useState(null)
-  const [speeds, setSpeeds] = useState(null)
+  const [throughput, setThroughput] = useState(null)
 
   /* Today's figures, for the two status lines. Loopback reads of counters in
      memory, asked once when the list opens. */
@@ -34,7 +34,7 @@ export default function Statistics({ providers = [], stats, onClose }) {
     let cancelled = false
     api.readStats('today').then((r) => { if (!cancelled) setReads(r.reads) }).catch(() => {})
     api.transferStats('today').then((r) => { if (!cancelled) setTransfers(r.transfers) }).catch(() => {})
-    api.throughput('today').then((r) => { if (!cancelled) setSpeeds(r.throughput) }).catch(() => {})
+    api.throughput('today').then((r) => { if (!cancelled) setThroughput(r.throughput) }).catch(() => {})
     return () => { cancelled = true }
   }, [])
 
@@ -51,8 +51,8 @@ export default function Statistics({ providers = [], stats, onClose }) {
       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
         <Setting
           icon="⏱️"
-          label="Read speed"
-          hint="Which cloud answers when a file is rebuilt, and how quickly"
+          label="Read race"
+          hint="Which cloud answers first when a file is rebuilt, and in how many ms"
           status={readStatus(reads)}
           tone={reads?.shortfalls > 0 ? COLORS.error : undefined}
           onClick={() => setOpen('reads')}
@@ -66,10 +66,10 @@ export default function Statistics({ providers = [], stats, onClose }) {
         />
         <Setting
           icon="⚡"
-          label="Speeds"
+          label="Throughput"
           hint="Mbps for the vault, each kind of file and each cloud"
-          status={speedStatus(speeds)}
-          onClick={() => setOpen('speeds')}
+          status={throughputStatus(throughput)}
+          onClick={() => setOpen('throughput')}
         />
         <Setting
           icon="🗄️"
@@ -84,7 +84,7 @@ export default function Statistics({ providers = [], stats, onClose }) {
 
       {open === 'reads' && <ReadStats onClose={close} />}
       {open === 'transfers' && <TransferStats onClose={close} />}
-      {open === 'speeds' && <SpeedStats onClose={close} />}
+      {open === 'throughput' && <ThroughputStats onClose={close} />}
       {open === 'storage' && <StorageBreakdown providers={providers} stats={stats} onClose={close} />}
     </Modal>
   )
@@ -102,9 +102,9 @@ function transferStatus(transfers) {
   return `↑ ${formatBytes(transfers.bytes_in)} ↓ ${formatBytes(transfers.bytes_out)}`
 }
 
-function speedStatus(speeds) {
-  if (!speeds) return ''
-  if (!speeds.open?.mbps && !speeds.store?.mbps) return 'none today'
-  if (!speeds.open?.mbps) return `↑ ${formatMbps(speeds.store.mbps)}`
-  return `↓ ${formatMbps(speeds.open.mbps)}`
+function throughputStatus(t) {
+  if (!t) return ''
+  if (!t.open?.mbps && !t.store?.mbps) return 'none today'
+  if (!t.open?.mbps) return `↑ ${formatMbps(t.store.mbps)}`
+  return `↓ ${formatMbps(t.open.mbps)}`
 }

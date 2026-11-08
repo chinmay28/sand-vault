@@ -2642,7 +2642,7 @@ class TestVaultSettings:
         app.keyboard.press("Escape")
 
 
-class TestReadSpeed:
+class TestReadRace:
     """Reading a file is a race, and the panel next to the settings is where it
     is scored.
 
@@ -2657,8 +2657,8 @@ class TestReadSpeed:
         app.get_by_role("button", name=re.compile(r"^Statistics")).click()
         menu = app.get_by_role("dialog", name="Statistics")
         menu.wait_for(timeout=20000)
-        menu.get_by_role("button", name=re.compile(r"^Read speed")).click()
-        panel = app.get_by_role("dialog", name="Read speed")
+        menu.get_by_role("button", name=re.compile(r"^Read race")).click()
+        panel = app.get_by_role("dialog", name="Read race")
         panel.wait_for(timeout=20000)
         return panel
 
@@ -2715,7 +2715,7 @@ class TestReadSpeed:
 
 
 class TestStatistics:
-    """Read speed, transfers and the storage breakdown, behind one door.
+    """Read race, transfers, throughput and the storage breakdown, behind one door.
 
     The drawer carries a single Statistics tile; the list it opens names each
     panel with the one figure worth knowing without opening it.
@@ -2730,7 +2730,7 @@ class TestStatistics:
 
     def test_the_menu_lists_all_three(self, app):
         menu = self._menu(app)
-        for name in ("Read speed", "Transfers", "Speeds", "Storage breakdown"):
+        for name in ("Read race", "Transfers", "Throughput", "Storage breakdown"):
             expect(menu.get_by_role("button", name=re.compile("^" + name))).to_be_visible()
         app.keyboard.press("Escape")
         menu.wait_for(state="detached", timeout=20000)
@@ -2756,14 +2756,14 @@ class TestStatistics:
         panel.wait_for(state="detached", timeout=20000)
         expect(menu).to_be_visible()
 
-    def test_speeds_are_in_mbps_by_kind_and_by_cloud(self, app, tmp_path):
+    def test_throughput_is_in_mbps_by_kind_and_by_cloud(self, app, tmp_path):
         source = tmp_path / "timed.txt"
         source.write_text("timed on the way in and on the way out\n" * 200)
         upload_and_settle(app, source, choose=["ui-one", "ui-two", "ui-three"])
 
         menu = self._menu(app)
-        menu.get_by_role("button", name=re.compile(r"^Speeds")).click()
-        panel = app.get_by_role("dialog", name="Speeds")
+        menu.get_by_role("button", name=re.compile(r"^Throughput")).click()
+        panel = app.get_by_role("dialog", name="Throughput")
         panel.wait_for(timeout=20000)
 
         expect(panel.get_by_text("storing files", exact=True)).to_be_visible(timeout=20000)
