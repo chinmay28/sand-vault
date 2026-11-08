@@ -26,7 +26,8 @@ export default function BackgroundRuns({ mobile, onChanged }) {
         )}
         outcome={(run) => (run.error
           ? `Putting the mislaid parts back did not finish: ${run.error}`
-          : `Mislaid parts put back. ${reattachOutcomeText(run.result)} No data was transferred.`)}
+          : `Mislaid parts put back. ${reattachOutcomeText(run.result)} No data was transferred.`
+            + (run.result?.merged?.length ? ` ${mergedText(run.result.merged)}` : ''))}
         /* The index changed only if something was recorded. */
         changed={(run) => run.result?.shards > 0}
         mobile={mobile}
@@ -55,6 +56,18 @@ export function reattachOutcomeText(report) {
   const files = report?.files || 0
   if (shards === 0) return 'Nothing needed recording — every part found already had its record.'
   return `${shards} shard${shards === 1 ? '' : 's'} recorded again across ${files} file${files === 1 ? '' : 's'}.`
+}
+
+/* The disconnected accounts a reattach recognised in the ones the parts were
+   found on, and what that did: their read history now counts under the
+   account they came back as, rather than as a row of its own that only ever
+   fails. "Elements" twice reads oddly but is the common case — the storage
+   was connected again under the name it had. */
+export function mergedText(merged) {
+  const named = merged.map((m) => (m.from_name && m.from_name !== m.into_name
+    ? `${m.from_name} is now ${m.into_name}`
+    : `${m.into_name} is the ${m.into_name} that was disconnected`))
+  return `${named.join('; ')} — its read history was carried over, so Read speed shows it as one cloud.`
 }
 
 /* "12 objects erased across 3 archives, freeing 2.4 MB." */

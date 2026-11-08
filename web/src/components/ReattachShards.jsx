@@ -4,6 +4,7 @@ import { useReattach } from '../hooks'
 import { claimRun } from '../runClaims'
 import { Banner, Button, Modal, Spinner } from './ui'
 import ScanProgress from './ScanProgress'
+import { mergedText } from './BackgroundRuns'
 
 /* Shards of your files, sitting on a cloud with nothing pointing at them.
 
@@ -88,6 +89,12 @@ export default function ReattachShards({ scan, providerId = '', cloud = '', zInd
           {report.files} file{report.files === 1 ? '' : 's'}. No data was transferred —
           the parts were already on your clouds; only the index had forgotten them.
         </Banner>
+
+        {report.merged?.length > 0 && (
+          <Banner tone="info">
+            {mergedText(report.merged)}
+          </Banner>
+        )}
 
         {report.restored?.length > 0 && (
           <>
