@@ -519,6 +519,7 @@ func (s *Server) Handler() (http.Handler, error) {
 		"GET /api/reads":         s.handleReadStats,
 		"POST /api/reads/forget": s.handleReadStatsForget,
 		"GET /api/transfers":     s.handleTransferStats,
+		"GET /api/throughput":    s.handleThroughput,
 		// Where one file being opened has got to — which account it is
 		// waiting on, whether it is decrypting, how much has been sent —
 		// keyed by the token the browser put on the content request. Read-only

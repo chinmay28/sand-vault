@@ -5,6 +5,7 @@ import { Modal } from './ui'
 import { Setting } from './VaultSettings'
 import ReadStats from './ReadStats'
 import TransferStats from './TransferStats'
+import SpeedStats, { formatMbps } from './SpeedStats'
 import StorageBreakdown, { storageTotals } from './StorageBreakdown'
 
 /* What the clouds have been doing with the vault, in one place.
@@ -14,7 +15,8 @@ import StorageBreakdown, { storageTotals } from './StorageBreakdown'
    that somebody standing in front of their accounts asks just as often: how
    much has moved to and from each of them, and how much room is left on them
    all together. Three tiles would crowd the drawer the way the settings tiles
-   once did, so it is one door and a list behind it, in the same shape as
+   once did — and a fourth, how fast all of it is — so it is one door and a
+   list behind it, in the same shape as
    Vault settings: each line says what it is and the one figure worth knowing
    without opening it, and each opens over this list so closing it comes back
    here.
@@ -24,6 +26,7 @@ export default function Statistics({ providers = [], stats, onClose }) {
   const [open, setOpen] = useState(null)
   const [reads, setReads] = useState(null)
   const [transfers, setTransfers] = useState(null)
+  const [speeds, setSpeeds] = useState(null)
 
   /* Today's figures, for the two status lines. Loopback reads of counters in
      memory, asked once when the list opens. */
@@ -31,6 +34,7 @@ export default function Statistics({ providers = [], stats, onClose }) {
     let cancelled = false
     api.readStats('today').then((r) => { if (!cancelled) setReads(r.reads) }).catch(() => {})
     api.transferStats('today').then((r) => { if (!cancelled) setTransfers(r.transfers) }).catch(() => {})
+    api.throughput('today').then((r) => { if (!cancelled) setSpeeds(r.throughput) }).catch(() => {})
     return () => { cancelled = true }
   }, [])
 
@@ -61,6 +65,13 @@ export default function Statistics({ providers = [], stats, onClose }) {
           onClick={() => setOpen('transfers')}
         />
         <Setting
+          icon="⚡"
+          label="Speeds"
+          hint="Mbps for the vault, each kind of file and each cloud"
+          status={speedStatus(speeds)}
+          onClick={() => setOpen('speeds')}
+        />
+        <Setting
           icon="🗄️"
           label="Storage breakdown"
           hint="Capacity, free space and what is using it, across every cloud"
@@ -73,6 +84,7 @@ export default function Statistics({ providers = [], stats, onClose }) {
 
       {open === 'reads' && <ReadStats onClose={close} />}
       {open === 'transfers' && <TransferStats onClose={close} />}
+      {open === 'speeds' && <SpeedStats onClose={close} />}
       {open === 'storage' && <StorageBreakdown providers={providers} stats={stats} onClose={close} />}
     </Modal>
   )
@@ -88,4 +100,11 @@ function transferStatus(transfers) {
   if (!transfers) return ''
   if (!transfers.bytes_in && !transfers.bytes_out) return 'none today'
   return `↑ ${formatBytes(transfers.bytes_in)} ↓ ${formatBytes(transfers.bytes_out)}`
+}
+
+function speedStatus(speeds) {
+  if (!speeds) return ''
+  if (!speeds.open?.mbps && !speeds.store?.mbps) return 'none today'
+  if (!speeds.open?.mbps) return `↑ ${formatMbps(speeds.store.mbps)}`
+  return `↓ ${formatMbps(speeds.open.mbps)}`
 }

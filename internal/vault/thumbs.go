@@ -446,7 +446,7 @@ func (v *Vault) loadPack(ctx context.Context, scope Scope, dir string) (map[stri
 		return items, nil
 	}
 
-	blob, err := v.gather(ctx, pack.Shards, archive.LegacyScheme(), pack.KeyID, "the thumbnails for "+dir)
+	blob, err := v.gather(ctx, pack.Shards, archive.LegacyScheme(), pack.KeyID, "the thumbnails for "+dir, kindThumbnails)
 	if err != nil {
 		return nil, err
 	}

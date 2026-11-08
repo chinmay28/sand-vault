@@ -2730,7 +2730,7 @@ class TestStatistics:
 
     def test_the_menu_lists_all_three(self, app):
         menu = self._menu(app)
-        for name in ("Read speed", "Transfers", "Storage breakdown"):
+        for name in ("Read speed", "Transfers", "Speeds", "Storage breakdown"):
             expect(menu.get_by_role("button", name=re.compile("^" + name))).to_be_visible()
         app.keyboard.press("Escape")
         menu.wait_for(state="detached", timeout=20000)
@@ -2755,6 +2755,27 @@ class TestStatistics:
         app.keyboard.press("Escape")
         panel.wait_for(state="detached", timeout=20000)
         expect(menu).to_be_visible()
+
+    def test_speeds_are_in_mbps_by_kind_and_by_cloud(self, app, tmp_path):
+        source = tmp_path / "timed.txt"
+        source.write_text("timed on the way in and on the way out\n" * 200)
+        upload_and_settle(app, source, choose=["ui-one", "ui-two", "ui-three"])
+
+        menu = self._menu(app)
+        menu.get_by_role("button", name=re.compile(r"^Speeds")).click()
+        panel = app.get_by_role("dialog", name="Speeds")
+        panel.wait_for(timeout=20000)
+
+        expect(panel.get_by_text("storing files", exact=True)).to_be_visible(timeout=20000)
+        for heading in ("By kind of file", "By cloud"):
+            expect(panel.get_by_role("heading", name=heading)).to_be_visible()
+        # The three kinds somebody asks about are always listed.
+        for kind in ("Images", "Videos", "Documents"):
+            expect(panel.get_by_text(kind, exact=True)).to_be_visible()
+        expect(panel.get_by_text(re.compile(r"[MG]bps$")).first).to_be_visible()
+
+        app.keyboard.press("Escape")
+        panel.wait_for(state="detached", timeout=20000)
 
     def test_storage_breakdown_draws_every_cloud(self, app):
         menu = self._menu(app)

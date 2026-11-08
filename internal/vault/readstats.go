@@ -105,6 +105,10 @@ type readBucket struct {
 	// see transferstats.go. Absent from a history written before it was kept,
 	// which reads as nothing having moved.
 	Transfers map[string]*transferCounts `json:"transfers,omitempty"`
+
+	// Loads is how fast whole files — or chunks of them — were opened and
+	// stored, by kind of file. See throughput.go.
+	Loads map[string]*loadCounts `json:"loads,omitempty"`
 }
 
 func (b *readBucket) counterFor(id string) *readCounts {
@@ -179,6 +183,9 @@ func (b *readBucket) add(other *readBucket) {
 	}
 	for id, counts := range other.Transfers {
 		b.transfersFor(id).add(counts)
+	}
+	for kind, counts := range other.Loads {
+		b.loadsFor(kind).add(counts)
 	}
 }
 

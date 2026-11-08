@@ -56,6 +56,9 @@ func (v *Vault) uploadChunkSize() uint32 {
 // placement decision is made once, before the first chunk, because which
 // accounts may hold a file is a property of the file and not of its pieces.
 func (v *Vault) scatterChunked(ctx context.Context, scope Scope, name string, data []byte, sp spread, chunkSize uint32) (placement, error) {
+	// Timed from here to the last shard written, for the speed figures:
+	// what storing a file of this kind costs end to end. See throughput.go.
+	started := time.Now()
 	target, err := v.snapshotTarget(scope, sp)
 	if err != nil {
 		return placement{}, failedAt(UploadPlacing, err)
@@ -130,6 +133,7 @@ func (v *Vault) scatterChunked(ctx context.Context, scope Scope, name string, da
 		return out, err
 	}
 
+	v.reads.loaded(kindOfName(name), loadStore, int64(len(data)), time.Since(started))
 	return out, nil
 }
 
@@ -347,6 +351,7 @@ func (v *Vault) gatherChunk(ctx context.Context, entry *Entry, index int, config
 
 	results := make(chan shardFetch, len(entry.Shards))
 	v.reads.race()
+	started := time.Now()
 
 	// Which shards are about to be sent for: the ones on an account that is
 	// still connected. Said once, up front, so a watcher can name who it is
@@ -427,6 +432,7 @@ func (v *Vault) gatherChunk(ctx context.Context, entry *Entry, index int, config
 		return nil, fmt.Errorf("chunk %d of %s answered as chunk %d",
 			index, entry.Path(), decoded.Index)
 	}
+	v.reads.loaded(kindOf(entry), loadOpen, int64(len(decoded.Data)), time.Since(started))
 	return decoded.Data, nil
 }
 

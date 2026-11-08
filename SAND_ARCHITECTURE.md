@@ -1807,7 +1807,17 @@ which a lock-screen password change would then save over the sealed history.
 `GET /api/transfers?window=…` serves them, with a vault-wide trend across the
 window; `POST /api/reads/forget` forgets them with the reads.
 
-**Storage breakdown**, the third entry under Statistics, is drawn entirely in
+**Speeds** (`internal/vault/throughput.go`). `meteredPut`/`meteredGet` also
+time each call, so a cloud's speed is its completed bytes over its completed
+calls' time, per direction. The vault's own speed is timed one level up: from
+the start of a read race to the decoded data (a whole file in `gather`, one
+chunk in `gatherChunk`), and from the start of `scatterChunked` /
+`scatterStream` to the last shard written — counted per day under the file's
+kind (`kindOf`: images, video, documents, audio, archives, other; a folder's
+thumbnail pack is `thumbnails`). All speeds are total bytes over total time.
+`GET /api/throughput?window=…` reports them in Mbps (10^6 bits per second).
+
+**Storage breakdown**, the last entry under Statistics, is drawn entirely in
 the browser from the account list the drawer already holds — each account's
 reported, counted or declared capacity, its quota, and what the index says SAND
 wrote there, through the same `usageBreakdown` the account cards use: a donut of

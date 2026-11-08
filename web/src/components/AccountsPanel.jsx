@@ -475,12 +475,12 @@ export default function AccountsPanel({
             hint="password · clouds · recovery kit"
             onClick={() => setSettingsOpen(true)}
           />
-          {/* Read speed, transfers and the storage breakdown, behind one
+          {/* Read speed, transfers, speeds and the storage breakdown, behind one
               door — see Statistics.jsx. */}
           <ActionTile
             icon="📊"
             label="Statistics"
-            hint="read speed · transfers · storage"
+            hint="reads · transfers · speeds · storage"
             onClick={() => setStatsOpen(true)}
           />
         </div>

@@ -2394,7 +2394,7 @@ pipe the password on stdin.
   still there?](#are-the-clouds-still-there)
 - **Statistics** — beside *Vault settings* at the foot of the sidebar: one tile
   that opens a list of three panels, each with today's figure on its line —
-  *Read speed*, *Transfers* and *Storage breakdown*, described below
+  *Read speed*, *Transfers*, *Speeds* and *Storage breakdown*, described below
 - **Read speed** — the first entry under *Statistics*. Opening a
   file is a race between the accounts holding its shards, and the losers are
   never mentioned anywhere else, so a cloud can stop pulling its weight without
@@ -2419,6 +2419,14 @@ pipe the password on stdin.
   scale), and a row per cloud with both directions, objects moved and failed
   calls. Same four tabs as Read speed, kept in the same sealed history and
   forgotten by the same button
+- **Speeds** — under *Statistics*, in Mbps over the same four tabs: the
+  vault's speed opening and storing files (a file's size over the time from
+  asking to rebuilt, or from handing it over to the last part written); that
+  again by kind of file — images, videos, documents, and audio, archives, other
+  files and thumbnails where there are any; and each cloud's own upload and
+  download speed, one object at a time. Every speed is total bytes over total
+  time, so a thousand small loads cannot outvote one large one. A chunked film
+  is timed a chunk at a time
 - **Storage breakdown** — under *Statistics*: a pie of the capacity of every
   cloud that knows its size, cut into SAND's parts on each cloud, other files,
   free space and space out of reach; capacity, used, free, SAND's parts and how

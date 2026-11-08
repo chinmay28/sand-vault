@@ -46,6 +46,21 @@ func (s *Server) handleTransferStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"transfers": v.TransferStats(window)})
 }
 
+// handleThroughput answers with how fast things have moved over a window, in
+// Mbps: each cloud's own speed up and down, the vault's speed opening and
+// storing files, and that again by kind of file (internal/vault/throughput.go).
+// Counters in memory, like the boards beside it; forgotten with them.
+func (s *Server) handleThroughput(w http.ResponseWriter, r *http.Request) {
+	window, err := vault.ParseReadWindow(r.URL.Query().Get("window"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
+		return
+	}
+
+	v, _ := s.Vault()
+	writeJSON(w, http.StatusOK, map[string]any{"throughput": v.Throughput(window)})
+}
+
 // handleReadStatsForget erases the history, in memory and on disk.
 //
 // Worth having, and worth confirming before it runs: it is the only thing in

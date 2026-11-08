@@ -122,6 +122,13 @@ func copyBucket(b *readBucket) readBucket {
 			out.Transfers[id] = &c
 		}
 	}
+	if len(b.Loads) > 0 {
+		out.Loads = make(map[string]*loadCounts, len(b.Loads))
+		for kind, counts := range b.Loads {
+			c := *counts
+			out.Loads[kind] = &c
+		}
+	}
 	return out
 }
 

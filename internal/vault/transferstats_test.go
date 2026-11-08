@@ -120,15 +120,15 @@ func TestTransfersIgnoreCallsThatMovedNothingAndFailedAtNothing(t *testing.T) {
 		provider.ErrNotFound,
 	} {
 		s := newReadStats()
-		s.transferred(cfg, transferOut, 0, err)
+		s.transferred(cfg, transferOut, 0, 0, err)
 		if s.recorded() {
 			t.Errorf("%v was recorded: the vault called it off, or the object was never there", err)
 		}
 	}
 
 	s := newReadStats()
-	s.transferred(cfg, transferIn, 100, errors.New("503 slow down"))
-	s.transferred(cfg, transferOut, 0, errors.New("connection reset"))
+	s.transferred(cfg, transferIn, 100, 0, errors.New("503 slow down"))
+	s.transferred(cfg, transferOut, 0, 0, errors.New("connection reset"))
 	a := transferOf(t, s.transferReport(WindowToday, nil, time.Now()), "cloud-a")
 	if a.PutFailures != 1 || a.GetFailures != 1 {
 		t.Errorf("failures = %d put, %d get; want 1 and 1", a.PutFailures, a.GetFailures)
@@ -140,8 +140,8 @@ func TestTransfersIgnoreCallsThatMovedNothingAndFailedAtNothing(t *testing.T) {
 
 func TestTransfersToAReplicaRootCountAgainstTheAccount(t *testing.T) {
 	s := newReadStats()
-	s.transferred(provider.Config{ID: "cloud-a", Name: "a"}, transferIn, 10, nil)
-	s.transferred(provider.Config{ID: replicaID("cloud-a"), Name: "a"}, transferIn, 5, nil)
+	s.transferred(provider.Config{ID: "cloud-a", Name: "a"}, transferIn, 10, 0, nil)
+	s.transferred(provider.Config{ID: replicaID("cloud-a"), Name: "a"}, transferIn, 5, 0, nil)
 
 	report := s.transferReport(WindowToday, nil, time.Now())
 	if len(report.Accounts) != 1 {
@@ -284,7 +284,7 @@ func TestTransfersAreNotCountedWhileTheVaultIsLocked(t *testing.T) {
 	v.AwaitBackupSync()
 	v.Lock()
 
-	v.reads.transferred(provider.Config{ID: "cloud-a", Name: "a"}, transferIn, 10, nil)
+	v.reads.transferred(provider.Config{ID: "cloud-a", Name: "a"}, transferIn, 10, 0, nil)
 	if v.reads.recorded() {
 		t.Fatalf("a transfer was counted into a locked vault's history")
 	}
@@ -292,7 +292,7 @@ func TestTransfersAreNotCountedWhileTheVaultIsLocked(t *testing.T) {
 	if err := v.Unlock(testPassword); err != nil {
 		t.Fatalf("Unlock: %v", err)
 	}
-	v.reads.transferred(provider.Config{ID: "cloud-a", Name: "a"}, transferIn, 10, nil)
+	v.reads.transferred(provider.Config{ID: "cloud-a", Name: "a"}, transferIn, 10, 0, nil)
 	if !v.reads.recorded() {
 		t.Errorf("unlocking did not start counting transfers again")
 	}

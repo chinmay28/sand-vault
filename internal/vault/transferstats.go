@@ -47,10 +47,18 @@ type transferCounts struct {
 	PutFailures int64 `json:"put_failures"`
 	GetFailures int64 `json:"get_failures"`
 
+	// How long the completed calls took, summed, so a speed is BytesIn over
+	// InTook: time-weighted, which is what an average speed has to be. Only
+	// completed calls, for the same reason only their bytes are counted.
+	InTook  time.Duration `json:"in_took,omitempty"`
+	OutTook time.Duration `json:"out_took,omitempty"`
+
 	LastAt time.Time `json:"last_at,omitzero"`
 }
 
 func (c *transferCounts) add(other *transferCounts) {
+	c.InTook += other.InTook
+	c.OutTook += other.OutTook
 	c.BytesIn += other.BytesIn
 	c.BytesOut += other.BytesOut
 	c.Puts += other.Puts
@@ -94,14 +102,16 @@ func transferFailed(err error) bool {
 		!errors.Is(err, provider.ErrNotFound)
 }
 
-func observeTransfer(c *transferCounts, dir transferDirection, n int64, err error, now time.Time) {
+func observeTransfer(c *transferCounts, dir transferDirection, n int64, took time.Duration, err error, now time.Time) {
 	switch {
 	case err == nil && dir == transferIn:
 		c.Puts++
 		c.BytesIn += n
+		c.InTook += took
 	case err == nil:
 		c.Gets++
 		c.BytesOut += n
+		c.OutTook += took
 	case !transferFailed(err):
 		// Nothing moved and nothing went wrong.
 		return
@@ -114,13 +124,14 @@ func observeTransfer(c *transferCounts, dir transferDirection, n int64, err erro
 }
 
 // transferred records one object moving to or from an account. n is the size
-// of the object; it is ignored when err is set. An account's replica root is
+// of the object and took how long the call took; both are ignored when err is
+// set. An account's replica root is
 // the account, so its traffic is counted under the account's own ID.
 //
 // A call that neither moved anything nor failed — a cancelled Get, a missing
 // object — leaves the history untouched, and so does anything at all while the
 // vault is locked (see readStats.locked).
-func (s *readStats) transferred(cfg provider.Config, dir transferDirection, n int, err error) {
+func (s *readStats) transferred(cfg provider.Config, dir transferDirection, n int, took time.Duration, err error) {
 	if s == nil || cfg.ID == "" {
 		return
 	}
@@ -139,23 +150,25 @@ func (s *readStats) transferred(cfg provider.Config, dir transferDirection, n in
 	if cfg.Name != "" || cfg.Kind != "" {
 		s.names[id] = readAccountName{Name: cfg.Name, Kind: string(cfg.Kind)}
 	}
-	observeTransfer(s.bucketLocked(now).transfersFor(id), dir, int64(n), err, now)
-	observeTransfer(s.total.transfersFor(id), dir, int64(n), err, now)
+	observeTransfer(s.bucketLocked(now).transfersFor(id), dir, int64(n), took, err, now)
+	observeTransfer(s.total.transfersFor(id), dir, int64(n), took, err, now)
 	s.touchedLocked(now)
 }
 
 // meteredPut is p.Put, counted. Every write of an object to an account goes
 // through here, so the transfer figures cannot miss one.
 func (v *Vault) meteredPut(ctx context.Context, p provider.Provider, cfg provider.Config, key string, data []byte) error {
+	started := time.Now()
 	err := p.Put(ctx, key, data)
-	v.reads.transferred(cfg, transferIn, len(data), err)
+	v.reads.transferred(cfg, transferIn, len(data), time.Since(started), err)
 	return err
 }
 
 // meteredGet is p.Get, counted.
 func (v *Vault) meteredGet(ctx context.Context, p provider.Provider, cfg provider.Config, key string) ([]byte, error) {
+	started := time.Now()
 	data, err := p.Get(ctx, key)
-	v.reads.transferred(cfg, transferOut, len(data), err)
+	v.reads.transferred(cfg, transferOut, len(data), time.Since(started), err)
 	return data, err
 }
 

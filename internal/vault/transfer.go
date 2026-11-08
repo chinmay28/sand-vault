@@ -585,7 +585,7 @@ func (v *Vault) Fetch(ctx context.Context, id string) ([]byte, *Entry, error) {
 		return data, entry, nil
 	}
 
-	data, err := v.gather(ctx, snapshot.Shards, snapshot.Scheme(), snapshot.KeyID, snapshot.Path())
+	data, err := v.gather(ctx, snapshot.Shards, snapshot.Scheme(), snapshot.KeyID, snapshot.Path(), kindOf(&snapshot))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -602,8 +602,9 @@ func (v *Vault) Fetch(ctx context.Context, id string) ([]byte, *Entry, error) {
 // and the two slowest never enter into it.
 //
 // label names the thing being read, for error messages: a path for a file, a
-// description for anything else.
-func (v *Vault) gather(ctx context.Context, shards []Shard, scheme archive.Scheme, keyID, label string) ([]byte, error) {
+// description for anything else. kind is what it is counted as in the speed
+// figures (see throughput.go).
+func (v *Vault) gather(ctx context.Context, shards []Shard, scheme archive.Scheme, keyID, label, kind string) ([]byte, error) {
 	v.mu.RLock()
 	if v.dataKey == nil {
 		v.mu.RUnlock()
@@ -627,6 +628,7 @@ func (v *Vault) gather(ctx context.Context, shards []Shard, scheme archive.Schem
 	// side rather than waited for. See readstats.go.
 	results := make(chan shardFetch, len(shards))
 	v.reads.race()
+	started := time.Now()
 
 	for _, shard := range shards {
 		cfg, ok := configs[shard.ProviderID]
@@ -692,6 +694,7 @@ func (v *Vault) gather(ctx context.Context, shards []Shard, scheme archive.Schem
 	if err != nil {
 		return nil, fmt.Errorf("rebuilding %s: %w", label, err)
 	}
+	v.reads.loaded(kind, loadOpen, int64(len(decoded.Data)), time.Since(started))
 	return decoded.Data, nil
 }
 

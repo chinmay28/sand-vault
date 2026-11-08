@@ -82,3 +82,43 @@ func TestTransferStatsNeedASession(t *testing.T) {
 		t.Errorf("GET /api/transfers on a locked vault: %d, want 401", w.Code)
 	}
 }
+
+func TestThroughputReportsSpeedsInMbps(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("how fast", 3)
+
+	id := c.upload("notes.txt", "/", []byte(strings.Repeat("read me back quickly ", 500)))["id"].(string)
+	if w := c.do(http.MethodGet, "/api/files/"+id+"/content", nil, ""); w.Code != http.StatusOK {
+		t.Fatalf("download: %d %s", w.Code, w.Body.String())
+	}
+
+	w, body := c.json(http.MethodGet, "/api/throughput?window=today", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("throughput: %d %s", w.Code, w.Body.String())
+	}
+	report := body["throughput"].(map[string]any)
+	if open := report["open"].(map[string]any); open["mbps"].(float64) <= 0 {
+		t.Errorf("no opening speed after a download: %v", open)
+	}
+	kinds := map[string]map[string]any{}
+	for _, raw := range report["kinds"].([]any) {
+		k := raw.(map[string]any)
+		kinds[k["kind"].(string)] = k
+	}
+	for _, kind := range []string{"images", "video", "documents"} {
+		if kinds[kind] == nil {
+			t.Errorf("%s missing from the kinds", kind)
+		}
+	}
+	// A .txt is a document.
+	if docs := kinds["documents"]; docs == nil || docs["open"].(map[string]any)["mbps"].(float64) <= 0 {
+		t.Errorf("a .txt opened and documents have no speed: %v", docs)
+	}
+	if got := len(report["accounts"].([]any)); got != 3 {
+		t.Errorf("accounts = %d, want 3", got)
+	}
+
+	if w, _ := c.json(http.MethodGet, "/api/throughput?window=fortnight", nil); w.Code != http.StatusBadRequest {
+		t.Errorf("bad window: %d, want 400", w.Code)
+	}
+}

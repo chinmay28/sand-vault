@@ -424,6 +424,9 @@ export const api = {
      in-memory counters as the read board, kept in the same history, so it is
      as cheap to poll and the forget above clears it too. */
   transferStats: (window = 'today') => request(`/api/transfers?window=${encodeURIComponent(window)}`),
+  /* How fast files open and store, by kind of file and by cloud, in Mbps.
+     The same history again: timings the read and write paths already took. */
+  throughput: (window = 'today') => request(`/api/throughput?window=${encodeURIComponent(window)}`),
   /* What is actually in a bucket, counted by listing it end to end.
 
      The one figure in the panel that costs a walk of somebody else's storage —
