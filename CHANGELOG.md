@@ -45,7 +45,8 @@ dry runs. Locking the vault stops a sweep between deletes.
 The cloud health line at the foot of the accounts drawer now says how many
 clouds there are when its first line does not — *1 disk warning* over
 *17 clouds · checked 3m ago* — and the health panel opens on *17 clouds
-connected · last checked …*.
+connected · last checked …*. The line under the figures says what it is spread
+over, too: *926 GB across 17 accounts · strict*.
 
 ### Putting mislaid parts back carries on with the page closed
 

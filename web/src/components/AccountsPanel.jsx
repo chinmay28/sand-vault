@@ -409,7 +409,11 @@ export default function AccountsPanel({
               color: COLORS.textMuted,
               lineHeight: 1.7,
             }}>
-              {formatBytes(stats.stored_bytes)} across accounts · {stats.policy}
+              {/* How many accounts the stored figure is spread over — the
+                  drawer lists them above, but on a phone that list is a
+                  scroll away from this line. */}
+              {formatBytes(stats.stored_bytes)} across{' '}
+              {providers.length === 1 ? '1 account' : `${providers.length} accounts`} · {stats.policy}
             </div>
             {/* The one figure down here that names something to do rather than
                 something to know: a file short a part stays short until
