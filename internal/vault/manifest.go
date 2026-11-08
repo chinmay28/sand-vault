@@ -240,6 +240,11 @@ type Manifest struct {
 	Entries []*Entry `json:"entries"`
 	Folders []string `json:"folders"`
 
+	// Departed remembers the accounts that were disconnected, with a sample
+	// of the parts each held, so a reattach can tell which one a returning
+	// account was. Main index only. See departed.go.
+	Departed []DepartedAccount `json:"departed,omitempty"`
+
 	// Thumbs points at the stored thumbnails, one pack per folder. It lives
 	// here because it is exactly as sensitive as the rest of the index: which
 	// files have a picture, and which folder they are in.

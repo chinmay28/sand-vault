@@ -1782,6 +1782,7 @@ func (v *Vault) RemoveProvider(id string, force bool) error {
 		}
 	}
 
+	gone := v.providers[idx]
 	v.providers = append(v.providers[:idx], v.providers[idx+1:]...)
 
 	// A default naming an account that is no longer there would silently
@@ -1813,6 +1814,11 @@ func (v *Vault) RemoveProvider(id string, force bool) error {
 
 	// And the replication policy, for the same reason.
 	v.pruneReplicationLocked(surviving)
+
+	// Before the records naming it go: a sample of what it held, so that if
+	// this storage is connected again and its parts are put back, the vault
+	// can tell it is this account returning. See departed.go.
+	v.manifest.noteDeparted(departedFrom(gone, v.manifest.Entries, time.Now()))
 
 	// Drop shard records pointing at the disconnected account so the index
 	// keeps telling the truth about what is actually retrievable. A shut sub

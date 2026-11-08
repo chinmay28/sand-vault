@@ -1548,7 +1548,26 @@ type ReattachReport struct {
 	// write, and why.
 	Skipped []string `json:"skipped,omitempty"`
 
+	// Merged names the disconnected accounts the parts were found to belong
+	// to, whose read history now counts under the account they came back
+	// as. See linkReturningLocked.
+	Merged []AccountMerge `json:"merged,omitempty"`
+
 	Warnings []string `json:"warnings,omitempty"`
+}
+
+// AccountMerge is one departed account recognised in a returning one.
+type AccountMerge struct {
+	From     string `json:"from"`
+	FromName string `json:"from_name"`
+	Into     string `json:"into"`
+	IntoName string `json:"into_name"`
+
+	// By is how it was recognised: "parts" when the returning account holds
+	// parts the departed one was recorded as holding, "name" when it is the
+	// one disconnected account by its name and kind and nothing better was
+	// on record.
+	By string `json:"by"`
 }
 
 // ReattachOptions says how far a reattach looks and whether it writes.
@@ -1649,6 +1668,7 @@ func (v *Vault) ReattachShards(ctx context.Context, opts ReattachOptions) (*Reat
 	}
 
 	files := map[string]bool{}
+	var recorded []StrayShard
 	for _, stray := range wanted {
 		entry, err := v.entryForReattachLocked(stray)
 		if err != nil {
@@ -1680,6 +1700,7 @@ func (v *Vault) ReattachShards(ctx context.Context, opts ReattachOptions) (*Reat
 
 		report.Shards++
 		report.Bytes += stray.Bytes
+		recorded = append(recorded, stray)
 		files[string(stray.Scope)+"\x00"+stray.FileID] = true
 		if entry.Redundancy() >= entry.Scheme().Total && stray.Scope == MainScope {
 			report.Restored = append(report.Restored, entry.Path())
@@ -1687,10 +1708,15 @@ func (v *Vault) ReattachShards(ctx context.Context, opts ReattachOptions) (*Reat
 	}
 	report.Files = len(files)
 
+	report.Merged = v.linkReturningLocked(recorded)
+
 	if report.Shards > 0 {
 		if err := v.persistLocked(); err != nil {
 			return nil, err
 		}
+	}
+	if len(report.Merged) > 0 {
+		v.flushReadHistoryLocked()
 	}
 
 	sort.Strings(report.Restored)
@@ -1743,4 +1769,79 @@ func strayName(stray StrayShard) string {
 		return stray.Path
 	}
 	return "archive " + stray.ArchiveID
+}
+
+// linkReturningLocked works out which disconnected accounts the parts just
+// recorded came from, and moves what was kept about each — its read history —
+// onto the account it came back as. Without it the history shows two rows for
+// one storage: the new account, counting from zero, and the old ID, marked
+// disconnected and failing every read it was ever asked for.
+//
+// The proof is a part: a departed account's sample naming exactly an archive
+// and part just found on a connected account (see departed.go). An account
+// that went before samples were kept has none, so for an account that took
+// parts back and matched no sample, the one disconnected account in the read
+// history with its name and kind is taken instead — and only when there is
+// exactly one, since two would be a guess.
+//
+// The caller holds the write lock.
+func (v *Vault) linkReturningLocked(recorded []StrayShard) []AccountMerge {
+	links := map[string]AccountMerge{} // by departed ID
+	linkedInto := map[string]bool{}
+	for _, stray := range recorded {
+		if stray.Scope != MainScope {
+			continue
+		}
+		d, ok := v.manifest.departedHolding(stray.ArchiveID, stray.Part)
+		if !ok || d.ID == stray.ProviderID {
+			continue
+		}
+		if _, done := links[d.ID]; done {
+			continue
+		}
+		cfg, connected := v.configForLocked(stray.ProviderID)
+		if !connected {
+			continue
+		}
+		links[d.ID] = AccountMerge{From: d.ID, FromName: d.Name, Into: cfg.ID, IntoName: cfg.Name, By: "parts"}
+		linkedInto[cfg.ID] = true
+	}
+
+	connected := func(id string) bool { _, ok := v.configForLocked(id); return ok }
+	tookParts := map[string]bool{}
+	for _, stray := range recorded {
+		tookParts[stray.ProviderID] = true
+	}
+	for id := range tookParts {
+		if linkedInto[id] {
+			continue
+		}
+		cfg, ok := v.configForLocked(id)
+		if !ok {
+			continue
+		}
+		candidates := v.reads.disconnectedNamed(cfg.Name, string(cfg.Kind), connected)
+		if len(candidates) != 1 {
+			continue
+		}
+		if _, taken := links[candidates[0]]; taken {
+			continue
+		}
+		links[candidates[0]] = AccountMerge{From: candidates[0], FromName: cfg.Name, Into: cfg.ID, IntoName: cfg.Name, By: "name"}
+	}
+
+	if len(links) == 0 {
+		return nil
+	}
+	// Recognised either way, so the record goes either way; said only where
+	// there was history to carry, since "carried over" about nothing is noise.
+	var merged []AccountMerge
+	for _, link := range links {
+		v.manifest.forgetDeparted(link.From)
+		if v.reads.mergeAccount(link.From, link.Into) {
+			merged = append(merged, link)
+		}
+	}
+	sort.Slice(merged, func(i, j int) bool { return merged[i].From < merged[j].From })
+	return merged
 }

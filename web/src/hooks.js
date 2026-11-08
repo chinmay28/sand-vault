@@ -31,46 +31,6 @@ export function useMediaQuery(query) {
   return matches
 }
 
-/* Where the orphan sweep has got to, asked about once a second while one is
-   running. Erasing the abandoned parts is one POST that answers only at the end — for a vault where somebody has
-   been deleting films, minutes of a button saying "Erasing…" — and the server
-   counts objects beside it (see /api/vault/orphans/erasing). A total of 0
-   while running is its own kind of news: the sweep lists every account again
-   before its first delete, so the button is not stuck, the clouds are being
-   asked. The count holds rather than blinking empty when the last poll races
-   the sweep finishing, for the reason below. */
-export function useOrphanEraseProgress(active) {
-  return useErasing(() => api.orphanErasing(), active, [])
-}
-
-/* One poll of an erasing window, whichever request it is beside. `ask` is
-   called every 900ms while active and answers {running, done, total}; the
-   count is kept while it is running and left standing afterwards, so the last
-   figure does not blink empty when the final poll races the request
-   finishing. Silence on failure is on purpose: this is the answer to a
-   question nobody typed, and the delete it watches reports its own failures. */
-function useErasing(ask, active, deps) {
-  const [at, setAt] = useState(null)
-
-  useEffect(() => {
-    setAt(null)
-    if (!active) return undefined
-
-    let live = true
-    const poll = () => ask()
-      .then((resp) => {
-        if (live && resp.running) setAt({ done: resp.done, total: resp.total })
-      })
-      .catch(() => {})
-
-    poll()
-    const timer = setInterval(poll, 900)
-    return () => { live = false; clearInterval(timer) }
-  }, [active, ...deps])
-
-  return at
-}
-
 /* How long a finished stray-parts scan is taken as the answer when the panel
    opens, rather than being run again. A page that was closed mid-scan and
    comes back wants the result it was waiting on, not a second listing of
@@ -98,6 +58,12 @@ export function useStrayScan() {
    takes {providerId}. */
 export function useReattach() {
   return useServerJob(api.reattachStatus, api.reattachStart, 'sand:reattach')
+}
+
+/* The orphan sweep, the same way (see api.sweepStart). `start` takes
+   {targets}. */
+export function useOrphanSweep() {
+  return useServerJob(api.sweepStatus, api.sweepStart, 'sand:orphan-sweep')
 }
 
 /* A job the server runs apart from any request (see jobWatch on the server):

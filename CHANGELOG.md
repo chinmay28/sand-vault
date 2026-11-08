@@ -12,6 +12,42 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### A reconnected cloud keeps its read history
+
+Disconnecting a cloud and connecting the same storage back made it a new
+account with a new id, so **Read speed** showed two rows for one cloud: the new
+one counting from zero, and the old one marked *disconnected* and failing every
+read. Putting the mislaid parts back now recognises the old account in the new
+one and carries its history over, leaving one row.
+
+The proof is a part. A disconnect now keeps a small sample of the parts the
+account held — up to 16, by archive and part number, in the encrypted index —
+and a returning account found holding one of those exact parts is that storage.
+A cloud disconnected before this kept no sample, so for an account that took
+parts back and matched none, the one disconnected account in the read history
+with the same name and kind is taken instead; two by that name is a guess, and
+nothing is merged. The reattach report lists what it carried over under
+`merged`, and the dialog and the strip over the file list say so.
+
+### Erasing abandoned parts carries on with the page closed
+
+**Erase N objects** in *Parts nothing points at* was one request that answered
+at the end, and closing the dialog or the page stopped it partway. It now runs
+on the server like the reattach: the dialog draws a bar — *checking every
+cloud once more*, then *erased 3 of 12 objects* — and can be closed, and the
+strip over the file list carries it on and says what was erased when it lands.
+`POST /api/vault/orphans/sweeping` starts one (`targets`, or none for every
+abandoned archive) or joins the one running for the same targets — anything
+else while one runs is a `409` — and `GET` says how far it is, then what it
+erased. `POST /api/vault/orphans` still answers in one request for scripts and
+dry runs. Locking the vault stops a sweep between deletes.
+
+The cloud health line at the foot of the accounts drawer now says how many
+clouds there are when its first line does not — *1 disk warning* over
+*17 clouds · checked 3m ago* — and the health panel opens on *17 clouds
+connected · last checked …*. The line under the figures says what it is spread
+over, too: *926 GB across 17 accounts · strict*.
+
 ### Putting mislaid parts back carries on with the page closed
 
 *Put N shards back* was one request that answered at the end: a spinner saying

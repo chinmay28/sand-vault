@@ -111,6 +111,8 @@ export function healthSummary(health) {
     return {
       tone: COLORS.warn,
       line: health.warnings === 1 ? '1 disk warning' : `${health.warnings} disk warnings`,
+      // The line does not say how many there are, so the line under it does.
+      count: cloudCount(health.accounts),
     }
   }
   if (health.checked_at) {
@@ -128,7 +130,12 @@ export function healthSummary(health) {
       note: notes.length ? notes.join(' · ') : null,
     }
   }
-  return { tone: COLORS.textMuted, line: 'Not checked yet' }
+  return { tone: COLORS.textMuted, line: 'Not checked yet', count: cloudCount(health.accounts) }
+}
+
+/* "1 cloud", "17 clouds" — every connected account, wherever it is asked from. */
+export function cloudCount(accounts) {
+  return accounts === 1 ? '1 cloud' : `${accounts} clouds`
 }
 
 /* The line itself, at the foot of the accounts drawer.
@@ -202,9 +209,11 @@ export function CloudHealthLine({ health, onClick }) {
         whiteSpace: 'nowrap',
         color: COLORS.textMuted,
       }}>
-        {summary.note
-          || (health.schedule && !health.schedule.enabled ? 'checks off'
-            : checked ? `checked ${checked}` : 'checking hourly')}
+        {summary.note || [
+          summary.count,
+          health.schedule && !health.schedule.enabled ? 'checks off'
+            : checked ? `checked ${checked}` : 'checking hourly',
+        ].filter(Boolean).join(' · ')}
       </span>
     </button>
   )
@@ -284,7 +293,8 @@ export default function CloudHealth({ health, zIndex, onClose, onChanged }) {
             color: COLORS.textMuted,
             lineHeight: 1.6,
           }}>
-            {health?.checked_at ? `Last checked ${ago(health.checked_at)}` : 'Not checked yet'}
+            {health?.accounts > 0 ? `${cloudCount(health.accounts)} connected · ` : ''}
+            {health?.checked_at ? `last checked ${ago(health.checked_at)}` : 'not checked yet'}
             {schedule.enabled && health?.next_check_at ? ` · next ${until(health.next_check_at)}` : ''}
             {!schedule.enabled ? ' · scheduled checks are off' : ''}
           </div>

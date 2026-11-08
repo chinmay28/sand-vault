@@ -1,9 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { COLORS, FONT, accountColor, formatBytes } from '../theme'
 import { useReattach } from '../hooks'
-import { claimReattachRun } from '../reattach'
+import { claimRun } from '../runClaims'
 import { Banner, Button, Modal, Spinner } from './ui'
 import ScanProgress from './ScanProgress'
+import { mergedText } from './BackgroundRuns'
 
 /* Shards of your files, sitting on a cloud with nothing pointing at them.
 
@@ -31,7 +32,7 @@ import ScanProgress from './ScanProgress'
    it lists every account before its one write, which on a slow cloud is
    minutes, and closing the page used to cancel it. So the button starts a
    run and the dialog draws it — a bar counting clouds as they answer — and
-   can be closed while it goes. The strip over the file list (ReattachRuns)
+   can be closed while it goes. The strip over the file list (BackgroundRuns)
    carries it from there. Opened while a run is already going, the dialog
    follows that run rather than offering to start another. */
 export default function ReattachShards({ scan, providerId = '', cloud = '', zIndex = 100, onClose, onDone }) {
@@ -46,7 +47,7 @@ export default function ReattachShards({ scan, providerId = '', cloud = '', zInd
   useEffect(() => {
     if (status?.running && status.id !== watching) setWatching(status.id)
   }, [status, watching])
-  useEffect(() => claimReattachRun(watching), [watching])
+  useEffect(() => claimRun('reattach', watching), [watching])
 
   const watched = watching && status?.id === watching ? status : null
   const running = !!watched?.running
@@ -88,6 +89,12 @@ export default function ReattachShards({ scan, providerId = '', cloud = '', zInd
           {report.files} file{report.files === 1 ? '' : 's'}. No data was transferred —
           the parts were already on your clouds; only the index had forgotten them.
         </Banner>
+
+        {report.merged?.length > 0 && (
+          <Banner tone="info">
+            {mergedText(report.merged)}
+          </Banner>
+        )}
 
         {report.restored?.length > 0 && (
           <>

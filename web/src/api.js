@@ -165,12 +165,20 @@ export const api = {
      they are now, not as the scan left them. */
   sweepOrphans: ({ targets = [], dryRun = false } = {}) =>
     request('/api/vault/orphans', { method: 'POST', body: { targets, dry_run: dryRun } }),
-  /* Where the sweep above has got to, while it is still in flight — objects
-     erased against objects doomed, read beside a POST that can only answer at
-     the end. A total of 0 while running means the sweep is still listing the
-     accounts to decide what goes. Asked only while a sweep is running — see
-     useOrphanEraseProgress. */
-  orphanErasing: () => request('/api/vault/orphans/erasing'),
+  /* sweepOrphans() as a job of its own, for the dialog.
+
+     The sweep lists every account again before its first delete and then
+     erases object by object — minutes, on a vault where somebody has been
+     deleting films — and closing the page used to cancel it halfway. This
+     starts it on the server's own clock and answers at once with the run:
+     {id, running, scope, started_at, progress}. The same targets again while
+     it runs joins it; anything else is a 409. Poll sweepStatus() for where it
+     has got to — progress is {done, total}, and a total of 0 means it is still
+     listing — and, once running is false, for the report under `result` (or
+     the refusal under `error`). See useOrphanSweep. */
+  sweepStart: ({ targets = [] } = {}) =>
+    request('/api/vault/orphans/sweeping', { method: 'POST', body: { targets } }),
+  sweepStatus: () => request('/api/vault/orphans/sweeping'),
   /* The other half of the same listing, and the opposite of a sweep.
 
      A part with no record is not always rubbish. Disconnecting a cloud drops

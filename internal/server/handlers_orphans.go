@@ -203,6 +203,11 @@ func (s *Server) handleLeftoverSweep(w http.ResponseWriter, r *http.Request) {
 // with any of them.
 const orphanSweepKey = "orphan-sweep"
 
+// orphanSweepTimeout bounds a sweep, in a request or on its own: long enough
+// for a listing of every account plus a delete per object, on a vault where
+// somebody has been deleting films.
+const orphanSweepTimeout = 10 * time.Minute
+
 // handleOrphanSweep erases the parts nothing points at.
 //
 // The sweep re-scans before it deletes, so a target that has stopped being
@@ -216,9 +221,7 @@ func (s *Server) handleOrphanSweep(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Long enough for a listing of every account plus a delete per object, on
-	// a vault where somebody has been deleting films.
-	ctx, cancel := contextWithTimeout(r, 10*time.Minute)
+	ctx, cancel := contextWithTimeout(r, orphanSweepTimeout)
 	defer cancel()
 
 	// Counted as it goes, so GET /api/vault/orphans/erasing can answer whoever

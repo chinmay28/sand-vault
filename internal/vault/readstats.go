@@ -690,3 +690,62 @@ func startOfDay(at time.Time) time.Time {
 func millis(d time.Duration) float64 {
 	return float64(d.Microseconds()) / 1000
 }
+
+// mergeAccount folds everything counted against one account ID into another,
+// in every day and in all time, and forgets the first: the two were the same
+// storage under two IDs, which is what reconnecting a cloud does (see
+// departed.go). The name kept is the surviving account's. Reports whether
+// there was anything under `from` to fold.
+func (s *readStats) mergeAccount(from, into string) bool {
+	if s == nil || from == "" || into == "" || from == into {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	moved := moveCounts(&s.total, from, into)
+	for _, day := range s.days {
+		if moveCounts(day, from, into) {
+			moved = true
+		}
+	}
+	if _, named := s.names[from]; named {
+		delete(s.names, from)
+		moved = true
+	}
+	if moved {
+		s.touchedLocked(time.Now())
+	}
+	return moved
+}
+
+// moveCounts adds one account's tally in a bucket onto another's and drops
+// the first. Reports whether there was one.
+func moveCounts(b *readBucket, from, into string) bool {
+	counts, ok := b.Accounts[from]
+	if !ok {
+		return false
+	}
+	b.counterFor(into).add(counts)
+	delete(b.Accounts, from)
+	return true
+}
+
+// disconnectedNamed lists the account IDs the history holds figures for that
+// are not connected, and were last called name and of kind — the candidates
+// for a reconnected account that has no other way of being recognised.
+func (s *readStats) disconnectedNamed(name, kind string, connected func(id string) bool) []string {
+	if s == nil || name == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var ids []string
+	for id, known := range s.names {
+		if known.Name == name && known.Kind == kind && !connected(id) {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
