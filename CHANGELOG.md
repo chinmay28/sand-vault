@@ -42,11 +42,9 @@ else while one runs is a `409` — and `GET` says how far it is, then what it
 erased. `POST /api/vault/orphans` still answers in one request for scripts and
 dry runs. Locking the vault stops a sweep between deletes.
 
-The cloud health line at the foot of the accounts drawer now says how many
-clouds there are when its first line does not — *1 disk warning* over
-*17 clouds · checked 3m ago* — and the health panel opens on *17 clouds
-connected · last checked …*. The line under the figures says what it is spread
-over, too: *926 GB across 17 accounts · strict*.
+The line under the figures in the accounts drawer says how many accounts the
+vault is spread over — *926 GB across 17 accounts · strict* — and the health
+panel opens on *17 clouds connected · last checked …*.
 
 ### Putting mislaid parts back carries on with the page closed
 
