@@ -119,6 +119,9 @@ export default function Checksums({ kind, path, vault = '', onClose, onChanged }
      runs shows that run, and says it is not the one that was asked for. */
   const theirs = running && !!status.progress?.kind && status.progress.kind !== kind
   const report = !running && !dismissed && mine(status?.result) ? status.result : null
+  /* A run that ended in an error rather than a report — the vault locked, the
+     sub vault shut before it began — has that to say and nothing else. */
+  const failed = !running && !dismissed && !status?.result && status?.error ? status.error : null
 
   const files = survey ? (kind === 'verify' ? survey.with : survey.without) : 0
   const bytes = survey ? (kind === 'verify' ? survey.with_bytes : survey.without_bytes) : 0
@@ -194,6 +197,7 @@ export default function Checksums({ kind, path, vault = '', onClose, onChanged }
   return (
     <Modal title={text.title} subtitle={path} onClose={onClose} width={600}>
       {error && <Banner tone="error" onDismiss={() => setError(null)}>{error}</Banner>}
+      {failed && <Banner tone="error" onDismiss={() => setDismissed(true)}>The last run did not finish: {failed}</Banner>}
       {body}
     </Modal>
   )
@@ -308,7 +312,7 @@ function Report({ report, onAgain, onClose }) {
     <>
       <p style={{ ...para, color: COLORS.text }}>
         {report.checked.toLocaleString()} of {report.files.toLocaleString()} file{report.files === 1 ? '' : 's'} read
-        {' '}({formatBytes(report.bytes)}){report.stopped ? ', stopped before the end' : ''}.
+        {' '}({formatBytes(report.bytes)}){report.stopped ? `, stopped before the end${report.stopped_by ? ` because ${report.stopped_by}` : ''}` : ''}.
       </p>
       <p style={{ ...para, ...mono, fontSize: '12px' }}>{tally || 'Nothing was read.'}</p>
 

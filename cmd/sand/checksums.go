@@ -84,6 +84,9 @@ func checksumsCmd() *cobra.Command {
 				fmt.Printf("  %-10s %s: %s\n", f.State, f.Path, f.Detail)
 			}
 			if report.Stopped {
+				if report.StoppedBy != "" {
+					return fmt.Errorf("stopped before the end: %s", report.StoppedBy)
+				}
 				return fmt.Errorf("stopped before the end")
 			}
 			if n := report.Mismatched + report.Unreadable; n > 0 {

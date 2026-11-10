@@ -222,8 +222,10 @@ type ChecksumReport struct {
 	Truncated bool              `json:"truncated,omitempty"`
 
 	// Stopped says the job was cut short, and the counts cover only the
-	// files it reached.
-	Stopped bool `json:"stopped,omitempty"`
+	// files it reached. StoppedBy says what cut it short when that was not
+	// somebody asking: the sub vault it was in being locked or deleted.
+	Stopped   bool   `json:"stopped,omitempty"`
+	StoppedBy string `json:"stopped_by,omitempty"`
 
 	// Ledger is the ledger as a compute left it, having written it.
 	Ledger      *ChecksumLedger `json:"ledger,omitempty"`
@@ -283,6 +285,28 @@ type ChecksumLedger struct {
 	// Written says this call stored a new one, as against finding the one
 	// already there up to date.
 	Written bool `json:"written,omitempty"`
+}
+
+// scopeShut says why a job over a vault cannot go on because of the vault
+// itself, or nothing if it can.
+//
+// The main vault locking is ErrLocked wherever it is met and ends a job
+// outright. A sub vault is different: it can be shut, or deleted, while the
+// vault holding it stays open, and a job walking it would then meet every
+// remaining file as one that "could not be read" — a report of damage that
+// is not damage. So a job asks this between files and after any failure,
+// and ends as stopped, with what it had done and the reason.
+func (v *Vault) scopeShut(scope Scope) string {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	_, err := v.manifestForLocked(scope)
+	switch {
+	case errors.Is(err, ErrSubVaultLocked):
+		return "the sub vault was locked"
+	case errors.Is(err, ErrNoSubVault):
+		return "the sub vault was deleted"
+	}
+	return ""
 }
 
 // isLedger reports whether an index row is the ledger itself, which is never
@@ -575,6 +599,10 @@ func (v *Vault) runChecksums(ctx context.Context, kind ChecksumKind, scope Scope
 			report.Stopped = true
 			break
 		}
+		if why := v.scopeShut(scope); why != "" {
+			report.Stopped, report.StoppedBy = true, why
+			break
+		}
 		var within int64
 		say := func() {
 			if opts.OnProgress != nil {
@@ -605,6 +633,14 @@ func (v *Vault) runChecksums(ctx context.Context, kind ChecksumKind, scope Scope
 			within += int64(n)
 			say()
 		})
+		// A read that failed because its vault shut underneath it is not a
+		// finding about the file.
+		if err != nil {
+			if why := v.scopeShut(scope); why != "" {
+				report.Stopped, report.StoppedBy = true, why
+				break
+			}
+		}
 		switch {
 		case errors.Is(err, ErrLocked):
 			return nil, err
@@ -627,6 +663,14 @@ func (v *Vault) runChecksums(ctx context.Context, kind ChecksumKind, scope Scope
 			report.Matched++
 		default:
 			recordedNow, err := v.RecordChecksum(entry.ID, archiveID, sum)
+			// Read to the end and then nowhere to write it: the vault shut
+			// between the last byte and the record. Not the file's doing.
+			if !recordedNow {
+				if why := v.scopeShut(scope); why != "" {
+					report.Stopped, report.StoppedBy = true, why
+					break
+				}
+			}
 			switch {
 			case errors.Is(err, ErrLocked):
 				return nil, err
@@ -655,7 +699,9 @@ func (v *Vault) runChecksums(ctx context.Context, kind ChecksumKind, scope Scope
 
 	// A compute changes what the ledger should say, so it leaves the ledger
 	// saying it — even when stopped, for the files it got to.
-	if kind == ChecksumCompute && report.Computed > 0 {
+	// A sub vault that shut took its index with it: the checksums recorded are
+	// in it, and its ledger is brought up to date when it is next open.
+	if kind == ChecksumCompute && report.Computed > 0 && report.StoppedBy == "" {
 		ledger, err := v.WriteChecksumLedger(context.WithoutCancel(ctx), scope)
 		if err != nil {
 			report.LedgerError = err.Error()

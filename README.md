@@ -3045,6 +3045,11 @@ runs. **Pause** holds it at the file it is on; **Stop** ends it and keeps what
 it had done. Only one runs at a time. A paused job does not keep an idle vault
 from locking, and locking ends it.
 
+A sub vault has a ledger of its own, at its own root and on its own default
+clouds where it has them, and a job started inside one stays inside it. Lock a
+sub vault while a job is working through it and the job stops there, saying
+so, with what it had done kept.
+
 A file with no checksum also gets one the first time it is opened and read
 from start to finish — a download, or a picture or document previewed.
 

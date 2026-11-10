@@ -181,3 +181,82 @@ func TestOpeningAFileRecordsItsMissingChecksum(t *testing.T) {
 		t.Fatalf("recorded %q, want the file's SHA-256", got)
 	}
 }
+
+// A job in a sub vault, over HTTP: it walks that vault and writes that vault's
+// ledger, and locking the sub vault under it ends it as stopped with the
+// reason rather than as a list of unreadable files.
+func TestChecksumJobInASubVaultAndLockingItMidway(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("the vault password", 3)
+	sub := c.createSub("Taxes", apiSubPassword)
+	c.upload("open.bin", "/", bytes.Repeat([]byte("o"), 5_000))
+	for _, name := range []string{"a.bin", "b.bin", "c.bin"} {
+		c.uploadInto(sub, name, "/", bytes.Repeat([]byte(name), 30_000))
+	}
+
+	w, survey := c.json(http.MethodGet, "/api/checksums/survey?path=/&vault="+sub, nil)
+	if w.Code != http.StatusOK || survey["files"].(float64) != 3 {
+		t.Fatalf("survey of the sub vault: %d %v", w.Code, survey)
+	}
+
+	w, ledger := c.json(http.MethodPost, "/api/checksums/ledger?vault="+sub, nil)
+	if w.Code != http.StatusOK || ledger["written"] != true || ledger["entries"].(float64) != 3 {
+		t.Fatalf("the sub vault's ledger: %d %v", w.Code, ledger)
+	}
+	if _, main := c.json(http.MethodGet, "/api/checksums/survey?path=/", nil); main["ledger"].(map[string]any)["stored"] == true {
+		t.Error("writing a sub vault's ledger wrote the main vault's")
+	}
+
+	// Slow enough to still be on its first file when the sub vault shuts.
+	w, _ = c.json(http.MethodPost, "/api/checksums", map[string]any{"kind": "verify", "path": "/", "vault": sub, "rate": 4096})
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("start: %d %s", w.Code, w.Body.String())
+	}
+	// Under way before the lock: a job that has not begun when its vault
+	// shuts is refused outright, which is the next test's business.
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		at, _ := c.checksumsStatus()["progress"].(map[string]any)
+		if at != nil && at["bytes"].(float64) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the job never got going")
+		}
+	}
+	if w, _ := c.json(http.MethodPost, "/api/subvaults/"+sub+"/lock", nil); w.Code != http.StatusOK {
+		t.Fatalf("lock: %d", w.Code)
+	}
+	c.json(http.MethodPost, "/api/checksums/rate", map[string]any{"rate": 0})
+
+	status := c.await("/api/checksums")
+	report, _ := status["result"].(map[string]any)
+	if report == nil || report["stopped"] != true || report["stopped_by"] != "the sub vault was locked" {
+		t.Fatalf("status = %v", status)
+	}
+	if report["unreadable"].(float64) != 0 || len(report["findings"].([]any)) != 0 {
+		t.Fatalf("a shut sub vault was reported as damage: %v", report)
+	}
+}
+
+// A job asked of a sub vault that is shut is refused, and the refusal is what
+// the status carries — not an empty report.
+func TestChecksumJobInAShutSubVaultSaysSo(t *testing.T) {
+	c := newTestClient(t)
+	c.setup("the vault password", 3)
+	sub := c.createSub("Taxes", apiSubPassword)
+	c.uploadInto(sub, "a.bin", "/", []byte("in the sub vault"))
+	c.json(http.MethodPost, "/api/subvaults/"+sub+"/lock", nil)
+
+	// The folder cannot be looked up in a shut vault, so the start is refused.
+	w, _ := c.json(http.MethodPost, "/api/checksums", map[string]any{"kind": "verify", "path": "/", "vault": sub})
+	if w.Code == http.StatusAccepted {
+		status := c.await("/api/checksums")
+		if msg, _ := status["error"].(string); !strings.Contains(msg, "locked") || status["result"] != nil {
+			t.Fatalf("status = %v", status)
+		}
+		return
+	}
+	if w.Code != http.StatusNotFound && w.Code != http.StatusUnauthorized {
+		t.Fatalf("start in a shut sub vault: %d %s", w.Code, w.Body.String())
+	}
+}

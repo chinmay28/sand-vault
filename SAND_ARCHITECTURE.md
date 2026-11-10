@@ -2473,6 +2473,12 @@ returns the report so far, marked stopped. The server holds one such job at a
 time beside its control (`handlers_checksums.go`); a paused job does not count
 as activity for the idle lock.
 
+A sub vault can shut while the vault holding it stays open, which a job over
+it would otherwise meet as one unreadable file after another. `scopeShut` is
+asked between files and after any failure — in these two jobs, in `CheckFolder`
+and in `RepairChecked` — and a shut scope ends the job as stopped with the
+reason (`StoppedBy`) and what it had done, never as findings.
+
 ---
 
 ## 7. Part File Format

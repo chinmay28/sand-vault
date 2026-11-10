@@ -46,6 +46,15 @@ time. A paused job does not hold an idle vault open.
 A file with no checksum that is **opened and read to the end** has one
 recorded from that read.
 
+**Sub vaults.** Each keeps its own `/checksums.gz`, of its own files, on its
+own default clouds where it has them; the main vault's ledger never lists a
+sub vault's files. A job started inside a sub vault walks that sub vault only.
+Locking or deleting a sub vault while a job is in it — a checksum job, a deep
+check or its repair — ends the job as *stopped, because the sub vault was
+locked*, keeping what it had done, instead of reporting every remaining file
+as unreadable. A job that ended in an error now shows that error in its
+dialog.
+
 `sand checksums write | verify [folder] | compute [folder]`, with `--limit`
 in MB a second. `POST`/`GET /api/checksums`, `…/pause`, `…/resume`, `…/rate`,
 `…/stop`, `…/ledger`, `GET /api/checksums/survey`.
