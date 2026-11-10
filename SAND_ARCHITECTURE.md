@@ -2441,6 +2441,38 @@ faulty parts named absent, or with the replica as source — onto the accounts
 the file is already on, and it refuses a file whose archive ID has changed
 since the check. The server runs both as `jobWatch` jobs (`handlers_check.go`).
 
+### 6.7 Checksums and their ledger
+
+A file's checksum is `Entry.Hash` — there is one record, and nothing below adds
+a second that could disagree with it (`internal/vault/checksums.go`).
+
+`checksums.gz` is that record written out: `path, sha256` a line
+(`internal/checksums`), stored as an ordinary entry at `/` of each vault's own
+tree through `Upload`, so it lands on the default clouds and travels with the
+index like any file. The encoding is deterministic — sorted, no time in the
+gzip header — so "would the bytes change" is answered by hashing them against
+the stored ledger's own `Hash`, and an unchanged ledger is never re-uploaded.
+A server loop calls `WriteChecksumLedgers` on a tick rather than hooking the
+index write: storing the ledger is an upload, and an import of ten thousand
+files is ten thousand index writes. A vault whose `UpdatedAt` has not moved
+since its ledger was last brought up to date is not looked at.
+
+`VerifyChecksums` and `ComputeChecksums` are one loop over a folder's
+descendants, reading each file through the sequential reader (§4.3) so nothing
+is put in the shared chunk cache. Verify compares and writes nothing. Compute
+calls `RecordChecksum`, which sets a hash only where there is none and only if
+the placement read is still the entry's — a checksum taken at upload is never
+replaced by a later read. The same call is what a whole-file HTTP read of a
+hashless entry ends with (`checksumOnRead`, which digests only bytes that
+arrive in order from zero).
+
+Both are paced by a `ChecksumControl`: a byte rate enforced by sleeping out
+each read's share, changeable while running (the debt owed at the old rate is
+forgiven), and a pause checked between reads and between files. Cancelling
+returns the report so far, marked stopped. The server holds one such job at a
+time beside its control (`handlers_checksums.go`); a paused job does not count
+as activity for the idle lock.
+
 ---
 
 ## 7. Part File Format
@@ -3306,6 +3338,7 @@ sand/
 │   ├── archive/               # encode.go — the in-memory pipeline both modes use
 │   ├── compress/              # zstd
 │   ├── crypto/                # Argon2id + AES-256-GCM
+│   ├── checksums/             # the checksums.gz ledger format
 │   ├── filecheck/             # is this a well-formed JPEG / PDF / MP4… (deep check)
 │   ├── splitter/              # split, XOR, reconstruct
 │   ├── sandfile/              # binary .sand part format

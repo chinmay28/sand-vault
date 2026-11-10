@@ -136,6 +136,15 @@ type Server struct {
 	checks  *checkWatch
 	repairs *repairWatch
 
+	// checksums is the verify or compute of a folder's checksums that is
+	// running, with the control that paces it. See handlers_checksums.go.
+	checksums *checksumJobs
+
+	// ChecksumsEvery is how often checksums.gz is brought up to date with
+	// the index while the vault is unlocked. Zero leaves it to be written
+	// only when asked for.
+	ChecksumsEvery time.Duration
+
 	// sweeps is the orphan sweep, run the same way: a listing of every
 	// account and then a delete per object, which must not stop halfway
 	// because the page that asked was closed. See sweep_run.go.
@@ -290,6 +299,9 @@ func (s *Server) Handler() (http.Handler, error) {
 	}
 	if s.checks == nil {
 		s.checks = newJobWatch[vault.CheckProgress, vault.CheckReport]()
+	}
+	if s.checksums == nil {
+		s.checksums = newChecksumJobs()
 	}
 	if s.repairs == nil {
 		s.repairs = newJobWatch[vault.RepairProgress, vault.RepairReport]()
@@ -622,6 +634,17 @@ func (s *Server) Handler() (http.Handler, error) {
 		"POST /api/check/repair":      s.handleRepairStart,
 		"GET /api/check/repair":       s.handleRepairStatus,
 		"POST /api/check/repair/stop": s.handleRepairStop,
+		// Checksums: what a verify or a compute of a folder would read, the
+		// job itself with its pace, pause and stop, and the ledger written
+		// now. See handlers_checksums.go.
+		"GET /api/checksums/survey":  s.handleChecksumSurvey,
+		"POST /api/checksums":        s.handleChecksumStart,
+		"GET /api/checksums":         s.handleChecksumStatus,
+		"POST /api/checksums/pause":  s.handleChecksumControl(checksumPause),
+		"POST /api/checksums/resume": s.handleChecksumControl(checksumResume),
+		"POST /api/checksums/rate":   s.handleChecksumControl(checksumRate),
+		"POST /api/checksums/stop":   s.handleChecksumStop,
+		"POST /api/checksums/ledger": s.handleChecksumLedgerWrite,
 		// Converting a pre-chunking file into the chunked format, which is what
 		// the read path's refusal asks for. See handlers_convert.go.
 		"GET /api/conversions":           s.handleConversionsPending,
@@ -889,6 +912,9 @@ func (s *Server) Start() error {
 	// And the files a password change left on the previous key, moved one at
 	// a time at the pace the change asked for, and nothing while locked — see
 	// rekeyLoop.
+	// And checksums.gz, kept in step with the index, and nothing while
+	// locked or while the index has not changed — see checksumLedgerLoop.
+	go s.checksumLedgerLoop()
 	go s.rekeyLoop()
 	// And the second copies the replication policy asks for, made one at a
 	// time at its pace, and nothing while locked — see replicationLoop.
@@ -1003,7 +1029,7 @@ func (s *Server) autoLockLoop() {
 		// too: it says so as each cloud answers, but says nothing while it
 		// waits on the slowest one, and that wait is the whole of it.
 		if s.strayScans.running() || s.reattaches.running() || s.sweeps.running() ||
-			s.checks.running() || s.repairs.running() {
+			s.checks.running() || s.repairs.running() || s.checksums.busy() {
 			continue
 		}
 		// A replica half-made would be erased and started again on the next
@@ -1021,6 +1047,7 @@ func (s *Server) autoLockLoop() {
 		s.sweeps.stopAll()
 		s.checks.stopAll()
 		s.repairs.stopAll()
+		s.checksums.stopAll()
 		log.Print("vault auto-locked after idle timeout")
 	}
 }

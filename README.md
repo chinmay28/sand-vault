@@ -2244,6 +2244,12 @@ sand check [path] [--all]          Verify parts are still there; non-zero if not
 sand check --deep <path> [--fix]   Download and verify a file or folder: every
                                    shard, the hash, the contents — and with
                                    --fix, rebuild what can be
+sand checksums write               Bring /checksums.gz up to date with the index
+sand checksums verify [dir] [--limit MB/s]
+                                   Read every file under a folder and hold it
+                                   to its checksum
+sand checksums compute [dir] [--limit MB/s]
+                                   Record a checksum for files that have none
 ```
 
 ### Automation
@@ -3001,6 +3007,47 @@ a folder rather than the whole vault when the vault is large.
 
 `sand check --deep <file-or-folder> [--fix]` is the same check from a terminal.
 
+### Checksums, and the ledger of them
+
+Every file has a checksum: the SHA-256 of its contents, taken from the bytes as
+they are stored. **`checksums.gz`** at the root of the vault lists them all —
+
+```
+$ zcat checksums.gz
+/photos/2024/hike.jpg, 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+/taxes/2023, final.pdf, e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+```
+
+— the full path, a comma and a space, and the checksum, one file a line. A
+comma in a name needs no quoting (the split is at the last `, ` on the line);
+a newline or a backslash in one is written `\n` or `\\`. It is an ordinary
+file in the vault, stored on the default clouds like any other, so it can be
+downloaded and a file checked against it with `sha256sum` and nothing else.
+SAND rewrites it when the index has changed — every two minutes while
+unlocked, by default — and leaves it alone when nothing has. The name is
+reserved: a file of your own called `/checksums.gz` would be replaced.
+
+Two entries in the menu use the checksums, each over the folder you are in and
+everything under it:
+
+- **Check files against their checksums** reads each file back as a download
+  would and compares. This is the quick corruption check — about 1× the
+  folder's size to read, against 1.5× for *Find and fix corrupt files* — and it
+  says *that* a file is wrong, not which part of it.
+- **Calculate missing checksums** is for files that have none: ones recovered
+  from the accounts after the index was lost, or stored by a very old build.
+  It reads them, records the checksum, and rewrites the ledger. On a vault
+  where every file was uploaded normally it has nothing to do, and says so.
+
+Both run in the background on the machine SAND is on — closing the dialog
+stops nothing — at a speed you pick before starting and can change while it
+runs. **Pause** holds it at the file it is on; **Stop** ends it and keeps what
+it had done. Only one runs at a time. A paused job does not keep an idle vault
+from locking, and locking ends it.
+
+A file with no checksum also gets one the first time it is opened and read
+from start to finish — a download, or a picture or document previewed.
+
 **A picture that will not open gets checked.** When the browser cannot draw a
 picture whose bytes have all arrived, the preview runs this check on that one
 file and says which it is: intact, or what is wrong with it.
@@ -3065,6 +3112,10 @@ is opened, and not at all by a browser that needs no help.
 | POST · GET | `/api/check` | Start a deep check of a folder (`{path, vault, kinds}`) · where it has got to, then what it found |
 | POST | `/api/check/stop` | Stop it, keeping what it found |
 | POST · GET | `/api/check/repair` | Repair files the last check flagged (`{ids}`) · progress, then the outcome |
+| GET | `/api/checksums/survey?path=` | How many files under a folder have a checksum and how many do not, and how the ledger stands |
+| POST · GET | `/api/checksums` | Start a `verify` or `compute` of a folder (`{kind, path, vault, rate}`, rate in bytes a second) · where it has got to — with `paused` and `rate` — then what it did |
+| POST | `/api/checksums/pause` · `/resume` · `/rate` · `/stop` | Hold it, let it go, change its pace (`{rate}`), end it keeping what was done |
+| POST | `/api/checksums/ledger` | Bring `/checksums.gz` up to date now |
 | GET | `/api/degraded?offset=&limit=` | The files missing at least one part, worst first and paged — what the accounts panel's "N files missing a spare part" is counting |
 | POST | `/api/files/{id}/move` | Rename / move into another folder |
 | DELETE | `/api/files/{id}` | Erase every part, holding the request open until they are gone |

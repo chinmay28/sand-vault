@@ -590,6 +590,30 @@ export const api = {
   repairStart: (ids = []) => request('/api/check/repair', { method: 'POST', body: { ids } }),
   repairStatus: () => request('/api/check/repair'),
   repairStop: () => request('/api/check/repair/stop', { method: 'POST' }),
+
+  /* Checksums. Every file has one — the SHA-256 of its contents — and
+     checksums.gz at the root of the vault lists them. checksumSurvey says how
+     many files under a folder have one and how many do not, and how the
+     ledger stands. checksumStart runs one of two jobs on the server: 'verify'
+     reads every file with a checksum and holds it to it; 'compute' reads the
+     ones with none and records one. `rate` is bytes a second, zero for
+     unlimited. One job at a time: the same one asked again joins it, another
+     is a 409. checksumStatus is where it has got to — with `paused` and
+     `rate` as they are now — and then what it did. Pause, resume and rate
+     act on the running job and answer with its status; stop ends it with
+     what it had done. checksumLedgerWrite brings the ledger up to date now.
+     See internal/server/handlers_checksums.go. */
+  checksumSurvey: (path, vault = '') =>
+    request(`/api/checksums/survey?path=${encodeURIComponent(path)}${vaultParam(vault)}`),
+  checksumStart: (kind, path, vault = '', rate = 0) =>
+    request('/api/checksums', { method: 'POST', body: { kind, path, vault, rate } }),
+  checksumStatus: () => request('/api/checksums'),
+  checksumPause: () => request('/api/checksums/pause', { method: 'POST' }),
+  checksumResume: () => request('/api/checksums/resume', { method: 'POST' }),
+  checksumRate: (rate) => request('/api/checksums/rate', { method: 'POST', body: { rate } }),
+  checksumStop: () => request('/api/checksums/stop', { method: 'POST' }),
+  checksumLedgerWrite: (vault = '') =>
+    request(`/api/checksums/ledger${vault ? `?vault=${encodeURIComponent(vault)}` : ''}`, { method: 'POST' }),
   /* Delete a selection — files, folders, or both — as one run on the machine.
      `targets` is `{ id }` for a file or `{ path, vault }` for a folder, the
      shape relocate() names a selection in; a path naming a file is a file.

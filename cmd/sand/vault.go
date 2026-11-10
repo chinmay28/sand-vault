@@ -23,6 +23,7 @@ func serveCmd() *cobra.Command {
 		webdavPrefix    string
 		webdavSubPrefix string
 		profile         string
+		checksumsEvery  time.Duration
 	)
 
 	cmd := &cobra.Command{
@@ -38,6 +39,7 @@ func serveCmd() *cobra.Command {
 				WebDAVPrefix:    webdavPrefix,
 				WebDAVSubPrefix: webdavSubPrefix,
 				Profile:         profile,
+				ChecksumsEvery:  checksumsEvery,
 			}
 			return s.Start()
 		},
@@ -66,6 +68,9 @@ func serveCmd() *cobra.Command {
 	// vault, which Settings → This machine writes; the flag pins it from
 	// the unit file for a box that is deliberately run as something it is
 	// not, and the page then says so rather than fighting it.
+	cmd.Flags().DurationVar(&checksumsEvery, "checksums-every", server.DefaultChecksumsEvery,
+		"how often checksums.gz at the root of the vault is brought up to date with the index, "+
+			"when the index has changed; 0 writes it only when asked")
 	cmd.Flags().StringVar(&profile, "profile", os.Getenv("SAND_PROFILE"),
 		"size SAND to a machine: auto, pi5, workstation or custom (default from SAND_PROFILE, else machine.json beside the vault)")
 	return cmd

@@ -96,6 +96,10 @@ def server(sand_bin, vault_dir):
     proc = subprocess.Popen(
         [
             sand_bin, "serve",
+            # checksums.gz is written when asked for here rather than on a
+            # timer: a file appearing at the root partway through the suite
+            # would change what every listing of the root is expected to hold.
+            "--checksums-every", "0",
             "--port", str(port),
             "--bind", "127.0.0.1",
             "--vault", os.path.join(vault_dir, "vault.sand"),
@@ -146,6 +150,10 @@ def spawn_server(sand_bin, tmp_path):
         proc = subprocess.Popen(
             [
                 sand_bin, "serve",
+            # checksums.gz is written when asked for here rather than on a
+            # timer: a file appearing at the root partway through the suite
+            # would change what every listing of the root is expected to hold.
+            "--checksums-every", "0",
                 "--port", str(port),
                 "--bind", "127.0.0.1",
                 "--vault", str(tmp_path / f"{name}.sand"),
@@ -396,6 +404,10 @@ def bucket_server(sand_bin, s3_stub, vault_password):
     proc = subprocess.Popen(
         [
             sand_bin, "serve",
+            # checksums.gz is written when asked for here rather than on a
+            # timer: a file appearing at the root partway through the suite
+            # would change what every listing of the root is expected to hold.
+            "--checksums-every", "0",
             "--port", str(port),
             "--bind", "127.0.0.1",
             "--vault", os.path.join(directory, "vault.sand"),

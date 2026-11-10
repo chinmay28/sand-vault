@@ -3070,6 +3070,43 @@ class TestNoConsoleErrors:
 DIALOG_CONNECT = re.compile(r"^\+ Connect (another|a missing) cloud$")
 
 
+class TestChecksums:
+    """Organize and automate → the two checksum entries.
+
+    A verify of a folder, started from the menu at a chosen speed, runs on the
+    server and comes back saying every file matched; the compute beside it
+    finds nothing to do, because an upload records a checksum as it stores.
+    """
+
+    def test_a_folder_verifies_against_its_checksums(self, app, tmp_path):
+        make_folder(app, "summed")
+        app.get_by_text("summed").first.click()
+        app.wait_for_load_state("networkidle")
+
+        source = tmp_path / "ledgered.txt"
+        source.write_bytes(b"held to its checksum\n" * 200)
+        upload_and_settle(app, source)
+
+        app.locator('button[aria-label="Organize and automate this folder"]').click()
+        app.get_by_role("button", name=re.compile("Check files against their checksums")).click()
+        dialog = app.get_by_role("dialog", name="Check files against their checksums")
+        dialog.wait_for(timeout=20000)
+        expect(dialog.get_by_text("with a checksum")).to_be_visible(timeout=20000)
+        dialog.get_by_label("Speed").select_option(label="5 MB/s")
+        dialog.get_by_role("button", name="Check 1 file").click()
+
+        expect(dialog.get_by_text(re.compile(r"1 of 1 file read"))).to_be_visible(timeout=60000)
+        expect(dialog.get_by_text(re.compile(r"exactly the checksum taken when it was stored"))).to_be_visible()
+        dialog.get_by_role("button", name="Done").click()
+
+        app.locator('button[aria-label="Organize and automate this folder"]').click()
+        app.get_by_role("button", name=re.compile("Calculate missing checksums")).click()
+        dialog = app.get_by_role("dialog", name="Calculate missing checksums")
+        dialog.wait_for(timeout=20000)
+        expect(dialog.get_by_text("Every file under this folder already has a checksum.")).to_be_visible(timeout=20000)
+        expect(dialog.get_by_role("button", name="Calculate 0 checksums")).to_be_disabled()
+
+
 class TestHEICPictures:
     """A HEIC photograph opens in a browser that cannot decode HEIC.
 
