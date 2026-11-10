@@ -911,6 +911,18 @@ func (v *Vault) relocateEntry(ctx context.Context, plan *FilePlan, accounts []st
 		return v.recodeEntry(ctx, plan, accounts)
 	}
 
+	// One carry per file at a time. Two runs over the same file — a folder
+	// and a file inside it, the same folder asked twice — copy the same part
+	// to the same key, and each then tidies up as if it were alone: one run's
+	// rollback erased the copy the other had just committed, and one run's
+	// erase of the old account landed after the other had moved the part
+	// back onto it. Either leaves the index naming a part with chunks gone.
+	// The second run leaves the file for the first, as a rebuild does.
+	if _, busy := v.relocating.LoadOrStore(plan.ID, true); busy {
+		return out, fmt.Errorf("%s is already being moved by another run: %w", plan.Path, ErrMigrationBusy)
+	}
+	defer v.relocating.Delete(plan.ID)
+
 	v.mu.RLock()
 	if v.dataKey == nil {
 		v.mu.RUnlock()

@@ -72,6 +72,18 @@ def find_file(session, server, name, path="/"):
     raise AssertionError(f"{name} not found in {path}")
 
 
+def _await_job(session, url, timeout=60):
+    """Poll one of the server's background jobs until it is no longer running."""
+    deadline = time.time() + timeout
+    while True:
+        status = session.get(url, timeout=30).json()
+        if not status.get("running"):
+            assert status.get("result") is not None, status
+            return status
+        assert time.time() < deadline, f"{url} did not finish: {status}"
+        time.sleep(0.1)
+
+
 def part_path(clouds, shard):
     """Where a stored part actually sits on disk, or None if it is gone.
 
@@ -393,6 +405,61 @@ class TestStoreAndRetrieve:
         assert health["recoverable"] is True, "two parts should still be enough"
         assert sum(1 for s in health["shards"] if not s["present"]) == 1
 
+    def test_deep_check_finds_a_damaged_part_and_repair_rebuilds_it(self, server, unlocked, clouds):
+        """A part that is present and wrong: invisible to the health check,
+        survived by a read, named by the deep check, and put right by its
+        repair."""
+        accounts = account_ids(unlocked, server, "cloud-one", "cloud-two", "cloud-three")
+        unlocked.post(f"{server}/api/folders", json={"path": "/deep-check"}, headers={"Origin": server}, timeout=30)
+        content = os.urandom(30_000)
+        r = upload(unlocked, server, "rotted.bin", content, path="/deep-check", accounts=accounts)
+        entry = r.json()["results"][0]["file"]
+        file_id = entry["id"]
+
+        victim = part_path(clouds, entry["shards"][0])
+        assert victim, entry["shards"][0]["key"]
+        with open(victim, "r+b") as f:
+            f.seek(-25, os.SEEK_END)
+            byte = f.read(1)
+            f.seek(-25, os.SEEK_END)
+            f.write(bytes([byte[0] ^ 0x01]))
+
+        # The object is there, so the health check sees nothing wrong...
+        health = unlocked.get(f"{server}/api/files/{file_id}/health", timeout=60).json()
+        assert all(s["present"] for s in health["shards"])
+        # ...and the file still reads, from the two parts that are right.
+        got = unlocked.get(f"{server}/api/files/{file_id}/content", timeout=60)
+        assert got.status_code == 200 and got.content == content
+
+        r = unlocked.post(f"{server}/api/check", json={"path": "/deep-check"}, headers={"Origin": server}, timeout=30)
+        assert r.status_code == 202, r.text
+        report = _await_job(unlocked, f"{server}/api/check")["result"]
+        assert report["checked"] == 1 and report["repairable"] == 1, report
+        finding = report["flagged"][0]
+        assert finding["id"] == file_id and finding["fix"] == "rebuild" and finding["hash_ok"]
+        assert [f["kind"] for f in finding["faults"]] == ["damaged"]
+        assert finding["faults"][0]["part"] == entry["shards"][0]["part"]
+
+        r = unlocked.post(f"{server}/api/check/repair", json={"ids": [file_id]}, headers={"Origin": server}, timeout=30)
+        assert r.status_code == 202, r.text
+        outcome = _await_job(unlocked, f"{server}/api/check/repair")["result"]
+        assert outcome["repaired"] == 1, outcome
+
+        after = unlocked.post(f"{server}/api/files/{file_id}/check", headers={"Origin": server}, timeout=60).json()
+        assert after["state"] == "sound" and after["good"] == 3, after
+        assert unlocked.get(f"{server}/api/files/{file_id}/content", timeout=60).content == content
+
+    def test_deep_check_tells_a_file_that_arrived_broken_from_one_the_vault_broke(self, server, unlocked):
+        # The front half of a JPEG: a header, a scan, and no end.
+        cut = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00" \
+              b"\xff\xda\x00\x08\x01\x01\x00\x00\x3f\x00" + bytes(range(1, 200)) * 20
+        r = upload(unlocked, server, "cut-short.jpg", cut)
+        file_id = r.json()["results"][0]["file"]["id"]
+        check = unlocked.post(f"{server}/api/files/{file_id}/check", headers={"Origin": server}, timeout=60).json()
+        assert check["state"] == "damaged_at_source", check
+        assert check["hash_ok"] and not check.get("faults") and not check.get("fix")
+        assert check["content"]["format"] == "JPEG"
+
     def test_upload_keeps_the_files_own_modified_time(self, server, unlocked):
         """A photograph from 2019 is filed under 2019, not under today."""
         taken = 1563099720  # 2019-07-14 10:22:00 UTC
@@ -626,6 +693,9 @@ class TestContentSafety:
 def cli_vault(sand_bin, vault_dir):
     """A separate vault for the CLI tests, wired to three accounts."""
     cli(sand_bin, vault_dir, "vault", "init", "--policy", "strict")
+    # A local folder is only ever created inside a parent that exists — a
+    # missing parent reads as an unmounted drive — so the parent is made here.
+    os.makedirs(os.path.join(vault_dir, "cli-clouds"), exist_ok=True)
     for name in ("cli-a", "cli-b", "cli-c"):
         path = os.path.join(vault_dir, "cli-clouds", name)
         cli(sand_bin, vault_dir, "remote", "add", "local", "--name", name, "--set", f"path={path}")

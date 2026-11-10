@@ -2241,6 +2241,9 @@ sand relocate <path> --accounts a,b,c [--scheme m-of-n] [--from replica] [--dry-
                                    from the replica, rebuild its parts there
 sand rm <path> [-r]                Erases every part from every account
 sand check [path] [--all]          Verify parts are still there; non-zero if not
+sand check --deep <path> [--fix]   Download and verify a file or folder: every
+                                   shard, the hash, the contents — and with
+                                   --fix, rebuild what can be
 ```
 
 ### Automation
@@ -2960,6 +2963,56 @@ tools wants one per file. Like the survey it walks the index in memory,
 decrypts nothing and contacts no account; all four answers come back from that
 one walk, so comparing them costs nothing.
 
+### Finding corrupt files, and fixing them
+
+**Find and fix corrupt files** is the one entry in that menu that asks whether
+the files are still *right* rather than where they are. The per-file health
+badge and a folder's scheduled sweep both ask each cloud whether an object
+exists; neither downloads it, so neither can tell a part that is present from a
+part that is present and wrong.
+
+This one reads everything. Tick the kinds to check — pictures, documents and
+video to begin with — and the dialog says how many files and how much they
+weigh before anything starts; then, for each file, the server:
+
+1. fetches **every** shard of every chunk from every cloud, not only the ones
+   a download needs, and opens each: is it there, and is it the part it is
+   recorded as;
+2. rebuilds the chunk and checks that the shards it did *not* need agree with
+   the ones it did;
+3. holds the whole file to the SHA-256 taken when it was stored;
+4. looks at the result as the kind of file it is — does the JPEG have its end,
+   does the film have its index, does the PDF, the `.docx`, the HEIC hold
+   together.
+
+| It says | It means | Fix |
+|---|---|---|
+| **Reads, with bad parts** | Some shards are missing or damaged; the file rebuilds from the others and matches | Rebuilds it — a full fresh set, bad parts erased after |
+| **Cannot be read** / **Does not match what was stored** | Too few good shards, or they rebuild to something else | From its [replica](#replication-a-second-copy-on-clouds-you-already-have), if it has one |
+| **Was damaged before it was stored** | Every shard is right and the hash matches — the file was already broken when it was uploaded | None in the vault; upload a good original over it |
+| **Could not be fully checked** | A cloud did not answer; what could be read is right | Check again later |
+
+Each finding names the part, the cloud holding it, and what is wrong with it.
+Checking changes nothing; **Fix** is a separate button over exactly the files
+listed. It runs on the machine SAND is on, so the dialog can be closed and
+reopened, and stopped for the findings so far. It costs a download of
+everything chosen — about 1.5× its size at the default scheme — so point it at
+a folder rather than the whole vault when the vault is large.
+
+`sand check --deep <file-or-folder> [--fix]` is the same check from a terminal.
+
+**A picture that will not open gets checked.** When the browser cannot draw a
+picture whose bytes have all arrived, the preview runs this check on that one
+file and says which it is: intact, or what is wrong with it.
+
+**HEIC opens everywhere.** HEIC — what an iPhone's camera writes — is decoded
+by Safari and by no other browser. Where the browser cannot, the page decodes
+it itself (libheif compiled to WebAssembly, the LGPL-3.0 `heic-to` package) for
+the preview, the full-screen viewer and the thumbnail made at upload. It is
+only ever for drawing: the stored file and a download of it are the original
+HEIC. The decoder is fetched from the vault's own origin the first time a HEIC
+is opened, and not at all by a browser that needs no help.
+
 ---
 
 ## HTTP API
@@ -3007,6 +3060,11 @@ one walk, so comparing them costs nothing.
 | GET · POST · DELETE | `/api/files/{id}/movie` | What film this is / look it up (`query`, `year`, `tmdb_id`) / forget it |
 | GET | `/api/files/{id}/movie/candidates?q=` | Search the database without storing anything, to correct a match |
 | GET | `/api/files/{id}/health` | Per-part reachability |
+| POST | `/api/files/{id}/check` | Deep-check one file: every shard fetched and opened, the hash, the contents |
+| GET | `/api/check/survey?path=` | What a deep check of a folder would read, by kind |
+| POST · GET | `/api/check` | Start a deep check of a folder (`{path, vault, kinds}`) · where it has got to, then what it found |
+| POST | `/api/check/stop` | Stop it, keeping what it found |
+| POST · GET | `/api/check/repair` | Repair files the last check flagged (`{ids}`) · progress, then the outcome |
 | GET | `/api/degraded?offset=&limit=` | The files missing at least one part, worst first and paged — what the accounts panel's "N files missing a spare part" is counting |
 | POST | `/api/files/{id}/move` | Rename / move into another folder |
 | DELETE | `/api/files/{id}` | Erase every part, holding the request open until they are gone |

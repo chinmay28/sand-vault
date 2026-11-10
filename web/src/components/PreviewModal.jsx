@@ -6,6 +6,7 @@ import { fetchToBlob, useDownload } from '../download'
 import { readToken } from '../readwatch'
 import { SaveSheet } from './SaveSheet'
 import { thumbnailFromElement } from '../thumbs'
+import { drawable } from '../heic'
 import { homeOf, indexPlacement, indexReplica, shardState } from '../placement'
 import ImageViewer from './ImageViewer'
 import PdfPreview from './PdfPreview'
@@ -16,6 +17,7 @@ import { RelocateClouds, fileScheme, schemeName, storedParts } from './CloudSele
 import FilmDetails, { FilmSummary, filmLabel } from './FilmDetails'
 import { Banner, Button, Modal, Spinner } from './ui'
 import { ReadFromChoice } from './Replication'
+import { describeCheck } from './CheckFiles'
 
 /* How much of the visible viewport a preview may take before the modal's own
    chrome and the buttons under it start being pushed off. */
@@ -58,7 +60,12 @@ function useRebuilt(file, wanted, asText, from = 'parts') {
           const text = await blob.slice(0, TEXT_CAP).text()
           if (live) setState((prev) => ({ ...prev, text }))
         } else {
-          setState((prev) => ({ ...prev, url: URL.createObjectURL(blob) }))
+          /* A HEIC, in a browser that cannot draw one, is decoded here and
+             shown as what it decodes to — see heic.js. A decode that fails
+             falls back to the bytes as they are, so the <img> refuses them
+             and the file gets checked, which is the right next question. */
+          const shown = await drawable(blob).catch(() => blob)
+          if (live) setState((prev) => ({ ...prev, url: URL.createObjectURL(shown) }))
         }
       })
       .catch((err) => {
@@ -123,6 +130,29 @@ export default function PreviewModal({
   const text = rebuilt.text
   const loading = kind === 'text' ? text === null && !rebuilt.error : rebuilt.url === null && !rebuilt.error
   const shown = error || rebuilt.error
+
+  /* A picture the browser would not draw, after every byte of it arrived.
+
+     That used to be reported as "could not be rebuilt or is not a readable
+     image", which is two different things, and for most files that ever
+     reached this line the first was untrue: the rebuild had just succeeded,
+     and the browser simply does not decode the format — HEIC, which is what
+     a phone's camera writes and only Safari draws. So the server is asked
+     which it is. It fetches every part, checks the file against the
+     fingerprint taken when it was stored, and looks at it as a picture; the
+     answer is either "intact, and this browser cannot show it" or what is
+     actually wrong with it. */
+  const [verdict, setVerdict] = useState(null)
+  useEffect(() => { setVerdict(null); setError(null) }, [file.id, source])
+  const explainUnreadable = () => {
+    setVerdict({ tone: 'info', text: 'This browser could not draw the picture. Checking whether the file itself is intact…', checking: true })
+    const id = file.id
+    api.checkFile(id)
+      .then((check) => { if (id === file.id) setVerdict(describeCheck(check)) })
+      .catch((err) => {
+        if (id === file.id) setVerdict({ tone: 'error', text: `This browser could not draw the picture, and the file could not be checked: ${err.message}` })
+      })
+  }
 
   /* The token the player's own requests carry, so the wait before a film's
      first frame can be named too. One per file: a player asks in ranges, and
@@ -273,6 +303,12 @@ export default function PreviewModal({
           marginBottom: '16px',
         }}>
           {shown && <Banner tone="error">{shown}</Banner>}
+          {!shown && verdict && (
+            <Banner tone={verdict.tone}>
+              {verdict.checking && <><Spinner size={11} />{' '}</>}
+              {verdict.text}
+            </Banner>
+          )}
 
           {/* A whole file on its way in: what it is waiting on, once the wait
               is long enough to be worth a sentence. */}
@@ -286,7 +322,7 @@ export default function PreviewModal({
             />
           )}
 
-          {!shown && kind === 'image' && rebuilt.url && (
+          {!shown && !verdict && kind === 'image' && rebuilt.url && (
             <img
               src={rebuilt.url}
               alt={file.name}
@@ -294,7 +330,7 @@ export default function PreviewModal({
               style={{ maxWidth: '100%', maxHeight: PREVIEW_MAX, display: 'block', cursor: 'zoom-in' }}
               onLoad={(e) => captureThumb(e.currentTarget)}
               onClick={() => setViewer(true)}
-              onError={() => setError('This file could not be rebuilt or is not a readable image.')}
+              onError={explainUnreadable}
             />
           )}
 

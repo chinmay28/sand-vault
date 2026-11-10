@@ -109,6 +109,9 @@ type gdriveProvider struct {
 	folderID string
 
 	mu sync.Mutex
+
+	// folderMu serialises resolveFolder, lookup and create together.
+	folderMu sync.Mutex
 	// folder is the resolved folder's ID once a lookup or a create has
 	// found it, cached for the life of the provider.
 	folder string
@@ -147,6 +150,13 @@ func (p *gdriveProvider) resolveFolder(ctx context.Context) (string, error) {
 	if p.folderName == "" {
 		return "", nil
 	}
+
+	// One lookup-or-create at a time. Drive allows two folders of one name, so
+	// the parallel puts of a first upload each finding none and each making
+	// one would split a file's shards across folders only one of which is
+	// found again after a restart.
+	p.folderMu.Lock()
+	defer p.folderMu.Unlock()
 
 	p.mu.Lock()
 	cached := p.folder

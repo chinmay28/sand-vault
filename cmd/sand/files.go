@@ -831,7 +831,7 @@ func printRelocationPlan(plan *vault.RelocationPlan) {
 }
 
 func checkCmd() *cobra.Command {
-	var all bool
+	var all, deep, fix bool
 
 	cmd := &cobra.Command{
 		Use:   "check [path-or-id]",
@@ -839,7 +839,7 @@ func checkCmd() *cobra.Command {
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 && !all {
-				return fmt.Errorf("give a file to check, or pass --all")
+				return fmt.Errorf("give a file to check (or, with --deep, a folder), or pass --all")
 			}
 
 			v, scope, err := openVaultIn(cmd)
@@ -849,6 +849,16 @@ func checkCmd() *cobra.Command {
 			defer closeVault(v)
 
 			ctx := context.Background()
+			if fix && !deep {
+				return fmt.Errorf("--fix repairs what --deep finds: pass both")
+			}
+			if deep {
+				target := "/"
+				if len(args) > 0 {
+					target = args[0]
+				}
+				return deepCheck(ctx, v, scope, target, all, fix)
+			}
 			var targets []*vault.Entry
 
 			if all {
@@ -909,7 +919,104 @@ func checkCmd() *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&all, "all", false, "check every file in the vault")
+	cmd.Flags().BoolVar(&deep, "deep", false,
+		"download and verify: every shard of every chunk, the file's hash, and its contents as a file of its kind. "+
+			"Takes a file or a folder")
+	cmd.Flags().BoolVar(&fix, "fix", false, "with --deep: repair the files that can be repaired")
 	return cmd
+}
+
+// deepCheck is `sand check --deep`: the read-everything check of a file or a
+// folder, and with fix the repair of what it flags. See vault/verify.go.
+func deepCheck(ctx context.Context, v *vault.Vault, scope vault.Scope, target string, all, fix bool) error {
+	var flagged []vault.FileCheck
+	checked := 0
+
+	if all || v.FolderExists(scope, vault.CleanDir(target)) {
+		if all {
+			target = "/"
+		}
+		report, err := v.CheckFolder(ctx, scope, target, vault.CheckOptions{
+			OnProgress: func(at vault.CheckProgress) { progressLine(at.Path, at.File, at.Files) },
+		})
+		clearProgressLine()
+		if err != nil {
+			return err
+		}
+		for _, name := range report.Offline {
+			fmt.Fprintf(os.Stderr, "warning: %s did not answer, so its shards were not checked\n", name)
+		}
+		flagged, checked = report.Flagged, report.Checked
+		fmt.Printf("%d file(s) checked, %s: %d sound, %d repairable, %d unreadable, %d altered, "+
+			"%d damaged before they were stored, %d not fully checked, %d skipped\n",
+			report.Checked, formatBytes(report.Bytes), report.Sound, report.Repairable, report.Unreadable,
+			report.Altered, report.DamagedAtSource, report.Incomplete, report.Skipped)
+		if report.Truncated {
+			fmt.Printf("(listing the first %d flagged files)\n", len(flagged))
+		}
+	} else {
+		entry, err := resolveEntry(v, scope, target)
+		if err != nil {
+			return err
+		}
+		check, err := v.CheckFile(ctx, entry.ID)
+		if err != nil {
+			return err
+		}
+		checked = 1
+		if check.State != vault.CheckSound {
+			flagged = []vault.FileCheck{*check}
+		} else {
+			fmt.Printf("%s: sound — %s\n", check.Path, check.Summary)
+		}
+	}
+
+	for _, c := range flagged {
+		fmt.Printf("\n%s  [%s, %s, %d of %d shards good]\n   %s\n", c.Path, c.State, c.Scheme, c.Good, c.Total, c.Summary)
+		for _, f := range c.Faults {
+			where := ""
+			if f.Chunks > 1 || f.FirstChunk > 0 {
+				where = fmt.Sprintf(" (%d chunk(s), from chunk %d)", f.Chunks, f.FirstChunk+1)
+			}
+			fmt.Printf("   ✗ part %d on %-20s %s%s: %s\n", f.Part, f.ProviderName, f.Kind, where, f.Detail)
+		}
+		if c.Advice != "" {
+			fmt.Printf("   → %s\n", c.Advice)
+		}
+	}
+
+	if fix {
+		var fixable []vault.FileCheck
+		for _, c := range flagged {
+			if c.Fix != "" {
+				fixable = append(fixable, c)
+			}
+		}
+		if len(fixable) > 0 {
+			report, err := v.RepairChecked(ctx, fixable, func(at vault.RepairProgress) {
+				progressLine(at.Path, at.File, at.Files)
+			})
+			clearProgressLine()
+			if err != nil {
+				return err
+			}
+			fmt.Printf("\nrepaired %d, failed %d, left for later %d\n", report.Repaired, report.Failed, report.Deferred)
+			for _, o := range report.Files {
+				if !o.Repaired {
+					fmt.Printf("   %s: %s\n", o.Path, o.Reason)
+				}
+				printWarnings(o.Warnings)
+			}
+			if left := len(flagged) - report.Repaired; left > 0 {
+				return fmt.Errorf("%d of %d file(s) still need attention", left, checked)
+			}
+			return nil
+		}
+	}
+	if len(flagged) > 0 {
+		return fmt.Errorf("%d of %d file(s) need attention", len(flagged), checked)
+	}
+	return nil
 }
 
 // placementStatus is the one word `sand check` says about a placement, and

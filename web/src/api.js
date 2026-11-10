@@ -569,6 +569,27 @@ export const api = {
      before it starts, and holds the connection for the duration. */
   convertFile: (id) => request(`/api/files/${encodeURIComponent(id)}/convert`, { method: 'POST' }),
   fileHealth: (id) => request(`/api/files/${encodeURIComponent(id)}/health`),
+
+  /* The deep check: every shard of every chunk fetched and opened, the file
+     held to its fingerprint, and its contents looked at as a file of their
+     kind. checkFile answers for one file in the request — the preview asks it
+     when a picture will not draw. A folder is a job on the server: checkSurvey
+     is the bill by kind, checkStart starts it (or joins the same one already
+     running; a different one running is a 409), checkStatus says where it has
+     got to and then what it found, and checkStop ends it with what it had.
+     repairStart rebuilds files the last check flagged, by ID — all of them
+     with a repair on offer when none are named. Nothing but the repair
+     changes anything. See internal/server/handlers_check.go. */
+  checkFile: (id) => request(`/api/files/${encodeURIComponent(id)}/check`, { method: 'POST' }),
+  checkSurvey: (path, vault = '') =>
+    request(`/api/check/survey?path=${encodeURIComponent(path)}${vaultParam(vault)}`),
+  checkStart: (path, vault = '', kinds = []) =>
+    request('/api/check', { method: 'POST', body: { path, vault, kinds } }),
+  checkStatus: () => request('/api/check'),
+  checkStop: () => request('/api/check/stop', { method: 'POST' }),
+  repairStart: (ids = []) => request('/api/check/repair', { method: 'POST', body: { ids } }),
+  repairStatus: () => request('/api/check/repair'),
+  repairStop: () => request('/api/check/repair/stop', { method: 'POST' }),
   /* Delete a selection — files, folders, or both — as one run on the machine.
      `targets` is `{ id }` for a file or `{ path, vault }` for a folder, the
      shape relocate() names a selection in; a path naming a file is a file.

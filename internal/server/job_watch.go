@@ -190,6 +190,18 @@ func (jw *jobWatch[P, R]) stopAll() {
 	}
 }
 
+// cancel ends a running job's context and keeps the run: the job is expected
+// to notice and finish with whatever it had, which then stands as its result.
+// For a job whose half-done answer is still an answer.
+func (jw *jobWatch[P, R]) cancel() {
+	jw.mu.Lock()
+	run := jw.run
+	jw.mu.Unlock()
+	if run != nil {
+		run.cancel()
+	}
+}
+
 // running reports whether a job is going right now.
 func (jw *jobWatch[P, R]) running() bool {
 	jw.mu.Lock()

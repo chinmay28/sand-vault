@@ -122,6 +122,10 @@ type DecodedChunk struct {
 	Data      []byte
 	Meta      *sandfile.Metadata
 	PartsUsed []int
+
+	// Compressed is the chunk as the shards carried it, before decompression —
+	// what ShardData recomputes every shard from.
+	Compressed []byte
 }
 
 // EncodeChunk compresses, splits, XORs and seals one chunk of an archive.
@@ -216,6 +220,163 @@ func EncodeChunk(plan ChunkPlan, index uint32, plaintext, master []byte) (*Encod
 	return out, nil
 }
 
+// OpenedShard is one shard of one chunk with its seal checked and removed:
+// what its cleartext header says it is, the archive description sealed inside
+// it, and its share of the compressed chunk.
+//
+// Opening is the step that can say a shard is bad on its own evidence — the
+// blob does not parse, or its tag does not verify under the key its own header
+// names — and it is separate from rebuilding so that a reader holding one bad
+// shard among good ones can set it aside and rebuild from the rest. See
+// OpenShard and AssembleChunk.
+type OpenedShard struct {
+	Header *sandfile.Header
+	Meta   *sandfile.Metadata
+	Data   []byte
+}
+
+// Scheme is the code this shard was cut with.
+func (s *OpenedShard) Scheme() Scheme { return schemeOf(s.Header) }
+
+// Legacy reports a shard from before schemes existed: two halves and their XOR.
+func (s *OpenedShard) Legacy() bool { return s.Header.Version != sandfile.ErasureFormatVersion }
+
+// OpenShard parses one stored chunk shard and opens its seal.
+//
+// The key is derived from the archive ID and chunk index in the shard's own
+// header, and that header is the seal's associated data, so a shard that opens
+// is exactly what was written for that part of that chunk of that archive: a
+// truncated object, a flipped bit, another file's shard under this key's name
+// and a shard relabelled as a different part all fail here. Whether it is the
+// chunk the caller *wanted* is for the caller to read off Header.
+func OpenShard(blob, master []byte) (*OpenedShard, error) {
+	part, err := sandfile.ReadPart(blob)
+	if err != nil {
+		return nil, err
+	}
+	switch part.Header.Version {
+	case sandfile.ChunkedFormatVersion, sandfile.ErasureFormatVersion:
+	default:
+		return nil, fmt.Errorf("format version %d is not a chunk", part.Header.Version)
+	}
+
+	key, err := crypto.DeriveChunkKey(master, part.Header.ArchiveID, part.Header.ChunkIndex)
+	if err != nil {
+		return nil, err
+	}
+	defer crypto.ZeroBytes(key)
+
+	meta, data, err := part.Open(key)
+	if err != nil {
+		return nil, err
+	}
+	return &OpenedShard{Header: part.Header, Meta: meta, Data: data}, nil
+}
+
+// AssembleChunk rebuilds one chunk from shards that have already been opened.
+//
+// It checks that they belong together — one archive, one chunk, one code, one
+// file hash, no shard number twice — rebuilds the compressed chunk from any
+// Scheme.Data of them, decompresses it and holds the result to the length the
+// archive's chunking says this chunk has.
+func AssembleChunk(shards []*OpenedShard) (*DecodedChunk, error) {
+	if len(shards) == 0 {
+		return nil, fmt.Errorf("no parts to rebuild a chunk from")
+	}
+
+	// The archive ID and chunk index are what says these parts belong to the
+	// same chunk of the same file.
+	ref := shards[0]
+	byNumber := make(map[int][]byte, len(shards))
+	used := make([]int, 0, len(shards))
+	for _, s := range shards {
+		if s.Header.ArchiveID != ref.Header.ArchiveID {
+			return nil, fmt.Errorf("archive ID mismatch: parts belong to different archives")
+		}
+		if s.Header.ChunkIndex != ref.Header.ChunkIndex {
+			return nil, fmt.Errorf("chunk index mismatch: parts belong to chunks %d and %d",
+				ref.Header.ChunkIndex, s.Header.ChunkIndex)
+		}
+		if s.Header.Version != ref.Header.Version ||
+			s.Header.DataShards != ref.Header.DataShards ||
+			s.Header.TotalShards != ref.Header.TotalShards {
+			return nil, fmt.Errorf("shards were cut with different codes: %s and %s",
+				ref.Scheme(), s.Scheme())
+		}
+		if s.Meta.OriginalHash != ref.Meta.OriginalHash {
+			return nil, fmt.Errorf("original hash mismatch: parts belong to different archives")
+		}
+		pn := int(s.Header.PartNumber)
+		if _, exists := byNumber[pn]; exists {
+			return nil, fmt.Errorf("duplicate shard number %d", pn)
+		}
+		byNumber[pn] = s.Data
+		used = append(used, pn)
+	}
+
+	scheme := ref.Scheme()
+	if len(byNumber) < scheme.Data {
+		return nil, fmt.Errorf("rebuilding a %s chunk needs %d shards, got %d",
+			scheme, scheme.Data, len(byNumber))
+	}
+
+	var compressed []byte
+	var err error
+	if ref.Header.Version == sandfile.ErasureFormatVersion {
+		compressed, err = splitter.Reconstruct(
+			byNumber, scheme.Data, scheme.Total, int(ref.Meta.CompressedSize))
+	} else {
+		compressed, err = splitter.ReconstructXOR(byNumber, ref.Meta.WasPadded)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reconstructing chunk %d: %w", ref.Header.ChunkIndex, err)
+	}
+
+	data, err := compress.Decompress(compressed)
+	if err != nil {
+		return nil, fmt.Errorf("decompressing chunk %d: %w", ref.Header.ChunkIndex, err)
+	}
+
+	// The whole-file SHA-256 in the metadata cannot be checked from one chunk,
+	// so the length is what is verifiable here. The GCM tag over each part,
+	// bound to this chunk index, is what actually guarantees the bytes.
+	want, err := ref.Meta.ChunkPlaintextSize(ref.Header.ChunkIndex)
+	if err != nil {
+		return nil, err
+	}
+	if uint64(len(data)) != want {
+		return nil, fmt.Errorf("chunk %d rebuilt to %d bytes, expected %d",
+			ref.Header.ChunkIndex, len(data), want)
+	}
+
+	return &DecodedChunk{
+		Index:      ref.Header.ChunkIndex,
+		Data:       data,
+		Meta:       ref.Meta,
+		PartsUsed:  used,
+		Compressed: compressed,
+	}, nil
+}
+
+// ShardData recomputes what every shard of a chunk should hold, from the
+// compressed chunk a rebuild produced: index i is shard i+1's share.
+//
+// A rebuild reads only Scheme.Data of the shards and trusts the rest to agree.
+// This is how a check finds out whether they do — a shard that opens under its
+// seal but does not match is one that was written from different bytes.
+// Version 3 chunks, which predate schemes, are two halves and their XOR.
+func ShardData(compressed []byte, scheme Scheme, legacy bool) ([][]byte, error) {
+	if legacy {
+		p1, p2, _ := splitter.Split(compressed)
+		p3, err := splitter.XOR(p1, p2)
+		if err != nil {
+			return nil, err
+		}
+		return [][]byte{p1, p2, p3}, nil
+	}
+	return splitter.Encode(compressed, scheme.Data, scheme.Total)
+}
+
 // DecodeChunk rebuilds one chunk from enough of its shards. The blobs may
 // arrive in any order and carry their own shard numbers and, from format
 // version 4, the code they belong to.
@@ -226,116 +387,21 @@ func EncodeChunk(plan ChunkPlan, index uint32, plaintext, master []byte) (*Encod
 // many rebuild it. Which one is in hand is read off the parts rather than
 // passed in, because a vault holds both at once — widening does not rewrite
 // what is already stored.
+//
+// Every blob has to open: this is the strict form, for a caller that has
+// exactly the shards it means to use. A reader racing accounts for them opens
+// each as it lands and assembles what opened — see OpenShard.
 func DecodeChunk(blobs [][]byte, master []byte) (*DecodedChunk, error) {
 	if len(blobs) == 0 {
 		return nil, fmt.Errorf("no parts to rebuild a chunk from")
 	}
-
-	parsed := make(map[int]*sandfile.Part, len(blobs))
+	shards := make([]*OpenedShard, 0, len(blobs))
 	for i, blob := range blobs {
-		part, err := sandfile.ReadPart(blob)
+		shard, err := OpenShard(blob, master)
 		if err != nil {
-			return nil, fmt.Errorf("parsing part %d: %w", i+1, err)
+			return nil, fmt.Errorf("opening part %d: %w", i+1, err)
 		}
-		switch part.Header.Version {
-		case sandfile.ChunkedFormatVersion, sandfile.ErasureFormatVersion:
-		default:
-			return nil, fmt.Errorf("part %d is format version %d, not a chunk",
-				i+1, part.Header.Version)
-		}
-
-		pn := int(part.Header.PartNumber)
-		if _, exists := parsed[pn]; exists {
-			return nil, fmt.Errorf("duplicate shard number %d", pn)
-		}
-		parsed[pn] = part
+		shards = append(shards, shard)
 	}
-
-	// The archive ID and chunk index are the only things readable before
-	// decryption, and together they are what says these parts belong to the
-	// same chunk of the same file.
-	var refHeader *sandfile.Header
-	for _, p := range parsed {
-		if refHeader == nil {
-			refHeader = p.Header
-			continue
-		}
-		if p.Header.ArchiveID != refHeader.ArchiveID {
-			return nil, fmt.Errorf("archive ID mismatch: parts belong to different archives")
-		}
-		if p.Header.ChunkIndex != refHeader.ChunkIndex {
-			return nil, fmt.Errorf("chunk index mismatch: parts belong to chunks %d and %d",
-				refHeader.ChunkIndex, p.Header.ChunkIndex)
-		}
-		if p.Header.Version != refHeader.Version ||
-			p.Header.DataShards != refHeader.DataShards ||
-			p.Header.TotalShards != refHeader.TotalShards {
-			return nil, fmt.Errorf("shards were cut with different codes: %s and %s",
-				schemeOf(refHeader), schemeOf(p.Header))
-		}
-	}
-
-	scheme := schemeOf(refHeader)
-	if len(parsed) < scheme.Data {
-		return nil, fmt.Errorf("rebuilding a %s chunk needs %d shards, got %d",
-			scheme, scheme.Data, len(parsed))
-	}
-
-	key, err := crypto.DeriveChunkKey(master, refHeader.ArchiveID, refHeader.ChunkIndex)
-	if err != nil {
-		return nil, err
-	}
-	defer crypto.ZeroBytes(key)
-
-	var refMeta *sandfile.Metadata
-	decryptedParts := make(map[int][]byte, len(parsed))
-	used := make([]int, 0, len(parsed))
-	for pn, p := range parsed {
-		meta, partData, err := p.Open(key)
-		if err != nil {
-			return nil, fmt.Errorf("decrypting chunk %d part %d: %w", refHeader.ChunkIndex, pn, err)
-		}
-		if refMeta == nil {
-			refMeta = meta
-		} else if meta.OriginalHash != refMeta.OriginalHash {
-			return nil, fmt.Errorf("original hash mismatch: parts belong to different archives")
-		}
-		decryptedParts[pn] = partData
-		used = append(used, pn)
-	}
-
-	var compressed []byte
-	if refHeader.Version == sandfile.ErasureFormatVersion {
-		compressed, err = splitter.Reconstruct(
-			decryptedParts, scheme.Data, scheme.Total, int(refMeta.CompressedSize))
-	} else {
-		compressed, err = splitter.ReconstructXOR(decryptedParts, refMeta.WasPadded)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("reconstructing chunk %d: %w", refHeader.ChunkIndex, err)
-	}
-
-	data, err := compress.Decompress(compressed)
-	if err != nil {
-		return nil, fmt.Errorf("decompressing chunk %d: %w", refHeader.ChunkIndex, err)
-	}
-
-	// The whole-file SHA-256 in the metadata cannot be checked from one chunk,
-	// so the length is what is verifiable here. The GCM tag over each part,
-	// bound to this chunk index, is what actually guarantees the bytes.
-	want, err := refMeta.ChunkPlaintextSize(refHeader.ChunkIndex)
-	if err != nil {
-		return nil, err
-	}
-	if uint64(len(data)) != want {
-		return nil, fmt.Errorf("chunk %d rebuilt to %d bytes, expected %d",
-			refHeader.ChunkIndex, len(data), want)
-	}
-
-	return &DecodedChunk{
-		Index:     refHeader.ChunkIndex,
-		Data:      data,
-		Meta:      refMeta,
-		PartsUsed: used,
-	}, nil
+	return AssembleChunk(shards)
 }
