@@ -7,6 +7,7 @@ import { BulkDelete, Meter, useRun } from './BulkActions'
 import { DuplicatesTool } from './Duplicates'
 import { AutomationSettings, describeCadence } from './FolderAutomation'
 import { FolderRepos } from './FolderRepos'
+import CheckFiles from './CheckFiles'
 
 /* Everything you do to a folder rather than to a row in it.
 
@@ -26,6 +27,13 @@ import { FolderRepos } from './FolderRepos'
      · Select by type — pick them all instead, and use the selection bar.
      · Duplicates  — the copies of things, by their bytes, their size, their
                      names or the film they are. See Duplicates.jsx.
+
+   One asks whether the files are still right rather than where they are:
+
+     · Find and fix corrupt files — fetch every part of every file, hold each
+                     file to the fingerprint taken when it was stored and to
+                     the format it claims, and rebuild the ones whose parts
+                     have gone wrong. See CheckFiles.jsx.
 
    Two are standing instructions rather than one-off jobs, and that is the whole
    difference between the halves: the six above happen when you press them, and
@@ -105,7 +113,7 @@ export function OrganizerMenu({ path, automation, repoCount = 0, onClose, onPick
   return (
     <ActionSheet
       title="Organize and automate"
-      subtitle={`Six ways to tidy ${here} and everything under it, each counting what it would do before it does any of it — and two standing instructions that keep going afterwards.`}
+      subtitle={`Six ways to tidy ${here} and everything under it, each counting what it would do before it does any of it — a check of whether the files there still come back right — and two standing instructions that keep going afterwards.`}
       onClose={onClose}
       items={[
         {
@@ -149,6 +157,13 @@ export function OrganizerMenu({ path, automation, repoCount = 0, onClose, onPick
           label: 'Find duplicates',
           hint: 'The same file twice — by its bytes, by its size, or by a name a copy marker apart',
           onSelect: () => onPick('dupes'),
+        },
+        {
+          key: 'check',
+          glyph: '⚕',
+          label: 'Find and fix corrupt files',
+          hint: 'Fetch every part of every picture, document and film, check each against what was stored, and rebuild what can be',
+          onSelect: () => onPick('check'),
         },
         {
           key: 'automate',
@@ -212,7 +227,7 @@ export function OrganizerTool({ tool, path, vault, providers = [], onClose, onDo
      refresh of the listing behind. */
   const dupes = tool === 'dupes'
   const bydate = tool === 'bydate'
-  const standing = tool === 'automate' || tool === 'repos'
+  const standing = tool === 'automate' || tool === 'repos' || tool === 'check'
 
   useEffect(() => {
     if (dupes || bydate || standing) return undefined
@@ -232,6 +247,13 @@ export function OrganizerTool({ tool, path, vault, providers = [], onClose, onDo
     return (
       <AutomationSettings path={path} vault={vault} onClose={onClose} onChanged={onDone} />
     )
+  }
+
+  /* The check asks nothing of the tree's shape either: it reads its own bill
+     from the server and then runs there. A repair rewrites files, hence
+     onDone. */
+  if (tool === 'check') {
+    return <CheckFiles path={path} vault={vault} onClose={onClose} onChanged={onDone} />
   }
 
   if (tool === 'repos') {

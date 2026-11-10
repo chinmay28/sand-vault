@@ -1206,11 +1206,12 @@ func (v *Vault) ownedArchivesLocked() map[string]*ownedArchive {
 		if meta == nil {
 			continue
 		}
-		if _, open := v.subs[meta.ID]; open {
-			// Already read from its own index above, in more detail than an
-			// inventory carries.
-			continue
-		}
+		// Counted whether or not the sub vault is open here. Its own index,
+		// read above, is the fuller record of what this machine stored in
+		// it — but a sub vault's index never travels, so what another
+		// machine stored in it is known here only through the inventory,
+		// and skipping that while the sub vault was open made those files
+		// look abandoned and let a sweep erase them.
 		for _, item := range meta.Inventory {
 			row := note(item.ArchiveID)
 			if row == nil {

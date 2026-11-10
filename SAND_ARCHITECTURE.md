@@ -2405,6 +2405,42 @@ nothing to hash. Reading a file end to end still verifies it. What a partial
 read gets instead is the per-part GCM tag bound to that chunk's index, which is
 what makes serving an arbitrary byte range honest rather than hopeful.
 
+### 6.5 A shard that is wrong is a shard that is lost
+
+The tag catches a bad shard; what the reader does next is the other half. The
+read race (§4.2) opens each shard as it lands (`archive.OpenShard`) and holds it
+to being the archive, chunk and part the index sent for; one that fails is
+recorded as a failure and the race goes on, so a file is unreadable only when
+fewer than k of its shards are good. Until this was so, the first k arrivals
+were decoded together and a single damaged object on a quick account failed
+every read of the file, while every `Stat`-based check reported it whole.
+
+A whole-file HTTP read asks for its first byte before any header is written,
+so a file that cannot be rebuilt is an error carrying the reason rather than a
+`200` with a declared length and no body.
+
+### 6.6 The deep check
+
+`Vault.CheckFolder` / `CheckFile` (`internal/vault/verify.go`) is the one path
+that reads all n shards. Per chunk it fetches every recorded shard and sorts
+each into good, **missing** (the account says not found), **damaged** (there,
+and does not open as what was written), or **unreachable** (no answer — never
+read as missing, because a repair on the strength of a rate limit would erase a
+part that is still there). It rebuilds from k good ones, recomputes all n from
+the result (`archive.ShardData`) and marks any that opened but disagree as
+**mismatched** — the one fault no ordinary read can see. The file is then held
+to its length and SHA-256, and its plaintext to `internal/filecheck`, a
+structural check per format that is bounded in what it reads and never decodes.
+
+The verdict keeps those layers apart because the repair differs: bad shards
+under a matching hash are rebuilt from the good ones; an unreadable or
+mismatching file is rebuilt from its replica when it has one; a matching hash
+over malformed contents is damage that arrived with the upload and has no
+repair in the vault. `RepairChecked` is §3.15's rebuild — `relocate` with the
+faulty parts named absent, or with the replica as source — onto the accounts
+the file is already on, and it refuses a file whose archive ID has changed
+since the check. The server runs both as `jobWatch` jobs (`handlers_check.go`).
+
 ---
 
 ## 7. Part File Format
@@ -2932,6 +2968,8 @@ reveals only whether a vault exists.
 | GET | `/stream/{token}/{name}` | Play it — public, ranged; the token is the credential |
 | GET | `/api/degraded?offset=&limit=` | The files missing at least one shard, worst first and paged — what `Stats.Degraded` counts, as a list (§3.14). Read out of the index; no account is contacted |
 | GET | `/api/files/{id}/health` | Per-part reachability, without downloading |
+| POST | `/api/files/{id}/check` | Deep check of one file — every shard, the hash, the contents (§6.6) |
+| POST · GET | `/api/check`, `/api/check/stop`, `/api/check/repair` | Deep check of a folder as a job, and the repair of what it flagged; `GET /api/check/survey` is its bill |
 | POST | `/api/files/{id}/move` | Rename or move into another folder (index only, §5.6) |
 | DELETE | `/api/files/{id}` | Erase every part, drop the entry |
 | GET | `/api/folders` | Every folder in the vault, root first — the whole tree in one answer, for a destination picker |
@@ -3268,6 +3306,7 @@ sand/
 │   ├── archive/               # encode.go — the in-memory pipeline both modes use
 │   ├── compress/              # zstd
 │   ├── crypto/                # Argon2id + AES-256-GCM
+│   ├── filecheck/             # is this a well-formed JPEG / PDF / MP4… (deep check)
 │   ├── splitter/              # split, XOR, reconstruct
 │   ├── sandfile/              # binary .sand part format
 │   ├── provider/              # provider.go, local, s3, webdav, gdrive, dropbox

@@ -426,6 +426,12 @@ func (p *boxProvider) Get(ctx context.Context, key string) ([]byte, error) {
 		p.forget(key)
 		return nil, ErrNotFound
 	}
+	// 202 is Box saying the file is not ready to download yet, with nothing in
+	// the body. Taken as a success it is an empty object handed back as the
+	// shard, which the reader can only call damaged.
+	if resp.StatusCode == http.StatusAccepted {
+		return nil, fmt.Errorf("box download: the file is not ready to download yet (202), try again shortly")
+	}
 	if !isSuccess(resp.StatusCode) {
 		return nil, httpError("box download", resp)
 	}

@@ -140,6 +140,14 @@ export async function fetchToBlob(url, onProgress, { signal } = {}) {
     got += value.byteLength
     onProgress?.(got)
   }
+  /* A response cut off partway can end cleanly, as far as a stream reader
+     can tell — through some proxies it always does. The server said how much
+     was coming; less than that is a failed rebuild, and must not be handed
+     on as the file. */
+  const expected = Number(resp.headers.get('Content-Length'))
+  if (resp.status === 200 && !resp.headers.get('Content-Encoding') && Number.isFinite(expected) && expected > 0 && got < expected) {
+    throw new Error(`the file stopped arriving partway — ${got.toLocaleString()} of ${expected.toLocaleString()} bytes came back`)
+  }
   return new Blob(chunks, { type })
 }
 

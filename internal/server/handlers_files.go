@@ -1467,6 +1467,33 @@ func (s *Server) handleFileContent(w http.ResponseWriter, r *http.Request) {
 		ticket.opened(entry.Size)
 	}
 
+	// A whole-file request is asked for its first byte before any header goes
+	// out. ServeContent commits to 200 and a Content-Length before it reads
+	// anything, so a file whose first chunk could not be rebuilt used to be
+	// answered with a success and an empty body — which a browser draws as a
+	// broken picture, with the reason nowhere. Asked here, it is an error
+	// that says which shards of which chunk would not come back. The chunk
+	// stays in the reader's cache, so the read that follows costs nothing. A
+	// range request is left alone: its first chunk is wherever the range is.
+	if r.Method == http.MethodGet && r.Header.Get("Range") == "" && entry.Size > 0 {
+		var first [1]byte
+		_, err := io.ReadFull(body, first[:])
+		if err == nil {
+			_, err = body.Seek(0, io.SeekStart)
+		}
+		if err != nil {
+			if ticket != nil {
+				ticket.finish(err)
+			}
+			if errors.Is(err, vault.ErrLocked) {
+				vaultErrorResponse(w, err)
+				return
+			}
+			writeError(w, http.StatusBadGateway, err.Error(), "UNREADABLE")
+			return
+		}
+	}
+
 	download := r.URL.Query().Get("download") == "1" || r.URL.Query().Get("download") == "true"
 	disposition := "inline"
 	if download {

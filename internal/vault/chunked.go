@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -13,6 +14,7 @@ import (
 	"github.com/chinmay28/sand-vault/internal/archive"
 	"github.com/chinmay28/sand-vault/internal/crypto"
 	"github.com/chinmay28/sand-vault/internal/provider"
+	"github.com/chinmay28/sand-vault/internal/sandfile"
 	"github.com/google/uuid"
 )
 
@@ -391,7 +393,15 @@ func (v *Vault) gatherChunk(ctx context.Context, entry *Entry, index int, config
 		}(shard, cfg)
 	}
 
-	held := map[int][]byte{}
+	// Each shard is opened as it lands, and one that will not open is set
+	// aside while the race goes on. It used to be that the first Scheme.Data
+	// answers were taken on trust and decoded together, so a single damaged
+	// object on a quick account — truncated, rotted, or not this file's shard
+	// at all — failed the read of a file every other account could still have
+	// rebuilt, and went on failing it for as long as that account kept
+	// answering first. A code that survives n−k lost shards has to survive
+	// them when they are lost by being wrong, not only by being absent.
+	held := map[int]*archive.OpenedShard{}
 	var failures []string
 	taken := 0
 	for i := 0; i < pending; i++ {
@@ -407,7 +417,15 @@ func (v *Vault) gatherChunk(ctx context.Context, entry *Entry, index int, config
 			v.reads.record(r, shardLate)
 			continue
 		}
-		held[r.shard.Part] = r.blob
+		opened, err := openChunkShard(entry, index, r.shard, r.blob, dataKey)
+		if err != nil {
+			r.err = fmt.Errorf("part %d from %s: %w", r.shard.Part, r.shard.ProviderName, err)
+			v.reads.record(r, shardFailed)
+			failures = append(failures, r.err.Error())
+			notifyRead(obs, entry, ReadEvent{Kind: ReadShardFailed, Chunk: index, Shard: r.shard, Took: r.took, Err: r.err})
+			continue
+		}
+		held[r.shard.Part] = opened
 		v.reads.record(r, shardWon)
 		notifyRead(obs, entry, ReadEvent{Kind: ReadShardArrived, Chunk: index, Shard: r.shard, Took: r.took})
 		if len(held) >= scheme.Data {
@@ -424,16 +442,53 @@ func (v *Vault) gatherChunk(ctx context.Context, entry *Entry, index int, config
 	}
 
 	notifyRead(obs, entry, ReadEvent{Kind: ReadChunkDecrypting, Chunk: index})
-	decoded, err := archive.DecodeChunk(collectParts(held), dataKey)
+	shards := make([]*archive.OpenedShard, 0, len(held))
+	for _, opened := range held {
+		shards = append(shards, opened)
+	}
+	decoded, err := archive.AssembleChunk(shards)
 	if err != nil {
 		return nil, fmt.Errorf("rebuilding chunk %d of %s: %w", index, entry.Path(), err)
 	}
-	if decoded.Index != uint32(index) {
-		return nil, fmt.Errorf("chunk %d of %s answered as chunk %d",
-			index, entry.Path(), decoded.Index)
-	}
 	v.reads.loaded(kindOf(entry), loadOpen, int64(len(decoded.Data)), time.Since(started))
 	return decoded.Data, nil
+}
+
+// ErrShardDamaged marks a stored shard that answered but is not the object
+// that was written: it does not parse, its seal does not verify, or it is
+// sealed as some other part of some other chunk. It is the account holding
+// something wrong, as distinct from the account holding nothing
+// (provider.ErrNotFound) or not answering.
+var ErrShardDamaged = errors.New("the stored object is damaged")
+
+// openChunkShard opens one fetched shard and holds it to being the shard that
+// was asked for: this archive, this chunk, this part number.
+//
+// The seal already binds a shard to what its own header says it is. What the
+// header says still has to be what the index sent for — an account that
+// answers a request for one object with another, intact, would otherwise pass.
+func openChunkShard(entry *Entry, index int, shard Shard, blob, dataKey []byte) (*archive.OpenedShard, error) {
+	opened, err := archive.OpenShard(blob, dataKey)
+	if err != nil {
+		// The two ways an object is wrong, said apart: one that is not a
+		// shard at all — empty, truncated, an error page stored as the
+		// object — and one that is a shard whose bytes have changed.
+		if _, parseErr := sandfile.ReadPart(blob); parseErr != nil {
+			return nil, fmt.Errorf("%w: its %d bytes are not a SAND part (%v)", ErrShardDamaged, len(blob), parseErr)
+		}
+		return nil, fmt.Errorf("%w: it fails its integrity check, so its %d bytes are not the ones that were written",
+			ErrShardDamaged, len(blob))
+	}
+	if got := hex.EncodeToString(opened.Header.ArchiveID[:]); got != entry.ArchiveID {
+		return nil, fmt.Errorf("%w: it is a shard of another file", ErrShardDamaged)
+	}
+	if opened.Header.ChunkIndex != uint32(index) {
+		return nil, fmt.Errorf("%w: it is chunk %d, not chunk %d", ErrShardDamaged, opened.Header.ChunkIndex, index)
+	}
+	if int(opened.Header.PartNumber) != shard.Part {
+		return nil, fmt.Errorf("%w: it is part %d, not part %d", ErrShardDamaged, opened.Header.PartNumber, shard.Part)
+	}
+	return opened, nil
 }
 
 // readSnapshot is what a chunked read needs from the vault, taken under the

@@ -12,6 +12,68 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### Find and fix corrupt files
+
+**Organize and automate → Find and fix corrupt files** checks whether the files
+under a folder still come back *right*, which nothing did before: every other
+health check asks whether a file's parts are *there* and downloads none of them.
+
+For each file it fetches **every** shard of every chunk — all n, not the k a
+read stops at — and holds it to four things: each shard opens under its seal as
+the part it is recorded as; the shards agree with one another; the file rebuilds
+to the SHA-256 recorded at upload; and the result is a well-formed file of its
+kind (JPEG, PNG, GIF, WebP, HEIC/AVIF, TIFF, PDF, Office/ZIP, MP4/MOV, Matroska,
+AVI/WAV — `internal/filecheck`). Which of those fails decides what is offered:
+
+- **Reads, with bad parts** — shards missing, damaged or disagreeing, but the
+  file still rebuilds and matches. *Fix* rebuilds it: a full fresh set written,
+  the bad ones erased after.
+- **Cannot be read / does not match** — the parts cannot give it back. If it
+  has a replica, *Fix* cuts new parts from that; if not, the report names which
+  part on which cloud is wrong and how.
+- **Was damaged before it was stored** — SAND returns exactly what was
+  uploaded and what was uploaded is a broken file. Nothing in the vault can
+  mend it; the report says so rather than leaving it to look like the vault's
+  doing.
+
+It runs on the server as a job (`POST`/`GET /api/check`, `…/stop`,
+`…/repair`), narrowed to the kinds you tick with the bill shown first, and can
+be closed, reopened and stopped. Checking never writes. On the command line:
+`sand check --deep <file-or-folder> [--fix]`.
+
+### A damaged shard no longer makes a file unreadable
+
+A read took the first k shards to arrive and decoded them together, so **one**
+damaged object on a quick cloud — truncated, rotted, an empty body — failed the
+read of a file every other cloud could still have rebuilt, every time, while
+the health check (which only asks whether objects exist) said the file was
+whole. Each shard is now opened as it lands, and one that will not open is set
+aside while the race goes on. A file is unreadable only when fewer than k of
+its shards are good.
+
+Found in the same audit, and fixed:
+
+- **A file that could not be rebuilt was served as an empty success.** A
+  whole-file request now fails with the reason — which part from which cloud —
+  instead of `200` and no body, which a browser drew as a broken picture. The
+  browser also refuses a response that stops short of its declared length.
+- **"Could not be rebuilt or is not a readable image" was said of intact
+  files.** It is what the preview showed whenever the browser could not draw a
+  picture — which for **HEIC**, in every browser but Safari, is always. The
+  preview now has the file checked and says which it is: intact and not
+  displayable here, or what is actually wrong.
+- **Box** answered a download of a file it was still processing with `202` and
+  no body, which was taken as the object.
+- **Google Drive**: the parallel puts of a first upload could each create the
+  shard folder, splitting a file's shards across two folders of one name, only
+  one of which is found after a restart.
+- **Two relocations over the same file** could erase each other's copies; the
+  second now leaves the file to the first.
+- **Reading from "either"** fell back to the replica chunk-for-chunk even when
+  the replica was cut at a different chunk size, returning the wrong bytes.
+- **A sub vault open on one machine** let its stray-parts sweep treat files
+  another machine had stored in that sub vault as abandoned.
+
 ### Statistics: read race, transfers, throughput and a storage breakdown
 
 The **Read speed** tile at the foot of the accounts drawer is now

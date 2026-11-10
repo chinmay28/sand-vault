@@ -245,6 +245,10 @@ type Vault struct {
 	// never waited on, and never while holding mu. See rekeyplan.go.
 	migrateMu sync.Mutex
 
+	// relocating is the files whose shards are being carried between
+	// accounts right now, by entry ID. See relocateEntry.
+	relocating sync.Map
+
 	// rekey is what this process remembers about the paced re-encryption
 	// that is not worth the vault file: the files it is leaving alone for a
 	// while, why, and the one it is moving now. A leaf lock, taken while

@@ -407,7 +407,7 @@ export default function ImageViewer({ images, start = 0, onClose, onShown }) {
             fontFamily: FONT.sans,
             fontSize: '13px',
             color: COLORS.textMuted,
-          }}>This file could not be rebuilt or is not a readable image.</div>
+          }}>This browser could not draw this picture. That is usually the format — HEIC opens in Safari and little else — rather than the file: close this view to have the file itself checked, or download it.</div>
         ) : (
           <img
             /* Keyed so turning the page replaces the element: the old

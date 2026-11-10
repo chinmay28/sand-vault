@@ -276,7 +276,16 @@ func (v *Vault) OpenReader(id string, opts ...ReadOption) (*ChunkedReader, error
 		}
 		reader.entry, reader.role = view, provider.Replicas
 	case ReadEither:
-		reader.fallback = snapshot.replicaView()
+		// The fallback is asked for a chunk by its index, so it stands in
+		// only when the replica is cut at the same seams as the parts. A
+		// replica made under a different chunk size holds different bytes
+		// at chunk i, and serving those — and caching them under the parts'
+		// key — would be silent corruption of exactly the read that was
+		// trying to avoid a failure.
+		if view := snapshot.replicaView(); view != nil &&
+			view.ChunkSize == snapshot.ChunkSize && view.ChunkCount == snapshot.ChunkCount {
+			reader.fallback = view
+		}
 	}
 	return reader, nil
 }

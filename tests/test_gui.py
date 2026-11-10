@@ -3070,6 +3070,37 @@ class TestNoConsoleErrors:
 DIALOG_CONNECT = re.compile(r"^\+ Connect (another|a missing) cloud$")
 
 
+class TestFindAndFixCorruptFiles:
+    """Organize and automate → Find and fix corrupt files, start to finish.
+
+    A folder with one sound file in it: the menu entry opens the dialog, the
+    dialog leads with what the check would read, the check runs as a job on
+    the server and comes back saying every file is intact.
+    """
+
+    def test_a_sound_folder_checks_clean(self, app, tmp_path):
+        make_folder(app, "deep-verify")
+        app.get_by_text("deep-verify").first.click()
+        app.wait_for_load_state("networkidle")
+
+        source = tmp_path / "notes.txt"
+        source.write_bytes(b"nothing wrong with this one\n")
+        upload_and_settle(app, source)
+
+        app.locator('button[aria-label="Organize and automate this folder"]').click()
+        app.get_by_role("button", name=re.compile("Find and fix corrupt files")).click()
+
+        dialog = app.get_by_role("dialog", name="Find and fix corrupt files")
+        dialog.wait_for(timeout=20000)
+        # The bill first: one document, and a button that says how many.
+        expect(dialog.get_by_text("Documents")).to_be_visible(timeout=20000)
+        dialog.get_by_role("button", name="Check 1 file").click()
+
+        expect(dialog.get_by_text(re.compile(r"1 of 1 file checked"))).to_be_visible(timeout=60000)
+        expect(dialog.get_by_text(re.compile(r"Every file checked is intact"))).to_be_visible()
+        assert dialog.get_by_role("button", name=re.compile(r"^Fix ")).count() == 0
+
+
 class TestDisasterRecovery:
     """The machine died and the clouds came back, one at a time.
 

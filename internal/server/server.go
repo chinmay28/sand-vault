@@ -130,6 +130,12 @@ type Server struct {
 	// handleReattachStart.
 	reattaches *reattachWatch
 
+	// checks is the deep check of a folder's files and repairs the repair of
+	// what it flagged, each run on its own like the scans above. See
+	// handlers_check.go.
+	checks  *checkWatch
+	repairs *repairWatch
+
 	// sweeps is the orphan sweep, run the same way: a listing of every
 	// account and then a delete per object, which must not stop halfway
 	// because the page that asked was closed. See sweep_run.go.
@@ -281,6 +287,12 @@ func (s *Server) Handler() (http.Handler, error) {
 	}
 	if s.sweeps == nil {
 		s.sweeps = newSweepWatch()
+	}
+	if s.checks == nil {
+		s.checks = newJobWatch[vault.CheckProgress, vault.CheckReport]()
+	}
+	if s.repairs == nil {
+		s.repairs = newJobWatch[vault.RepairProgress, vault.RepairReport]()
 	}
 	if s.erasures == nil {
 		s.erasures = newEraseRuns()
@@ -599,6 +611,17 @@ func (s *Server) Handler() (http.Handler, error) {
 		// And a batch of them in one index write, for a plan of thousands.
 		"POST /api/files/move":       s.handleFilesMove,
 		"GET /api/files/{id}/health": s.handleFileHealth,
+		// The deep check: every shard of every chunk fetched and opened, the
+		// file held to its hash and its contents to their format. One file,
+		// answered in the request; a folder, as a job. See handlers_check.go.
+		"POST /api/files/{id}/check":  s.handleFileCheck,
+		"GET /api/check/survey":       s.handleCheckSurvey,
+		"POST /api/check":             s.handleCheckStart,
+		"GET /api/check":              s.handleCheckStatus,
+		"POST /api/check/stop":        s.handleCheckStop,
+		"POST /api/check/repair":      s.handleRepairStart,
+		"GET /api/check/repair":       s.handleRepairStatus,
+		"POST /api/check/repair/stop": s.handleRepairStop,
 		// Converting a pre-chunking file into the chunked format, which is what
 		// the read path's refusal asks for. See handlers_convert.go.
 		"GET /api/conversions":           s.handleConversionsPending,
@@ -979,7 +1002,8 @@ func (s *Server) autoLockLoop() {
 		// A stray-parts scan somebody started and walked away from is use
 		// too: it says so as each cloud answers, but says nothing while it
 		// waits on the slowest one, and that wait is the whole of it.
-		if s.strayScans.running() || s.reattaches.running() || s.sweeps.running() {
+		if s.strayScans.running() || s.reattaches.running() || s.sweeps.running() ||
+			s.checks.running() || s.repairs.running() {
 			continue
 		}
 		// A replica half-made would be erased and started again on the next
@@ -995,6 +1019,8 @@ func (s *Server) autoLockLoop() {
 		s.strayScans.stopAll()
 		s.reattaches.stopAll()
 		s.sweeps.stopAll()
+		s.checks.stopAll()
+		s.repairs.stopAll()
 		log.Print("vault auto-locked after idle timeout")
 	}
 }
