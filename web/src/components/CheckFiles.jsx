@@ -191,6 +191,12 @@ export default function CheckFiles({ path, vault = '', onClose, onChanged }) {
   return (
     <Modal title="Find and fix corrupt files" subtitle={path} onClose={onClose} width={640}>
       {error && <div style={{ marginBottom: '12px' }}><Banner tone="error" onDismiss={() => setError(null)}>{error}</Banner></div>}
+      {!check?.running && !check?.result && check?.error && (
+        <div style={{ marginBottom: '12px' }}><Banner tone="error">The last check did not finish: {check.error}</Banner></div>
+      )}
+      {!repair?.running && !repair?.result && repair?.error && (
+        <div style={{ marginBottom: '12px' }}><Banner tone="error">The last repair did not finish: {repair.error}</Banner></div>
+      )}
       {body}
     </Modal>
   )
@@ -264,7 +270,7 @@ function RepairOutcome({ report }) {
         {report.repaired} file{report.repaired === 1 ? '' : 's'} rebuilt
         {report.failed ? `, ${report.failed} could not be` : ''}
         {report.deferred ? `, ${report.deferred} left as they were` : ''}
-        {report.stopped ? ' — stopped before the end' : ''}.
+        {report.stopped ? ` — stopped before the end${report.stopped_by ? ` because ${report.stopped_by}` : ''}` : ''}.
         {' '}Check again to confirm.
       </Banner>
       {failed.map((f) => (
@@ -290,7 +296,7 @@ function Report({ report, busy, onRepair, onAgain }) {
     <>
       <p style={{ ...para, color: COLORS.text }}>
         {report.checked.toLocaleString()} of {report.files.toLocaleString()} file{report.files === 1 ? '' : 's'} checked
-        {' '}({formatBytes(report.bytes)}){report.stopped ? ', stopped before the end' : ''}.
+        {' '}({formatBytes(report.bytes)}){report.stopped ? `, stopped before the end${report.stopped_by ? ` because ${report.stopped_by}` : ''}` : ''}.
       </p>
       <p style={{ ...para, fontFamily: FONT.mono, fontSize: '12px' }}>{tally || 'Nothing was checked.'}</p>
 

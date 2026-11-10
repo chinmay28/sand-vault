@@ -238,8 +238,10 @@ type CheckReport struct {
 	Truncated bool        `json:"truncated,omitempty"`
 
 	// Stopped says the check was cut short, and everything above describes
-	// only the files it reached.
-	Stopped bool `json:"stopped,omitempty"`
+	// only the files it reached. StoppedBy says what cut it short when that
+	// was not somebody asking — see scopeShut.
+	Stopped   bool   `json:"stopped,omitempty"`
+	StoppedBy string `json:"stopped_by,omitempty"`
 
 	// Offline names accounts that did not answer when the check began. Their
 	// shards were not asked for.
@@ -352,8 +354,18 @@ func (v *Vault) CheckFolder(ctx context.Context, scope Scope, dir string, opts C
 				})
 			}
 		}
+		if why := v.scopeShut(scope); why != "" {
+			report.Stopped, report.StoppedBy = true, why
+			break
+		}
 		say(0)
 		check, err := v.checkEntry(ctx, scope, entry, online, say)
+		// A file "skipped" because its vault shut as it was reached is not a
+		// finding about the file.
+		if why := v.scopeShut(scope); why != "" && (err != nil || check.State == CheckSkipped) {
+			report.Stopped, report.StoppedBy = true, why
+			break
+		}
 		if err != nil {
 			if errors.Is(err, ErrLocked) {
 				return nil, err
@@ -854,11 +866,12 @@ type RepairOutcome struct {
 
 // RepairReport is what a repair did.
 type RepairReport struct {
-	Repaired int             `json:"repaired"`
-	Failed   int             `json:"failed"`
-	Deferred int             `json:"deferred"`
-	Files    []RepairOutcome `json:"files"`
-	Stopped  bool            `json:"stopped,omitempty"`
+	Repaired  int             `json:"repaired"`
+	Failed    int             `json:"failed"`
+	Deferred  int             `json:"deferred"`
+	Files     []RepairOutcome `json:"files"`
+	Stopped   bool            `json:"stopped,omitempty"`
+	StoppedBy string          `json:"stopped_by,omitempty"`
 }
 
 // RepairChecked repairs files a check found wanting, each by the fix the
@@ -899,6 +912,12 @@ func (v *Vault) RepairChecked(ctx context.Context, checks []FileCheck, onProgres
 		}
 		if ctx.Err() != nil {
 			report.Stopped = true
+			break
+		}
+		// A repair in a sub vault that has shut would fail once per file,
+		// each a "failed" that is not a failure of the file.
+		if why := v.scopeShut(c.Vault); why != "" {
+			report.Stopped, report.StoppedBy = true, why
 			break
 		}
 		if onProgress != nil {

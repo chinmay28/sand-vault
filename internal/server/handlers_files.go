@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"mime"
 	"net/http"
 	"sort"
@@ -1465,6 +1466,22 @@ func (s *Server) handleFileContent(w http.ResponseWriter, r *http.Request) {
 	}
 	if ticket != nil {
 		ticket.opened(entry.Size)
+	}
+
+	// A file with no checksum on record has one taken from this read, if this
+	// read turns out to be all of it in order — see checksumOnRead. Only from
+	// the parts: a replica is another placement, and the checksum recorded
+	// is of the file as its parts give it back.
+	if entry.Hash == "" && source == vault.ReadParts && r.Method == http.MethodGet && r.Header.Get("Range") == "" {
+		summing := newChecksumOnRead(body)
+		body = summing
+		defer func() {
+			if sum, whole := summing.sum(entry.Size); whole {
+				if _, err := v.RecordChecksum(entry.ID, entry.ArchiveID, sum); err != nil && !errors.Is(err, vault.ErrLocked) {
+					log.Printf("recording a checksum for %s: %v", entry.Path(), err)
+				}
+			}
+		}()
 	}
 
 	// A whole-file request is asked for its first byte before any header goes

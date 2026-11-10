@@ -245,6 +245,12 @@ type Vault struct {
 	// never waited on, and never while holding mu. See rekeyplan.go.
 	migrateMu sync.Mutex
 
+	// ledgerMu serialises writes of checksums.gz and guards ledgerSeen: each
+	// vault's index stamp as of the last time its ledger was brought up to
+	// date. See checksums.go.
+	ledgerMu   sync.Mutex
+	ledgerSeen map[Scope]time.Time
+
 	// relocating is the files whose shards are being carried between
 	// accounts right now, by entry ID. See relocateEntry.
 	relocating sync.Map

@@ -247,6 +247,7 @@ func (s *Server) handleVaultLock(w http.ResponseWriter, r *http.Request) {
 	s.sweeps.stopAll()
 	s.checks.stopAll()
 	s.repairs.stopAll()
+	s.checksums.stopAll()
 	v.Lock()
 	clearSessionCookie(w, isSecureRequest(r))
 

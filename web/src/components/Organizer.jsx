@@ -8,6 +8,7 @@ import { DuplicatesTool } from './Duplicates'
 import { AutomationSettings, describeCadence } from './FolderAutomation'
 import { FolderRepos } from './FolderRepos'
 import CheckFiles from './CheckFiles'
+import Checksums from './Checksums'
 
 /* Everything you do to a folder rather than to a row in it.
 
@@ -28,12 +29,18 @@ import CheckFiles from './CheckFiles'
      · Duplicates  — the copies of things, by their bytes, their size, their
                      names or the film they are. See Duplicates.jsx.
 
-   One asks whether the files are still right rather than where they are:
+   Three ask whether the files are still right rather than where they are:
 
      · Find and fix corrupt files — fetch every part of every file, hold each
                      file to the fingerprint taken when it was stored and to
                      the format it claims, and rebuild the ones whose parts
                      have gone wrong. See CheckFiles.jsx.
+
+     · Check against checksums — the quick form of the same question: read
+                     each file as a download would and hold it to its
+                     checksum, paced and pausable. And Calculate missing
+                     checksums, for the files that have none. See
+                     Checksums.jsx.
 
    Two are standing instructions rather than one-off jobs, and that is the whole
    difference between the halves: the six above happen when you press them, and
@@ -113,7 +120,7 @@ export function OrganizerMenu({ path, automation, repoCount = 0, onClose, onPick
   return (
     <ActionSheet
       title="Organize and automate"
-      subtitle={`Six ways to tidy ${here} and everything under it, each counting what it would do before it does any of it — a check of whether the files there still come back right — and two standing instructions that keep going afterwards.`}
+      subtitle={`Six ways to tidy ${here} and everything under it, each counting what it would do before it does any of it — three ways to ask whether the files there still come back right — and two standing instructions that keep going afterwards.`}
       onClose={onClose}
       items={[
         {
@@ -164,6 +171,20 @@ export function OrganizerMenu({ path, automation, repoCount = 0, onClose, onPick
           label: 'Find and fix corrupt files',
           hint: 'Fetch every part of every picture, document and film, check each against what was stored, and rebuild what can be',
           onSelect: () => onPick('check'),
+        },
+        {
+          key: 'sums-verify',
+          glyph: '≟',
+          label: 'Check files against their checksums',
+          hint: 'Read every file under here and hold it to its checksum — at a speed you choose, in the background, pausable',
+          onSelect: () => onPick('sums-verify'),
+        },
+        {
+          key: 'sums-compute',
+          glyph: '∑',
+          label: 'Calculate missing checksums',
+          hint: 'Give a checksum to every file under here that has none, and list them all in checksums.gz',
+          onSelect: () => onPick('sums-compute'),
         },
         {
           key: 'automate',
@@ -227,7 +248,8 @@ export function OrganizerTool({ tool, path, vault, providers = [], onClose, onDo
      refresh of the listing behind. */
   const dupes = tool === 'dupes'
   const bydate = tool === 'bydate'
-  const standing = tool === 'automate' || tool === 'repos' || tool === 'check'
+  const sums = tool === 'sums-verify' || tool === 'sums-compute'
+  const standing = tool === 'automate' || tool === 'repos' || tool === 'check' || sums
 
   useEffect(() => {
     if (dupes || bydate || standing) return undefined
@@ -254,6 +276,20 @@ export function OrganizerTool({ tool, path, vault, providers = [], onClose, onDo
      onDone. */
   if (tool === 'check') {
     return <CheckFiles path={path} vault={vault} onClose={onClose} onChanged={onDone} />
+  }
+
+  /* The two checksum jobs, one dialog told which it is. A compute writes
+     checksums.gz into the root, hence onDone. */
+  if (sums) {
+    return (
+      <Checksums
+        kind={tool === 'sums-verify' ? 'verify' : 'compute'}
+        path={path}
+        vault={vault}
+        onClose={onClose}
+        onChanged={onDone}
+      />
+    )
   }
 
   if (tool === 'repos') {

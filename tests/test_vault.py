@@ -9,6 +9,7 @@ Cloud accounts are stood up as local-folder providers.  That is a real backend
 going through the same scatter/gather code an S3 bucket or a Drive account
 would, so these tests exercise the whole path without needing credentials.
 """
+import gzip
 import hashlib
 import os
 import shutil
@@ -459,6 +460,55 @@ class TestStoreAndRetrieve:
         assert check["state"] == "damaged_at_source", check
         assert check["hash_ok"] and not check.get("faults") and not check.get("fix")
         assert check["content"]["format"] == "JPEG"
+
+    def test_checksums_are_listed_in_the_ledger_and_verified_against(self, server, unlocked):
+        """checksums.gz is a real file at the root — a path and a SHA-256 a
+        line — and a verify of a folder reads every file under it, however
+        deep, and holds each to its checksum."""
+        origin = {"Origin": server}
+        unlocked.post(f"{server}/api/folders", json={"path": "/sums/deeper"}, headers=origin, timeout=30)
+        top, deep = os.urandom(40_000), os.urandom(9_000)
+        assert upload(unlocked, server, "top.bin", top, path="/sums").status_code == 201
+        assert upload(unlocked, server, "deep, with a comma.bin", deep, path="/sums/deeper").status_code == 201
+
+        survey = unlocked.get(f"{server}/api/checksums/survey", params={"path": "/sums"}, timeout=30).json()
+        assert survey["with"] == 2 and survey["without"] == 0, survey
+
+        ledger = unlocked.post(f"{server}/api/checksums/ledger", headers=origin, timeout=120).json()
+        assert ledger["stored"] and ledger["path"] == "/checksums.gz", ledger
+        entry = find_file(unlocked, server, "checksums.gz")
+        assert entry, "the ledger should be listed at the root like any other file"
+        raw = unlocked.get(f"{server}/api/files/{entry['id']}/content", timeout=60).content
+        lines = gzip.decompress(raw).decode().splitlines()
+        assert f"/sums/top.bin, {hashlib.sha256(top).hexdigest()}" in lines
+        assert f"/sums/deeper/deep, with a comma.bin, {hashlib.sha256(deep).hexdigest()}" in lines
+        assert not any(line.startswith("/checksums.gz, ") for line in lines), "the ledger does not list itself"
+
+        # Unchanged, it is not stored again.
+        again = unlocked.post(f"{server}/api/checksums/ledger", headers=origin, timeout=120).json()
+        assert again["id"] == ledger["id"] and not again.get("written"), again
+
+        # Started slow enough to be caught running, held, and let go.
+        r = unlocked.post(f"{server}/api/checksums", headers=origin, timeout=30,
+                          json={"kind": "verify", "path": "/sums", "rate": 2048})
+        assert r.status_code == 202, r.text
+        paused = unlocked.post(f"{server}/api/checksums/pause", headers=origin, timeout=30).json()
+        assert paused["running"] and paused["paused"] and paused["rate"] == 2048, paused
+        time.sleep(0.5)
+        assert unlocked.get(f"{server}/api/checksums", timeout=30).json()["running"], "a paused job must not finish"
+        unlocked.post(f"{server}/api/checksums/rate", json={"rate": 0}, headers=origin, timeout=30)
+        unlocked.post(f"{server}/api/checksums/resume", headers=origin, timeout=30)
+
+        report = _await_job(unlocked, f"{server}/api/checksums")["result"]
+        assert report["kind"] == "verify" and report["files"] == 2, report
+        assert report["matched"] == 2 and report["findings"] == [], report
+
+        # Nothing lacks a checksum, so there is nothing to compute.
+        r = unlocked.post(f"{server}/api/checksums", headers=origin, timeout=30,
+                          json={"kind": "compute", "path": "/sums"})
+        assert r.status_code == 202, r.text
+        report = _await_job(unlocked, f"{server}/api/checksums")["result"]
+        assert report["kind"] == "compute" and report["files"] == 0 and report["computed"] == 0, report
 
     def test_upload_keeps_the_files_own_modified_time(self, server, unlocked):
         """A photograph from 2019 is filed under 2019, not under today."""

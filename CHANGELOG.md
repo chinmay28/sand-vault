@@ -12,6 +12,53 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### Checksums: a ledger at the root, and two paced jobs that use it
+
+Every file has a checksum — the SHA-256 of its contents, taken as it is stored
+and kept in the index. Three things are new around it.
+
+**`checksums.gz`**, at the root of the vault, lists them all: one file a line,
+`full path, checksum`, gzipped. It is an ordinary file in the vault — cut,
+sealed and scattered over the **default clouds** like any other, listed in the
+browser, downloadable — so the record of what every file should hash to can be
+taken out and held against a download without SAND (`zcat checksums.gz`). It is
+written from the index and rewritten when the index has changed: every two
+minutes while the vault is unlocked (`sand serve --checksums-every`, `0` for
+only when asked), and never when nothing changed. Each sub vault keeps its own.
+
+Two new entries under **Organize and automate**, each over a folder and
+everything beneath it:
+
+- **Check files against their checksums** reads every file the way a download
+  does and holds it to its checksum. It is the quick corruption check — it
+  fetches the parts a read needs, not all of them, and looks only at the hash;
+  *Find and fix corrupt files* is the one that says which part on which cloud
+  is wrong.
+- **Calculate missing checksums** reads the files that have none — recovered
+  without their index, or stored long ago — records what they hash to, and
+  rewrites the ledger. A checksum on record is never replaced.
+
+Both run in the background on the machine SAND is on, at a **speed you
+choose** (unlimited down to 512 KB/s) and can change while it runs, and can be
+**paused**, resumed and **stopped** with what was done kept. One runs at a
+time. A paused job does not hold an idle vault open.
+
+A file with no checksum that is **opened and read to the end** has one
+recorded from that read.
+
+**Sub vaults.** Each keeps its own `/checksums.gz`, of its own files, on its
+own default clouds where it has them; the main vault's ledger never lists a
+sub vault's files. A job started inside a sub vault walks that sub vault only.
+Locking or deleting a sub vault while a job is in it — a checksum job, a deep
+check or its repair — ends the job as *stopped, because the sub vault was
+locked*, keeping what it had done, instead of reporting every remaining file
+as unreadable. A job that ended in an error now shows that error in its
+dialog.
+
+`sand checksums write | verify [folder] | compute [folder]`, with `--limit`
+in MB a second. `POST`/`GET /api/checksums`, `…/pause`, `…/resume`, `…/rate`,
+`…/stop`, `…/ledger`, `GET /api/checksums/survey`.
+
 ### Find and fix corrupt files
 
 **Organize and automate → Find and fix corrupt files** checks whether the files
