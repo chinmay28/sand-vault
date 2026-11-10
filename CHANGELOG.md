@@ -41,6 +41,20 @@ It runs on the server as a job (`POST`/`GET /api/check`, `…/stop`,
 be closed, reopened and stopped. Checking never writes. On the command line:
 `sand check --deep <file-or-folder> [--fix]`.
 
+### HEIC pictures open in every browser
+
+HEIC — what an iPhone's camera writes — is decoded by Safari and by no other
+browser, so on Android, Chrome, Firefox and Edge an intact photograph uploaded
+with no thumbnail and opened to a dark box. Where the browser cannot decode a
+HEIC the page now does it itself (libheif as WebAssembly, via `heic-to`), in
+the preview, the full-screen viewer and the thumbnail made at upload.
+
+Only for drawing: the stored file is untouched and a download is still the
+original HEIC. The decoder is a 3.2 MB chunk (0.8 MB compressed) served from
+the vault's own origin and fetched the first time a HEIC is in front of
+someone; a browser that draws HEIC natively never fetches it. `heic-to` and
+libheif are LGPL-3.0.
+
 ### A damaged shard no longer makes a file unreadable
 
 A read took the first k shards to arrive and decoded them together, so **one**
@@ -59,9 +73,9 @@ Found in the same audit, and fixed:
   browser also refuses a response that stops short of its declared length.
 - **"Could not be rebuilt or is not a readable image" was said of intact
   files.** It is what the preview showed whenever the browser could not draw a
-  picture — which for **HEIC**, in every browser but Safari, is always. The
-  preview now has the file checked and says which it is: intact and not
-  displayable here, or what is actually wrong.
+  picture — which for **HEIC**, in every browser but Safari, was always (see
+  above). A picture that still will not draw now has the file checked, and
+  the preview says which it is: intact, or what is actually wrong.
 - **Box** answered a download of a file it was still processing with `202` and
   no body, which was taken as the object.
 - **Google Drive**: the parallel puts of a first upload could each create the

@@ -6,6 +6,7 @@ import { fetchToBlob, useDownload } from '../download'
 import { readToken } from '../readwatch'
 import { SaveSheet } from './SaveSheet'
 import { thumbnailFromElement } from '../thumbs'
+import { drawable } from '../heic'
 import { homeOf, indexPlacement, indexReplica, shardState } from '../placement'
 import ImageViewer from './ImageViewer'
 import PdfPreview from './PdfPreview'
@@ -59,7 +60,12 @@ function useRebuilt(file, wanted, asText, from = 'parts') {
           const text = await blob.slice(0, TEXT_CAP).text()
           if (live) setState((prev) => ({ ...prev, text }))
         } else {
-          setState((prev) => ({ ...prev, url: URL.createObjectURL(blob) }))
+          /* A HEIC, in a browser that cannot draw one, is decoded here and
+             shown as what it decodes to — see heic.js. A decode that fails
+             falls back to the bytes as they are, so the <img> refuses them
+             and the file gets checked, which is the right next question. */
+          const shown = await drawable(blob).catch(() => blob)
+          if (live) setState((prev) => ({ ...prev, url: URL.createObjectURL(shown) }))
         }
       })
       .catch((err) => {

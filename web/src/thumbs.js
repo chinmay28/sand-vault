@@ -1,8 +1,9 @@
 /* Thumbnails are made here, in the tab that is uploading the file, and not on
    the server — because this is the only place they can be made at all.
 
-   The browser decodes HEIC, which most photos taken on a phone are and which
-   Go cannot read; it honours the EXIF orientation that would otherwise leave a
+   HEIC — which most photos taken on a phone are and which Go cannot read — is
+   decoded here, by the browser where it can and by heic.js where it cannot;
+   the browser honours the EXIF orientation that would otherwise leave a
    third of them lying on their side; and with pdf.js it renders the first page
    of a PDF, which nothing in a static Go binary can do without a C library.
 
@@ -11,6 +12,7 @@
 
 import { PDF_OPTIONS, loadPDFJS } from './pdfjs'
 import { previewKind } from './theme'
+import { drawable } from './heic'
 
 /* The longest edge of a stored thumbnail. Matches internal/thumb.Size — the
    server re-encodes to the same number, so producing anything larger only
@@ -27,7 +29,10 @@ const MAX_SOURCE_BYTES = 80 * 1024 * 1024
    better served by the glyph it already has. */
 export function thumbnailKind(mime = '', name = '') {
   const kind = previewKind(mime, name)
-  return kind === 'image' || kind === 'pdf' ? kind : null
+  if (kind === 'image' || kind === 'pdf') return kind
+  // A browser that cannot draw HEIC does not know its type either, and hands
+  // the file over with none — so the name has to be enough to try.
+  return /\.(heic|heif)$/i.test(name) ? 'image' : null
 }
 
 /* Renders a file to a small JPEG, or resolves null when it cannot. A missing
@@ -64,7 +69,10 @@ export async function thumbnailFromElement(el) {
   }
 }
 
-async function fromImage(blob) {
+async function fromImage(source) {
+  // A HEIC outside Safari is decoded by the page first — see heic.js — so a
+  // photo uploaded from any browser gets its picture in the list.
+  const blob = await drawable(source)
   let bitmap
   try {
     // Without this the picture is drawn as stored, and a photo taken in

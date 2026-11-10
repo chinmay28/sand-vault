@@ -3070,6 +3070,39 @@ class TestNoConsoleErrors:
 DIALOG_CONNECT = re.compile(r"^\+ Connect (another|a missing) cloud$")
 
 
+class TestHEICPictures:
+    """A HEIC photograph opens in a browser that cannot decode HEIC.
+
+    Chromium is exactly that browser, which is what makes this a test: before
+    the page decoded HEIC itself, this file uploaded with no thumbnail and
+    opened to "could not be rebuilt or is not a readable image".
+    """
+
+    def test_a_heic_gets_a_thumbnail_and_opens(self, app, tmp_path):
+        make_folder(app, "iphone-roll")
+        app.get_by_text("iphone-roll").first.click()
+        app.wait_for_load_state("networkidle")
+
+        source = tmp_path / "IMG_0014.HEIC"
+        source.write_bytes(open(os.path.join(os.path.dirname(__file__), "sample.heic"), "rb").read())
+        upload_and_settle(app, source)
+
+        # The picture made at upload, from a decode the browser could not do.
+        listing = app.evaluate(
+            "async () => (await (await fetch('/api/files?path=/iphone-roll')).json())")
+        file_id = listing["files"][0]["id"]
+        status = app.evaluate(
+            "async (id) => (await fetch(`/api/files/${id}/thumb`)).status", file_id)
+        assert status == 200, "a HEIC uploaded from Chromium should still get its thumbnail"
+
+        app.get_by_text("IMG_0014.HEIC").first.click()
+        app.wait_for_function(
+            """() => { const i = document.querySelector('img[alt="IMG_0014.HEIC"]');
+                       return i && i.complete && i.naturalWidth === 160 && i.naturalHeight === 120 }""",
+            timeout=60000)
+        assert app.get_by_text("could not").count() == 0
+
+
 class TestFindAndFixCorruptFiles:
     """Organize and automate → Find and fix corrupt files, start to finish.
 

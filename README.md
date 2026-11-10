@@ -3001,11 +3001,17 @@ a folder rather than the whole vault when the vault is large.
 
 `sand check --deep <file-or-folder> [--fix]` is the same check from a terminal.
 
-**A picture that will not open is usually not a corrupt file.** HEIC — what an
-iPhone's camera writes — is displayed by Safari and by no other browser, so on
-Android or in Chrome the preview cannot draw it however intact it is. When a
-picture will not draw, the preview now runs this check on that one file and
-says which it is.
+**A picture that will not open gets checked.** When the browser cannot draw a
+picture whose bytes have all arrived, the preview runs this check on that one
+file and says which it is: intact, or what is wrong with it.
+
+**HEIC opens everywhere.** HEIC — what an iPhone's camera writes — is decoded
+by Safari and by no other browser. Where the browser cannot, the page decodes
+it itself (libheif compiled to WebAssembly, the LGPL-3.0 `heic-to` package) for
+the preview, the full-screen viewer and the thumbnail made at upload. It is
+only ever for drawing: the stored file and a download of it are the original
+HEIC. The decoder is fetched from the vault's own origin the first time a HEIC
+is opened, and not at all by a browser that needs no help.
 
 ---
 

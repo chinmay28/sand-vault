@@ -4,6 +4,8 @@ import { COLORS, FONT } from '../theme'
 import { useIsMobile } from '../hooks'
 import { api } from '../api'
 import { readToken } from '../readwatch'
+import { fetchToBlob } from '../download'
+import { drawable } from '../heic'
 import ReadStatus from './ReadStatus'
 import { IconButton, Spinner } from './ui'
 
@@ -65,6 +67,15 @@ export default function ImageViewer({ images, start = 0, onClose, onShown }) {
   /* Per file, not one flag: the show goes on past a broken image, and coming
      back to it should say "broken" again rather than spin. */
   const [failed, setFailed] = useState(() => new Set())
+
+  /* Pictures the browser refused and the page decoded instead — a HEIC
+     outside Safari — as object URLs by file id. See heic.js. Let go of when
+     the viewer closes. */
+  const [decoded, setDecoded] = useState(() => new Map())
+  const decodedRef = useRef(decoded)
+  decodedRef.current = decoded
+  useEffect(() => () => { for (const url of decodedRef.current.values()) URL.revokeObjectURL(url) }, [])
+  const tried = useRef(new Set())
 
   const stageRef = useRef(null)
   /* The fingers currently down and what they are doing. Gesture state lives in
@@ -407,20 +418,35 @@ export default function ImageViewer({ images, start = 0, onClose, onShown }) {
             fontFamily: FONT.sans,
             fontSize: '13px',
             color: COLORS.textMuted,
-          }}>This browser could not draw this picture. That is usually the format — HEIC opens in Safari and little else — rather than the file: close this view to have the file itself checked, or download it.</div>
+          }}>This picture could not be drawn. Close this view to have the file itself checked, or download it.</div>
         ) : (
           <img
             /* Keyed so turning the page replaces the element: the old
                photograph must not sit there while the next one streams in
                behind the same src. */
             key={entry.file.id}
-            src={api.contentURL(entry.file.id, { watch })}
+            src={decoded.get(entry.file.id) || api.contentURL(entry.file.id, { watch })}
             alt={entry.file.name}
             draggable={false}
             onLoad={(e) => { setLoading(false); onShown?.(entry, e.currentTarget) }}
             onError={() => {
-              setLoading(false)
-              setFailed((prev) => new Set(prev).add(entry.file.id))
+              const id = entry.file.id
+              const fail = () => {
+                setLoading(false)
+                setFailed((prev) => new Set(prev).add(id))
+              }
+              /* Refused once: fetch the bytes and see whether the page can
+                 decode what the browser could not. Tried once per file — a
+                 decoded picture that also fails is a broken one. */
+              if (tried.current.has(id)) { fail(); return }
+              tried.current.add(id)
+              fetchToBlob(api.contentURL(id))
+                .then(async (blob) => {
+                  const shown = await drawable(blob)
+                  if (shown === blob) { fail(); return }
+                  setDecoded((prev) => new Map(prev).set(id, URL.createObjectURL(shown)))
+                })
+                .catch(fail)
             }}
             style={{
               maxWidth: '100%',

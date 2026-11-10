@@ -369,7 +369,7 @@ export function describeCheck(check) {
   const verified = 'This file is intact: every part was fetched, and it matches the fingerprint taken when it was stored.'
   const browser = !format || DRAWN_EVERYWHERE.has(format)
     ? 'This browser could not draw it all the same — download it and open it with something else.'
-    : `This browser cannot display ${format} pictures${format === 'HEIC' ? ' (Safari can)' : ''} — download it, or open it in a browser that does.`
+    : `As a ${format} picture it could not be decoded in this browser — download it and open it with something else.`
   const parts = check.state === 'repairable'
     ? ' Some of its parts do need repair: Organize and automate → Find and fix corrupt files.'
     : ''
