@@ -273,3 +273,109 @@ func (c *Client) WriteUnder(root, rel string, r io.Reader, opts WriteOptions) (i
 	}
 	return n, nil
 }
+
+// Pending is a file being written into a directory under a root, under a
+// temporary name, whose real name is given only when it is finished.
+//
+// WriteUnder is the same bargain for a caller that knows the name first and
+// has the bytes as a reader. This is for the one that has neither: a snapshot
+// writes its part files as a stream arrives, and what a part is called
+// depends on whether another follows it — which is known only once this one
+// is full. See internal/snapshot.
+type Pending struct {
+	c    *Client
+	dir  string // resolved, on the server
+	tmp  string
+	file *pkgsftp.File
+	done bool
+}
+
+// CreatePending begins a file in the directory rel under root, making the
+// directory and everything above it if need be. The directory goes through
+// resolve, so the boundary is the one every other write here has.
+func (c *Client) CreatePending(root, rel string) (*Pending, error) {
+	dir, err := c.MkdirUnder(root, rel)
+	if err != nil {
+		return nil, err
+	}
+	tmp := TempName(dir)
+	f, err := c.sftp.Create(tmp)
+	if err != nil {
+		return nil, fmt.Errorf("cannot create a file in %s: %w", displayPath(CleanPath(root), dir), err)
+	}
+	// Before the bytes, for the reason WriteUnder gives.
+	if err := c.sftp.Chmod(tmp, 0o600); err != nil {
+		f.Close()
+		c.sftp.Remove(tmp)
+		return nil, fmt.Errorf("cannot set permissions in %s: %w", displayPath(CleanPath(root), dir), err)
+	}
+	return &Pending{c: c, dir: dir, tmp: tmp, file: f}, nil
+}
+
+func (p *Pending) Write(b []byte) (int, error) { return p.file.Write(b) }
+
+// Commit closes the file and renames it to name in its directory. The name is
+// one path element: a file is committed where it was begun and nowhere else.
+// A name already taken is refused and the file discarded — nothing here
+// writes over what is there.
+func (p *Pending) Commit(name string) error {
+	if p.done {
+		return fmt.Errorf("the file was already finished")
+	}
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
+		p.Abort()
+		return fmt.Errorf("%q is not a file name", name)
+	}
+	p.done = true
+	if err := p.file.Close(); err != nil {
+		p.c.sftp.Remove(p.tmp)
+		return fmt.Errorf("closing %s: %w", name, err)
+	}
+	full := path.Join(p.dir, name)
+	if _, err := p.c.sftp.Lstat(full); err == nil {
+		p.c.sftp.Remove(p.tmp)
+		return fmt.Errorf("%s: %w", name, ErrExists)
+	}
+	if err := p.c.sftp.Rename(p.tmp, full); err != nil {
+		p.c.sftp.Remove(p.tmp)
+		return fmt.Errorf("putting %s in place: %w", name, err)
+	}
+	return nil
+}
+
+// Abort discards the file. Safe to call after Commit, where it does nothing.
+func (p *Pending) Abort() error {
+	if p.done {
+		return nil
+	}
+	p.done = true
+	p.file.Close()
+	return p.c.sftp.Remove(p.tmp)
+}
+
+// RemoveUnder removes one file under root. A file that is not there is not an
+// error; a folder is refused, since nothing here removes those.
+func (c *Client) RemoveUnder(root, rel string) error {
+	root = CleanPath(root)
+	if root == "" {
+		root = "/"
+	}
+	full, err := c.resolve(root, rel)
+	if err != nil {
+		return err
+	}
+	info, err := c.sftp.Lstat(full)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("cannot check %s: %w", displayPath(root, full), err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("%s is a folder, not a file", displayPath(root, full))
+	}
+	if err := c.sftp.Remove(full); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("removing %s: %w", displayPath(root, full), err)
+	}
+	return nil
+}

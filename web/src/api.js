@@ -637,6 +637,33 @@ export const api = {
   checksumStop: () => request('/api/checksums/stop', { method: 'POST' }),
   checksumLedgerWrite: (vault = '') =>
     request(`/api/checksums/ledger${vault ? `?vault=${encodeURIComponent(vault)}` : ''}`, { method: 'POST' }),
+
+  /* Snapshots: a folder and everything under it as one archive — compressed,
+     sealed under a password of its own, cut into part files past a size —
+     kept on one connected cloud or one machine. A `target` names where:
+     { account } or { machine, dir }.
+
+     snapshotPlan says what a snapshot of a folder would hold and the limits
+     a part's size is held to. snapshotsStored lists what a place is keeping,
+     read from the names there. snapshotInspect opens one under a password
+     and says what it is of — a wrong password is a 400 with the code
+     SNAPSHOT_PASSWORD. snapshotTake and snapshotRestore start the job on the
+     server, one at a time between them; the same one already running is
+     joined and a different one is a 409. snapshotStatus is where it has got
+     to, and snapshotStop ends it: a snapshot being taken is thrown away, a
+     restore keeps what had arrived. See internal/server/handlers_snapshots.go. */
+  snapshotPlan: (path, vault = '') =>
+    request(`/api/snapshots/plan?path=${encodeURIComponent(path)}${vaultParam(vault)}`),
+  snapshotsStored: (target) =>
+    request(`/api/snapshots/stored?${new URLSearchParams(target).toString()}`),
+  snapshotInspect: (target, name, password) =>
+    request('/api/snapshots/inspect', { method: 'POST', body: { target, name, password } }),
+  snapshotDelete: (target, name) =>
+    request('/api/snapshots/delete', { method: 'POST', body: { target, name } }),
+  snapshotTake: (body) => request('/api/snapshots', { method: 'POST', body }),
+  snapshotRestore: (body) => request('/api/snapshots/restore', { method: 'POST', body }),
+  snapshotStatus: () => request('/api/snapshots'),
+  snapshotStop: () => request('/api/snapshots/stop', { method: 'POST' }),
   /* Delete a selection — files, folders, or both — as one run on the machine.
      `targets` is `{ id }` for a file or `{ path, vault }` for a folder, the
      shape relocate() names a selection in; a path naming a file is a file.

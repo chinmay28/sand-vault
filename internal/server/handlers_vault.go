@@ -252,6 +252,10 @@ func (s *Server) handleVaultLock(w http.ResponseWriter, r *http.Request) {
 	// and every one it wrote is where the index says it belongs.
 	s.lostScans.stopAll()
 	s.lostRestores.stopAll()
+	// A snapshot being taken erases what it had written and one being
+	// restored keeps the files that arrived; either way it was reading or
+	// writing with keys that are leaving.
+	s.snapshots.stopAll()
 	v.Lock()
 	clearSessionCookie(w, isSecureRequest(r))
 

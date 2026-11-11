@@ -2316,6 +2316,26 @@ sand checksums compute [dir] [--limit MB/s]
                                    Record a checksum for files that have none
 ```
 
+### Snapshots
+
+```
+sand snapshot take [folder] --cloud <account> | --machine <name> [--dir <folder>]
+                   [--max-size 2G]     Pack a folder into one compressed, sealed
+                                       archive; over --max-size, into part files
+sand snapshot ls --cloud … | --machine … [--dir …]
+                                       The snapshots a place is keeping
+sand snapshot restore <snapshot> [folder] --cloud … | --machine … [--dir …] [--replace]
+                                       Unpack one into a folder (default: the root)
+sand snapshot rm <snapshot> --cloud … | --machine … [--dir …]
+                                       Erase one
+```
+
+The snapshot's password is asked for — twice when taking one — or read from
+`SAND_SNAPSHOT_PASSWORD`. `--max-size` defaults to no limit on a machine and
+64 MB on a cloud, where 256 MB is the most a part may be. Ctrl-C during `take`
+erases what had been written; during `restore` it keeps what had arrived, and
+running it again carries on. See [Snapshots of a folder](#snapshots-of-a-folder).
+
 ### Automation
 
 ```
@@ -2604,6 +2624,12 @@ pipe the password on stdin.
   stored copy is in. See
   [Keeping copies of git repositories](#keeping-copies-of-git-repositories).
 
+  Two put the whole folder somewhere else and bring it back. **Take a
+  snapshot** packs everything under the folder into one archive — compressed
+  hard, encrypted under a password of its own — on one cloud or one machine,
+  cut into part files past a size you choose; **Restore a snapshot** unpacks
+  one into the folder. See [Snapshots of a folder](#snapshots-of-a-folder).
+
   The button carries the standing state, so a folder looking after itself says
   so without the menu being opened: lit when there is a policy, amber when the
   last run found something, and the two standing rows say what they are up to in
@@ -2825,11 +2851,12 @@ those folders, paid where they are listed instead.
 ## Organizing a folder
 
 `🗂` in the toolbar, beside `🎬`, acts on the folder you are standing in and
-everything under it. Six of the eight entries are jobs of the kind nobody does
-one row at a time — which is why they never get done — and the other two are the
-standing instructions in [A folder that looks after
-itself](#a-folder-that-looks-after-itself) and [Keeping copies of git
-repositories](#keeping-copies-of-git-repositories). The six:
+everything under it. Six of the entries are jobs of the kind nobody does one
+row at a time — which is why they never get done. Three ask whether the files
+still come back right, two [take and restore a snapshot](#snapshots-of-a-folder)
+of the whole folder, and the last two are the standing instructions in [A
+folder that looks after itself](#a-folder-that-looks-after-itself) and [Keeping
+copies of git repositories](#keeping-copies-of-git-repositories). The six:
 
 - **Flatten into this folder** — every file below comes up to here, and the
   folders they came from are dropped. Two files called `IMG_0001.jpg` is the
@@ -3129,6 +3156,80 @@ only ever for drawing: the stored file and a download of it are the original
 HEIC. The decoder is fetched from the vault's own origin the first time a HEIC
 is opened, and not at all by a browser that needs no help.
 
+### Snapshots of a folder
+
+**Take a snapshot** packs the folder you are in, and everything under it, into
+one archive and keeps it somewhere you choose. **Restore a snapshot** unpacks
+one into the folder you are in. Both are in the same menu.
+
+A snapshot is:
+
+- **Highly compressed.** One zstd stream over the whole tree at the library's
+  best level, rather than a stream per file — so what a folder of similar files
+  has in common is stored once. Media that is already compressed will not get
+  smaller; documents, source trees and anything repetitive will, a lot.
+- **Encrypted under a password you type.** Argon2id (512 MB, the costs a
+  recovery kit uses) turns it into a key, and the archive is sealed in
+  AES-256-GCM frames. It is the snapshot's own password, not the vault's, and
+  SAND does not keep it — it is asked for again to restore. A wrong password is
+  said before anything is unpacked.
+- **Kept in one place you pick**: one of the connected clouds, or a machine you
+  have an SSH login on (the same machines imports and exports use), in a folder
+  you name there.
+- **No bigger per file than you allow.** Past the size you choose it is cut into
+  part files, and restoring puts them back together — there is nothing to
+  assemble by hand, only to keep in the same folder:
+
+  ```
+  snapshot-20261111T192233Z-ab12cd34.sandsnap                a whole snapshot in one file
+  snapshot-20261111T192233Z-ab12cd34.part001.sandsnap        the first of several
+  snapshot-20261111T192233Z-ab12cd34.part002.sandsnap
+  snapshot-20261111T192233Z-ab12cd34.part003.last.sandsnap   the last, which says so
+  ```
+
+  A machine takes a part as a stream, so a part there can be any size, or the
+  limit can be left off for one file however big. A cloud takes an object as
+  one block of memory, so a part bound for one is at most **256 MB** (64 MB
+  unless you say otherwise).
+
+The name says when the snapshot was taken and nothing else: not the folder, and
+not a file in it. A listing tells a finished snapshot from an interrupted one
+by the part marked last, without opening anything; an incomplete one is shown
+as such and can be erased but not restored.
+
+**It is the one thing SAND stores whole.** Every file in the vault is cut into
+parts that mean nothing alone; a snapshot is the entire folder on a single
+account, and its password is all that stands between that account and the
+files. That is the point of it — a snapshot is readable with its parts and its
+password and *no vault at all*, which is what you want when the vault is the
+thing that was lost — and it is the reason to give it a long password.
+
+What is in one is the tree: every folder, empty ones included, and every file
+with its bytes, its modified time and its checksum. What is not is anything the
+vault knows *about* the tree — thumbnails, film details, which clouds held the
+parts, a folder's schedule.
+
+**Restoring** lands the snapshot's contents *in* the folder you are in: a
+snapshot of `/photos` restored into `/photos` puts everything back where it
+was, and restored into `/old` it becomes `/old/2019/…`. Each file arrives as an
+ordinary upload, on this vault's own clouds. A file already there with the same
+contents is passed over, so a restore is safe to repeat — and repeating it is
+how one that was stopped is carried on. A file with the same name and
+*different* contents is left alone and listed, unless **Replace files that
+differ** is ticked; nothing is ever stored beside it under a numbered name.
+
+Both run in the background on the machine SAND is on, one at a time between
+them. Stopping a snapshot erases what had been written of it — a snapshot
+missing a file is worse than none — and so does a file that cannot be read.
+Stopping a restore keeps the files that had arrived.
+
+```
+sand snapshot take /photos --cloud r2-cold --max-size 200M
+sand snapshot take /photos --machine nas --dir backups/sand --max-size 4G
+sand snapshot ls --machine nas --dir backups/sand
+sand snapshot restore snapshot-20261111T192233Z-ab12cd34 /photos --machine nas --dir backups/sand
+```
+
 ---
 
 ## HTTP API
@@ -3185,6 +3286,13 @@ is opened, and not at all by a browser that needs no help.
 | POST · GET | `/api/checksums` | Start a `verify` or `compute` of a folder (`{kind, path, vault, rate}`, rate in bytes a second) · where it has got to — with `paused` and `rate` — then what it did |
 | POST | `/api/checksums/pause` · `/resume` · `/rate` · `/stop` | Hold it, let it go, change its pace (`{rate}`), end it keeping what was done |
 | POST | `/api/checksums/ledger` | Bring `/checksums.gz` up to date now |
+| GET | `/api/snapshots/plan?path=` | What a snapshot of a folder would hold, and the limits a part's size is held to |
+| GET | `/api/snapshots/stored?account=` · `?machine=&dir=` | The snapshots a cloud or a machine's folder is keeping, read from the names there |
+| POST | `/api/snapshots/inspect` | Open one under its password (`{target, name, password}`) and say what it is of; `400 SNAPSHOT_PASSWORD` when it is wrong |
+| POST · GET | `/api/snapshots` | Take a snapshot of a folder (`{path, vault, target, password, part_size}`, where `target` is `{account}` or `{machine, dir}`) · where the job has got to, then what it did |
+| POST | `/api/snapshots/restore` | Unpack one into a folder (`{path, vault, target, name, password, replace}`); polled on `GET /api/snapshots` |
+| POST | `/api/snapshots/stop` | End the job: a snapshot being taken is erased, a restore keeps what had arrived |
+| POST | `/api/snapshots/delete` | Erase every part of one (`{target, name}`) |
 | GET | `/api/degraded?offset=&limit=` | The files missing at least one part, worst first and paged — what the accounts panel's "N files missing a spare part" is counting |
 | POST | `/api/files/{id}/move` | Rename / move into another folder |
 | DELETE | `/api/files/{id}` | Erase every part, holding the request open until they are gone |
@@ -3710,6 +3818,8 @@ sand/
 │   ├── compress/                # zstd
 │   ├── splitter/                # split, XOR, reconstruct
 │   ├── sandfile/                # binary .sand part format
+│   ├── snapshot/                # a folder as one sealed archive: tar → zstd →
+│   │                            #   AES-GCM frames → part files, over a Store
 │   ├── provider/                # local, s3 (SigV4), webdav, gdrive, dropbox,
 │   │                            #   onedrive, box, proton + the OAuth sign-in flow;
 │   │                            #   protoncli drives Proton's own client

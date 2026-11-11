@@ -9,6 +9,7 @@ import { AutomationSettings, describeCadence } from './FolderAutomation'
 import { FolderRepos } from './FolderRepos'
 import CheckFiles from './CheckFiles'
 import Checksums from './Checksums'
+import Snapshots from './Snapshots'
 
 /* Everything you do to a folder rather than to a row in it.
 
@@ -41,6 +42,15 @@ import Checksums from './Checksums'
                      checksum, paced and pausable. And Calculate missing
                      checksums, for the files that have none. See
                      Checksums.jsx.
+
+   Two put the folder somewhere else whole, and bring it back:
+
+     · Take a snapshot — every file and folder under here as one archive,
+                     compressed hard and sealed under a password of its own,
+                     kept on one cloud or one machine and cut into part files
+                     past a size you choose.
+     · Restore a snapshot — pick one, give its password, and unpack it into
+                     this folder. See Snapshots.jsx.
 
    Two are standing instructions rather than one-off jobs, and that is the whole
    difference between the halves: the six above happen when you press them, and
@@ -120,7 +130,7 @@ export function OrganizerMenu({ path, automation, repoCount = 0, onClose, onPick
   return (
     <ActionSheet
       title="Organize and automate"
-      subtitle={`Six ways to tidy ${here} and everything under it, each counting what it would do before it does any of it — three ways to ask whether the files there still come back right — and two standing instructions that keep going afterwards.`}
+      subtitle={`Six ways to tidy ${here} and everything under it, each counting what it would do before it does any of it — three ways to ask whether the files there still come back right — a snapshot of it all to take or to restore — and two standing instructions that keep going afterwards.`}
       onClose={onClose}
       items={[
         {
@@ -187,6 +197,20 @@ export function OrganizerMenu({ path, automation, repoCount = 0, onClose, onPick
           onSelect: () => onPick('sums-compute'),
         },
         {
+          key: 'snap-take',
+          glyph: '⛶',
+          label: 'Take a snapshot',
+          hint: 'Everything under here as one compressed archive, sealed under its own password, on a cloud or a machine — in part files past a size you choose',
+          onSelect: () => onPick('snap-take'),
+        },
+        {
+          key: 'snap-restore',
+          glyph: '⟲',
+          label: 'Restore a snapshot',
+          hint: 'Pick a snapshot a cloud or a machine is keeping, give its password, and unpack it into this folder',
+          onSelect: () => onPick('snap-restore'),
+        },
+        {
           key: 'automate',
           glyph: '⏱',
           label: 'Look after this folder',
@@ -249,7 +273,8 @@ export function OrganizerTool({ tool, path, vault, providers = [], onClose, onDo
   const dupes = tool === 'dupes'
   const bydate = tool === 'bydate'
   const sums = tool === 'sums-verify' || tool === 'sums-compute'
-  const standing = tool === 'automate' || tool === 'repos' || tool === 'check' || sums
+  const snaps = tool === 'snap-take' || tool === 'snap-restore'
+  const standing = tool === 'automate' || tool === 'repos' || tool === 'check' || sums || snaps
 
   useEffect(() => {
     if (dupes || bydate || standing) return undefined
@@ -286,6 +311,21 @@ export function OrganizerTool({ tool, path, vault, providers = [], onClose, onDo
         kind={tool === 'sums-verify' ? 'verify' : 'compute'}
         path={path}
         vault={vault}
+        onClose={onClose}
+        onChanged={onDone}
+      />
+    )
+  }
+
+  /* The two snapshot jobs, one dialog told which it is. A restore puts files
+     in this folder, hence onDone. */
+  if (snaps) {
+    return (
+      <Snapshots
+        mode={tool === 'snap-take' ? 'take' : 'restore'}
+        path={path}
+        vault={vault}
+        providers={providers}
         onClose={onClose}
         onChanged={onDone}
       />
