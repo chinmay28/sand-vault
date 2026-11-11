@@ -1,16 +1,17 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { COLORS, FONT, formatBytes } from '../theme'
-import { useOrphanSweep, useReattach } from '../hooks'
+import { useLostRestore, useOrphanSweep, useReattach } from '../hooks'
 import { isRunClaimed } from '../runClaims'
 import { Banner, Spinner } from './ui'
 import { describeProgress, formatElapsed } from './ScanProgress'
+import { describeRestore, restoreOutcomeText } from './LostParts'
 
 /* The housekeeping that carries on after its dialog is closed, drawn above
    the file list — and what each run came to, until that is dismissed.
 
-   Putting mislaid parts back and erasing abandoned ones both run on the
-   server (see useServerJob), so closing their dialog, or the page, stops
-   nothing. This is where they show from then on: a bar while they go, and a
+   Putting mislaid parts back, erasing abandoned ones and remaking lost ones
+   all run on the server (see useServerJob), so closing their dialog, or the
+   page, stops nothing. This is where they show from then on: a bar while they go, and a
    line saying what they did once they land, on this page or the next one
    opened while they are still going. A run a dialog is still drawing is left
    to that dialog (see runClaims.js). */
@@ -43,6 +44,20 @@ export default function BackgroundRuns({ mobile, onChanged }) {
           : `Abandoned parts erased. ${sweepOutcomeText(run.result)}`)}
         /* Room on the clouds changed, which the accounts panel shows. */
         changed={(run) => run.result?.deleted > 0}
+        mobile={mobile}
+        onChanged={onChanged}
+      />
+      <JobStrip
+        kind="lost-restore"
+        useJob={useLostRestore}
+        title="Putting lost parts back"
+        describe={describeRestore}
+        outcome={(run) => (run.error
+          ? `Putting the lost parts back did not finish: ${run.error}`
+          : restoreOutcomeText(run.result)
+            + (run.result?.stopped ? ` It ended early — ${run.result.stopped_by || 'it was stopped'}.` : '')
+            + (run.result?.failed > 0 ? ` ${run.result.failed} could not be put back — Settings → Lost parts says which.` : ''))}
+        changed={(run) => run.result?.objects > 0}
         mobile={mobile}
         onChanged={onChanged}
       />

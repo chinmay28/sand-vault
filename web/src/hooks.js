@@ -60,6 +60,17 @@ export function useReattach() {
   return useServerJob(api.reattachStatus, api.reattachStart, 'sand:reattach')
 }
 
+/* The scan for parts a cloud should be holding and is not (see
+   api.lostScanStart), and the run that puts them back (api.lostRestoreStart;
+   `start` takes {providerIds}). */
+export function useLostScan() {
+  return useServerJob(api.lostScanStatus, api.lostScanStart, 'sand:lost-scan')
+}
+
+export function useLostRestore() {
+  return useServerJob(api.lostRestoreStatus, api.lostRestoreStart, 'sand:lost-restore')
+}
+
 /* The orphan sweep, the same way (see api.sweepStart). `start` takes
    {targets}. */
 export function useOrphanSweep() {

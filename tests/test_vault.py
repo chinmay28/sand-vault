@@ -1710,6 +1710,101 @@ class TestReattachMislaidShards:
 # Are the clouds still there?
 # ---------------------------------------------------------------------------
 
+class TestLostParts:
+    """A part the index records on a cloud that the cloud is no longer holding.
+
+    The folder-emptied-by-mistake case. The file still shows a full set of
+    parts and still reads, on its spares, so nothing says anything until this
+    is asked — and the way back is the lost part alone, cut again from the
+    others and written where it was, with the index left as it is.
+    """
+
+    def build(self, sand_bin, root):
+        """A vault with three clouds and two files spread over all of them."""
+        os.makedirs(root, exist_ok=True)
+        sub_cli(sand_bin, root, "vault", "init")
+        clouds = {}
+        for name in ("lp-a", "lp-b", "lp-c"):
+            path = os.path.join(root, "lp-clouds", name)
+            # A local folder is made inside a parent that exists, never
+            # through one that does not — a missing parent is an unmounted
+            # drive.
+            os.makedirs(path, exist_ok=True)
+            sub_cli(sand_bin, root, "remote", "add", "local", "--name", name, "--set", f"path={path}")
+            clouds[name] = path
+
+        for name, body in (("ledger.csv", "date,amount\n2026-08-01,42\n" * 200), ("note.txt", "short")):
+            source = os.path.join(root, name)
+            with open(source, "w") as f:
+                f.write(body)
+            sub_cli(sand_bin, root, "put", source, "--accounts", "lp-a,lp-b,lp-c")
+        return clouds
+
+    def parts_in(self, directory):
+        return {n for n in os.listdir(directory)
+                if n.endswith(".sand") and n != "manifest.sand"}
+
+    def empty(self, directory):
+        for name in os.listdir(directory):
+            os.remove(os.path.join(directory, name))
+
+    def test_a_whole_vault_has_nothing_lost(self, sand_bin, tmp_path):
+        root = str(tmp_path / "whole")
+        self.build(sand_bin, root)
+
+        result = sub_cli(sand_bin, root, "vault", "restore-parts")
+        assert "Every part the index records is on the cloud it is recorded on." in result.stdout
+
+    def test_an_emptied_cloud_is_found_and_its_parts_remade_there(self, sand_bin, tmp_path):
+        root = str(tmp_path / "emptied")
+        clouds = self.build(sand_bin, root)
+        before = {name: self.parts_in(path) for name, path in clouds.items()}
+        assert all(len(parts) == 2 for parts in before.values()), before
+
+        self.empty(clouds["lp-b"])
+
+        listed = sub_cli(sand_bin, root, "vault", "restore-parts", "--verbose")
+        assert "2 part(s) of 2 file(s)" in listed.stdout, listed.stdout
+        assert "it holds NONE of them" in listed.stdout, listed.stdout
+        assert "/ledger.csv" in listed.stdout and "/note.txt" in listed.stdout, listed.stdout
+        assert "Run again with --yes" in listed.stdout, listed.stdout
+        # Listing is not writing.
+        assert self.parts_in(clouds["lp-b"]) == set()
+
+        done = sub_cli(sand_bin, root, "vault", "restore-parts", "--yes")
+        assert "2 part(s) of 2 file(s) put back" in done.stdout, done.stdout
+        assert "to lp-b" in done.stdout, done.stdout
+
+        # Back under the names they had, and nothing else touched.
+        after = {name: self.parts_in(path) for name, path in clouds.items()}
+        assert after == before, (before, after)
+        again = sub_cli(sand_bin, root, "vault", "restore-parts")
+        assert "Every part the index records" in again.stdout, again.stdout
+
+        # And they are real parts: with another cloud emptied, the files are
+        # read through them.
+        self.empty(clouds["lp-a"])
+        out = str(tmp_path / "ledger-back.csv")
+        sub_cli(sand_bin, root, "get", "/ledger.csv", "-o", out)
+        with open(out) as f:
+            assert f.read() == "date,amount\n2026-08-01,42\n" * 200
+
+    def test_a_part_that_cannot_be_remade_is_said_and_left(self, sand_bin, tmp_path):
+        root = str(tmp_path / "short")
+        clouds = self.build(sand_bin, root)
+
+        # Two of three gone: nothing is left to cut a part from.
+        self.empty(clouds["lp-a"])
+        self.empty(clouds["lp-b"])
+
+        listed = sub_cli(sand_bin, root, "vault", "restore-parts", "--verbose")
+        assert "4 part(s) of 2 file(s)" in listed.stdout, listed.stdout
+        assert "cannot be put back" in listed.stdout, listed.stdout
+        assert "Run again with --yes" not in listed.stdout, listed.stdout
+        sub_cli(sand_bin, root, "vault", "restore-parts", "--yes")
+        assert self.parts_in(clouds["lp-a"]) == set()
+
+
 class TestCloudHealth:
     """The hourly check, and the line the accounts drawer draws from it.
 

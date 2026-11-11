@@ -248,6 +248,10 @@ func (s *Server) handleVaultLock(w http.ResponseWriter, r *http.Request) {
 	s.checks.stopAll()
 	s.repairs.stopAll()
 	s.checksums.stopAll()
+	// A lost-parts scan names file paths; a restore stops between objects,
+	// and every one it wrote is where the index says it belongs.
+	s.lostScans.stopAll()
+	s.lostRestores.stopAll()
 	v.Lock()
 	clearSessionCookie(w, isSecureRequest(r))
 

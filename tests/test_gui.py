@@ -4838,3 +4838,105 @@ class TestMovingFilesWithAMachine:
 
         app.keyboard.press("Escape")
         expect(machine).to_have_count(0)
+
+
+class TestLostParts:
+    """A cloud's folder emptied by mistake: the app says so, and puts the parts
+    back where they were.
+
+    Its own server and vault, because the scenario is done to the clouds
+    underneath a vault that is not running: the parts are removed from one of
+    them, and nothing in the index knows.
+    """
+
+    PASSWORD = "the-lost-parts-passphrase"
+
+    def build_vault(self, sand_bin, tmp_path, name):
+        import subprocess
+
+        vault_file = str(tmp_path / f"{name}.sand")
+
+        def run(*args):
+            env = dict(os.environ)
+            env["SAND_PASSWORD"] = self.PASSWORD
+            result = subprocess.run(
+                [sand_bin, "--vault", vault_file, *args],
+                capture_output=True, text=True, env=env,
+            )
+            assert result.returncode == 0, f"{args}\nstdout: {result.stdout}\nstderr: {result.stderr}"
+            return result
+
+        run("vault", "init", "--policy", "strict")
+        clouds = {}
+        for cloud in ("lost-one", "lost-two", "lost-three"):
+            path = str(tmp_path / "lost-clouds" / cloud)
+            os.makedirs(path, exist_ok=True)
+            clouds[cloud] = path
+            run("remote", "add", "local", "--name", cloud, "--set", f"path={path}")
+
+        for filename, body in (("deed.txt", b"the one that matters"), ("spare.txt", b"and another")):
+            source = tmp_path / filename
+            source.write_bytes(body)
+            run("put", str(source), "--accounts", "lost-one,lost-two,lost-three")
+        return clouds
+
+    def parts_in(self, directory):
+        return {n for n in os.listdir(directory)
+                if n.endswith(".sand") and n != "manifest.sand"}
+
+    def unlock(self, page, base_url):
+        page.goto(base_url)
+        page.locator('input[type="password"]').first.fill(self.PASSWORD)
+        page.get_by_text("▶ Unlock").click()
+        open_accounts(page)
+
+    def test_the_app_offers_to_put_them_back_and_does(self, page, sand_bin, tmp_path, spawn_server):
+        clouds = self.build_vault(sand_bin, tmp_path, "lost-notice")
+        before = self.parts_in(clouds["lost-two"])
+        assert len(before) == 2, before
+        for name in os.listdir(clouds["lost-two"]):
+            os.remove(os.path.join(clouds["lost-two"], name))
+
+        self.unlock(page, spawn_server("lost-notice"))
+
+        # Nobody asked: the listing the app takes of the clouds anyway found it.
+        notice = page.get_by_text(re.compile(r"2 parts of 2 files are missing from lost-two"))
+        expect(notice).to_be_visible(timeout=30000)
+        page.get_by_role("button", name="Put them back").click()
+
+        lost = page.get_by_role("dialog", name="Lost parts")
+        lost.wait_for(timeout=20000)
+        # Its own scan, with the rows — and the one caution a listing cannot
+        # settle, said before anything is written.
+        expect(lost.get_by_text("/deed.txt")).to_be_visible(timeout=30000)
+        expect(lost.get_by_text("/spare.txt")).to_be_visible()
+        expect(lost.get_by_text(re.compile(r"pointed at the wrong\s+folder"))).to_be_visible()
+        # Looking wrote nothing.
+        assert self.parts_in(clouds["lost-two"]) == set()
+
+        # Unticking the cloud leaves nothing to do; ticking it puts it back.
+        lost.get_by_role("checkbox").uncheck()
+        expect(lost.get_by_role("button", name=re.compile(r"^Put 0 parts back"))).to_be_disabled()
+        lost.get_by_role("checkbox").check()
+        lost.get_by_role("button", name=re.compile(r"^Put 2 parts back")).click()
+
+        expect(lost.get_by_text(re.compile(r"2 parts of 2 files put back on lost-two"))).to_be_visible(
+            timeout=30000)
+        # Under the names they had.
+        assert self.parts_in(clouds["lost-two"]) == before
+
+        lost.get_by_role("button", name="Done").click()
+        expect(lost).to_have_count(0)
+        expect(notice).to_have_count(0)
+
+    def test_settings_asks_on_demand_and_a_whole_vault_says_so(self, page, sand_bin, tmp_path, spawn_server):
+        self.build_vault(sand_bin, tmp_path, "lost-settings")
+        self.unlock(page, spawn_server("lost-settings"))
+
+        open_vault_setting(page, "Lost parts")
+        lost = page.get_by_role("dialog", name="Lost parts")
+        lost.wait_for(timeout=20000)
+        expect(lost.get_by_text("Every part the index records is on the cloud it is recorded on.")).to_be_visible(
+            timeout=30000)
+        expect(lost.get_by_role("button", name=re.compile(r"^Put "))).to_have_count(0)
+

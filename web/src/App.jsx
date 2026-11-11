@@ -12,6 +12,7 @@ import CleanOrphans from './components/CleanOrphans'
 import EraseRuns from './components/EraseRuns'
 import BackgroundRuns from './components/BackgroundRuns'
 import ReattachShards from './components/ReattachShards'
+import LostParts, { lostNotice } from './components/LostParts'
 import FilmDetails from './components/FilmDetails'
 import Assistant from './components/Assistant'
 import { Brand, DevMark } from './components/Brand'
@@ -75,6 +76,13 @@ export default function App() {
   const [orphans, setOrphans] = useState(null)
   const [sweeping, setSweeping] = useState(false)
   const [reattaching, setReattaching] = useState(false)
+  /* What the same listing found the other way round: parts the index records
+     on a cloud that the cloud is not holding (`lost` on the scan — figures
+     only), and whether the dialog that lists and restores them is open. Its
+     own notice with its own dismissal, because it is not housekeeping: a file
+     is nearer to unreadable than it shows. */
+  const [lost, setLost] = useState(null)
+  const [fixingLost, setFixingLost] = useState(false)
   /* Which set of connected clouds the tidy-up notice has already been shown
      for. Kept in state rather than in a ref because dismissing it has to redraw
      — and unlike the recovery scan's ref, this cannot re-run anything: the scan
@@ -325,12 +333,14 @@ export default function App() {
   useEffect(() => {
     if (!unlocked || providerKey === '' || recovery?.available) {
       setOrphans(null)
+      setLost(null)
       return
     }
     let cancelled = false
     api.orphanScan().then((scan) => {
       if (cancelled) return
       setOrphans(scan.found || scan.reattachable > 0 ? scan : null)
+      setLost(scan.lost?.parts > 0 ? scan.lost : null)
       // A cloud that came back holding parts under the previous key is news
       // even if the last notice was waved away: the notice it dismissed was
       // not about this.
@@ -362,6 +372,8 @@ export default function App() {
     setSweeping(false)
     setReattaching(false)
     setOrphansDismissed('')
+    setLost(null)
+    setFixingLost(false)
     // The trail is a list of folder names, which is the file index — locking
     // the vault has to put that away with everything else.
     nav.reset()
@@ -543,6 +555,24 @@ export default function App() {
             what they did. See BackgroundRuns. */}
         <BackgroundRuns mobile={mobile} onChanged={refreshAll} />
 
+        {/* The listing below also says what a cloud should be holding and is
+            not. Said first and on its own: the other two notices are about
+            room and records, and this one is about a file that has less to
+            lose than its badges show. The dialog does its own scan, so the
+            figures here are only the reason to open it. */}
+        {lost && !fixingLost && (
+          <div style={{ padding: mobile ? '10px 10px 0' : '12px 20px 0', flexShrink: 0 }}>
+            <Banner tone="warn" onDismiss={() => setLost(null)}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                <span>{lostNotice(lost)}</span>
+                <Button size="sm" variant="ghost" onClick={() => setFixingLost(true)}>
+                  {lost.restorable > 0 ? 'Put them back' : 'Take a look'}
+                </Button>
+              </span>
+            </Banner>
+          </div>
+        )}
+
         {/* Two different pieces of news out of one listing, and the repair
             leads — a file short of a spare part is worth more attention than
             room being wasted, and putting it right costs nothing at all. Both
@@ -673,6 +703,18 @@ export default function App() {
              to hear about them the moment they land rather than when it
              closes. */
           onAccountsChanged={refreshProviders}
+        />
+      )}
+      {fixingLost && (
+        <LostParts
+          /* Closing counts as having been told: the banner's figures are from
+             before whatever was done here, and the next listing of the clouds
+             raises it again if anything is still missing. */
+          onClose={() => {
+            setFixingLost(false)
+            setLost(null)
+          }}
+          onChanged={refreshAll}
         />
       )}
       {reattaching && orphans && (

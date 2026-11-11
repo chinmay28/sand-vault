@@ -13,6 +13,7 @@ import MachineSettings, { machineStatusLine } from './MachineSettings'
 import IndexBackup, { backupDelayLabel } from './IndexBackup'
 import Instances from './Instances'
 import { StrayParts } from './CleanOrphans'
+import LostParts from './LostParts'
 import {
   DefaultClouds, PARTS_PER_FILE, defaultSchemeFor, parseScheme, schemeName,
 } from './CloudSelect'
@@ -289,6 +290,21 @@ export default function VaultSettings({
             onClick={() => setOpen('strays')}
           />
         )}
+
+        {/* The same listing read the other way, and here on the same ground:
+            the banner that offers it appears only when the app's own scan
+            happens to find something, and somebody who has just emptied a
+            folder by mistake needs a door that does not wait for that. A
+            question rather than a reading, like the line above — it lists
+            every cloud, so it starts when it is asked. */}
+        {providers.length > 0 && (
+          <Setting
+            icon="🩹"
+            label="Lost parts"
+            hint="What a cloud should be holding and is not — found, and remade there"
+            onClick={() => setOpen('lost')}
+          />
+        )}
       </div>
 
       {open === 'defaults' && (
@@ -397,6 +413,12 @@ export default function VaultSettings({
           the index, so both are `onChanged` rather than a quiet close. */}
       {open === 'strays' && (
         <StrayParts zIndex={CHILD_Z} onClose={close} onChanged={onChanged} />
+      )}
+
+      {/* Parts put back change what the clouds are holding, which the
+          accounts panel's figures are drawn from. */}
+      {open === 'lost' && (
+        <LostParts zIndex={CHILD_Z} onClose={close} onChanged={onChanged} />
       )}
     </Modal>
   )

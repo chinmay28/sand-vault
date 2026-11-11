@@ -136,6 +136,12 @@ type Server struct {
 	checks  *checkWatch
 	repairs *repairWatch
 
+	// lostScans is the scan for parts the index records on an account that
+	// the account is not holding, and lostRestores the run that puts them
+	// back. See handlers_lostparts.go.
+	lostScans    *lostScanWatch
+	lostRestores *lostRestoreWatch
+
 	// checksums is the verify or compute of a folder's checksums that is
 	// running, with the control that paces it. See handlers_checksums.go.
 	checksums *checksumJobs
@@ -302,6 +308,12 @@ func (s *Server) Handler() (http.Handler, error) {
 	}
 	if s.checksums == nil {
 		s.checksums = newChecksumJobs()
+	}
+	if s.lostScans == nil {
+		s.lostScans = newJobWatch[vault.OrphanScanProgress, vault.LostPartsScan]()
+	}
+	if s.lostRestores == nil {
+		s.lostRestores = newJobWatch[vault.LostRestoreProgress, vault.LostRestoreReport]()
 	}
 	if s.repairs == nil {
 		s.repairs = newJobWatch[vault.RepairProgress, vault.RepairReport]()
@@ -475,6 +487,15 @@ func (s *Server) Handler() (http.Handler, error) {
 		// /api/vault/orphans stays for scripts and dry runs.
 		"POST /api/vault/orphans/sweeping": s.handleSweepStart,
 		"GET /api/vault/orphans/sweeping":  s.handleSweepStatus,
+		// The scan run the other way: parts the index records on an account
+		// that the account is not holding, and the run that remakes each
+		// from the file's other parts and writes it back where it was. See
+		// handlers_lostparts.go.
+		"POST /api/vault/lost-parts/scan":         s.handleLostScanStart,
+		"GET /api/vault/lost-parts/scan":          s.handleLostScanStatus,
+		"POST /api/vault/lost-parts/restore":      s.handleLostRestoreStart,
+		"GET /api/vault/lost-parts/restore":       s.handleLostRestoreStatus,
+		"POST /api/vault/lost-parts/restore/stop": s.handleLostRestoreStop,
 		// The same question asked of the one disk SAND writes to itself. An
 		// interrupted upload leaves its spool in the vault's own directory at
 		// the full size of the file it was sending, and nothing goes back for
@@ -1029,7 +1050,8 @@ func (s *Server) autoLockLoop() {
 		// too: it says so as each cloud answers, but says nothing while it
 		// waits on the slowest one, and that wait is the whole of it.
 		if s.strayScans.running() || s.reattaches.running() || s.sweeps.running() ||
-			s.checks.running() || s.repairs.running() || s.checksums.busy() {
+			s.checks.running() || s.repairs.running() || s.checksums.busy() ||
+			s.lostScans.running() || s.lostRestores.running() {
 			continue
 		}
 		// A replica half-made would be erased and started again on the next
@@ -1048,6 +1070,8 @@ func (s *Server) autoLockLoop() {
 		s.checks.stopAll()
 		s.repairs.stopAll()
 		s.checksums.stopAll()
+		s.lostScans.stopAll()
+		s.lostRestores.stopAll()
 		log.Print("vault auto-locked after idle timeout")
 	}
 }
