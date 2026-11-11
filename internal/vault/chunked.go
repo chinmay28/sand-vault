@@ -346,6 +346,29 @@ func (v *Vault) eraseShardChunks(ctx context.Context, target *transferTarget, pl
 // per-chunk twin of gather: the same race across accounts, decided the same way
 // by whichever Scheme.Data distinct shards answer first.
 func (v *Vault) gatherChunk(ctx context.Context, entry *Entry, index int, configs map[string]provider.Config, dataKey []byte, obs ReadObserver) ([]byte, error) {
+	started := time.Now()
+	shards, err := v.gatherChunkShards(ctx, entry, index, configs, dataKey, obs)
+	if err != nil {
+		return nil, err
+	}
+	notifyRead(obs, entry, ReadEvent{Kind: ReadChunkDecrypting, Chunk: index})
+	decoded, err := archive.AssembleChunk(shards)
+	if err != nil {
+		return nil, fmt.Errorf("rebuilding chunk %d of %s: %w", index, entry.Path(), err)
+	}
+	v.reads.loaded(kindOf(entry), loadOpen, int64(len(decoded.Data)), time.Since(started))
+	return decoded.Data, nil
+}
+
+// gatherChunkShards is the race itself: every recorded shard of one chunk is
+// sent for at once, each is opened as it lands, and the first Scheme.Data
+// distinct ones that open are handed back, opened and unassembled.
+//
+// Apart from gatherChunk because rebuilding the chunk's bytes is not the only
+// thing a set of good shards is for — a lost shard is cut again from exactly
+// this (see lostparts.go), and wants the shards rather than what they decode
+// to.
+func (v *Vault) gatherChunkShards(ctx context.Context, entry *Entry, index int, configs map[string]provider.Config, dataKey []byte, obs ReadObserver) ([]*archive.OpenedShard, error) {
 	scheme := entry.Scheme()
 
 	fetchCtx, cancel := context.WithCancel(ctx)
@@ -353,7 +376,6 @@ func (v *Vault) gatherChunk(ctx context.Context, entry *Entry, index int, config
 
 	results := make(chan shardFetch, len(entry.Shards))
 	v.reads.race()
-	started := time.Now()
 
 	// Which shards are about to be sent for: the ones on an account that is
 	// still connected. Said once, up front, so a watcher can name who it is
@@ -441,17 +463,11 @@ func (v *Vault) gatherChunk(ctx context.Context, entry *Entry, index int, config
 			strings.Join(failures, "; "))
 	}
 
-	notifyRead(obs, entry, ReadEvent{Kind: ReadChunkDecrypting, Chunk: index})
 	shards := make([]*archive.OpenedShard, 0, len(held))
 	for _, opened := range held {
 		shards = append(shards, opened)
 	}
-	decoded, err := archive.AssembleChunk(shards)
-	if err != nil {
-		return nil, fmt.Errorf("rebuilding chunk %d of %s: %w", index, entry.Path(), err)
-	}
-	v.reads.loaded(kindOf(entry), loadOpen, int64(len(decoded.Data)), time.Since(started))
-	return decoded.Data, nil
+	return shards, nil
 }
 
 // ErrShardDamaged marks a stored shard that answered but is not the object

@@ -12,6 +12,44 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### Lost parts: found, and remade where they were
+
+A part the index records on a cloud that the cloud is no longer holding — a
+folder emptied by mistake, a bucket restored from an old backup, a sync client
+that tidied the files away — used to go unnoticed. The file showed a full set
+of badges and read back on its spares; only a file's own health check, or a
+folder's automation, would have said.
+
+**It is looked for** with the listing SAND already takes of every cloud (the
+stray-parts scan, read the other way), so a **banner** over the file list says
+what is missing and offers to put it back. **Vault settings → Lost parts** asks
+on demand: one listing per cloud, nothing downloaded, the lost parts listed by
+cloud and by file.
+
+**Putting one back is not a rebuild of the file.** Only the lost object is cut
+again, from *k* of the file's other parts, and written to the cloud the index
+already records it on under the name it had. The parts a read needs come down
+and one object goes up, per lost chunk; the index is not written; nothing is
+erased or overwritten — each object is asked for by name first and left alone
+if it is there — and a file moved, re-encrypted or deleted in the meantime is
+skipped. It runs in the background with a bar, can be stopped with what it did
+kept, and can be limited to chosen clouds.
+
+A cloud that holds **none** of what is recorded on it is marked: an emptied
+folder and a cloud pointed at the wrong folder look the same to a listing, and
+that is the thing to rule out before writing to it. Nothing is put back
+unasked.
+
+Remaking is per chunk, so two parts that each lost a different chunk mend one
+another. A chunk short of *k* shards cannot be remade (the row says why — a
+replica rebuild is the way back). Not covered: files from before chunking,
+locked sub vaults, thumbnails, replicas.
+
+`sand vault restore-parts [--verbose] [--yes] [--cloud NAME]…`.
+`POST`/`GET /api/vault/lost-parts/scan`, `POST`/`GET
+/api/vault/lost-parts/restore`, `…/restore/stop`; `GET /api/vault/orphans`
+carries the figures under `lost`.
+
 ### Checksums: a ledger at the root, and two paced jobs that use it
 
 Every file has a checksum — the SHA-256 of its contents, taken as it is stored

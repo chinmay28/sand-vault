@@ -247,6 +247,29 @@ export const api = {
       body: providerId ? { provider_id: providerId } : {},
     }),
   reattachStatus: () => request('/api/vault/orphans/reattaching'),
+  /* The stray-parts scan run the other way: parts the index records on a
+     cloud that the cloud is not holding — a folder emptied by hand, a bucket
+     restored from an old backup.
+
+     A job, like strayScanStart: one listing per cloud, kept by the server
+     when the page goes. Poll lostScanStatus() — `progress` while it runs,
+     `result` once it is done: {found, parts, files, objects, bytes,
+     restorable, on, items, accounts, warnings}. Nothing is written. */
+  lostScanStart: () => request('/api/vault/lost-parts/scan', { method: 'POST' }),
+  lostScanStatus: () => request('/api/vault/lost-parts/scan'),
+  /* Puts them back: each lost object is cut again from the file's other
+     parts and written to the cloud the index records it on, under the name
+     it had. The index is not written, nothing is erased, and an object the
+     cloud turns out to hold is left as it is.
+
+     `providerIds` limits it to parts missing from those clouds; none is
+     every cloud. It lists the clouds itself first, so it needs no scan.
+     Poll lostRestoreStatus(); lostRestoreStop() ends it with what it had
+     put back kept. See useLostRestore. */
+  lostRestoreStart: ({ providerIds = [] } = {}) =>
+    request('/api/vault/lost-parts/restore', { method: 'POST', body: { provider_ids: providerIds } }),
+  lostRestoreStatus: () => request('/api/vault/lost-parts/restore'),
+  lostRestoreStop: () => request('/api/vault/lost-parts/restore/stop', { method: 'POST' }),
   /* The third thing the same scan turns up, and the only one that is not about
      a cloud at all.
 

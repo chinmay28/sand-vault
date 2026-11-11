@@ -242,6 +242,11 @@ type OrphanAccount struct {
 	// answer contributes nothing at all rather than an empty listing, because
 	// an empty listing would make everything it holds look abandoned.
 	Error string `json:"error,omitempty"`
+
+	// held is the parts folder's listing as the names of its part objects,
+	// kept for the one other question the same listing answers: which parts
+	// the index records here that are not here (lostparts.go).
+	held heldKeys
 }
 
 // OrphanScan is what the accounts are holding that the vault has forgotten.
@@ -285,6 +290,13 @@ type OrphanScan struct {
 	// ItemsTruncated is how many did not fit.
 	Items          []OrphanArchive `json:"items"`
 	ItemsTruncated int             `json:"items_truncated,omitempty"`
+
+	// Lost is the opposite finding out of the same listings: parts the index
+	// records on an account that the account is not holding. Figures only —
+	// the rows, and putting them back, are ScanForLostParts and
+	// RestoreLostParts — and absent when there are none, or when the scan was
+	// of one account.
+	Lost *LostSummary `json:"lost,omitempty"`
 
 	// Leftovers is the same question asked of the one disk SAND writes to
 	// itself: the working files in the vault's own directory that no operation
@@ -490,6 +502,13 @@ func (v *Vault) scanForOrphansOn(ctx context.Context, providerID string, onProgr
 		return nil, ErrLocked
 	}
 	owned := v.ownedArchivesLocked()
+	// The files as they are recorded now, for the lost-parts half: copied
+	// before any account is listed, so a file stored during the listings is
+	// not judged against a listing older than it is.
+	var recorded []lostFile
+	if providerID == "" {
+		recorded = v.lostFilesLocked()
+	}
 	// Taken under the same lock as the index, so that an upload whose commit
 	// lands between the two reads is seen by at least one of them: either the
 	// index already names it, or the registry still does.
@@ -543,6 +562,10 @@ func (v *Vault) scanForOrphansOn(ctx context.Context, providerID string, onProgr
 	// two facts that together say which of the record is out of date.
 	seen := map[stalePartKey]bool{}
 	listed := map[string]bool{}
+	// The parts folders that answered, as the names they hold, and the
+	// accounts they are: what the lost-parts half is judged from.
+	held := map[string]heldKeys{}
+	holders := map[string]*LostAccount{}
 
 	// Where the listing has got to, kept under mu with the rest and handed
 	// out as a copy, so a receiver that holds on to one is not watching it
@@ -577,6 +600,14 @@ func (v *Vault) scanForOrphansOn(ctx context.Context, providerID string, onProgr
 				for key := range present {
 					seen[key] = true
 				}
+				// A disk that lives on another machine lists whatever is at
+				// its path on this one, which says nothing about its parts.
+				if !v.livesElsewhere(listing.cfg) {
+					held[listing.cfg.ID] = account.held
+					holders[listing.cfg.ID] = &LostAccount{
+						ProviderID: listing.cfg.ID, Name: listing.cfg.Name, Kind: string(listing.cfg.Kind),
+					}
+				}
 			}
 		}(listing)
 	}
@@ -596,6 +627,14 @@ func (v *Vault) scanForOrphansOn(ctx context.Context, providerID string, onProgr
 		}); err != nil && !errors.Is(err, ErrLocked) {
 			scan.Warnings = append(scan.Warnings, fmt.Sprintf(
 				"the record of parts left under the previous key could not be brought up to date: %v", err))
+		}
+	}
+
+	// The same listings, read the other way: what the index records on each
+	// account that the account did not list.
+	if providerID == "" {
+		if lost := v.lostPartsFrom(recorded, held, holders); lost.Found {
+			scan.Lost = &lost.LostSummary
 		}
 	}
 
@@ -825,6 +864,7 @@ func (v *Vault) scanAccountForOrphans(
 	// The manifest backup lives in the parts folder, so only the parts row
 	// can say whose account this is; the replica row has nothing to read.
 	if !listing.replicas {
+		account.held = heldKeysOf(objects)
 		account.Backup, account.Foreign = v.backupState(ctx, p, vaultKey, previousSalts)
 	}
 

@@ -1,6 +1,7 @@
 package archive
 
 import (
+	"bytes"
 	"fmt"
 
 	"github.com/chinmay28/sand-vault/internal/compress"
@@ -404,4 +405,90 @@ func DecodeChunk(blobs [][]byte, master []byte) (*DecodedChunk, error) {
 		shards = append(shards, shard)
 	}
 	return AssembleChunk(shards)
+}
+
+// RemakeShard cuts one shard of a chunk again from enough of the others, and
+// seals it as the part it replaces.
+//
+// A code that rebuilds a chunk from any Scheme.Data of its shards can rebuild
+// any one shard the same way: the chunk is put back together, every shard is
+// recomputed from it (ShardData), and the one asked for is sealed under the
+// chunk's own key with a nonce of its own. The result is not byte-for-byte the
+// object that was lost — the nonce differs — but it opens as the same part of
+// the same chunk of the same archive, carrying the same share, and so stands
+// in for it anywhere the original would have served.
+//
+// The shards must already be opened, which is what authenticates them, and
+// must be Scheme.Data or more of one chunk; part is the shard number to make,
+// 1..Scheme.Total. It may be one of the shards handed in.
+//
+// Nothing is returned on trust. Before it is handed back the new shard is
+// opened again and the chunk rebuilt with it standing in for one of the
+// shards it was made from; a result that does not give back the same bytes is
+// an error rather than an object.
+func RemakeShard(shards []*OpenedShard, part int, master []byte) ([]byte, error) {
+	chunk, err := AssembleChunk(shards)
+	if err != nil {
+		return nil, err
+	}
+	ref := shards[0]
+	scheme := ref.Scheme()
+	if part < 1 || part > scheme.Total {
+		return nil, fmt.Errorf("shard %d is not one a %s chunk has", part, scheme)
+	}
+
+	all, err := ShardData(chunk.Compressed, scheme, ref.Legacy())
+	if err != nil {
+		return nil, fmt.Errorf("recomputing the shards of chunk %d: %w", chunk.Index, err)
+	}
+	if len(all) != scheme.Total {
+		return nil, fmt.Errorf("chunk %d recomputed to %d shards, expected %d", chunk.Index, len(all), scheme.Total)
+	}
+
+	nonce, err := crypto.GenerateNonce()
+	if err != nil {
+		return nil, fmt.Errorf("generating nonce for chunk %d shard %d: %w", chunk.Index, part, err)
+	}
+	header := *ref.Header
+	header.PartNumber = uint8(part)
+	header.Nonce = nonce
+
+	key, err := crypto.DeriveChunkKey(master, header.ArchiveID, header.ChunkIndex)
+	if err != nil {
+		return nil, err
+	}
+	defer crypto.ZeroBytes(key)
+
+	blob, err := sandfile.Seal(&header, ref.Meta, all[part-1], key)
+	if err != nil {
+		return nil, fmt.Errorf("writing chunk %d shard %d: %w", chunk.Index, part, err)
+	}
+
+	// The proof: the new shard and Scheme.Data−1 of the others, none of them
+	// the part it replaces, must give the chunk back.
+	remade, err := OpenShard(blob, master)
+	if err != nil {
+		return nil, fmt.Errorf("the remade shard %d of chunk %d does not open: %w", part, chunk.Index, err)
+	}
+	proof := []*OpenedShard{remade}
+	seen := map[int]bool{part: true}
+	for _, s := range shards {
+		if len(proof) == scheme.Data {
+			break
+		}
+		if n := int(s.Header.PartNumber); !seen[n] {
+			seen[n] = true
+			proof = append(proof, s)
+		}
+	}
+	if len(proof) == scheme.Data {
+		again, err := AssembleChunk(proof)
+		if err != nil {
+			return nil, fmt.Errorf("the remade shard %d of chunk %d does not rebuild it: %w", part, chunk.Index, err)
+		}
+		if !bytes.Equal(again.Compressed, chunk.Compressed) {
+			return nil, fmt.Errorf("the remade shard %d of chunk %d rebuilds different bytes", part, chunk.Index)
+		}
+	}
+	return blob, nil
 }

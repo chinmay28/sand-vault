@@ -1776,6 +1776,69 @@ erase it.
 
 ---
 
+## Parts the index records that a cloud has lost
+
+The section above is about what a cloud holds that the index does not name.
+This is the same listing read the other way: what the index names that a cloud
+does **not** hold. A folder emptied by mistake, a bucket restored from last
+month's backup, a sync client that decided the files were its to tidy — the
+parts were written and recorded, and have since gone from under SAND.
+
+Nothing else notices. The index is the only record of what should be there, so
+the file still shows a full set of part badges, and it still reads back — on
+its spares, which is what they are for — until a second cloud is unavailable.
+
+SAND looks whenever it lists the clouds anyway (the same listing as above), and
+a banner over the file list says what is missing and offers to put it back.
+**Vault settings → Lost parts** asks on demand, which is the door for "I just
+emptied the wrong folder":
+
+```bash
+./sand vault restore-parts                 # what is missing, cloud by cloud
+./sand vault restore-parts --verbose       # …and every part, with why any cannot be remade
+./sand vault restore-parts --yes           # remake them and write them back
+./sand vault restore-parts --yes --cloud Dropbox
+```
+
+**Putting a part back is not a rebuild of the file.** The code that rebuilds a
+file from any *k* of its parts rebuilds any one part the same way, so only the
+lost object is cut again — from *k* of the survivors — and written to the cloud
+the index already records it on, under the name it had:
+
+- what travels is the parts a read needs, down, and the one lost object, up —
+  per lost chunk, not the whole file down and all *n* parts up;
+- the **index is not written**. It was right about where the part belongs;
+- **nothing is erased and nothing is overwritten.** Each object is asked for by
+  name before it is written, and one the cloud turns out to hold is left
+  exactly as it is. A file moved, re-encrypted or deleted between the scan and
+  the write is skipped.
+
+It is per chunk, so two parts of a long file that have each lost a different
+chunk mend one another. A chunk with fewer than *k* shards left cannot be
+remade this way; the row says so, and a file with a
+[replica](#putting-the-parts-back-from-the-replica) is rebuilt from that
+instead.
+
+**One thing a listing cannot tell apart:** a cloud that was emptied, and a
+cloud pointed at the wrong folder. Both hold none of what the index records
+there. Such a cloud is marked — *holds none of them* — and can be left out of
+the restore; if the folder merely moved, fix the account rather than writing
+the parts into the wrong place. This is why nothing is put back unasked. (A
+local folder that is *gone*, rather than empty, does not get this far: it is an
+error, not an empty listing.)
+
+Not covered: a file stored in the format from before chunking
+([convert it](#converting-old-files)), a locked sub vault's files (unlock it
+first), and thumbnails and replicas, which are remade by their own means. A
+cloud that will not answer is named and not judged, and a disk that lives on
+another machine is scanned from there.
+
+`POST`/`GET /api/vault/lost-parts/scan`, `POST`/`GET /api/vault/lost-parts/restore`
+(`{"provider_ids": […]}`, none for every cloud), `…/restore/stop`. `GET
+/api/vault/orphans` carries the figures under `lost`.
+
+---
+
 ## Opening the vault on more than one machine
 
 The same vault can run on a desk and on a Raspberry Pi at once — the same
@@ -2122,6 +2185,7 @@ sand vault recover --resume                   Finish one, once the rest of the c
 sand vault reclaim [--account NAME]...        Re-encrypt recovered files under your own key
 sand vault sweep [--verbose] [--yes]          Find parts no file points at and working files left behind, and erase them
 sand vault reattach [--yes]                   Re-record shards your clouds still hold
+sand vault restore-parts [--verbose] [--yes]  Find parts a cloud has lost, and remake them there
 ```
 
 ### Sub vaults
