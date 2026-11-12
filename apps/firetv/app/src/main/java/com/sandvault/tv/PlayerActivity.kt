@@ -549,6 +549,7 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
             detail = PlayerText.time(p.currentPosition) + " of " + PlayerText.time(knownDuration() ?: 0) +
                 "  ·  speed " + PlayerText.speed(p.playbackParameters.speed),
         )
+        rows += Choice("App", detail = appVersionName(this@PlayerActivity) + "  ·  built by CM Hegday (0x434d)")
         rows += Choice("Close") {}
         show("What's playing", rows)
     }

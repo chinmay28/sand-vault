@@ -252,6 +252,64 @@ h2 { font-size: 1.4rem; margin: 0 0 0.4rem; }
 .player-fill { height: 100%; width: 0; background: var(--accent-bright); }
 .player-time { margin-top: 0.4rem; color: var(--muted); font-variant-numeric: tabular-nums; }
 
+/* --- Versions and the developer mark ---------------------------------- */
+
+.brand-stack { display: flex; flex-direction: column; gap: 0.1rem; }
+.brand-version { font: 500 0.7rem/1 ui-monospace, monospace; letter-spacing: 0.05em; color: #64748b; padding-left: 2.1rem; }
+
+/* The mark is a dark badge in its own right; it stays dark whatever is
+   behind it. 2.2rem is about the smallest its wordmark still reads at. */
+.devmark {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  padding: 0; border: 0; background: none; cursor: pointer; border-radius: 50%;
+}
+.devmark img {
+  width: 2.2rem; height: 2.2rem; border-radius: 50%; background: #101010;
+  box-shadow: 0 0 0 0.06rem var(--border); opacity: 0.8; transition: opacity 120ms, transform 100ms;
+}
+.devmark:focus { box-shadow: none; }
+.devmark:focus img { opacity: 1; transform: scale(1.12); box-shadow: 0 0 0 0.2rem var(--accent-bright); }
+/* In the header it hangs off the tabs on a hairline, as in the web app. */
+.devmark-rule { border-left: 0.06rem solid var(--border); border-radius: 0; padding-left: 0.9rem; }
+.devmark-rule:focus { box-shadow: none; }
+
+/* Top right, which the pairing screen leaves empty: at the bottom it ran
+   into the button row. */
+.corner {
+  position: absolute; right: 3rem; top: 2rem;
+  display: flex; align-items: center; gap: 0.8rem;
+}
+.version-line { font: 0.75rem/1.4 ui-monospace, monospace; color: #64748b; text-align: right; white-space: pre-line; }
+
+.about { display: flex; align-items: center; gap: 1.6rem; margin: 0 0 1.6rem; text-align: left; }
+.about-badge { padding: 0; border: 0; background: none; border-radius: 50%; cursor: pointer; }
+.about-badge img { display: block; width: 7rem; height: 7rem; border-radius: 50%; box-shadow: 0 0 0 0.06rem var(--border); }
+.about-badge:focus { box-shadow: none; }
+.about-badge:focus img { box-shadow: 0 0 0 0.22rem var(--accent-bright); }
+.about-lines { display: grid; grid-template-columns: max-content 1fr; gap: 0.3rem 1rem; margin: 0; font-size: 0.95rem; }
+.about-lines dt { color: var(--muted); }
+.about-lines dd { margin: 0; font-family: ui-monospace, monospace; }
+
+.devflash {
+  position: fixed; inset: 0; z-index: 50; display: grid; place-items: center;
+  background: rgba(10, 14, 23, 0.82);
+  animation: devflash-veil 3s ease-in-out forwards;
+}
+.devflash-lockup {
+  display: flex; flex-direction: column; align-items: center; gap: 1.2rem;
+  animation: devflash-badge 3s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+.devflash img {
+  width: min(64vmin, 26rem); height: min(64vmin, 26rem); border-radius: 50%;
+  box-shadow: 0 0 0 0.06rem var(--border), 0 1.5rem 3.6rem rgba(0, 0, 0, 0.55);
+}
+.devflash span { font: 1rem/1 ui-monospace, monospace; letter-spacing: 0.08em; color: #64748b; }
+@keyframes devflash-veil { 0% { opacity: 0; } 7% { opacity: 1; } 82% { opacity: 1; } 100% { opacity: 0; } }
+@keyframes devflash-badge {
+  0% { transform: scale(0.82); } 14% { transform: scale(1.02); } 22% { transform: scale(1); }
+  82% { transform: scale(1); } 100% { transform: scale(1.06); }
+}
+
 .toast {
   position: fixed; left: 50%; bottom: 2.5rem; transform: translateX(-50%);
   background: var(--raised); border: 0.08rem solid var(--border); border-radius: 0.6rem;

@@ -32,6 +32,10 @@
       <button class="btn btn-primary" id="pair-connect" data-focus>Connect</button>
       <button class="btn btn-ghost" id="pair-server" data-focus hidden>Change server</button>
     </div>
+    <footer class="corner">
+      <span class="version-line" data-versions></span>
+      <button class="devmark" data-focus data-devmark aria-label="Show the developer badge"><img src="dev-badge.png" alt=""></button>
+    </footer>
   </section>
 
   <section id="screen-locked" class="screen screen-center" hidden>
@@ -47,13 +51,17 @@
 
   <section id="screen-library" class="screen" hidden>
     <header class="topbar">
-      <div class="brand"><img src="icon.svg" alt=""> SAND <span class="brand-dim">TV</span></div>
+      <div class="brand-stack">
+        <div class="brand"><img src="icon.svg" alt=""> SAND <span class="brand-dim">TV</span></div>
+        <span class="brand-version" data-app-version></span>
+      </div>
       <div class="crumbs" id="crumbs"></div>
       <div class="tabs">
         <button class="tab" id="tab-folders" data-focus>Folders</button>
         <button class="tab" id="tab-all" data-focus>All films</button>
         <button class="tab tab-quiet" id="tab-menu" data-focus>⋯</button>
       </div>
+      <button class="devmark devmark-rule" data-focus data-devmark aria-label="Show the developer badge"><img src="dev-badge.png" alt=""></button>
     </header>
     <div class="grid" id="grid"></div>
     <div class="empty" id="library-empty" hidden>
@@ -90,6 +98,14 @@
   <section id="screen-menu" class="screen screen-center" hidden>
     <h1 id="menu-title"></h1>
     <p class="muted lede" id="menu-expiry"></p>
+    <div class="about">
+      <button class="about-badge" data-focus data-devmark aria-label="Show the developer badge"><img src="dev-badge-full.png" alt="Built by CM Hegday — 0x434d"></button>
+      <dl class="about-lines">
+        <dt>App</dt><dd data-app-version-long></dd>
+        <dt>SAND Vault</dt><dd data-server-version></dd>
+        <dt>Built by</dt><dd>CM Hegday · 0x434d · github.com/chinmay28</dd>
+      </dl>
+    </div>
     <div class="column-buttons">
       <button class="btn" id="menu-back" data-focus>Back to the library</button>
       <button class="btn" id="menu-unpair" data-focus>Sign out of this TV</button>
@@ -107,6 +123,15 @@
   </section>
 
   <div class="toast" id="toast" hidden></div>
+
+  <!-- The developer badge thrown up full screen for a beat, as the web app
+       does when its header mark is pressed. -->
+  <div class="devflash" id="devflash" hidden>
+    <div class="devflash-lockup">
+      <img src="dev-badge-full.png" alt="Built by CM Hegday — 0x434d">
+      <span>github.com/chinmay28</span>
+    </div>
+  </div>
 
   <script src="tv.js"></script>
 </body>
