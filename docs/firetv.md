@@ -19,15 +19,17 @@ folder, for a while**, by a four-character code.
 
 1. **Get the app onto the Fire TV.** It is not in the Amazon Appstore, so it is
    sideloaded:
-   - Build it with `cd apps/firetv && ./gradlew assembleRelease` (needs the
-     Android SDK), or download the `sand-tv-apk` artifact from the latest run
-     of the **SAND TV (Fire TV app)** workflow on GitHub.
+   - Every [release](https://github.com/chinmay28/sand-vault/releases) carries
+     it as `sand-tv.apk`, and the latest is always at
+     `https://github.com/chinmay28/sand-vault/releases/latest/download/sand-tv.apk`.
+     Or build it yourself with `cd apps/firetv && ./gradlew assembleRelease`
+     (needs the Android SDK).
    - On the Fire TV: *Settings → My Fire TV → Developer options* → turn on
      **Apps from Unknown Sources** (on newer Fire OS, *Install unknown apps*,
      for the app you will install with). If Developer options is missing, open
      *Settings → My Fire TV → About* and press Select on the device name seven
      times.
-   - Install the APK with Amazon's **Downloader** app (give it the APK's URL),
+   - Install the APK with Amazon's **Downloader** app (give it the URL above),
      or over the network with `adb connect <tv-ip> && adb install sand-tv.apk`.
 2. **Have SAND listening on the network.** The quickstart service already does
    (`--bind 0.0.0.0` is the default). A `sand serve --bind 127.0.0.1` is

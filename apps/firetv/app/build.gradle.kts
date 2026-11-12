@@ -12,8 +12,12 @@ android {
         // Fire OS 5 (the first Fire TV Stick) is API 22; everything since is newer.
         minSdk = 22
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        // The release workflow stamps the app with the release it ships in:
+        // the vault's own version as the name, and its commit count — which
+        // only ever grows — as the code, so each release installs over the
+        // last. A local build is 1 / "dev".
+        versionCode = (project.findProperty("sandVersionCode") as String?)?.toInt() ?: 1
+        versionName = (project.findProperty("sandVersionName") as String?) ?: "dev"
     }
 
     buildTypes {
