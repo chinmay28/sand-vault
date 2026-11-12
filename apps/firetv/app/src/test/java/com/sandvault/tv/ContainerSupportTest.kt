@@ -4,8 +4,15 @@ import androidx.annotation.OptIn
 import androidx.media3.common.C
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.extractor.DefaultExtractorInput
-import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.extractor.Extractor
+import androidx.media3.extractor.avi.AviExtractor
+import androidx.media3.extractor.flv.FlvExtractor
+import androidx.media3.extractor.mkv.MatroskaExtractor
+import androidx.media3.extractor.mp4.FragmentedMp4Extractor
+import androidx.media3.extractor.mp4.Mp4Extractor
+import androidx.media3.extractor.ogg.OggExtractor
+import androidx.media3.extractor.ts.PsExtractor
+import androidx.media3.extractor.ts.TsExtractor
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -17,10 +24,14 @@ import java.io.EOFException
  *
  * Each fixture in resources/containers is a one-second clip made with ffmpeg
  * in that container, with the codecs it usually carries (see the table). The
- * test runs every one of Media3's extractors' sniff() over it — the same check
- * the player makes before a byte is decoded — and asserts which extractor
- * claims it. A container nothing claims is one the player cannot open at all,
- * whatever codecs are inside.
+ * test runs the sniff() of each of Media3's container extractors over it — the
+ * check the player makes, through DefaultExtractorsFactory, before a byte is
+ * decoded — and asserts which extractor claims it. A container none of them
+ * claims is one the player cannot open at all, whatever codecs are inside.
+ *
+ * The extractors are built here rather than asked of DefaultExtractorsFactory,
+ * whose createExtractors() reads Uri.EMPTY — an Android class, and on the JVM
+ * only a stub.
  *
  * Decoding is the TV's business, and cannot be tested off a device: video by
  * its hardware decoders, audio by those, HDMI passthrough, or FFmpeg.
@@ -54,12 +65,30 @@ class ContainerSupportTest {
     /** The extractors that recognise the bytes, by class name. */
     private fun claimants(bytes: ByteArray): List<String> {
         val out = mutableListOf<String>()
-        for (extractor in DefaultExtractorsFactory().createExtractors()) {
+        for (extractor in containerExtractors()) {
             if (sniffs(extractor, bytes)) out += extractor.javaClass.simpleName
             extractor.release()
         }
         return out
     }
+
+    /**
+     * Every container extractor DefaultExtractorsFactory hands the player.
+     * The no-argument constructors are the ones the factory's own subtitle
+     * handling replaces; for sniffing, which reads only headers, they are the
+     * same extractor.
+     */
+    @Suppress("DEPRECATION")
+    private fun containerExtractors(): List<Extractor> = listOf(
+        Mp4Extractor(),
+        FragmentedMp4Extractor(),
+        MatroskaExtractor(),
+        AviExtractor(),
+        TsExtractor(),
+        PsExtractor(),
+        FlvExtractor(),
+        OggExtractor(),
+    )
 
     private fun sniffs(extractor: Extractor, bytes: ByteArray): Boolean {
         var at = 0
