@@ -151,7 +151,7 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
             subtitleView?.apply {
                 // Above the bottom edge a TV crops, and outlined so it reads
                 // over a bright scene.
-                setBottomPaddingFraction(0.1f)
+                setBottomPaddingFraction(SUBTITLE_LIFT_HIDDEN)
                 setApplyEmbeddedFontSizes(false)
                 setStyle(
                     CaptionStyleCompat(
@@ -312,6 +312,9 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
 
     private fun setControlsVisible(visible: Boolean, focus: View? = null) {
         controls.visibility = if (visible) View.VISIBLE else View.GONE
+        // Subtitles sit just above the cropped bottom edge, which is where
+        // the controls are; while those are up, the subtitles move above them.
+        video.subtitleView?.setBottomPaddingFraction(if (visible) SUBTITLE_LIFT_CONTROLS else SUBTITLE_LIFT_HIDDEN)
         if (visible) {
             refreshTime()
             when {
@@ -671,6 +674,10 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
         private const val KEY_AUDIO_LANGUAGE = "audio_language"
         private const val KEY_TEXT_LANGUAGE = "text_language"
         private const val TEXT_OFF = "off"
+
+        /** How far up the screen subtitles sit, without and with the controls. */
+        private const val SUBTITLE_LIFT_HIDDEN = 0.1f
+        private const val SUBTITLE_LIFT_CONTROLS = 0.3f
 
         private val SPEEDS = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f)
         private val SUBTITLE_SIZES = listOf(0.75f to "Small", 1f to "Normal", 1.35f to "Large", 1.7f to "Extra large")
