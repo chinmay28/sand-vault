@@ -46,8 +46,9 @@ server and the app together: the app's sidecar subtitles need this server.
   TV's own decoders and HDMI passthrough still come first. Media3 moves to
   1.7.1.
 - **Which files open, tested.** MKV, WebM, MP4, M4V, MOV, 3GP, AVI, TS,
-  MPG/VOB and FLV play; WMV/ASF, M2TS, Ogg video and ISO do not, and the
-  details page says so before Play. Each container is checked on every build
+  MPG/VOB (MPEG-2) and FLV play; WMV/ASF, M2TS, Ogg video, VCD-era MPEG-1
+  `.mpg` and ISO do not, and the details page says so before Play where the
+  extension tells. Each container is checked on every build
   against a real clip. A film whose picture or sound is beyond the TV now
   says which, in words, and plays the rest.
 

@@ -49,13 +49,17 @@ class ContainerSupportTest {
         "sample.webm" to "MatroskaExtractor", // VP9 + Opus
         "sample.avi" to "AviExtractor", // MPEG-4 part 2 (Xvid/DivX) + MP3
         "sample.ts" to "TsExtractor", // H.264 + AAC
-        "sample.mpg" to "PsExtractor", // MPEG-2 + MP2
+        "sample.mpg" to "PsExtractor", // MPEG-2 + MP2, an MPEG-2 program stream — DVD, TV recordings
         "sample.vob" to "PsExtractor", // MPEG-2 + AC-3
         "sample.flv" to "FlvExtractor", // H.264 + AAC
         // Not openable by Media3, and so not by the player:
         "sample.ogv" to null, // Theora + Vorbis — Ogg is read for audio only
         "sample.wmv" to null, // WMV + WMA in ASF — no ASF extractor exists
         "sample.m2ts" to null, // H.264 + AC-3 in Blu-ray M2TS — 192-byte packets, not TS's 188
+        // MPEG-1 + MP2 in an MPEG-1 system stream, VCD-era .mpg: PsExtractor
+        // reads only MPEG-2 pack headers. Same extension as the one above,
+        // so the TV page cannot warn about it before Play; the player says so.
+        "sample-mpeg1.mpg" to null,
     )
 
     private fun fixture(name: String): ByteArray =
