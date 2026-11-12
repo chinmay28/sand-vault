@@ -10,7 +10,14 @@ Each section below is the body of the corresponding GitHub release. A heading
 must name the tag exactly — a tag whose commit builds a different version is a
 tag that shouldn't be published.
 
-## Unreleased
+## v2026.11.227
+
+**Downloads:** `sand-v2026.11.227-linux-arm64` (the server) and
+**`sand-tv.apk`** (the SAND TV app for Fire TV — on the TV, put
+`https://github.com/chinmay28/sand-vault/releases/latest/download/sand-tv.apk`
+into Amazon's Downloader app, and it installs over the previous version; see
+[`docs/firetv.md`](./docs/firetv.md)). Both are in `SHA256SUMS`. Update the
+server and the app together: the app's sidecar subtitles need this server.
 
 ### SAND TV: a player drawn for a TV, details that fit, and folder pictures
 
