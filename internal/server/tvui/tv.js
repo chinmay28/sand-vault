@@ -485,6 +485,12 @@
     }
 
     $('details-file').textContent = item.name + '  ·  ' + formatBytes(item.size)
+    var warn = $('details-warn')
+    var cannot = unplayableKind(item.name)
+    warn.textContent = cannot
+      ? 'The TV player cannot open ' + cannot + ' files. Convert it to MKV or MP4 to watch it here.'
+      : ''
+    warn.hidden = !cannot
 
     var poster = $('details-poster')
     var backdrop = $('details-backdrop')
@@ -565,6 +571,16 @@
       return true
     }
     return false
+  }
+
+  /* The kinds of file the player cannot open at all, whatever is inside
+     them — the ones apps/firetv's ContainerSupportTest finds no Media3
+     extractor for. Said before Play, rather than after it fails. */
+  var UNPLAYABLE = { wmv: 'WMV', asf: 'ASF', wma: 'WMA', ogv: 'Ogg video', ogm: 'Ogg video', m2ts: 'M2TS', mts: 'M2TS', iso: 'disc image (ISO)', rm: 'RealMedia', rmvb: 'RealMedia' }
+
+  function unplayableKind(name) {
+    var dot = name.lastIndexOf('.')
+    return dot < 0 ? '' : (UNPLAYABLE[name.slice(dot + 1).toLowerCase()] || '')
   }
 
   function addCredit(dl, label, value) {

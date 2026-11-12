@@ -25,6 +25,7 @@ import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
+import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
@@ -118,7 +119,12 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
 
         setContentView(buildUi(title))
 
-        val renderers = DefaultRenderersFactory(this).setEnableDecoderFallback(true)
+        // The TV's own decoders and HDMI passthrough first, then FFmpeg for
+        // the audio they cannot do (DTS, TrueHD, AC-3 on sticks without it);
+        // and a decoder that will not start falls through to the next.
+        val renderers = DefaultRenderersFactory(this)
+            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
+            .setEnableDecoderFallback(true)
         val exo = ExoPlayer.Builder(this, renderers).build()
         player = exo
         video.player = exo
@@ -584,6 +590,51 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
         }
     }
 
+    // --- What cannot be played ---------------------------------------------------
+
+    private var warnedAboutTracks = false
+
+    /**
+     * Why a type of track cannot be played, when the film has tracks of it
+     * and this TV can play none of them; null when one of them will play.
+     */
+    private fun unplayable(tracks: Tracks, type: Int, what: String): String? {
+        val groups = tracks.groups.filter { it.type == type }
+        if (groups.isEmpty() || groups.any { g -> (0 until g.length).any { g.isTrackSupported(it) } }) return null
+        val codec = groups.firstNotNullOfOrNull { g ->
+            (0 until g.length).map { PlayerText.codec(g.getTrackFormat(it).sampleMimeType) }.firstOrNull { it.isNotBlank() }
+        }
+        val named = codec?.let { " ($it)" } ?: ""
+        return "This TV cannot decode this film's $what$named, so it will play without it."
+    }
+
+    /** A failure in words, rather than an error code. */
+    private fun explain(error: PlaybackException): String {
+        val file = intent.getStringExtra(EXTRA_URL)?.let { Uri.parse(it).lastPathSegment } ?: "this file"
+        val kind = file.substringAfterLast('.', "").uppercase()
+        return when (error.errorCode) {
+            PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED ->
+                "This TV cannot open ${if (kind.isNotBlank()) "$kind files" else "this kind of file"}. " +
+                    "MKV, MP4, MOV, AVI, WebM, TS, MPG and FLV all play."
+            PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED ->
+                "$file looks damaged — the player could not read it."
+            PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED ->
+                "This TV has no decoder for the video in $file."
+            PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES ->
+                "$file is beyond what this TV can decode — too high a resolution or bitrate for it."
+            PlaybackException.ERROR_CODE_DECODER_INIT_FAILED, PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED ->
+                "The TV's decoder would not start for $file. Try playing it again."
+            PlaybackException.ERROR_CODE_AUDIO_TRACK_INIT_FAILED ->
+                "The TV would not open its sound output. Try another audio track from the Audio menu."
+            PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+            PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ->
+                "Lost the connection to SAND. Is the server still running?"
+            PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS, PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND ->
+                "SAND would not send this film — the code may have been revoked, or the vault locked."
+            else -> "Could not play $file (${error.errorCodeName})."
+        }
+    }
+
     // --- Lifecycle --------------------------------------------------------------
 
     private inner class PlayerEvents : Player.Listener {
@@ -609,12 +660,22 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
         }
 
         override fun onPlayerError(error: PlaybackException) {
-            Toast.makeText(
-                this@PlayerActivity,
-                "Could not play this file: ${error.errorCodeName}",
-                Toast.LENGTH_LONG,
-            ).show()
+            Toast.makeText(this@PlayerActivity, explain(error), Toast.LENGTH_LONG).show()
             finish()
+        }
+
+        /**
+         * A film whose video this TV cannot decode still plays its sound, to
+         * a black screen that looks like a fault — and one whose audio it
+         * cannot play is silent. Either way, say which and why, once.
+         */
+        override fun onTracksChanged(tracks: Tracks) {
+            if (warnedAboutTracks) return
+            val problem = unplayable(tracks, C.TRACK_TYPE_VIDEO, "picture")
+                ?: unplayable(tracks, C.TRACK_TYPE_AUDIO, "sound")
+                ?: return
+            warnedAboutTracks = true
+            Toast.makeText(this@PlayerActivity, problem, Toast.LENGTH_LONG).show()
         }
     }
 

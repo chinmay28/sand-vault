@@ -40,6 +40,16 @@ server and the app together: the app's sidecar subtitles need this server.
   edges to say there is more. The poster, blurred, fills the background.
 - **Folder pictures on the TV.** A folder wears the picture picked for it in
   the browser, or, when it holds a single film, that film's poster.
+- **Every major audio format.** The app now carries an FFmpeg audio decoder, so
+  DTS, TrueHD and AC-3/E-AC-3 play on sticks without those decoders and with
+  no receiver to pass them to, alongside FLAC, ALAC, Opus, Vorbis and PCM. The
+  TV's own decoders and HDMI passthrough still come first. Media3 moves to
+  1.7.1.
+- **Which files open, tested.** MKV, WebM, MP4, M4V, MOV, 3GP, AVI, TS,
+  MPG/VOB and FLV play; WMV/ASF, M2TS, Ogg video and ISO do not, and the
+  details page says so before Play. Each container is checked on every build
+  against a real clip. A film whose picture or sound is beyond the TV now
+  says which, in words, and plays the rest.
 
 `GET /api/tv/folders/art?path=…`; `POST /api/tv/items/{id}/play` now also
 answers `subtitles: [{url, label, language, mime}]`, each a link bound to the

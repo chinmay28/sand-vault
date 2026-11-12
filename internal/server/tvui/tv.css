@@ -233,6 +233,7 @@ h2 { font-size: 1.4rem; margin: 0 0 0.4rem; }
 .details-file { font-size: 0.8rem; margin: 0; font-family: ui-monospace, monospace; overflow-wrap: anywhere; }
 
 .details-more { flex: none; margin: 0.3rem 0 0; font-size: 0.8rem; color: var(--muted); letter-spacing: 0.02em; }
+.details-warn { flex: none; margin: 0.4rem 0 0; font-size: 0.9rem; color: #fbbf24; }
 .details-buttons { flex: none; margin-top: 0.8rem; flex-wrap: wrap; }
 
 /* --- Player (the browser's own, when there is no native one) ---------- */

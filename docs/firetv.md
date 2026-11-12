@@ -93,6 +93,31 @@ The TV cannot:
 - unlock the vault. If SAND locks itself while nobody is using it, the TV says
   so and waits; unlock in the browser and it carries on, still paired.
 
+## What plays
+
+The player is Media3 (ExoPlayer) with Jellyfin's FFmpeg audio decoder.
+Containers are opened by Media3 itself; video is decoded by the Fire TV's
+hardware; audio by the TV's decoders, passed through HDMI to a receiver or
+soundbar that takes it, or decoded in software by FFmpeg — in that order.
+
+| | Plays | Does not |
+|---|---|---|
+| **Containers** | MKV, WebM, MP4, M4V, MOV, 3GP, AVI, TS, MPG/MPEG-PS, VOB, FLV | WMV/ASF, M2TS (Blu-ray rips), Ogg video (OGV), ISO disc images, RealMedia |
+| **Video** | H.264, HEVC/H.265 (incl. HDR10 where the TV supports it), VP9 — every Fire TV. AV1 on the newer 4K models. MPEG-2, MPEG-4 part 2 (Xvid/DivX) and VC-1 where the stick's chip has a decoder, which most do | anything the stick's chip has no decoder for — there is no software video decoder |
+| **Audio** | AAC, MP3, AC-3, E-AC-3 (incl. Atmos passthrough), DTS (core), TrueHD, FLAC, ALAC, Opus, Vorbis, PCM | DTS:X and DTS-HD MA are played as their DTS core unless passed through; WMA; MP2 on most sticks |
+| **Subtitles** | SRT, WebVTT, SSA/ASS, PGS, DVB, VobSub, CEA-608/708 — embedded or beside the film | — |
+
+The container rows are not taken on trust: `ContainerSupportTest` runs every
+Media3 extractor over a one-second clip in each container on every build of
+the app and fails if the list above stops being true. The details page warns
+before Play on a file in a container that does not open, and the player says
+in words — not an error code — when a film's picture or sound is beyond the
+TV, and plays what it can.
+
+To watch a file in one of the "does not" containers, remux it, which copies
+the streams without re-encoding and takes seconds:
+`ffmpeg -i film.m2ts -map 0 -c copy film.mkv`.
+
 ## Ending it
 
 A code ends when its time is up, when you **Revoke** it in the Watch on TV
