@@ -41,6 +41,12 @@ jobs:
         with:
           node-version: 22
 
+      # For the Fire TV app. The runner image ships the Android SDK.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
       - name: Compute version
         id: version
         run: |
@@ -94,7 +100,27 @@ jobs:
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath \
             -ldflags="-s -w -X github.com/chinmay28/sand-vault/internal/version.Patch=${{ steps.version.outputs.patch }} -X github.com/chinmay28/sand-vault/internal/version.Date=${{ steps.version.outputs.date }}" \
             -o "dist/sand-${VERSION}-linux-arm64" ./cmd/sand
-          (cd dist && sha256sum sand-* > SHA256SUMS)
+
+      # The SAND TV app, stamped with this release's version. Attached under a
+      # name that never changes, so .../releases/latest/download/sand-tv.apk is
+      # an address short enough to type into the Fire TV's Downloader app.
+      - name: Build sand-tv.apk
+        if: steps.notes.outputs.release == 'true'
+        working-directory: apps/firetv
+        run: |
+          ./gradlew --no-daemon assembleRelease \
+            -PsandVersionName="${{ steps.version.outputs.version }}" \
+            -PsandVersionCode="${{ steps.version.outputs.patch }}"
+          apks=(app/build/outputs/apk/release/*.apk)
+          if [ "${#apks[@]}" -ne 1 ] || [ ! -f "${apks[0]}" ]; then
+            echo "expected exactly one release APK, found: ${apks[*]}" >&2
+            exit 1
+          fi
+          cp "${apks[0]}" ../../dist/sand-tv.apk
+
+      - name: Checksums
+        if: steps.notes.outputs.release == 'true'
+        run: (cd dist && sha256sum sand-* > SHA256SUMS)
 
       - name: Publish release
         if: steps.notes.outputs.release == 'true'
@@ -108,6 +134,7 @@ jobs:
           fi
           gh release create "${VERSION}" \
             "dist/sand-${VERSION}-linux-arm64" \
+            dist/sand-tv.apk \
             dist/SHA256SUMS \
             --target "${GITHUB_SHA}" \
             --title "${VERSION}" \
