@@ -12,6 +12,44 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### Snapshots: a folder as one compressed, password-sealed archive
+
+**Organize and automate → Take a snapshot** packs the folder you are in, and
+everything under it, into one archive and keeps it where you choose: **one of
+the connected clouds, or a machine** you have an SSH login on. **Restore a
+snapshot** lists what a place is keeping, opens one under its password, and
+unpacks it into the folder you are in.
+
+- **Highly compressed**: one zstd stream over the whole tree, at the library's
+  best level.
+- **Encrypted under a password you type** — the snapshot's own, stretched with
+  Argon2id at the recovery kit's costs and sealed in AES-256-GCM frames. SAND
+  does not keep it.
+- **A maximum file size.** Past it the snapshot is cut into part files —
+  `….part001.sandsnap`, `….part002.sandsnap`, `….part003.last.sandsnap` — which
+  a restore puts back together. On a machine a part can be any size, or
+  unlimited for one file; on a cloud it is at most 256 MB (64 MB by default),
+  because a part bound for one is held in memory whole.
+
+A snapshot needs its parts and its password and no vault, so it is still
+readable when the vault is not. That makes it the one thing SAND stores whole
+on a single account: the account sees only ciphertext, under a name that says
+when it was taken and nothing else, and the password is what protects it.
+
+Taking is all or nothing — a stop, or a file that cannot be read, erases what
+had been written. Restoring passes over a file already there with the same
+contents (so it is safe to repeat, and repeating is how a stopped one carries
+on), leaves a different file under the same name alone unless **Replace files
+that differ** is ticked, and stores each file as an ordinary upload on this
+vault's clouds. An interrupted snapshot is listed as incomplete and can be
+erased. Thumbnails, film details and schedules are not in a snapshot.
+
+`sand snapshot take|ls|restore|rm --cloud NAME | --machine NAME [--dir …]
+[--max-size 2G]`, password from `SAND_SNAPSHOT_PASSWORD`. `GET
+/api/snapshots/plan`, `GET /api/snapshots/stored`, `POST
+/api/snapshots/inspect`, `POST`/`GET /api/snapshots`, `POST
+/api/snapshots/restore`, `…/stop`, `…/delete`.
+
 ### Lost parts: found, and remade where they were
 
 A part the index records on a cloud that the cloud is no longer holding — a

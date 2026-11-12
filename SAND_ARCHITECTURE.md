@@ -2479,6 +2479,78 @@ asked between files and after any failure — in these two jobs, in `CheckFolder
 and in `RepairChecked` — and a shut scope ends the job as stopped with the
 reason (`StoppedBy`) and what it had done, never as findings.
 
+### 6.8 Snapshots
+
+A snapshot is a folder as one archive in one place, readable with its part
+files and its password and no vault (`internal/snapshot`, with the two ends of
+it in `internal/vault/snapshot.go`). It is deliberately not the vault's format
+and shares none of its keys: the case it exists for is the vault being gone.
+
+The layers, outermost first:
+
+```
+part files   54-byte plaintext header, then a slice of the sealed stream
+sealed       AES-256-GCM frames of up to 1 MiB, key = Argon2id(password, salt)
+compressed   one zstd stream, SpeedBestCompression
+archive      u32 length + JSON description, then a PAX tar of the tree
+```
+
+**The part header** is `SANDSNAP`, a version byte, the three Argon2id costs,
+a 16-byte salt, the snapshot's 16-byte ID and the part's number. Every part
+carries all of it so that a part found alone says what it belongs to, and a
+part of another snapshot is refused by ID rather than by a cipher error. The
+costs are read from a file somebody else has held, so the reader bounds them
+(2 GiB, 64 passes) before paying them. New snapshots use the recovery kit's
+costs (§6.1): opened rarely, kept for years on storage somebody else runs,
+under a password a person chose.
+
+**The sealed stream** is cut into frames because a snapshot can be larger than
+the machine. Each is a four-byte length and the ciphertext. The nonce is the
+frame's number (the key is used for one snapshot, from a fresh salt, so a
+counter is safe); the AAD is the snapshot ID and one byte saying whether the
+frame is the last, which is also the length's top bit. So reordered frames, a
+frame from another snapshot and a stream cut at a frame boundary all fail to
+open. The first frame failing is reported as a wrong password; any later one
+as damage. A reader has only verified the whole when it has read to EOF.
+
+**The description** — path, counts, when — sits ahead of the compressed stream
+so that opening a snapshot to try a password is one frame and no decompressor.
+
+**The tar** carries folders (so empty ones survive) and files with their
+modified time and, in a PAX record, the SHA-256 the index held. Paths are
+relative to the snapshotted folder and are re-validated on the way back in.
+
+**Parts** are written through `snapshot.Store`: `Create` begins a part with no
+name, and `Commit(name)` makes it visible whole or not at all. The name comes
+last because it is not known first — the final part is named `.last`, and
+whether a part is final is known only when the stream ends or the next part
+begins. That marker is what lets a listing tell complete from interrupted with
+no index and no sidecar file: `snapshot-<UTC stamp>-<8 hex of the ID>` and then
+nothing (one file), `.partNNN`, or `.partNNN.last`. The name carries no folder
+or file name (§5.5).
+
+Two stores. A connected account (`accountSnapshots`) buffers a part and `Put`s
+it — a backend takes an object as one slice — which is why a cloud part is
+capped at 256 MiB. Parts sit in the account's parts folder; nothing else there
+ends in `.sandsnap`, and the orphan scan claims only keys matching its own
+strict pattern. A machine (`machineSnapshots`) streams a part to a temporary
+name over SFTP and renames it on commit (`sftp.Pending`), inside the source's
+root like every other write there, so a part can be any size. Both refuse to
+remove a name that is not a part's.
+
+**Taking** is the folder zip's plan (`PlanFolderZip`) read through the sequential reader (§4.3)
+into the writer. It is all or nothing: any failure or a stop erases the parts
+written, since a snapshot missing a file is worse than none. **Restoring**
+feeds each item to `UploadStream` — an ordinary upload on the restoring
+vault's clouds — after `heldAt` compares it with what is at its path: same
+size and hash is skipped (which is the whole of resume), different is kept and
+reported unless `Replace`, and never stored beside under a numbered name. One
+file failing does not stop the rest; damage in the stream does.
+
+Both run as one `jobWatch` between them (`handlers_snapshots.go`). The
+password is in the request body, handed to the job, and is in no status, key
+or log.
+
 ---
 
 ## 7. Part File Format
@@ -3348,6 +3420,7 @@ sand/
 │   ├── filecheck/             # is this a well-formed JPEG / PDF / MP4… (deep check)
 │   ├── splitter/              # split, XOR, reconstruct
 │   ├── sandfile/              # binary .sand part format
+│   ├── snapshot/              # a folder as one sealed, split archive (§6.8)
 │   ├── provider/              # provider.go, local, s3, webdav, gdrive, dropbox
 │   ├── movie/                 # file name → film, and the film database client;
 │   │                          #   the only package that speaks to a third party (§3.11)

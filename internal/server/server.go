@@ -146,6 +146,10 @@ type Server struct {
 	// running, with the control that paces it. See handlers_checksums.go.
 	checksums *checksumJobs
 
+	// snapshots is the snapshot of a folder being taken or restored, one at
+	// a time between the two. See handlers_snapshots.go.
+	snapshots *snapshotWatch
+
 	// ChecksumsEvery is how often checksums.gz is brought up to date with
 	// the index while the vault is unlocked. Zero leaves it to be written
 	// only when asked for.
@@ -308,6 +312,9 @@ func (s *Server) Handler() (http.Handler, error) {
 	}
 	if s.checksums == nil {
 		s.checksums = newChecksumJobs()
+	}
+	if s.snapshots == nil {
+		s.snapshots = newJobWatch[vault.SnapshotProgress, vault.SnapshotReport]()
 	}
 	if s.lostScans == nil {
 		s.lostScans = newJobWatch[vault.OrphanScanProgress, vault.LostPartsScan]()
@@ -666,6 +673,18 @@ func (s *Server) Handler() (http.Handler, error) {
 		"POST /api/checksums/rate":   s.handleChecksumControl(checksumRate),
 		"POST /api/checksums/stop":   s.handleChecksumStop,
 		"POST /api/checksums/ledger": s.handleChecksumLedgerWrite,
+		// Snapshots of a folder: what one would hold, which are kept at a
+		// place, a password tried on one, one erased — and the job that takes
+		// or restores one, with its status and its stop. See
+		// handlers_snapshots.go.
+		"GET /api/snapshots/plan":     s.handleSnapshotPlan,
+		"GET /api/snapshots/stored":   s.handleSnapshotStored,
+		"POST /api/snapshots/inspect": s.handleSnapshotInspect,
+		"POST /api/snapshots/delete":  s.handleSnapshotDelete,
+		"POST /api/snapshots":         s.handleSnapshotTake,
+		"POST /api/snapshots/restore": s.handleSnapshotRestore,
+		"GET /api/snapshots":          s.handleSnapshotStatus,
+		"POST /api/snapshots/stop":    s.handleSnapshotStop,
 		// Converting a pre-chunking file into the chunked format, which is what
 		// the read path's refusal asks for. See handlers_convert.go.
 		"GET /api/conversions":           s.handleConversionsPending,
@@ -1051,7 +1070,7 @@ func (s *Server) autoLockLoop() {
 		// waits on the slowest one, and that wait is the whole of it.
 		if s.strayScans.running() || s.reattaches.running() || s.sweeps.running() ||
 			s.checks.running() || s.repairs.running() || s.checksums.busy() ||
-			s.lostScans.running() || s.lostRestores.running() {
+			s.lostScans.running() || s.lostRestores.running() || s.snapshots.running() {
 			continue
 		}
 		// A replica half-made would be erased and started again on the next
@@ -1072,6 +1091,7 @@ func (s *Server) autoLockLoop() {
 		s.checksums.stopAll()
 		s.lostScans.stopAll()
 		s.lostRestores.stopAll()
+		s.snapshots.stopAll()
 		log.Print("vault auto-locked after idle timeout")
 	}
 }

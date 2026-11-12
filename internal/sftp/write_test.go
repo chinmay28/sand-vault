@@ -288,3 +288,117 @@ func (f *failingReader) Read(p []byte) (int, error) {
 	f.sent += n
 	return n, nil
 }
+
+// A pending file is under no real name until it is committed, and then under
+// exactly the one it was committed as.
+func TestPendingIsNamedOnlyWhenCommitted(t *testing.T) {
+	client, root, _ := browseFixture(t)
+
+	pending, err := client.CreatePending(root, "snaps/deep")
+	if err != nil {
+		t.Fatalf("CreatePending: %v", err)
+	}
+	if _, err := pending.Write([]byte("sealed bytes")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	dir := filepath.Join(root, "snaps", "deep")
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 || !IsTempName(entries[0].Name()) {
+		t.Fatalf("before the commit the folder should hold one temporary file, got %v", entries)
+	}
+
+	if err := pending.Commit("part.bin"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "part.bin"))
+	if err != nil || string(got) != "sealed bytes" {
+		t.Fatalf("committed file reads %q, %v", got, err)
+	}
+	entries, _ = os.ReadDir(dir)
+	if len(entries) != 1 {
+		t.Errorf("a temporary file outlived the commit: %v", entries)
+	}
+	// Aborting what is already committed leaves it alone.
+	pending.Abort()
+	if _, err := os.Stat(filepath.Join(dir, "part.bin")); err != nil {
+		t.Errorf("an abort after the commit removed the file: %v", err)
+	}
+}
+
+func TestPendingAbortLeavesNothing(t *testing.T) {
+	client, root, _ := browseFixture(t)
+
+	pending, err := client.CreatePending(root, "snaps")
+	if err != nil {
+		t.Fatalf("CreatePending: %v", err)
+	}
+	pending.Write([]byte("half a part"))
+	if err := pending.Abort(); err != nil {
+		t.Fatalf("Abort: %v", err)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(root, "snaps")); len(entries) != 0 {
+		t.Errorf("an aborted file was left behind: %v", entries)
+	}
+}
+
+// A commit never writes over a file, and never lands anywhere but the folder
+// the file was begun in.
+func TestPendingCommitRefusesATakenOrWanderingName(t *testing.T) {
+	client, root, _ := browseFixture(t)
+	write(t, filepath.Join(root, "taken.bin"), "original")
+
+	pending, err := client.CreatePending(root, "")
+	if err != nil {
+		t.Fatalf("CreatePending: %v", err)
+	}
+	pending.Write([]byte("replacement"))
+	if err := pending.Commit("taken.bin"); !errors.Is(err, ErrExists) {
+		t.Fatalf("got %v, want ErrExists", err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(root, "taken.bin")); string(got) != "original" {
+		t.Errorf("the existing file was changed to %q", got)
+	}
+
+	for _, name := range []string{"../escape.bin", "a/b.bin", "..", ""} {
+		pending, err := client.CreatePending(root, "")
+		if err != nil {
+			t.Fatalf("CreatePending: %v", err)
+		}
+		if err := pending.Commit(name); err == nil {
+			t.Errorf("a file was committed as %q", name)
+		}
+	}
+	entries, _ := os.ReadDir(root)
+	for _, e := range entries {
+		if IsTempName(e.Name()) {
+			t.Errorf("a refused commit left %s behind", e.Name())
+		}
+	}
+}
+
+func TestRemoveUnder(t *testing.T) {
+	client, root, disk := browseFixture(t)
+	write(t, filepath.Join(root, "a.bin"), "x")
+	write(t, filepath.Join(disk, "outside.bin"), "x")
+	os.MkdirAll(filepath.Join(root, "folder"), 0o755)
+
+	if err := client.RemoveUnder(root, "a.bin"); err != nil {
+		t.Fatalf("RemoveUnder: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "a.bin")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the file is still there: %v", err)
+	}
+	if err := client.RemoveUnder(root, "a.bin"); err != nil {
+		t.Errorf("removing a file that is gone should be a no-op, got %v", err)
+	}
+	if err := client.RemoveUnder(root, "folder"); err == nil {
+		t.Error("a folder was removed")
+	}
+	if err := client.RemoveUnder(root, "../outside.bin"); err == nil {
+		t.Error("a file outside the root was removed")
+	}
+	if _, err := os.Stat(filepath.Join(disk, "outside.bin")); err != nil {
+		t.Errorf("the file outside the root is gone: %v", err)
+	}
+}
