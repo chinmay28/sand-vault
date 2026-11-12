@@ -3407,7 +3407,8 @@ at `http://<host>:8123/tv/` — with the posters, synopses and cast that film
 lookup stored, and plays the films straight off the machine running SAND, with
 seeking and resume. Like Plex or Jellyfin, except that the TV is never given the
 vault: in the browser, a folder's menu → **Watch on TV** makes a
-**four-character code** good for that folder, for an hour up to thirty days.
+**four-character code** good for that folder, for an hour, thirty days, a length of your own up to a
+year, or until you revoke it.
 The TV finds SAND on the network by itself, you key the code in with the
 remote, and it can watch the videos in that folder and below it — and see
 nothing else, change nothing, and unlock nothing.

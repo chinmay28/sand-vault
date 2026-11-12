@@ -255,6 +255,62 @@ func TestTheOwnerListsLiveCodes(t *testing.T) {
 	}
 }
 
+func TestTheOwnerMintsACodeWithNoEnd(t *testing.T) {
+	c, _ := tvLibrary(t)
+	w, body := c.json(http.MethodPost, "/api/tv/codes", map[string]any{"path": "/films", "forever": true})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("mint: %d %v", w.Code, body)
+	}
+	if body["forever"] != true {
+		t.Errorf("forever = %v, want true", body["forever"])
+	}
+	if _, ok := body["expires_at"]; ok {
+		t.Errorf("a code with no end carries expires_at: %v", body)
+	}
+	code := body["code"].(string)
+	token := c.pairTV(code)
+
+	w, session := c.tvDo(http.MethodGet, "/api/tv/session", token, nil)
+	if w.Code != http.StatusOK || session["forever"] != true {
+		t.Errorf("session = %d %v, want forever", w.Code, session)
+	}
+	if _, ok := session["expires_at"]; ok {
+		t.Errorf("session for a code with no end carries expires_at: %v", session)
+	}
+}
+
+func TestTheOwnerMintsACodeOfACustomLength(t *testing.T) {
+	c, _ := tvLibrary(t)
+	// Three and a half days, which none of the presets offer, then ninety,
+	// which is past the old thirty-day ceiling.
+	w, body := c.json(http.MethodPost, "/api/tv/codes", map[string]any{"path": "/films", "minutes": 60*24*3 + 720})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("mint: %d %v", w.Code, body)
+	}
+	expires, _ := time.Parse(time.RFC3339Nano, body["expires_at"].(string))
+	if d := time.Until(expires); d < 84*time.Hour-time.Minute || d > 84*time.Hour+time.Minute {
+		t.Errorf("expires in %s, want 84h", d)
+	}
+
+	w, body = c.json(http.MethodPost, "/api/tv/codes", map[string]any{"path": "/films", "minutes": 60 * 24 * 90})
+	if w.Code != http.StatusCreated {
+		t.Errorf("ninety days: %d %v, want 201", w.Code, body)
+	}
+}
+
+func TestACodeCannotBeBothForeverAndTimed(t *testing.T) {
+	c, _ := tvLibrary(t)
+	for _, req := range []map[string]any{
+		{"path": "/films", "forever": true, "minutes": 60},
+		{"path": "/films", "minutes": 60 * 24 * 366},
+		{"path": "/films", "minutes": 4},
+	} {
+		if w, body := c.json(http.MethodPost, "/api/tv/codes", req); w.Code != http.StatusBadRequest {
+			t.Errorf("%v: %d %v, want 400", req, w.Code, body)
+		}
+	}
+}
+
 func TestMintingACodeNeedsTheSessionAndARealFolder(t *testing.T) {
 	c, _ := tvLibrary(t)
 
@@ -264,8 +320,8 @@ func TestMintingACodeNeedsTheSessionAndARealFolder(t *testing.T) {
 	if w, _ := c.json(http.MethodPost, "/api/tv/codes", map[string]any{"path": "/films", "minutes": 1}); w.Code != http.StatusBadRequest {
 		t.Errorf("a one-minute code = %d, want 400", w.Code)
 	}
-	if w, _ := c.json(http.MethodPost, "/api/tv/codes", map[string]any{"path": "/films", "minutes": 60 * 24 * 365}); w.Code != http.StatusBadRequest {
-		t.Errorf("a year-long code = %d, want 400", w.Code)
+	if w, _ := c.json(http.MethodPost, "/api/tv/codes", map[string]any{"path": "/films", "minutes": 60*24*365 + 1}); w.Code != http.StatusBadRequest {
+		t.Errorf("a code longer than a year = %d, want 400", w.Code)
 	}
 
 	// Without the browser's cookie, nobody mints anything.

@@ -53,6 +53,10 @@ type tvCodeRequest struct {
 
 	// Minutes is how long the code lasts; zero means tvaccess.DefaultTTL.
 	Minutes int `json:"minutes"`
+
+	// Forever asks for a code with no end, which lasts until it is revoked or
+	// SAND restarts. Minutes must then be zero.
+	Forever bool `json:"forever"`
 }
 
 // tvCodesResponse is the list the dialog draws, with the addresses a TV could
@@ -83,8 +87,10 @@ func (s *Server) handleTVCodeCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A forever code passes its minutes through untouched, so that asking for
+	// both is refused by Issue rather than quietly settled here.
 	ttl := tvaccess.DefaultTTL
-	if req.Minutes != 0 {
+	if req.Minutes != 0 || req.Forever {
 		ttl = time.Duration(req.Minutes) * time.Minute
 	}
 	label := strings.TrimSpace(req.Label)
@@ -95,9 +101,9 @@ func (s *Server) handleTVCodeCreate(w http.ResponseWriter, r *http.Request) {
 		label = label[:80]
 	}
 
-	grant, err := s.tv.Issue(tvaccess.Request{Scope: string(scope), Dir: dir, Label: label, TTL: ttl})
+	grant, err := s.tv.Issue(tvaccess.Request{Scope: string(scope), Dir: dir, Label: label, TTL: ttl, Forever: req.Forever})
 	switch {
-	case errors.Is(err, tvaccess.ErrBadTTL):
+	case errors.Is(err, tvaccess.ErrBadTTL), errors.Is(err, tvaccess.ErrForeverWithTTL):
 		writeError(w, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
 		return
 	case errors.Is(err, tvaccess.ErrTooManyGrants):
@@ -147,7 +153,8 @@ type tvPairRequest struct {
 type tvPairResponse struct {
 	Token     string    `json:"token"`
 	Label     string    `json:"label"`
-	ExpiresAt time.Time `json:"expires_at"`
+	ExpiresAt time.Time `json:"expires_at,omitzero"`
+	Forever   bool      `json:"forever,omitempty"`
 }
 
 // handleTVPair trades a code for a device token. Public, because a TV has
@@ -181,6 +188,7 @@ func (s *Server) handleTVPair(w http.ResponseWriter, r *http.Request) {
 		Token:     dev.Token,
 		Label:     dev.Grant.Label,
 		ExpiresAt: dev.Grant.ExpiresAt,
+		Forever:   dev.Grant.Forever,
 	})
 }
 
@@ -236,7 +244,8 @@ func (s *Server) tvActive(v *vault.Vault) {
 
 type tvSessionResponse struct {
 	Label     string    `json:"label"`
-	ExpiresAt time.Time `json:"expires_at"`
+	ExpiresAt time.Time `json:"expires_at,omitzero"`
+	Forever   bool      `json:"forever,omitempty"`
 	Locked    bool      `json:"locked"`
 }
 
@@ -248,6 +257,7 @@ func (s *Server) handleTVSession(w http.ResponseWriter, r *http.Request, grant t
 	writeJSON(w, http.StatusOK, tvSessionResponse{
 		Label:     grant.Label,
 		ExpiresAt: grant.ExpiresAt,
+		Forever:   grant.Forever,
 		Locked:    !v.Unlocked(),
 	})
 }

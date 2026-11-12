@@ -721,7 +721,9 @@
   function openMenu() {
     api('GET', '/api/tv/session').then(function (s) {
       $('menu-title').textContent = s.label
-      $('menu-expiry').textContent = 'This TV can watch ' + s.label + ' until ' + formatDate(s.expires_at) + '.'
+      $('menu-expiry').textContent = s.forever
+        ? 'This TV can watch ' + s.label + ' until its code is revoked or SAND restarts.'
+        : 'This TV can watch ' + s.label + ' until ' + formatDate(s.expires_at) + '.'
       show('menu')
     }, handleError)
   }
