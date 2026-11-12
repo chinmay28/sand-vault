@@ -103,43 +103,52 @@
     toast((err && err.message) || 'Something went wrong')
   }
 
-  /* --- Posters: fetched with the token, kept as blobs ------------------- */
+  /* --- Pictures: fetched with the token, kept as blobs -------------------
+     An <img> cannot send the Authorization header, so posters and folder
+     pictures are fetched and handed to it as blob: URLs, cached by key for as
+     long as the page is open. */
 
-  var posterURLs = {}
-  var posterQueue = []
-  var postersInFlight = 0
+  var imageURLs = {}
+  var imageQueue = []
+  var imagesInFlight = 0
 
   function posterFor(id) {
-    if (posterURLs[id]) return Promise.resolve(posterURLs[id])
+    return imageFor('item:' + id, '/api/tv/items/' + encodeURIComponent(id) + '/poster')
+  }
+
+  function folderArtFor(path) {
+    return imageFor('folder:' + path, '/api/tv/folders/art?path=' + encodeURIComponent(path))
+  }
+
+  function imageFor(key, url) {
+    if (imageURLs[key]) return Promise.resolve(imageURLs[key])
     return new Promise(function (resolve) {
-      posterQueue.push({ id: id, resolve: resolve })
-      pumpPosters()
+      imageQueue.push({ key: key, url: url, resolve: resolve })
+      pumpImages()
     })
   }
 
-  /* Four at a time: the first poster of a folder gathers its whole pack from
+  /* Four at a time: the first picture of a folder gathers its whole pack from
      the clouds, and the rest of the grid should not queue up behind a TV's
      connection limit while it does. */
-  function pumpPosters() {
-    while (postersInFlight < 4 && posterQueue.length) {
-      var job = posterQueue.shift()
-      postersInFlight++
-      fetchPoster(job.id).then(job.resolve, function () { job.resolve(null) }).then(function () {
-        postersInFlight--
-        pumpPosters()
+  function pumpImages() {
+    while (imagesInFlight < 4 && imageQueue.length) {
+      var job = imageQueue.shift()
+      imagesInFlight++
+      fetchImage(job.key, job.url).then(job.resolve, function () { job.resolve(null) }).then(function () {
+        imagesInFlight--
+        pumpImages()
       })
     }
   }
 
-  function fetchPoster(id) {
-    if (posterURLs[id]) return Promise.resolve(posterURLs[id])
-    return fetch('/api/tv/items/' + encodeURIComponent(id) + '/poster', {
-      headers: { 'Authorization': 'Bearer ' + token },
-    }).then(function (resp) {
+  function fetchImage(key, url) {
+    if (imageURLs[key]) return Promise.resolve(imageURLs[key])
+    return fetch(url, { headers: { 'Authorization': 'Bearer ' + token } }).then(function (resp) {
       if (!resp.ok) return null
       return resp.blob().then(function (blob) {
-        posterURLs[id] = URL.createObjectURL(blob)
-        return posterURLs[id]
+        imageURLs[key] = URL.createObjectURL(blob)
+        return imageURLs[key]
       })
     })
   }
@@ -301,8 +310,8 @@
   function unpairLocally() {
     token = null
     save(KEY_TOKEN, null)
-    for (var id in posterURLs) URL.revokeObjectURL(posterURLs[id])
-    posterURLs = {}
+    for (var key in imageURLs) URL.revokeObjectURL(imageURLs[key])
+    imageURLs = {}
   }
 
   /* --- Locked ------------------------------------------------------------- */
@@ -359,6 +368,7 @@
 
     data.folders.forEach(function (f) {
       var card = makeCard('▸', f.name, f.count + (f.count === 1 ? ' video' : ' videos'), 'card-folder')
+      if (f.art) attachImage(card.firstChild, folderArtFor(f.path))
       card.addEventListener('click', function () { openLibrary(f.path, false) })
       grid.appendChild(card)
     })
@@ -382,7 +392,7 @@
         bar.appendChild(fill)
         art.appendChild(bar)
       }
-      if (item.poster) attachPoster(art, item.id)
+      if (item.poster) attachImage(art, posterFor(item.id))
       card.addEventListener('click', function () { openDetails(item.id) })
       if (item.id === focusId) focusTarget = card
       grid.appendChild(card)
@@ -419,8 +429,8 @@
     return card
   }
 
-  function attachPoster(art, id) {
-    posterFor(id).then(function (url) {
+  function attachImage(art, picture) {
+    picture.then(function (url) {
       if (!url) return
       var img = document.createElement('img')
       img.alt = ''
@@ -477,7 +487,9 @@
     $('details-file').textContent = item.name + '  ·  ' + formatBytes(item.size)
 
     var poster = $('details-poster')
+    var backdrop = $('details-backdrop')
     poster.textContent = '🎬'
+    backdrop.style.backgroundImage = ''
     if (item.poster) {
       posterFor(item.id).then(function (url) {
         if (!url || detailsItem !== item) return
@@ -486,6 +498,7 @@
         img.alt = ''
         img.src = url
         poster.appendChild(img)
+        backdrop.style.backgroundImage = 'url("' + url + '")'
       })
     }
 
@@ -508,6 +521,50 @@
     addButton(buttons, 'Back', false, goBack)
 
     show('details', first)
+    // Measured once the screen is showing, since a hidden box has no height.
+    var scroller = $('details-scroll')
+    scroller.scrollTop = 0
+    setTimeout(function () { fitScroller(scroller) }, 0)
+  }
+
+  /* The synopsis box is only something to move to when it has more than it
+     shows. When it does, it joins the D-pad's targets — Up from the buttons
+     lands on it, and Up and Down then scroll it — and says so underneath. */
+  function fitScroller(el) {
+    var overflows = el.scrollHeight > el.clientHeight + 2
+    if (overflows) el.setAttribute('data-focus', '')
+    else el.removeAttribute('data-focus')
+    markScroller(el)
+  }
+
+  function markScroller(el) {
+    var overflows = el.scrollHeight > el.clientHeight + 2
+    var above = overflows && el.scrollTop > 2
+    var below = overflows && el.scrollTop + el.clientHeight < el.scrollHeight - 2
+    el.classList.toggle('more-above', above)
+    el.classList.toggle('more-below', below)
+    var hint = $('details-more')
+    hint.hidden = !overflows
+    if (overflows) {
+      hint.textContent = document.activeElement === el
+        ? (below ? '▼ more   ·   ▲▼ to read' : '▼ to the buttons')
+        : '▲ press up to read the rest'
+    }
+  }
+
+  /* Up and Down inside a box with more to show scroll it, a few lines at a
+     time; at either end they move on, as anywhere else. */
+  function scrollWithin(el, dir) {
+    var step = Math.max(40, el.clientHeight * 0.6)
+    if (dir === 'down' && el.scrollTop + el.clientHeight < el.scrollHeight - 2) {
+      el.scrollTop += step
+      return true
+    }
+    if (dir === 'up' && el.scrollTop > 2) {
+      el.scrollTop -= step
+      return true
+    }
+    return false
   }
 
   function addCredit(dl, label, value) {
@@ -537,12 +594,23 @@
     var title = (item.movie && item.movie.title) || stripExtension(item.name)
     api('POST', '/api/tv/items/' + encodeURIComponent(item.id) + '/play').then(function (link) {
       var url = new URL(link.url, window.location.href).href
+      var subtitles = (link.subtitles || []).map(function (s) {
+        return { url: new URL(s.url, window.location.href).href, label: s.label, language: s.language || '', mime: s.mime }
+      })
       playingId = item.id
+      // playWith carries the subtitles; an app from before it existed only
+      // has play, and gets the film without them.
+      if (native && native.playWith) {
+        native.playWith(JSON.stringify({
+          url: url, title: title, startMs: Math.floor(startMs || 0), itemId: item.id, subtitles: subtitles,
+        }))
+        return
+      }
       if (native && native.play) {
         native.play(url, title, Math.floor(startMs || 0), item.id)
         return
       }
-      playInBrowser(url, title, startMs || 0)
+      playInBrowser(url, title, startMs || 0, subtitles)
     }, handleError)
   }
 
@@ -556,8 +624,19 @@
   var video = $('player')
   var barTimer = null
 
-  function playInBrowser(url, title, startMs) {
+  function playInBrowser(url, title, startMs, subtitles) {
     $('player-title').textContent = title
+    while (video.firstChild) video.removeChild(video.firstChild)
+    // A browser reads WebVTT and nothing else in a <track>.
+    ;(subtitles || []).forEach(function (s) {
+      if (s.mime !== 'text/vtt') return
+      var track = document.createElement('track')
+      track.kind = 'subtitles'
+      track.label = s.label
+      if (s.language) track.srclang = s.language
+      track.src = s.url
+      video.appendChild(track)
+    })
     video.src = url
     // A seek before the length is known is ignored, so it waits for it.
     if (startMs) {
@@ -692,7 +771,11 @@
     }
 
     var dir = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down' }[key]
-    if (dir) { move(dir); e.preventDefault() }
+    if (!dir) return
+    e.preventDefault()
+    var active = document.activeElement
+    if (active && active.classList && active.classList.contains('scroller') && scrollWithin(active, dir)) return
+    move(dir)
   })
 
   document.addEventListener('mousemove', function () { if (current === 'player') wakeBar() })
@@ -727,6 +810,14 @@
   /* --- Start ---------------------------------------------------------------- */
 
   buildKeypad()
+  ;(function () {
+    var scroller = $('details-scroll')
+    var mark = function () { markScroller(scroller) }
+    scroller.addEventListener('scroll', mark)
+    scroller.addEventListener('focus', mark)
+    scroller.addEventListener('blur', mark)
+    window.addEventListener('resize', function () { if (current === 'details') fitScroller(scroller) })
+  })()
   $('pair-delete').addEventListener('click', deleteChar)
   $('pair-connect').addEventListener('click', connect)
   $('locked-retry').addEventListener('click', checkUnlocked)

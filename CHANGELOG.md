@@ -10,6 +10,35 @@ Each section below is the body of the corresponding GitHub release. A heading
 must name the tag exactly — a tag whose commit builds a different version is a
 tag that shouldn't be published.
 
+## Unreleased
+
+### SAND TV: a player drawn for a TV, details that fit, and folder pictures
+
+- **A new player.** Media3's own controls were drawn for a phone, edge to
+  edge, so on a TV that crops the edge of the picture the clock and the
+  settings ran off the screen. The player now has its own controls inside the
+  TV safe area, and the options a film wants: **Audio** (every track, named by
+  language, codec and channels — "English · E-AC-3 5.1" — with the ones the TV
+  cannot decode shown as such), **Subtitles** (the film's own, and the `.srt`,
+  `.vtt` or `.ass` files beside it, loaded by themselves as VLC does; off; and
+  four text sizes), **Zoom** (fit, fill the screen, stretch), **Speed** (0.5×
+  to 2×), and **Info** (resolution, codecs, frame rate and bitrate of what is
+  actually playing). Left and Right seek, gathering pace while held — 10s,
+  30s, a minute, three, five — and the seek is sent once the pressing stops.
+  Zoom, subtitle size and the languages last picked carry over to the next
+  film.
+- **Film details always fit.** The details page is laid out to the screen:
+  title, facts and buttons stay put, and a long synopsis and cast scroll in
+  their own box — Up from Play to read it, Down to scroll, fading at the
+  edges to say there is more. The poster, blurred, fills the background.
+- **Folder pictures on the TV.** A folder wears the picture picked for it in
+  the browser, or, when it holds a single film, that film's poster.
+
+`GET /api/tv/folders/art?path=…`; `POST /api/tv/items/{id}/play` now also
+answers `subtitles: [{url, label, language, mime}]`, each a link bound to the
+code like the film's. The app's bridge gains `playWith(json)`, which carries
+them; an older app keeps working with `play`, without the subtitles.
+
 ## v2026.11.226
 
 **Downloads:** `sand-v2026.11.226-linux-arm64` (the server) and

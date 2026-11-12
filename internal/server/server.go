@@ -423,6 +423,7 @@ func (s *Server) Handler() (http.Handler, error) {
 	mux.HandleFunc("GET /api/tv/items/{id}", s.requireTV(s.handleTVItem))
 	mux.HandleFunc("GET /api/tv/items/{id}/poster", s.requireTV(s.handleTVPoster))
 	mux.HandleFunc("POST /api/tv/items/{id}/play", s.requireTV(s.handleTVPlay))
+	mux.HandleFunc("GET /api/tv/folders/art", s.requireTV(s.handleTVFolderArt))
 	// And the screen it is all drawn on, which the Fire TV app opens — or any
 	// browser on a TV. See tvui.go.
 	if err := s.mountTVApp(mux); err != nil {

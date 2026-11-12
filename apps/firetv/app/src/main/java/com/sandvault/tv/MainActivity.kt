@@ -153,6 +153,51 @@ class MainActivity : Activity() {
             }
         }
 
+        /**
+         * play, with the subtitle files the server found beside the film:
+         * {url, title, startMs, itemId, subtitles: [{url, label, language, mime}]}.
+         */
+        @JavascriptInterface
+        fun playWith(json: String) {
+            val server = origin ?: return
+            val req = try {
+                JSONObject(json)
+            } catch (_: Exception) {
+                return
+            }
+            val url = req.optString("url")
+            if (!ServerAddress.isOwn(url, server)) return
+
+            val urls = ArrayList<String>()
+            val labels = ArrayList<String>()
+            val languages = ArrayList<String>()
+            val mimes = ArrayList<String>()
+            val subs = req.optJSONArray("subtitles")
+            for (i in 0 until (subs?.length() ?: 0)) {
+                val sub = subs?.optJSONObject(i) ?: continue
+                val subUrl = sub.optString("url")
+                if (!ServerAddress.isOwn(subUrl, server)) continue
+                urls += subUrl
+                labels += sub.optString("label")
+                languages += sub.optString("language")
+                mimes += sub.optString("mime")
+            }
+
+            main.post {
+                val intent = Intent(this@MainActivity, PlayerActivity::class.java)
+                    .putExtra(PlayerActivity.EXTRA_URL, url)
+                    .putExtra(PlayerActivity.EXTRA_TITLE, req.optString("title"))
+                    .putExtra(PlayerActivity.EXTRA_START_MS, req.optLong("startMs", 0))
+                    .putExtra(PlayerActivity.EXTRA_ITEM_ID, req.optString("itemId"))
+                    .putExtra(PlayerActivity.EXTRA_SUB_URLS, urls.toTypedArray())
+                    .putExtra(PlayerActivity.EXTRA_SUB_LABELS, labels.toTypedArray())
+                    .putExtra(PlayerActivity.EXTRA_SUB_LANGUAGES, languages.toTypedArray())
+                    .putExtra(PlayerActivity.EXTRA_SUB_MIMES, mimes.toTypedArray())
+                @Suppress("DEPRECATION")
+                startActivityForResult(intent, REQUEST_PLAY)
+            }
+        }
+
         @JavascriptInterface
         fun changeServer() {
             main.post {

@@ -55,7 +55,33 @@ The TV can:
 - see what film lookup stored for each video — poster, year, runtime, rating,
   genres, tagline, synopsis, director and cast (turn **film lookup** on for the
   folder in the browser first, and run it, for there to be anything to see);
-- play a video, seek anywhere in it, and resume where it stopped.
+- see the folder pictures picked in the browser (a folder holding a single
+  film wears that film's poster);
+- play a video, seek anywhere in it, and resume where it stopped, with the
+  subtitle files beside it (`Film.mkv` claims `Film.srt`, `Film.en.srt`,
+  `Film.English.forced.vtt`, `.ass`/`.ssa` too) — never any other file.
+
+## The player
+
+Drawn for a TV: everything sits inside the safe area (48dp at the sides, 32dp
+top and bottom), because TVs crop the edge of the picture. If yours also crops
+the film itself, the TV's own picture setting — *Screen Fit*, *Just Scan* or
+*1:1 pixel* depending on the make — turns that off.
+
+| Remote | |
+|---|---|
+| Select | show the controls; press the focused button |
+| Left / Right | seek — 10s a press, gathering pace while held (30s, 1m, 3m, 5m); the seek is sent when you stop |
+| Play/Pause, ⏪, ⏩ | what they say, any time |
+| Back | close a menu, then the controls, then the film |
+
+The buttons: **Play/Pause**, **−10s**, **+30s**, then the menus —
+**Audio** (every track by language, codec and channels; tracks the TV cannot
+decode are listed as such), **Subtitles** (off, the film's own tracks, the
+sidecar files, and *Text size*), **Zoom** (fit / fill screen / stretch),
+**Speed** (0.5× to 2×) and **Info** (resolution, codecs, frame rate, bitrates).
+Zoom, subtitle size and the last-picked audio and subtitle languages carry over
+to the next film.
 
 The TV cannot:
 
@@ -111,9 +137,9 @@ it off; a firewall needs UDP 8124 open beside TCP 8123 for it to work.
 |---|---|
 | `MainActivity` | A full-screen WebView around `/tv/` on the chosen server — the screens are the server's, so they update with SAND, not with the app. Navigation is held to that server and the app's own pages. |
 | `Discovery` | Broadcasts the query on every interface and collects answers for two seconds. |
-| `PlayerActivity` | Media3 ExoPlayer on the stream link, using the Fire TV's hardware decoders: MKV, MP4, HEVC, AC-3/E-AC-3 and DTS passthrough, embedded subtitles. Reports where it stopped so the page can offer to resume. |
+| `PlayerActivity` | Media3 ExoPlayer on the stream link, using the Fire TV's hardware decoders: MKV, MP4, HEVC, AC-3/E-AC-3 and DTS passthrough, embedded and sidecar subtitles — with its own TV controls (`PlayerWidgets.kt`) rather than Media3's. Reports where it stopped so the page can offer to resume. |
 
-The page and the app talk through `window.SandTVNative` (`play`, `discover`,
+The page and the app talk through `window.SandTVNative` (`playWith`, `play`, `discover`,
 `connect`, `changeServer`, `savedServer`) and `window.sandTV` (`back`,
 `onPlaybackStopped`) — see the header of `internal/server/tvui/tv.js`.
 
@@ -136,7 +162,8 @@ TV, with `Authorization: Bearer <token>`:
 | `GET /api/tv/library?path=/sub&all=1` | folders with videos beneath them, and the videos, relative to the grant |
 | `GET /api/tv/items/{id}` | one video with its film details |
 | `GET /api/tv/items/{id}/poster` | the poster JPEG |
-| `POST /api/tv/items/{id}/play` | → a `/stream/…` link bound to the code |
+| `POST /api/tv/items/{id}/play` | → a `/stream/…` link bound to the code, and `subtitles: [{url, label, language, mime}]` for the sidecar files |
+| `GET /api/tv/folders/art?path=/sub` | a folder's picture |
 | `POST /api/tv/logout` | unpair this TV |
 
 `401 TV_UNPAIRED` means pair again; `401 LOCKED` means the vault is locked.
