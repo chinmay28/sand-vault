@@ -836,10 +836,10 @@
 
   function drawVersions(serverVersion) {
     var server = serverVersion || '…'
-    var short = appVersion ? 'SAND TV ' + appVersion + '\nServer ' + server : 'Server ' + server
+    var short = appVersion ? 'App ' + appVersion + '\nServer ' + server : 'Server ' + server
     eachEl('[data-versions]', function (el) { el.textContent = short })
     eachEl('[data-app-version]', function (el) { el.textContent = appVersion || server })
-    eachEl('[data-app-version-long]', function (el) { el.textContent = appVersion ? appVersion + ' (Fire TV app)' : 'in this browser' })
+    eachEl('[data-app-version-long]', function (el) { el.textContent = appVersion || 'in this browser' })
     eachEl('[data-server-version]', function (el) { el.textContent = server })
   }
 

@@ -14,8 +14,8 @@ tag that shouldn't be published.
 
 ### SAND TV: its version, and the developer mark
 
-The TV app now says which version it is, and whose: the app's version (as the
-release stamped it) and the server's sit under the SAND TV name in the library
+The app now says which version it is, and whose: the app's version (as the
+release stamped it) and the server's sit under the name in the library
 header, in the corner of the pairing and connect screens, on an **About** panel
 in the ⋯ menu, and in the player's **Info**. The developer badge from the web
 app hangs off the library header on a hairline and sits on the pairing screen;

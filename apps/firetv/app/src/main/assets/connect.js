@@ -97,7 +97,7 @@
 
   try {
     var v = nativeApp && nativeApp.appVersion ? nativeApp.appVersion() : ''
-    $('version').textContent = v ? 'SAND TV ' + v + '\nby CM Hegday' : ''
+    $('version').textContent = v ? v + '\nby CM Hegday' : ''
   } catch (e) { /* an older bridge without it: no version line */ }
 
   var hash = decodeURIComponent((location.hash.match(/error=([^&]*)/) || [])[1] || '')
