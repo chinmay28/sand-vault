@@ -226,7 +226,9 @@ func (s *Server) match(
 		}
 	}
 
-	info.Query = guess.String()
+	if info.Query == "" {
+		info.Query = guess.String()
+	}
 	info.File = entry.Name
 
 	v, err := s.Vault()

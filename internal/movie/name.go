@@ -55,13 +55,7 @@ func (g Guess) String() string {
 func TitleKey(title string) string {
 	// Apostrophes vanish rather than splitting a word, as they do in clean:
 	// a stored title keeps its "Charlotte's" and a parsed one has lost it.
-	title = strings.Map(func(r rune) rune {
-		if r == '\'' || r == '’' || r == '`' {
-			return -1
-		}
-		return r
-	}, title)
-	key := normalizeTitle(title)
+	key := plainTitle(title)
 	for _, article := range []string{"the ", "a ", "an "} {
 		if rest, ok := strings.CutPrefix(key, article); ok && rest != "" {
 			return rest
@@ -131,10 +125,19 @@ var genericNames = map[string]bool{
 // Parse reads a film title and year out of one name — a filename or a folder
 // name, with or without an extension.
 func Parse(name string) Guess {
-	cleaned := clean(stripExtension(name))
-	tokens := strings.Fields(cleaned)
+	name = stripExtension(name)
+	tokens := strings.Fields(clean(name))
 	if len(tokens) == 0 {
 		return Guess{}
+	}
+
+	// A year in brackets ahead of the title — "[1985]-a-view-to-a-kill", the
+	// way a collection sorted by release is often named — is a release date and
+	// nothing else: nobody brackets the first word of a title. It is taken out
+	// of the title here and used if nothing later in the name says otherwise.
+	leadingYear := 0
+	if y, ok := leadingBracketedYear(name); ok && len(tokens) > 1 {
+		leadingYear, tokens = y, tokens[1:]
 	}
 
 	// The year, if the name has one. The last plausible one wins: "2012.2009"
@@ -165,8 +168,26 @@ func Parse(name string) Guess {
 		}
 	}
 
+	if year == 0 {
+		year = leadingYear
+	}
 	title := strings.Join(tokens[:end], " ")
 	return Guess{Title: strings.TrimSpace(title), Year: year}
+}
+
+// leadingBracketedYear reads a plausible year at the very start of a name, in
+// square or round brackets: "[1985]", "(1985)". Anything else up front —
+// "1917", "[Rip]" — is not one.
+func leadingBracketedYear(name string) (int, bool) {
+	name = strings.TrimLeftFunc(name, unicode.IsSpace)
+	if len(name) < 6 {
+		return 0, false
+	}
+	open, closing := name[0], name[5]
+	if !(open == '[' && closing == ']') && !(open == '(' && closing == ')') {
+		return 0, false
+	}
+	return parseYear(name[1:5])
 }
 
 // ParseIn reads a name the way a browser sees it: a file inside a folder.

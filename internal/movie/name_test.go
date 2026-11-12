@@ -44,6 +44,16 @@ func TestParse(t *testing.T) {
 		// plausible-year window is what says so.
 		{"Blade Runner 2049", "Blade Runner 2049", 0},
 
+		// A collection sorted by release puts the year in brackets up front.
+		{"[1985]-james-bond-a-view-to-a-kill.mp4", "james bond a view to a kill", 1985},
+		{"(2006) Casino Royale.mkv", "Casino Royale", 2006},
+		// A year later in the name still wins over the one in front.
+		{"[1985] Casino Royale 2006.mkv", "Casino Royale", 2006},
+		// Unbracketed, a leading number is still a title.
+		{"1917 Sam Mendes.mkv", "1917 Sam Mendes", 0},
+		// A bracketed year that is the whole name is not taken out of it.
+		{"[1985].mkv", "1985", 0},
+
 		{"", "", 0},
 	}
 
