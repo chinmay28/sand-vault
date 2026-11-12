@@ -265,6 +265,9 @@ type tvFolder struct {
 
 	// Count is how many videos are at or below it.
 	Count int `json:"count"`
+
+	// Art says the folder has a picture, fetched from /api/tv/folders/art.
+	Art bool `json:"art,omitempty"`
 }
 
 // tvItem is one video as a row of the TV's grid.
@@ -315,16 +318,25 @@ func (s *Server) handleTVLibrary(w http.ResponseWriter, r *http.Request, grant t
 		resp.Parent = path.Dir(rel)
 	}
 
+	// Which videos have a poster, asked once per folder that holds one.
+	posters := postersOf(v, scope, below)
+
 	counts := map[string]int{}
-	var videos []*vault.Entry
+	var videos, deeper []*vault.Entry
 	for _, e := range below {
 		if !vault.IsVideo(e) {
 			continue
 		}
 		if all || e.Dir == abs {
 			videos = append(videos, e)
+			if all {
+				continue
+			}
+		}
+		if e.Dir == abs {
 			continue
 		}
+		deeper = append(deeper, e)
 		// A file deeper down counts toward the subfolder of abs it is under.
 		rest := strings.TrimPrefix(e.Dir, strings.TrimSuffix(abs, "/")+"/")
 		if i := strings.Index(rest, "/"); i >= 0 {
@@ -334,23 +346,25 @@ func (s *Server) handleTVLibrary(w http.ResponseWriter, r *http.Request, grant t
 	}
 
 	if !all {
+		dirs := make([]string, 0, len(counts))
+		for name := range counts {
+			dirs = append(dirs, vault.JoinPath(abs, name))
+		}
+		art := folderArt(v, scope, dirs, deeper, posters)
 		for name, n := range counts {
-			resp.Folders = append(resp.Folders, tvFolder{Name: name, Path: vault.JoinPath(rel, name), Count: n})
+			resp.Folders = append(resp.Folders, tvFolder{
+				Name:  name,
+				Path:  vault.JoinPath(rel, name),
+				Count: n,
+				Art:   art[vault.JoinPath(abs, name)] != "",
+			})
 		}
 		sort.Slice(resp.Folders, func(i, j int) bool {
 			return strings.ToLower(resp.Folders[i].Name) < strings.ToLower(resp.Folders[j].Name)
 		})
 	}
 
-	posters := map[string]bool{}
-	seenDir := map[string]bool{}
 	for _, e := range videos {
-		if !seenDir[e.Dir] {
-			seenDir[e.Dir] = true
-			for _, id := range v.ThumbIDs(scope, e.Dir) {
-				posters[id] = true
-			}
-		}
 		resp.Items = append(resp.Items, s.tvItemFor(v, grant, e, posters[e.ID]))
 	}
 	sort.Slice(resp.Items, func(i, j int) bool {
@@ -362,6 +376,87 @@ func (s *Server) handleTVLibrary(w http.ResponseWriter, r *http.Request, grant t
 	})
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// postersOf reports which of a set of files have a stored picture, asking the
+// index once per folder rather than once per file.
+func postersOf(v *vault.Vault, scope vault.Scope, entries []*vault.Entry) map[string]bool {
+	out := map[string]bool{}
+	seen := map[string]bool{}
+	for _, e := range entries {
+		if seen[e.Dir] {
+			continue
+		}
+		seen[e.Dir] = true
+		for _, id := range v.ThumbIDs(scope, e.Dir) {
+			out[id] = true
+		}
+	}
+	return out
+}
+
+// folderArt picks the picture each folder is drawn with on the TV, by the ID
+// of the file whose thumbnail it is; a folder with none is absent.
+//
+// The picture chosen for it in the browser comes first — that is the owner
+// saying which film stands for the folder. Failing that, a folder holding
+// exactly one video wears that video's poster: a folder per film is how most
+// libraries are sorted, and for those there is nothing to guess. A folder of
+// several films with nothing chosen keeps its icon, as it does in the browser.
+//
+// videos are the videos somewhere beneath the folders, and posters which of
+// them have a picture.
+func folderArt(v *vault.Vault, scope vault.Scope, dirs []string, videos []*vault.Entry, posters map[string]bool) map[string]string {
+	out := map[string]string{}
+	chosen := v.FolderArts(scope, dirs)
+	for _, dir := range dirs {
+		if art, ok := chosen[dir]; ok {
+			out[dir] = art.ID
+			continue
+		}
+		var only *vault.Entry
+		n := 0
+		for _, e := range videos {
+			if within(e.Dir, dir) {
+				only = e
+				n++
+			}
+		}
+		if n == 1 && posters[only.ID] {
+			out[dir] = only.ID
+		}
+	}
+	return out
+}
+
+// handleTVFolderArt serves a folder's picture, by the folder's path relative
+// to the grant. The picture is worked out again here rather than taken from an
+// ID the TV sends, so the TV can only ever ask for a folder's picture — never
+// for an arbitrary file's thumbnail.
+func (s *Server) handleTVFolderArt(w http.ResponseWriter, r *http.Request, grant tvaccess.Grant) {
+	v, _ := s.Vault()
+	scope := vault.Scope(grant.Scope)
+	abs := confine(grant.Dir, vault.CleanDir(r.URL.Query().Get("path")))
+
+	below, err := v.Descendants(scope, abs)
+	if err != nil {
+		vaultErrorResponse(w, err)
+		return
+	}
+	s.tvActive(v)
+
+	var videos []*vault.Entry
+	for _, e := range below {
+		if vault.IsVideo(e) {
+			videos = append(videos, e)
+		}
+	}
+	id := folderArt(v, scope, []string{abs}, videos, postersOf(v, scope, videos))[abs]
+	if id == "" {
+		writeError(w, http.StatusNotFound, "this folder has no picture", "NO_THUMBNAIL")
+		return
+	}
+	s.writeThumb(w, r, v, id)
 }
 
 func (s *Server) tvItemFor(v *vault.Vault, grant tvaccess.Grant, e *vault.Entry, poster bool) tvItem {
@@ -436,9 +531,14 @@ func (s *Server) handleTVPoster(w http.ResponseWriter, r *http.Request, grant tv
 	}
 	s.tvActive(v)
 
+	s.writeThumb(w, r, v, entry.ID)
+}
+
+// writeThumb serves a file's stored thumbnail to a TV.
+func (s *Server) writeThumb(w http.ResponseWriter, r *http.Request, v *vault.Vault, id string) {
 	ctx, cancel := contextWithTimeout(r, tvPosterTimeout)
 	defer cancel()
-	data, err := v.Thumb(ctx, entry.ID)
+	data, err := v.Thumb(ctx, id)
 	if err != nil {
 		if errors.Is(err, vault.ErrNoThumb) {
 			writeError(w, http.StatusNotFound, err.Error(), "NO_THUMBNAIL")
@@ -472,13 +572,50 @@ func (s *Server) handleTVPlay(w http.ResponseWriter, r *http.Request, grant tvac
 		writeError(w, http.StatusInternalServerError, "could not mint a stream link", "INTERNAL_ERROR")
 		return
 	}
-	writeJSON(w, http.StatusCreated, streamLinkResponse{
-		URL:       streamPath(token, entry.Name),
-		Name:      entry.Name,
-		MIME:      entry.MIME,
-		ExpiresAt: expiry,
-		ExpiresIn: int(time.Until(expiry).Round(time.Second).Seconds()),
-	})
+	resp := tvPlayResponse{
+		streamLinkResponse: streamLinkResponse{
+			URL:       streamPath(token, entry.Name),
+			Name:      entry.Name,
+			MIME:      entry.MIME,
+			ExpiresAt: expiry,
+			ExpiresIn: int(time.Until(expiry).Round(time.Second).Seconds()),
+		},
+		Subtitles: []tvSubtitleLink{},
+	}
+
+	// The subtitle files beside it, each behind a link of its own bound to
+	// the same code. A folder that will not list is a film without them, not
+	// a film that will not play.
+	if listing, err := v.List(vault.Scope(grant.Scope), entry.Dir); err == nil {
+		for _, sub := range sidecarSubtitles(entry, listing.Files) {
+			subToken, _, err := s.streams.issue(streamTicket{fileID: sub.Entry.ID, source: vault.ReadParts, grant: grant.Code})
+			if err != nil {
+				continue
+			}
+			resp.Subtitles = append(resp.Subtitles, tvSubtitleLink{
+				URL:      streamPath(subToken, sub.Entry.Name),
+				Label:    sub.Label,
+				Language: sub.Language,
+				MIME:     sub.MIME,
+			})
+		}
+	}
+	writeJSON(w, http.StatusCreated, resp)
+}
+
+// tvPlayResponse is a stream link for the film and one for each subtitle file
+// found beside it.
+type tvPlayResponse struct {
+	streamLinkResponse
+	Subtitles []tvSubtitleLink `json:"subtitles"`
+}
+
+// tvSubtitleLink is one sidecar subtitle, as the player is handed it.
+type tvSubtitleLink struct {
+	URL      string `json:"url"`
+	Label    string `json:"label"`
+	Language string `json:"language,omitempty"`
+	MIME     string `json:"mime"`
 }
 
 // tvEntry resolves a file ID for a TV, answering not found for anything the

@@ -86,6 +86,26 @@ func (v *Vault) FolderArtFor(scope Scope, dir string) (FolderArt, bool) {
 	return art, art.ID != ""
 }
 
+// FolderArts answers FolderArtFor for many folders in one walk of the index —
+// the shape a listing of a folder's subfolders wants. Folders drawn with
+// nothing are absent from the answer, as are folders that do not exist.
+func (v *Vault) FolderArts(scope Scope, dirs []string) map[string]FolderArt {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+
+	m, err := v.manifestForLocked(scope)
+	if err != nil {
+		return nil
+	}
+	out := map[string]FolderArt{}
+	for dir, art := range v.folderArtForLocked(m, dirs) {
+		if art.ID != "" {
+			out[dir] = art
+		}
+	}
+	return out
+}
+
 // FolderArtChoices lists the pictures a folder could be drawn with: every file
 // at or below it that has a stored thumbnail, films first.
 //

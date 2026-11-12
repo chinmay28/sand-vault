@@ -159,28 +159,82 @@ h2 { font-size: 1.4rem; margin: 0 0 0.4rem; }
 
 .empty { text-align: center; margin-top: 8rem; }
 
-/* --- Details ------------------------------------------------------------ */
+/* --- Details ------------------------------------------------------------
+   Laid out to the screen rather than to its content: the poster is as tall as
+   the space allows, the right column is exactly the height of the screen, and
+   only the middle of it — synopsis, credits — gives when there is more text
+   than room. That middle scrolls under the D-pad, so nothing ever runs past
+   the bottom edge or pushes the buttons off it. */
 
-.details { display: flex; gap: 3rem; height: 100%; align-items: flex-start; padding-top: 1rem; }
+.screen-details { display: flex; }
+.details-backdrop {
+  position: absolute; inset: -3rem; z-index: 0;
+  background-size: cover; background-position: center;
+  filter: blur(2.5rem) saturate(1.2); opacity: 0.28;
+  transition: opacity 300ms;
+}
+.details {
+  position: relative; z-index: 1;
+  display: flex; gap: 2.4rem; width: 100%; height: 100%; min-height: 0;
+}
 .details-poster {
-  flex: 0 0 18rem; aspect-ratio: 2 / 3; border-radius: 0.8rem; overflow: hidden;
+  flex: 0 0 auto; align-self: flex-start;
+  height: min(100%, 27rem); aspect-ratio: 2 / 3;
+  border-radius: 0.8rem; overflow: hidden;
   background: linear-gradient(160deg, var(--raised), var(--surface));
   display: flex; align-items: center; justify-content: center;
   border: 0.06rem solid var(--border);
+  box-shadow: 0 0.8rem 2.4rem rgba(0, 0, 0, 0.55);
+  font-size: 4rem;
 }
 .details-poster img { width: 100%; height: 100%; object-fit: cover; }
-.details-poster { font-size: 5rem; }
-.details-body { flex: 1; min-width: 0; }
-.details-body h1 { font-size: 2.4rem; }
-.details-meta { color: var(--muted); font-size: 1.05rem; margin: 0 0 0.8rem; }
+
+.details-body { flex: 1 1 auto; min-width: 0; min-height: 0; height: 100%; display: flex; flex-direction: column; }
+.details-body h1 {
+  flex: none; font-size: 2rem; line-height: 1.15; margin: 0 0 0.4rem;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.details-meta { flex: none; color: var(--muted); font-size: 1rem; margin: 0 0 0.5rem; }
 .details-meta .rating { color: var(--accent-bright); font-weight: 650; }
-.details-tagline { font-style: italic; color: var(--muted); margin: 0 0 0.8rem; }
-.details-overview { font-size: 1.1rem; max-width: 46rem; margin: 0 0 1rem;
-  display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; }
-.details-credits { display: grid; grid-template-columns: max-content 1fr; gap: 0.2rem 1rem; margin: 0 0 1rem; max-width: 46rem; }
+.details-tagline {
+  flex: none; font-style: italic; color: var(--muted); margin: 0 0 0.6rem;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.details-scroll {
+  flex: 1 1 auto; min-height: 3rem;
+  overflow-y: auto; overflow-x: hidden;
+  scroll-behavior: smooth; scrollbar-width: none;
+  max-width: 46rem;
+  padding: 0.3rem 0.6rem 0.3rem 0; margin-left: -0.4rem; padding-left: 0.4rem;
+  border-radius: 0.5rem;
+  outline: none;
+}
+.details-scroll::-webkit-scrollbar { display: none; }
+/* Fades say there is more above or below, without a scrollbar to read. */
+.details-scroll.more-below {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 2.6rem), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 2.6rem), transparent);
+}
+.details-scroll.more-above {
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 2.6rem);
+  mask-image: linear-gradient(to bottom, transparent, #000 2.6rem);
+}
+.details-scroll.more-above.more-below {
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 2.6rem, #000 calc(100% - 2.6rem), transparent);
+  mask-image: linear-gradient(to bottom, transparent, #000 2.6rem, #000 calc(100% - 2.6rem), transparent);
+}
+.details-scroll:focus { box-shadow: inset 0.18rem 0 0 var(--accent-bright); background: rgba(255, 255, 255, 0.03); }
+
+.details-overview { font-size: 1.05rem; line-height: 1.5; margin: 0 0 0.9rem; }
+.details-credits { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1rem; margin: 0 0 0.9rem; font-size: 0.95rem; }
 .details-credits dt { color: var(--muted); }
 .details-credits dd { margin: 0; }
-.details-file { font-size: 0.85rem; margin: 0 0 0.6rem; font-family: ui-monospace, monospace; overflow-wrap: anywhere; }
+.details-file { font-size: 0.8rem; margin: 0; font-family: ui-monospace, monospace; overflow-wrap: anywhere; }
+
+.details-more { flex: none; margin: 0.3rem 0 0; font-size: 0.8rem; color: var(--muted); letter-spacing: 0.02em; }
+.details-warn { flex: none; margin: 0.4rem 0 0; font-size: 0.9rem; color: #fbbf24; }
+.details-buttons { flex: none; margin-top: 0.8rem; flex-wrap: wrap; }
 
 /* --- Player (the browser's own, when there is no native one) ---------- */
 

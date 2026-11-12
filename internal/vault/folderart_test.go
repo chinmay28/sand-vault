@@ -288,3 +288,26 @@ func TestFolderArtChoicesListFilmsFirst(t *testing.T) {
 		t.Errorf("choices = %d, want the three files that have a picture", len(choices))
 	}
 }
+
+// FolderArts answers for many folders at once, and leaves out the ones drawn
+// with nothing — which is every folder nobody has picked a picture for.
+func TestFolderArtsAnswersForManyFoldersAtOnce(t *testing.T) {
+	v, _ := newTestVault(t, 3)
+
+	alien := filmsFolder(t, v, "/films/alien", "Alien", "Aliens")
+	filmsFolder(t, v, "/films/thing", "The Thing")
+	if _, err := v.SetFolderArt(MainScope, "/films/alien", alien[1]); err != nil {
+		t.Fatalf("SetFolderArt: %v", err)
+	}
+
+	got := v.FolderArts(MainScope, []string{"/films/alien", "/films/thing", "/nowhere"})
+	if len(got) != 1 {
+		t.Fatalf("FolderArts = %+v, want only the folder with a picture", got)
+	}
+	if art := got["/films/alien"]; art.ID != alien[1] || !art.Film {
+		t.Errorf("/films/alien drawn with %+v, want %s as a film poster", art, alien[1])
+	}
+	if got := v.FolderArts(Scope("no-such-sub-vault"), []string{"/films/alien"}); len(got) != 0 {
+		t.Errorf("a scope that is not open answered %+v", got)
+	}
+}
