@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The launcher tile, 320×180 as the Fire TV home screen wants it: the mark
+     on the left, the name beside it drawn as three bars of "parts". -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="320dp"
+    android:height="180dp"
+    android:viewportWidth="320"
+    android:viewportHeight="180">
+    <path android:fillColor="#FF0A0E17" android:pathData="M0,0h320v180h-320z" />
+    <path android:fillColor="#FF111827" android:pathData="M48,42h96a12,12 0,0 1,12 12v72a12,12 0,0 1,-12 12h-96a12,12 0,0 1,-12 -12v-72a12,12 0,0 1,12 -12z" />
+    <path android:fillColor="#FFD97706" android:pathData="M62,58h68a5,5 0,0 1,5 5v8a5,5 0,0 1,-5 5h-68a5,5 0,0 1,-5 -5v-8a5,5 0,0 1,5 -5z" />
+    <path android:fillColor="#FFD97706" android:pathData="M62,82h68a5,5 0,0 1,5 5v8a5,5 0,0 1,-5 5h-68a5,5 0,0 1,-5 -5v-8a5,5 0,0 1,5 -5z" />
+    <path android:fillColor="#6BD97706" android:pathData="M62,106h68a5,5 0,0 1,5 5v8a5,5 0,0 1,-5 5h-68a5,5 0,0 1,-5 -5v-8a5,5 0,0 1,5 -5z" />
+    <!-- A play triangle, which is what this tile opens. -->
+    <path android:fillColor="#FFE2E8F0" android:pathData="M196,56l64,34l-64,34z" />
+</vector>

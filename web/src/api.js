@@ -800,6 +800,13 @@ export const api = {
      without use, so it can also be pasted into a download manager elsewhere. It
      is refused, with NEEDS_CONVERSION, while any file under the folder is
      still in the pre-chunking format. */
+  /* Four-character codes that open one folder to a TV for a while — see
+     WatchOnTV.jsx and internal/server/handlers_tv.go. */
+  tvCodes: () => request('/api/tv/codes'),
+  tvCodeCreate: (path, vault = '', minutes = 0) =>
+    request('/api/tv/codes', { method: 'POST', body: { path, vault, minutes } }),
+  tvCodeRevoke: (code) => request(`/api/tv/codes/${encodeURIComponent(code)}`, { method: 'DELETE' }),
+
   folderZipLink: (path, vault = '') =>
     request('/api/folders/zip', { method: 'POST', body: { path, vault } }),
 

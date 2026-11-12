@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/chinmay28/sand-vault/internal/davfs"
+	"github.com/chinmay28/sand-vault/internal/tvaccess"
 	"github.com/chinmay28/sand-vault/internal/vault"
 	"github.com/chinmay28/sand-vault/internal/version"
 )
@@ -85,9 +86,19 @@ type Server struct {
 	MovieBaseURL      string
 	MovieImageBaseURL string
 
-	vault      *vault.Vault
-	sessions   *sessionStore
-	streams    *streamStore
+	// TVDiscoveryPort is the UDP port a TV on the network broadcasts to when
+	// looking for SAND. Zero turns discovery off; it is never served on a
+	// loopback bind, where no TV could reach the web server anyway. See
+	// internal/tvdiscover.
+	TVDiscoveryPort int
+
+	vault    *vault.Vault
+	sessions *sessionStore
+	streams  *streamStore
+
+	// tv holds the four-character codes that open one folder to a TV, and
+	// the TVs paired under them. See handlers_tv.go.
+	tv         *tvaccess.Store
 	oauthFlows *oauthFlowStore
 
 	// generatedKeys holds SSH key pairs SAND made for a connect form that has
@@ -283,6 +294,9 @@ func (s *Server) Handler() (http.Handler, error) {
 	if s.oauthFlows == nil {
 		s.oauthFlows = newOAuthFlowStore()
 	}
+	if s.tv == nil {
+		s.tv = tvaccess.New(tvaccess.Options{})
+	}
 	if s.generatedKeys == nil {
 		s.generatedKeys = newGeneratedKeyStore()
 	}
@@ -398,6 +412,22 @@ func (s *Server) Handler() (http.Handler, error) {
 	// buffers and has to be an address the browser — or a download manager
 	// on another machine — saves from directly. See handlers_zip.go.
 	mux.HandleFunc("GET /zip/{token}/{name}", s.handleFolderZip)
+
+	// The TV: a code traded for a device token, and then one folder's videos
+	// to that token and nothing else. Outside the session because a TV has
+	// none; the token is the credential. See handlers_tv.go.
+	mux.HandleFunc("POST /api/tv/pair", s.handleTVPair)
+	mux.HandleFunc("GET /api/tv/session", s.requireTV(s.handleTVSession))
+	mux.HandleFunc("POST /api/tv/logout", s.requireTV(s.handleTVLogout))
+	mux.HandleFunc("GET /api/tv/library", s.requireTV(s.handleTVLibrary))
+	mux.HandleFunc("GET /api/tv/items/{id}", s.requireTV(s.handleTVItem))
+	mux.HandleFunc("GET /api/tv/items/{id}/poster", s.requireTV(s.handleTVPoster))
+	mux.HandleFunc("POST /api/tv/items/{id}/play", s.requireTV(s.handleTVPlay))
+	// And the screen it is all drawn on, which the Fire TV app opens — or any
+	// browser on a TV. See tvui.go.
+	if err := s.mountTVApp(mux); err != nil {
+		return nil, err
+	}
 
 	// The provider sends the browser back here after the account holder has
 	// signed in. It arrives as a cross-site navigation, which the session
@@ -834,6 +864,11 @@ func (s *Server) Handler() (http.Handler, error) {
 		"GET /api/remote/{id}/export":          s.handleRemoteExportProgress,
 		"DELETE /api/remote/{id}/export/{run}": s.handleRemoteExportStop,
 	}
+	// Minting the codes is the owner's, behind the session like the rest.
+	protected["GET /api/tv/codes"] = s.handleTVCodes
+	protected["POST /api/tv/codes"] = s.handleTVCodeCreate
+	protected["DELETE /api/tv/codes/{code}"] = s.handleTVCodeRevoke
+
 	for pattern, handler := range protected {
 		mux.HandleFunc(pattern, s.requireSession(handler))
 	}
@@ -962,6 +997,11 @@ func (s *Server) Start() error {
 	// And what the other machines opening this vault wrote to the index,
 	// pulled on its schedule, and nothing while locked — see syncLoop.
 	go s.syncLoop()
+	// And the answer to a TV on the network asking where SAND is — only on a
+	// bind a TV could reach. See internal/tvdiscover.
+	if port := s.discoveryPort(); port > 0 {
+		go s.discoveryLoop(port)
+	}
 
 	addr := net.JoinHostPort(s.Bind, fmt.Sprint(s.Port))
 	v, _ := s.Vault()

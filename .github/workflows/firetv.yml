@@ -1,0 +1,56 @@
+name: SAND TV (Fire TV app)
+
+# Builds the Fire TV app and runs its unit tests whenever it, or the server's
+# side of the TV, changes — the app's whole contract with the server is the
+# /api/tv routes and the discovery packet, so a change to either is a change
+# worth building the app against. The APK is kept as an artifact to sideload.
+
+on:
+  pull_request:
+    paths:
+      - "apps/firetv/**"
+      - "internal/tvdiscover/**"
+      - ".github/workflows/firetv.yml"
+  push:
+    branches: [main]
+    paths:
+      - "apps/firetv/**"
+      - "internal/tvdiscover/**"
+      - ".github/workflows/firetv.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and test the APK
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/firetv
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # The runner image ships the Android SDK; ANDROID_HOME points at it.
+      - name: Unit tests
+        run: ./gradlew --no-daemon testDebugUnitTest
+
+      - name: Lint
+        run: ./gradlew --no-daemon lintDebug
+
+      - name: Build
+        run: ./gradlew --no-daemon assembleRelease
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sand-tv-apk
+          path: apps/firetv/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error

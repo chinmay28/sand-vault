@@ -12,6 +12,37 @@ tag that shouldn't be published.
 
 ## Unreleased
 
+### SAND TV: a folder of films on a Fire TV, opened with a four-character code
+
+A folder's menu → **Watch on TV** makes a **four-character code** that opens
+that folder on a TV for as long as you choose — an hour up to thirty days. The
+new **SAND TV** app for Fire TV (`apps/firetv`) finds SAND on the network by
+itself, takes the code from the remote, and shows the folder the way Plex or
+Jellyfin would: a poster grid, **All films**, and a details page with the
+synopsis, runtime, rating, genres, director and cast that film lookup stored.
+Films play in a native player (Media3/ExoPlayer on the Fire TV's hardware
+decoders — MKV, HEVC, AC-3, DTS passthrough, subtitles), streamed straight off
+the machine running SAND with seeking, and resume where they stopped. Any TV
+browser can open the same screens at `/tv/`.
+
+- **One folder, nothing else.** The TV sees the videos in that folder and the
+  folders under it, by paths that start at the folder. Other files, other
+  folders, settings and writes are out of its reach.
+- **Ending it.** A code ends when its time is up, when you revoke it — which
+  unpairs every TV that used it and stops a film that is playing — or when SAND
+  restarts. A locked vault holds the TV at "unlock SAND" without unpairing it.
+- **Four characters, kept safe.** No `0`/`O` or `1`/`I`; 5 wrong codes from
+  one address or 30 from anywhere in ten minutes refuses all pairing until the
+  window passes. The code is traded for a 256-bit device token, stored only as
+  its hash.
+- **Discovery** answers on UDP 8124, only on a network bind and only to local
+  addresses. `sand serve --tv-discovery-port 0` turns it off.
+
+`POST`/`GET /api/tv/codes`, `DELETE /api/tv/codes/{code}`; for the TV, `POST
+/api/tv/pair`, `GET /api/tv/session`, `GET /api/tv/library`, `GET
+/api/tv/items/{id}`, `…/poster`, `POST …/play`, `POST /api/tv/logout`. See
+[`docs/firetv.md`](./docs/firetv.md).
+
 ### Snapshots: a folder as one compressed, password-sealed archive
 
 **Organize and automate → Take a snapshot** packs the folder you are in, and

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SAND on a home network is usually plain HTTP on a private address, and
+     there is no certificate a LAN server could get for 192.168.x.y anyway.
+     The films are rebuilt from encrypted parts on the server; what crosses
+     the LAN to the TV is the same stream a browser on the LAN would get. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

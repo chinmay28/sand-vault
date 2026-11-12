@@ -125,6 +125,11 @@ func (s *ticketStore[T]) clear() {
 type streamTicket struct {
 	fileID string
 	source vault.ReadSource
+
+	// grant is the TV code a link was minted under, empty for one the browser
+	// minted. A link under a code dies with the code: revoking it stops the
+	// film that is playing, not only the next one. See handlers_tv.go.
+	grant string
 }
 
 // streamStore holds stream tickets.
@@ -214,6 +219,10 @@ func (s *Server) handleFileStreamLink(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	ticket, ok := s.streams.lookup(r.PathValue("token"))
 	if !ok {
+		writeError(w, http.StatusNotFound, "this stream link has expired", "NO_TICKET")
+		return
+	}
+	if ticket.grant != "" && !s.tv.Live(ticket.grant) {
 		writeError(w, http.StatusNotFound, "this stream link has expired", "NO_TICKET")
 		return
 	}
