@@ -1,8 +1,10 @@
-import React, { useCallback, useEffect, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { COLORS, FONT } from '../theme'
-import { useIsMobile } from '../hooks'
+import { useFilmScan, useIsMobile } from '../hooks'
 import { api } from '../api'
-import { Banner, Button, IconButton, Input, Modal, Spinner } from './ui'
+import { claimRun } from '../runClaims'
+import { Banner, Button, IconButton, Input, LoadProgress, Modal, Spinner } from './ui'
+import { formatElapsed } from './ScanProgress'
 
 /* What a film is, drawn from what the vault was told once.
 
@@ -531,13 +533,53 @@ export function FilmKeySettings({ onClose, onChanged, zIndex }) {
    The two are deliberately separate buttons. Turning the switch on stores a
    setting and sends nothing; sweeping is what actually puts a list of your
    filenames in front of somebody else's server, and it should be a thing
-   somebody pressed. */
+   somebody pressed.
+
+   The sweep runs on the server (see useFilmScan), so the dialog can be closed
+   while it goes: the strip over the file list (BackgroundRuns) carries it
+   from there, and opening this again on the same folder picks it back up. */
 export function FilmLookupSettings({ path, vault = '', lookup, onClose, onChanged }) {
   const mobile = useIsMobile()
   const [settings, setSettings] = useState(null)
   const [busy, setBusy] = useState(null)
   const [error, setError] = useState(null)
-  const [report, setReport] = useState(null)
+
+  const { status, error: startError, start, refresh } = useFilmScan()
+  const [stopping, setStopping] = useState(false)
+
+  /* The run this dialog is drawing: one for this folder, found going or
+     started here, told apart from another folder's by the scope the server
+     gives it back under. Claimed while drawn, so the strip leaves it be. */
+  const mine = (run) => !!run?.scope && scopeFolder(run.scope) === `${vault}:${path}`
+  const [watching, setWatching] = useState(null)
+  useEffect(() => {
+    if (status?.running && mine(status) && status.id !== watching) setWatching(status.id)
+  }, [status, watching]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => claimRun('film-scan', watching), [watching])
+
+  const watched = watching && status?.id === watching ? status : null
+  const scanning = !!watched?.running
+  const report = watched && !scanning ? watched.result : null
+  const runError = watched && !scanning ? watched.error : null
+  // Another folder's sweep, which has to finish before this one can start.
+  const elsewhere = status?.running && !mine(status) ? status : null
+
+  /* What was matched changes the listing behind the dialog — said once, when
+     the run this dialog drew landed. */
+  const told = useRef(null)
+  useEffect(() => {
+    if (!watched || scanning || told.current === watching) return
+    told.current = watching
+    onChanged?.()
+  }, [watched, scanning, watching, onChanged])
+
+  /* The clock between polls, for the elapsed time under the bar. */
+  const [, tick] = useState(0)
+  useEffect(() => {
+    if (!scanning) return undefined
+    const timer = setInterval(() => tick((n) => n + 1), 1000)
+    return () => clearInterval(timer)
+  }, [scanning])
 
   useEffect(() => {
     api.movieSettings()
@@ -562,28 +604,42 @@ export function FilmLookupSettings({ path, vault = '', lookup, onClose, onChange
     }
   }
 
-  const scan = async (refresh) => {
+  const scan = async (again) => {
     setBusy('scan')
     setError(null)
-    setReport(null)
     try {
-      setReport(await api.scanMovies(path, { refresh, vault }))
-      onChanged?.()
-    } catch (err) {
-      setError(err.message)
+      await start(path, { refresh: again, vault })
     } finally {
       setBusy(null)
     }
   }
 
+  const stop = async () => {
+    setStopping(true)
+    try {
+      await api.filmScanStop()
+      await refresh()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setStopping(false)
+    }
+  }
+
+  const failure = error || startError || runError
+  const startedAt = watched?.started_at ? Date.parse(watched.started_at) : NaN
+  const elapsed = scanning && Number.isFinite(startedAt) ? formatElapsed(Date.now() - startedAt) : ''
+  const progress = scanning ? describeFilmScan(watched.progress, elapsed) : null
+
   return (
     <Modal
       title="Film details"
       subtitle={`For ${path} and everything inside it`}
-      onClose={() => !busy && onClose()}
+      // Closing never stops a sweep, so only the settings switch holds it.
+      onClose={() => busy !== 'toggle' && onClose()}
       width={560}
     >
-      {error && <Banner tone="error" onDismiss={() => setError(null)}>{error}</Banner>}
+      {failure && <Banner tone="error" onDismiss={() => setError(null)}>{failure}</Banner>}
 
       {/* Said before anything can be turned on, because it is the whole reason
           this is a switch rather than a feature. */}
@@ -626,40 +682,63 @@ export function FilmLookupSettings({ path, vault = '', lookup, onClose, onChange
             </div>
             <Button
               variant={on ? 'ghost' : 'primary'}
-              disabled={!!busy || (!hasKey && !on) || inherited}
+              disabled={!!busy || scanning || (!hasKey && !on) || inherited}
               title={inherited ? `The setting lives on ${lookup.source}` : undefined}
               onClick={() => toggle(!on)}
             >{busy === 'toggle' ? '…' : on ? 'Turn off' : 'Turn on'}</Button>
           </div>
 
-          {on && (
+          {on && scanning && (
+            <div style={{
+              display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px',
+              padding: '14px 12px', marginBottom: '6px',
+              background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: '6px',
+            }}>
+              <LoadProgress label={progress.label} detail={progress.detail} fraction={progress.fraction} width={440} />
+              <Button size="sm" variant="ghost" disabled={stopping} onClick={stop}>
+                {stopping ? 'Stopping…' : 'Stop'}
+              </Button>
+            </div>
+          )}
+
+          {on && !scanning && (
             <>
               <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '4px' }}>
                 <Button
                   variant="primary"
-                  disabled={!!busy || !hasKey}
+                  disabled={!!busy || !hasKey || !!elsewhere || status === null}
                   onClick={() => scan(false)}
                   style={mobile ? { flex: 1, justifyContent: 'center' } : null}
                 >
                   {busy === 'scan'
-                    ? <><Spinner size={12} color={COLORS.bg} /> Looking up…</>
+                    ? <><Spinner size={12} color={COLORS.bg} /> Starting…</>
                     : '🎬 Look up new films'}
                 </Button>
                 <Button
-                  disabled={!!busy || !hasKey}
+                  disabled={!!busy || !hasKey || !!elsewhere || status === null}
                   title="Look everything up again, including films that already have details. Matches you fixed by hand are left alone."
                   onClick={() => scan(true)}
                   style={mobile ? { flex: 1, justifyContent: 'center' } : null}
                 >⟳ Look up everything again</Button>
               </div>
-              <div style={{
-                fontFamily: FONT.sans, fontSize: '11px', lineHeight: 1.5, color: COLORS.textMuted,
-              }}>
-                One search and one poster per film, so a large folder takes a
-                while. Leave this open — it is safe to stop and run again, and
-                nothing is looked up twice.
-              </div>
+              {elsewhere && (
+                <Banner tone="info">
+                  Films are being looked up in {elsewhere.progress?.path || scopeFolder(elsewhere.scope).replace(/^[^:]*:/, '')} right
+                  now. One folder at a time — this one can start once that is done.
+                </Banner>
+              )}
             </>
+          )}
+
+          {on && (
+            <div style={{
+              fontFamily: FONT.sans, fontSize: '11px', lineHeight: 1.5, color: COLORS.textMuted,
+            }}>
+              One search and one poster per film, so a large folder takes a
+              while. It runs on the server, so you can close this and carry on —
+              the bar over the file list follows it. Stopping keeps what was
+              found, and running it again picks up where it left off.
+            </div>
           )}
 
           {report && <ScanReport report={report} />}
@@ -672,17 +751,52 @@ export function FilmLookupSettings({ path, vault = '', lookup, onClose, onChange
       }}>{ATTRIBUTION}</div>
 
       <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', marginTop: '14px' }}>
-        <Button variant="ghost" disabled={!!busy} onClick={onClose}>Close</Button>
+        <Button variant="ghost" disabled={busy === 'toggle'} onClick={onClose}>Close</Button>
       </div>
     </Modal>
   )
+}
+
+/* The folder a sweep's scope names, as "vault:path" — the scope carries
+   " (again)" as well for a sweep that looks everything up afresh. */
+function scopeFolder(scope) {
+  return (scope || '').replace(/ \(again\)$/, '')
+}
+
+/* The bar's sentence and how full it is, for a running sweep: videos looked
+   at of videos found, and the one in hand. */
+export function describeFilmScan(at, elapsed) {
+  const total = at?.total || 0
+  if (!total) {
+    return { label: 'Finding the videos…', detail: elapsed, fraction: null }
+  }
+  const done = Math.min(at.done || 0, total)
+  return {
+    label: `Looked at ${done} of ${total} video${total === 1 ? '' : 's'} · ${at.matched || 0} matched`
+      + (elapsed ? ` · ${elapsed}` : ''),
+    detail: at.current || '',
+    fraction: done / total,
+  }
+}
+
+/* The one line a finished sweep comes to, for the strip over the file list —
+   the dialog lists the misses as well. */
+export function filmScanOutcomeText(report) {
+  if (!report) return ''
+  const where = report.path || 'the folder'
+  if (report.considered === 0 && !report.stopped) return `No videos in ${where} to look up.`
+  const missed = report.unmatched?.length || 0
+  return `Film details for ${where}: ${report.matched} matched, ${report.skipped} already had them`
+    + (missed ? `, ${missed} left unmatched` : '')
+    + ` — out of ${report.considered} video${report.considered === 1 ? '' : 's'}.`
+    + (report.stopped ? ' Stopped before the end; running it again carries on.' : '')
 }
 
 /* What a sweep did. The misses matter more than the hits — those are the files
    that want a match picked by hand — so they are listed by name rather than
    counted. */
 function ScanReport({ report }) {
-  const nothing = report.considered === 0
+  const nothing = report.considered === 0 && !report.stopped
 
   return (
     <div style={{ marginTop: '14px' }}>
@@ -691,7 +805,8 @@ function ScanReport({ report }) {
           ? 'No videos here to look up.'
           : `${report.matched} matched, ${report.skipped} already had details, ` +
             `${report.unmatched?.length || 0} left unmatched — out of ${report.considered} video(s). ` +
-            `${report.artwork} poster(s) stored.`}
+            `${report.artwork} poster(s) stored.` +
+            (report.stopped ? ' Stopped before the end — running it again carries on from here.' : '')}
       </Banner>
 
       {report.warnings?.map((warning, i) => (

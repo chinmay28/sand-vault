@@ -3106,6 +3106,9 @@ reveals only whether a vault exists.
 | POST | `/api/movies/key` | Store the key — checked against the database before it is kept; `""` clears it |
 | POST | `/api/movies/lookup` | Turn film lookup on or off for a `path` and everything beneath it |
 | POST | `/api/movies/scan` | Match every unmatched video under a `path` (`"refresh": true` redoes the matched ones) |
+| POST | `/api/movies/scanning` | The same sweep run in the background: 202 with the run, 200 when joining the one for the same folder, 409 while another folder is being looked up |
+| GET | `/api/movies/scanning` | The running sweep and its progress (`{path, done, total, matched, current}`), or the last one's report under `result` |
+| DELETE | `/api/movies/scanning` | Stop the running sweep; what it matched is kept, and its report says `stopped` |
 | GET | `/api/files/{id}/movie` | The stored film, plus what the file name reads as |
 | POST | `/api/files/{id}/movie` | Look one up: on the name, on a `query`, or on a `tmdb_id` chosen by hand |
 | DELETE | `/api/files/{id}/movie` | Forget the film; the poster stays as the file's thumbnail |

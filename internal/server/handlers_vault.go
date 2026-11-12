@@ -245,6 +245,7 @@ func (s *Server) handleVaultLock(w http.ResponseWriter, r *http.Request) {
 	// A sweep stops between deletes: what it erased is gone, and running it
 	// again finishes the rest, since what is left is still abandoned.
 	s.sweeps.stopAll()
+	s.movieScans.stopAll()
 	s.checks.stopAll()
 	s.repairs.stopAll()
 	s.checksums.stopAll()

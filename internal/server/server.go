@@ -171,6 +171,11 @@ type Server struct {
 	// because the page that asked was closed. See sweep_run.go.
 	sweeps *sweepWatch
 
+	// movieScans is the sweep of a folder for film details, run the same
+	// way: a search and a poster per film, which must not stop because the
+	// dialog that asked was closed. See movie_scan_run.go.
+	movieScans *movieScanWatch
+
 	// erasures is where the deletes running right now say how far they have
 	// got — the relocation watch's shape, for the same two readers: a progress
 	// bar, and a delete that was detached from the page that started it. See
@@ -320,6 +325,9 @@ func (s *Server) Handler() (http.Handler, error) {
 	}
 	if s.sweeps == nil {
 		s.sweeps = newSweepWatch()
+	}
+	if s.movieScans == nil {
+		s.movieScans = newMovieScanWatch()
 	}
 	if s.checks == nil {
 		s.checks = newJobWatch[vault.CheckProgress, vault.CheckReport]()
@@ -780,10 +788,19 @@ func (s *Server) Handler() (http.Handler, error) {
 		// that talks to anything but the user's own accounts, which is why the
 		// switch is per folder and why the sweep is a request of its own rather
 		// than something turning the switch on sets going. See movies.go.
-		"GET /api/movies":                      s.handleMovieSettings,
-		"POST /api/movies/key":                 s.handleMovieKey,
-		"POST /api/movies/lookup":              s.handleMovieLookup,
-		"POST /api/movies/scan":                s.handleMovieScan,
+		"GET /api/movies":         s.handleMovieSettings,
+		"POST /api/movies/key":    s.handleMovieKey,
+		"POST /api/movies/lookup": s.handleMovieLookup,
+		"POST /api/movies/scan":   s.handleMovieScan,
+		// The same sweep run apart from the request, so the dialog can be
+		// closed while it goes: POST starts one (or joins the one running
+		// for the same folder), GET says how far it is, then what it found,
+		// and DELETE stops it with what it has. POST /api/movies/scan above
+		// stays for scripts that want the answer in one request. See
+		// movie_scan_run.go.
+		"POST /api/movies/scanning":            s.handleMovieScanStart,
+		"GET /api/movies/scanning":             s.handleMovieScanStatus,
+		"DELETE /api/movies/scanning":          s.handleMovieScanStop,
 		"GET /api/files/{id}/movie":            s.handleMovieGet,
 		"POST /api/files/{id}/movie":           s.handleMovieMatch,
 		"DELETE /api/files/{id}/movie":         s.handleMovieForget,
@@ -1109,7 +1126,7 @@ func (s *Server) autoLockLoop() {
 		// A stray-parts scan somebody started and walked away from is use
 		// too: it says so as each cloud answers, but says nothing while it
 		// waits on the slowest one, and that wait is the whole of it.
-		if s.strayScans.running() || s.reattaches.running() || s.sweeps.running() ||
+		if s.strayScans.running() || s.reattaches.running() || s.sweeps.running() || s.movieScans.running() ||
 			s.checks.running() || s.repairs.running() || s.checksums.busy() ||
 			s.lostScans.running() || s.lostRestores.running() || s.snapshots.running() {
 			continue
@@ -1127,6 +1144,7 @@ func (s *Server) autoLockLoop() {
 		s.strayScans.stopAll()
 		s.reattaches.stopAll()
 		s.sweeps.stopAll()
+		s.movieScans.stopAll()
 		s.checks.stopAll()
 		s.repairs.stopAll()
 		s.checksums.stopAll()

@@ -3278,6 +3278,9 @@ sand snapshot restore snapshot-20261111T192233Z-ab12cd34 /photos --machine nas -
 | POST | `/api/movies/key` | Store the key (checked against the database first); `""` clears it |
 | POST | `/api/movies/lookup` | Turn film details on or off for a `path` and everything under it |
 | POST | `/api/movies/scan` | Look up every unmatched video under a `path` (`refresh` to redo the matched ones) |
+| POST | `/api/movies/scanning` | The same sweep run in the background: 202 with the run, 200 when joining the one for the same folder, 409 while another folder is being looked up |
+| GET | `/api/movies/scanning` | The running sweep and its progress (`{path, done, total, matched, current}`), or the last one's report under `result` |
+| DELETE | `/api/movies/scanning` | Stop the running sweep; what it matched is kept, and its report says `stopped` |
 | GET · POST · DELETE | `/api/files/{id}/movie` | What film this is / look it up (`query`, `year`, `tmdb_id`) / forget it |
 | GET | `/api/files/{id}/movie/candidates?q=` | Search the database without storing anything, to correct a match |
 | GET | `/api/files/{id}/health` | Per-part reachability |

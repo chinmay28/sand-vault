@@ -1155,6 +1155,19 @@ export const api = {
     request(`/api/movies/scan${vault ? `?vault=${encodeURIComponent(vault)}` : ''}`,
       { method: 'POST', body: { path, refresh }, signal }),
 
+  /* The same sweep run on the server apart from any request, so the dialog
+     can be closed while it goes (see useFilmScan). One at a time: the same
+     folder asked again joins the run going, anything else is a 409. The
+     status's progress is {path, vault, done, total, matched, current}, and a
+     finished run's report — the one scanMovies answers with, plus `stopped`
+     when it was stopped — is under `result`. Stopping keeps every film
+     matched so far. */
+  filmScanStart: (path, { refresh = false, vault = '' } = {}) =>
+    request(`/api/movies/scanning${vault ? `?vault=${encodeURIComponent(vault)}` : ''}`,
+      { method: 'POST', body: { path, refresh } }),
+  filmScanStatus: () => request('/api/movies/scanning'),
+  filmScanStop: () => request('/api/movies/scanning', { method: 'DELETE' }),
+
   movie: (id) => request(`/api/files/${encodeURIComponent(id)}/movie`),
   /* Look one file up now. With nothing passed it searches for whatever the
      filename suggests; `tmdbId` names a film outright, which is what choosing
