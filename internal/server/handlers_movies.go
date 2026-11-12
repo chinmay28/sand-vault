@@ -138,7 +138,7 @@ func (s *Server) handleMovieScan(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := contextWithTimeout(r, scanTimeout)
 	defer cancel()
 
-	report, err := s.scanFolder(ctx, requestScope(r), req.Path, req.Refresh)
+	report, err := s.scanFolder(ctx, requestScope(r), req.Path, req.Refresh, nil)
 	if err != nil {
 		movieErrorResponse(w, err)
 		return

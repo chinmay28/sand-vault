@@ -1,16 +1,17 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { COLORS, FONT, formatBytes } from '../theme'
-import { useLostRestore, useOrphanSweep, useReattach } from '../hooks'
+import { useFilmScan, useLostRestore, useOrphanSweep, useReattach } from '../hooks'
 import { isRunClaimed } from '../runClaims'
 import { Banner, Spinner } from './ui'
 import { describeProgress, formatElapsed } from './ScanProgress'
 import { describeRestore, restoreOutcomeText } from './LostParts'
+import { describeFilmScan, filmScanOutcomeText } from './FilmDetails'
 
 /* The housekeeping that carries on after its dialog is closed, drawn above
    the file list — and what each run came to, until that is dismissed.
 
-   Putting mislaid parts back, erasing abandoned ones and remaking lost ones
-   all run on the server (see useServerJob), so closing their dialog, or the
+   Putting mislaid parts back, erasing abandoned ones, remaking lost ones and
+   looking a folder's films up all run on the server (see useServerJob), so closing their dialog, or the
    page, stops nothing. This is where they show from then on: a bar while they go, and a
    line saying what they did once they land, on this page or the next one
    opened while they are still going. A run a dialog is still drawing is left
@@ -58,6 +59,19 @@ export default function BackgroundRuns({ mobile, onChanged }) {
             + (run.result?.stopped ? ` It ended early — ${run.result.stopped_by || 'it was stopped'}.` : '')
             + (run.result?.failed > 0 ? ` ${run.result.failed} could not be put back — Settings → Lost parts says which.` : ''))}
         changed={(run) => run.result?.objects > 0}
+        mobile={mobile}
+        onChanged={onChanged}
+      />
+      <JobStrip
+        kind="film-scan"
+        useJob={useFilmScan}
+        title={(status) => `Looking up films in ${status.progress?.path || 'a folder'}`}
+        describe={(status, elapsed) => describeFilmScan(status.progress, elapsed)}
+        outcome={(run) => (run.error
+          ? `Looking up the films did not finish: ${run.error}`
+          : filmScanOutcomeText(run.result))}
+        /* Posters and titles in the listing changed only if something was stored. */
+        changed={(run) => run.result?.matched > 0 || run.result?.artwork > 0}
         mobile={mobile}
         onChanged={onChanged}
       />
@@ -159,7 +173,7 @@ function JobStrip({ kind, useJob, title, describe, outcome, changed, mobile, onC
     const { label, detail, fraction } = describe(status, elapsed)
     return (
       <div style={pad}>
-        <RunCard title={title} label={label} detail={detail !== elapsed ? detail : ''} fraction={fraction} />
+        <RunCard title={typeof title === 'function' ? title(status) : title} label={label} detail={detail !== elapsed ? detail : ''} fraction={fraction} />
       </div>
     )
   }

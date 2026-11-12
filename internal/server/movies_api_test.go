@@ -21,6 +21,12 @@ type fakeMovieDB struct {
 	searches int // how many times a title was looked up
 	details  int // how many times a film's record was fetched
 	posters  int
+
+	// held, when it is set before a sweep starts, makes every search wait
+	// until it is closed, after saying on searching that it has begun — so a
+	// test can catch a sweep in the middle of a film.
+	held      chan struct{}
+	searching chan string
 }
 
 func newFakeMovieDB(t *testing.T) *fakeMovieDB {
@@ -66,6 +72,10 @@ func newFakeMovieDB(t *testing.T) *fakeMovieDB {
 	mux.HandleFunc("/3/search/movie", func(w http.ResponseWriter, r *http.Request) {
 		db.searches++
 		query := strings.ToLower(r.URL.Query().Get("query"))
+		if db.held != nil {
+			db.searching <- query
+			<-db.held
+		}
 		results := []map[string]any{}
 		for title, film := range films {
 			if strings.Contains(query, title) {

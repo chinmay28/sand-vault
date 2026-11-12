@@ -77,6 +77,12 @@ export function useOrphanSweep() {
   return useServerJob(api.sweepStatus, api.sweepStart, 'sand:orphan-sweep')
 }
 
+/* The sweep of a folder for film details (see api.filmScanStart). `start`
+   takes (path, {refresh, vault}). */
+export function useFilmScan() {
+  return useServerJob(api.filmScanStatus, api.filmScanStart, 'sand:film-scan')
+}
+
 /* A job the server runs apart from any request (see jobWatch on the server):
    `ask` answers its status, `begin` starts one or joins the one going. Both
    must be stable functions. `status` is null until the first answer, then

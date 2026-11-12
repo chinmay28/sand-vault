@@ -86,6 +86,11 @@ type ScanReport struct {
 
 	// Warnings are the failures that did not stop the sweep.
 	Warnings []string `json:"warnings,omitempty"`
+
+	// Stopped is a sweep that was asked to stop before it had been through
+	// every video. What it counts was stored all the same; asking again
+	// carries on from there.
+	Stopped bool `json:"stopped,omitempty"`
 }
 
 // maxUnmatchedReported caps the list of misses one report carries back. A
@@ -97,7 +102,11 @@ const maxUnmatchedReported = 40
 //
 // It refuses unless the folder has been opted in, which is the whole consent
 // model: nothing here reaches the network for a folder nobody asked about.
-func (s *Server) scanFolder(ctx context.Context, scope vault.Scope, dir string, refresh bool) (*ScanReport, error) {
+//
+// onProgress, when it is not nil, hears where the sweep has got to before the
+// first video and after each one. A sweep whose context is cancelled — not
+// timed out — ends early with what it had, marked Stopped.
+func (s *Server) scanFolder(ctx context.Context, scope vault.Scope, dir string, refresh bool, onProgress func(movieScanProgress)) (*ScanReport, error) {
 	v, err := s.Vault()
 	if err != nil {
 		return nil, err
@@ -124,11 +133,33 @@ func (s *Server) scanFolder(ctx context.Context, scope vault.Scope, dir string, 
 	posters := map[string]map[string][]byte{}
 	drawn := thumbedIDs(v, entries)
 
+	at := movieScanProgress{Path: dir}
+	for _, entry := range entries {
+		if isVideo(entry) {
+			at.Total++
+		}
+	}
+	tell := func() {
+		if onProgress != nil {
+			at.Matched = report.Matched
+			onProgress(at)
+		}
+	}
+	tell()
+
 	for _, entry := range entries {
 		if !isVideo(entry) {
 			continue
 		}
+		if errors.Is(ctx.Err(), context.Canceled) {
+			report.Stopped = true
+			break
+		}
 		report.Considered++
+		at.Current = entry.Name
+		tell()
+		// Counted as done whichever way the film goes below.
+		at.Done++
 
 		if known := v.Movie(entry.ID); known != nil {
 			// A match somebody corrected by hand stays corrected, even when the
@@ -154,6 +185,14 @@ func (s *Server) scanFolder(ctx context.Context, scope vault.Scope, dir string, 
 			// spending two hundred requests to say so two hundred times.
 			// Everything matched up to here is already stored, and asking
 			// again picks up from there.
+			if errors.Is(ctx.Err(), context.Canceled) {
+				// Asked to stop, mid-film, which is what this error is
+				// whatever it says. That one is not counted.
+				report.Considered--
+				at.Done--
+				report.Stopped = true
+				break
+			}
 			if errors.Is(err, movie.ErrNoKey) || errors.Is(err, movie.ErrRejectedKey) ||
 				errors.Is(err, movie.ErrRateLimited) || errors.Is(err, vault.ErrLocked) ||
 				ctx.Err() != nil {
@@ -184,7 +223,19 @@ func (s *Server) scanFolder(ctx context.Context, scope vault.Scope, dir string, 
 		}
 	}
 
-	storePosters(ctx, v, posters, report)
+	at.Current = ""
+	tell()
+
+	// Stored on a context of their own when the sweep was stopped: the
+	// posters are already fetched and paid for, and the stop was for the
+	// lookups, not for keeping what they found.
+	storeCtx := ctx
+	if report.Stopped {
+		var cancel context.CancelFunc
+		storeCtx, cancel = context.WithTimeout(context.WithoutCancel(ctx), lookupTimeout)
+		defer cancel()
+	}
+	storePosters(storeCtx, v, posters, report)
 
 	sort.Slice(report.Unmatched, func(i, j int) bool {
 		return report.Unmatched[i].Name < report.Unmatched[j].Name
