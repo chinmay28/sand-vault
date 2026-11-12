@@ -2414,8 +2414,12 @@ sand find receipt
 
 ```
 sand serve [--port 8123] [--bind 0.0.0.0] [--idle-timeout 30m] [--vault PATH] [--profile auto|pi5|workstation|custom]
-           [--webdav] [--webdav-path /dav] [--webdav-sub-path /sub]
+           [--webdav] [--webdav-path /dav] [--webdav-sub-path /sub] [--tv-discovery-port 8124]
 ```
+
+`--tv-discovery-port` is the UDP port the SAND TV app finds the server on (`0`
+turns it off; it is never served on a loopback bind) — see
+[Watching on a TV](#watching-on-a-tv).
 
 On start it reads whatever memory limit it is running under — the systemd unit's
 `MemoryMax`, or the machine's own — and sets `GOMEMLIMIT` below it, so the
@@ -3393,6 +3397,25 @@ one with a documented way in on every platform.
 > Serve or a reverse proxy it is the `https://` address without being told
 > about it. Over plain HTTP it is a bearer token in the clear, like everything
 > else SAND sends there — put TLS in front of it.
+
+---
+
+## Watching on a TV
+
+**SAND TV** puts one folder on a television — a Fire TV app, or any TV browser
+at `http://<host>:8123/tv/` — with the posters, synopses and cast that film
+lookup stored, and plays the films straight off the machine running SAND, with
+seeking and resume. Like Plex or Jellyfin, except that the TV is never given the
+vault: in the browser, a folder's menu → **Watch on TV** makes a
+**four-character code** good for that folder, for an hour up to thirty days.
+The TV finds SAND on the network by itself, you key the code in with the
+remote, and it can watch the videos in that folder and below it — and see
+nothing else, change nothing, and unlock nothing.
+
+Revoking the code (same dialog) unpairs the TV and stops whatever it is
+playing; codes are held in memory only, so a restart ends them all. Wrong codes
+are throttled hard enough that four characters stay safe. Setup, sideloading
+the app and the security model are in [`docs/firetv.md`](./docs/firetv.md).
 
 ---
 

@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SAND TV</title>
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="tv.css">
+</head>
+<body>
+  <!-- Every screen is here from the start and one is shown at a time: a TV is
+       a slow machine, and building the DOM once is cheaper than building it
+       per screen. tv.js decides which. -->
+
+  <section id="screen-loading" class="screen screen-center">
+    <img class="logo-large" src="icon.svg" alt="">
+    <p class="muted">Connecting…</p>
+  </section>
+
+  <section id="screen-pair" class="screen screen-center" hidden>
+    <div class="brand"><img src="icon.svg" alt=""> SAND <span class="brand-dim">TV</span></div>
+    <h1>Enter your code</h1>
+    <p class="muted lede">On your computer, open SAND Vault, choose a folder's menu and pick
+      <strong>Watch on TV</strong>. Key the four characters it shows in here.</p>
+    <div class="code-boxes" id="code-boxes">
+      <span class="code-box"></span><span class="code-box"></span><span class="code-box"></span><span class="code-box"></span>
+    </div>
+    <p class="error" id="pair-error" hidden></p>
+    <div class="keypad" id="keypad"></div>
+    <div class="row-buttons">
+      <button class="btn" id="pair-delete" data-focus>⌫ Delete</button>
+      <button class="btn btn-primary" id="pair-connect" data-focus>Connect</button>
+      <button class="btn btn-ghost" id="pair-server" data-focus hidden>Change server</button>
+    </div>
+  </section>
+
+  <section id="screen-locked" class="screen screen-center" hidden>
+    <img class="logo-large" src="icon.svg" alt="">
+    <h1>The vault is locked</h1>
+    <p class="muted lede">SAND locks itself when nobody has used it for a while. Unlock it on
+      your computer and this screen carries on by itself.</p>
+    <div class="row-buttons">
+      <button class="btn btn-primary" id="locked-retry" data-focus>Try again</button>
+      <button class="btn btn-ghost" id="locked-unpair" data-focus>Use a different code</button>
+    </div>
+  </section>
+
+  <section id="screen-library" class="screen" hidden>
+    <header class="topbar">
+      <div class="brand"><img src="icon.svg" alt=""> SAND <span class="brand-dim">TV</span></div>
+      <div class="crumbs" id="crumbs"></div>
+      <div class="tabs">
+        <button class="tab" id="tab-folders" data-focus>Folders</button>
+        <button class="tab" id="tab-all" data-focus>All films</button>
+        <button class="tab tab-quiet" id="tab-menu" data-focus>⋯</button>
+      </div>
+    </header>
+    <div class="grid" id="grid"></div>
+    <div class="empty" id="library-empty" hidden>
+      <h2>Nothing to watch here</h2>
+      <p class="muted">There are no videos in this folder.</p>
+    </div>
+  </section>
+
+  <section id="screen-details" class="screen" hidden>
+    <div class="details">
+      <div class="details-poster" id="details-poster"></div>
+      <div class="details-body">
+        <h1 id="details-title"></h1>
+        <p class="details-meta" id="details-meta"></p>
+        <p class="details-tagline" id="details-tagline"></p>
+        <p class="details-overview" id="details-overview"></p>
+        <dl class="details-credits" id="details-credits"></dl>
+        <p class="details-file muted" id="details-file"></p>
+        <div class="row-buttons row-left" id="details-buttons"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="screen-menu" class="screen screen-center" hidden>
+    <h1 id="menu-title"></h1>
+    <p class="muted lede" id="menu-expiry"></p>
+    <div class="column-buttons">
+      <button class="btn" id="menu-back" data-focus>Back to the library</button>
+      <button class="btn" id="menu-unpair" data-focus>Sign out of this TV</button>
+      <button class="btn btn-ghost" id="menu-server" data-focus hidden>Change server</button>
+    </div>
+  </section>
+
+  <section id="screen-player" class="screen screen-player" hidden>
+    <video id="player" playsinline></video>
+    <div class="player-bar" id="player-bar">
+      <div class="player-title" id="player-title"></div>
+      <div class="player-track"><div class="player-fill" id="player-fill"></div></div>
+      <div class="player-time" id="player-time"></div>
+    </div>
+  </section>
+
+  <div class="toast" id="toast" hidden></div>
+
+  <script src="tv.js"></script>
+</body>
+</html>

@@ -1,0 +1,206 @@
+/* Drawn for a television: ten feet away, a remote rather than a pointer.
+   Everything is sized in rem off the viewport width, so the same page fills a
+   960-pixel WebView and a 1920-pixel browser alike, and whatever has focus is
+   impossible to miss from the sofa. */
+
+:root {
+  --bg: #0a0e17;
+  --surface: #111827;
+  --raised: #1a2332;
+  --border: #1e2d3d;
+  --text: #e2e8f0;
+  --muted: #94a3b8;
+  --accent: #d97706;
+  --accent-bright: #f59e0b;
+  --error: #f87171;
+  color-scheme: dark;
+}
+
+html { font-size: calc(100vw / 60); }
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 1rem;
+  line-height: 1.4;
+  overflow: hidden;
+  height: 100vh;
+}
+
+[hidden] { display: none !important; }
+
+h1 { font-size: 2rem; margin: 0 0 0.5rem; font-weight: 650; }
+h2 { font-size: 1.4rem; margin: 0 0 0.4rem; }
+.muted { color: var(--muted); }
+.lede { max-width: 34rem; margin: 0 auto 1.2rem; }
+.error { color: var(--error); margin: 0 0 1rem; }
+
+/* Overscan: TVs crop the edge of the picture, so nothing lives near it. */
+.screen { position: absolute; inset: 0; padding: 2.2rem 3rem; overflow: hidden; }
+.screen-center {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center;
+}
+
+.brand { display: flex; align-items: center; gap: 0.5rem; font-weight: 700; letter-spacing: 0.08em; }
+.brand img { width: 1.6rem; height: 1.6rem; }
+.brand-dim { color: var(--accent); }
+.screen-center .brand { margin-bottom: 1rem; font-size: 1.2rem; }
+.logo-large { width: 5rem; height: 5rem; margin-bottom: 1.5rem; }
+
+/* --- Focus: the one thing a remote has to be able to see --------------- */
+
+[data-focus] { outline: none; }
+[data-focus]:focus {
+  box-shadow: 0 0 0 0.22rem var(--accent-bright);
+}
+
+.btn, .tab, .key {
+  font: inherit;
+  color: var(--text);
+  background: var(--raised);
+  border: 0.08rem solid var(--border);
+  border-radius: 0.5rem;
+  padding: 0.55rem 1.3rem;
+  cursor: pointer;
+  transition: transform 80ms ease-out, background 80ms;
+}
+.btn:focus, .tab:focus, .key:focus { background: #243247; transform: scale(1.06); }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: #111; font-weight: 650; }
+.btn-primary:focus { background: var(--accent-bright); }
+.btn-ghost { background: transparent; }
+
+.row-buttons { display: flex; gap: 1rem; justify-content: center; margin-top: 1rem; }
+.row-left { justify-content: flex-start; }
+.column-buttons { display: flex; flex-direction: column; gap: 0.8rem; min-width: 18rem; }
+
+/* --- Pairing ------------------------------------------------------------ */
+
+.code-boxes { display: flex; gap: 0.8rem; margin-bottom: 1rem; }
+.code-box {
+  width: 3.2rem; height: 3.8rem;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 2.2rem; font-weight: 700; font-family: ui-monospace, monospace;
+  background: var(--surface); border: 0.1rem solid var(--border); border-radius: 0.6rem;
+}
+.code-box.filled { border-color: var(--accent); }
+.code-box.next { border-color: var(--muted); }
+
+.keypad { display: grid; grid-template-columns: repeat(8, 3rem); gap: 0.45rem; }
+.key { padding: 0; height: 2.4rem; font-size: 1.3rem; font-weight: 650; font-family: ui-monospace, monospace; }
+
+/* --- Library ------------------------------------------------------------ */
+
+.topbar { display: flex; align-items: center; gap: 2rem; margin-bottom: 1.4rem; }
+.crumbs { flex: 1; font-size: 1.15rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.crumbs strong { color: var(--text); }
+.tabs { display: flex; gap: 0.6rem; }
+.tab { padding: 0.35rem 1rem; background: transparent; }
+.tab.active { background: var(--raised); border-color: var(--accent); }
+
+.grid {
+  display: grid;
+  /* minmax(0, …) so a long title is cut short rather than widening its
+     column, and start so rows keep their own height instead of being
+     stretched to fill the screen. */
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  align-content: start;
+  gap: 1.4rem 1.2rem;
+  height: calc(100vh - 7rem);
+  overflow-y: auto;
+  /* Room for a focused card to grow without being clipped. */
+  padding: 1rem 0.7rem 3rem;
+  scroll-behavior: smooth;
+  scrollbar-width: none;
+}
+.grid::-webkit-scrollbar { display: none; }
+
+.card {
+  min-width: 0;
+  font: inherit; color: inherit; text-align: left;
+  background: none; border: 0; padding: 0; cursor: pointer;
+  border-radius: 0.6rem;
+  transition: transform 100ms ease-out;
+}
+.card:focus { transform: scale(1.07); box-shadow: none; }
+.card:focus .card-art { box-shadow: 0 0 0 0.22rem var(--accent-bright), 0 0.6rem 1.6rem rgba(0,0,0,0.6); }
+
+.card-art {
+  position: relative;
+  aspect-ratio: 2 / 3;
+  border-radius: 0.6rem;
+  overflow: hidden;
+  background: linear-gradient(160deg, var(--raised), var(--surface));
+  border: 0.06rem solid var(--border);
+  display: flex; align-items: center; justify-content: center;
+}
+.card-art img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.card-glyph { font-size: 3rem; opacity: 0.55; }
+.card-fallback-title {
+  position: absolute; left: 0.6rem; right: 0.6rem; bottom: 0.6rem;
+  font-size: 0.9rem; font-weight: 650; overflow-wrap: anywhere;
+}
+.card-progress { position: absolute; left: 0; right: 0; bottom: 0; height: 0.3rem; background: rgba(0,0,0,0.5); }
+.card-progress div { height: 100%; background: var(--accent-bright); }
+.card-watched {
+  position: absolute; top: 0.4rem; right: 0.4rem;
+  background: rgba(10,14,23,0.85); color: var(--accent-bright);
+  border-radius: 1rem; padding: 0.05rem 0.5rem; font-size: 0.8rem; font-weight: 700;
+}
+
+.card-name { margin-top: 0.5rem; font-size: 0.95rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card-sub { font-size: 0.8rem; color: var(--muted); }
+
+.card-folder .card-art { aspect-ratio: 2 / 3; }
+
+.empty { text-align: center; margin-top: 8rem; }
+
+/* --- Details ------------------------------------------------------------ */
+
+.details { display: flex; gap: 3rem; height: 100%; align-items: flex-start; padding-top: 1rem; }
+.details-poster {
+  flex: 0 0 18rem; aspect-ratio: 2 / 3; border-radius: 0.8rem; overflow: hidden;
+  background: linear-gradient(160deg, var(--raised), var(--surface));
+  display: flex; align-items: center; justify-content: center;
+  border: 0.06rem solid var(--border);
+}
+.details-poster img { width: 100%; height: 100%; object-fit: cover; }
+.details-poster { font-size: 5rem; }
+.details-body { flex: 1; min-width: 0; }
+.details-body h1 { font-size: 2.4rem; }
+.details-meta { color: var(--muted); font-size: 1.05rem; margin: 0 0 0.8rem; }
+.details-meta .rating { color: var(--accent-bright); font-weight: 650; }
+.details-tagline { font-style: italic; color: var(--muted); margin: 0 0 0.8rem; }
+.details-overview { font-size: 1.1rem; max-width: 46rem; margin: 0 0 1rem;
+  display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; }
+.details-credits { display: grid; grid-template-columns: max-content 1fr; gap: 0.2rem 1rem; margin: 0 0 1rem; max-width: 46rem; }
+.details-credits dt { color: var(--muted); }
+.details-credits dd { margin: 0; }
+.details-file { font-size: 0.85rem; margin: 0 0 0.6rem; font-family: ui-monospace, monospace; overflow-wrap: anywhere; }
+
+/* --- Player (the browser's own, when there is no native one) ---------- */
+
+.screen-player { padding: 0; background: #000; }
+.screen-player video { width: 100%; height: 100%; object-fit: contain; background: #000; }
+.player-bar {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  padding: 1.5rem 3rem 2rem;
+  background: linear-gradient(transparent, rgba(0,0,0,0.85));
+  transition: opacity 300ms;
+}
+.player-bar.idle { opacity: 0; }
+.player-title { font-size: 1.3rem; font-weight: 650; margin-bottom: 0.6rem; }
+.player-track { height: 0.35rem; background: rgba(255,255,255,0.2); border-radius: 0.2rem; overflow: hidden; }
+.player-fill { height: 100%; width: 0; background: var(--accent-bright); }
+.player-time { margin-top: 0.4rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.toast {
+  position: fixed; left: 50%; bottom: 2.5rem; transform: translateX(-50%);
+  background: var(--raised); border: 0.08rem solid var(--border); border-radius: 0.6rem;
+  padding: 0.7rem 1.4rem; max-width: 40rem; text-align: center;
+  box-shadow: 0 0.6rem 2rem rgba(0,0,0,0.6);
+}

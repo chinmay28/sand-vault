@@ -11,6 +11,7 @@ import (
 
 	"github.com/chinmay28/sand-vault/internal/archive"
 	"github.com/chinmay28/sand-vault/internal/server"
+	"github.com/chinmay28/sand-vault/internal/tvdiscover"
 	"github.com/chinmay28/sand-vault/internal/vault"
 )
 
@@ -24,6 +25,7 @@ func serveCmd() *cobra.Command {
 		webdavSubPrefix string
 		profile         string
 		checksumsEvery  time.Duration
+		tvDiscovery     int
 	)
 
 	cmd := &cobra.Command{
@@ -40,6 +42,7 @@ func serveCmd() *cobra.Command {
 				WebDAVSubPrefix: webdavSubPrefix,
 				Profile:         profile,
 				ChecksumsEvery:  checksumsEvery,
+				TVDiscoveryPort: tvDiscovery,
 			}
 			return s.Start()
 		},
@@ -71,6 +74,12 @@ func serveCmd() *cobra.Command {
 	cmd.Flags().DurationVar(&checksumsEvery, "checksums-every", server.DefaultChecksumsEvery,
 		"how often checksums.gz at the root of the vault is brought up to date with the index, "+
 			"when the index has changed; 0 writes it only when asked")
+	// On, because finding the server is the step that would otherwise mean
+	// typing an IP address with a TV remote. It answers only on a bind a TV
+	// could reach, only the local network, and authorizes nothing — pairing
+	// still needs a code. See internal/tvdiscover.
+	cmd.Flags().IntVar(&tvDiscovery, "tv-discovery-port", tvdiscover.DefaultPort,
+		"UDP port the SAND TV app broadcasts to when looking for this server; 0 turns discovery off")
 	cmd.Flags().StringVar(&profile, "profile", os.Getenv("SAND_PROFILE"),
 		"size SAND to a machine: auto, pi5, workstation or custom (default from SAND_PROFILE, else machine.json beside the vault)")
 	return cmd

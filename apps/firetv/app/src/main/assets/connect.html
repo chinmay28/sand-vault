@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SAND TV</title>
+  <link rel="stylesheet" href="connect.css">
+</head>
+<body>
+  <!-- The app's own page, shown until it has a server. Everything after this
+       is drawn by the server at /tv/. -->
+  <main>
+    <div class="brand"><img src="icon.svg" alt=""> SAND <span class="dim">TV</span></div>
+    <h1>Find your SAND Vault</h1>
+    <p class="muted" id="status">Looking on this network…</p>
+    <p class="error" id="error" hidden></p>
+
+    <div class="list" id="servers"></div>
+
+    <div class="row">
+      <button id="search" data-focus>Search again</button>
+      <button id="manual" data-focus>Enter address</button>
+    </div>
+
+    <form class="manual" id="manual-form" hidden>
+      <p class="muted">The address SAND shows under <strong>Watch on TV</strong>, like 192.168.1.20:8123</p>
+      <input id="address" data-focus type="url" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="192.168.1.20:8123">
+      <button id="go" class="primary" data-focus type="submit">Connect</button>
+    </form>
+  </main>
+  <script src="connect.js"></script>
+</body>
+</html>

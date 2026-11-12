@@ -4,6 +4,7 @@ import { api } from '../api'
 import { homeOf } from '../placement'
 import { useDownload } from '../download'
 import { FolderZip } from './FolderZip'
+import { WatchOnTV } from './WatchOnTV'
 import { SaveSheet } from './SaveSheet'
 import { MachineTransfer, fileItem } from './MachineTransfer'
 import { Thumb } from './Thumb'
@@ -995,6 +996,7 @@ function useFolderActions({
   const [picturing, setPicturing] = useState(false)
   const [assigning, setAssigning] = useState(false)
   const [zipping, setZipping] = useState(false)
+  const [watching, setWatching] = useState(false)
   const [sending, setSending] = useState(false)
 
   const [busy, setBusy] = useState(false)
@@ -1065,6 +1067,15 @@ function useFolderActions({
               label: 'Download as zip',
               hint: 'Everything inside it as one archive, built as it downloads',
               onSelect: () => setZipping(true),
+            },
+            /* A TV gets a code for this folder and nothing else in the
+               vault — see WatchOnTV. */
+            {
+              key: 'tv',
+              glyph: '▶',
+              label: 'Watch on TV',
+              hint: 'A four-character code that opens its videos on a TV for a while',
+              onSelect: () => setWatching(true),
             },
             {
               key: 'send',
@@ -1225,6 +1236,15 @@ function useFolderActions({
           name={name}
           vault={vault}
           onClose={() => setZipping(false)}
+        />
+      )}
+
+      {watching && (
+        <WatchOnTV
+          path={path}
+          name={name}
+          vault={vault}
+          onClose={() => setWatching(false)}
         />
       )}
 
