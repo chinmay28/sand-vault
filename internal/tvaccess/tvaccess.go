@@ -7,11 +7,12 @@
 // the evening — so that is what it is given.
 //
 // The owner, already signed in on a computer, asks for a code for a folder and
-// a length of time. The code is four characters, short enough to read off one
+// a length of time — or for one with no end, which lasts until it is revoked
+// or the server restarts. The code is four characters, short enough to read off one
 // screen and key into another with a D-pad. The TV trades it for a device
 // token, a long random bearer secret, and from then on presents the token. The
 // token is good for what the code was good for — that folder, until the code
-// expires — and nothing else.
+// expires or is revoked — and nothing else.
 //
 // Four characters is a small space, about a million codes, so a code is only
 // as safe as the rate at which wrong guesses are allowed. Redeem keeps a count
@@ -46,13 +47,14 @@ const Alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 // CodeLength is how many characters a code has.
 const CodeLength = 4
 
-// The bounds on how long a code lasts. Five minutes is the shortest time in
-// which anybody gets from a laptop to a sofa and through a pairing screen;
-// thirty days is long enough for "the kids' films, on the playroom TV" and short
-// enough that a code nobody remembers handing out does eventually stop.
+// The bounds on how long a timed code lasts. Five minutes is the shortest time
+// in which anybody gets from a laptop to a sofa and through a pairing screen; a
+// year is the longest a length typed in by hand may be, so a slip of the finger
+// does not become a code that will, in practice, never stop. A code that should
+// never stop asks for that outright, with Request.Forever.
 const (
 	MinTTL     = 5 * time.Minute
-	MaxTTL     = 30 * 24 * time.Hour
+	MaxTTL     = 365 * 24 * time.Hour
 	DefaultTTL = 4 * time.Hour
 )
 
@@ -77,7 +79,11 @@ var (
 	ErrThrottled = errors.New("too many wrong codes — wait a few minutes and try again")
 
 	// ErrBadTTL is a lifetime outside MinTTL..MaxTTL.
-	ErrBadTTL = fmt.Errorf("a code must last between %s and %s", MinTTL, durationWords(MaxTTL))
+	ErrBadTTL = fmt.Errorf("a code must last between %s and %s, or have no end", MinTTL, durationWords(MaxTTL))
+
+	// ErrForeverWithTTL is a request that asks for a code with no end and
+	// for a length as well; one of the two is a mistake.
+	ErrForeverWithTTL = errors.New("a code with no end cannot also have a length")
 
 	// ErrTooManyGrants is an issue refused because MaxGrants are live.
 	ErrTooManyGrants = fmt.Errorf("%d codes are already live — revoke one first", MaxGrants)
@@ -115,7 +121,12 @@ type Grant struct {
 	Label string `json:"label"`
 
 	CreatedAt time.Time `json:"created_at"`
-	ExpiresAt time.Time `json:"expires_at"`
+
+	// ExpiresAt is when the code stops. It is zero, and left out of the JSON,
+	// for a code with no end; Forever says the same thing for a reader that
+	// would rather not test a date for zero.
+	ExpiresAt time.Time `json:"expires_at,omitzero"`
+	Forever   bool      `json:"forever,omitempty"`
 
 	// Devices is how many TVs are paired under the code right now.
 	Devices int `json:"devices"`
@@ -126,7 +137,15 @@ type Request struct {
 	Scope string
 	Dir   string
 	Label string
-	TTL   time.Duration
+
+	// TTL is how long the code lasts, between MinTTL and MaxTTL. It is
+	// ignored, and must be zero, when Forever is set.
+	TTL time.Duration
+
+	// Forever asks for a code with no end. It still ends when it is revoked,
+	// when the store is cleared, and when the process exits — everything is
+	// in memory.
+	Forever bool
 }
 
 // Device is what a successful redemption hands back: the bearer token the TV
@@ -188,7 +207,10 @@ func New(opts Options) *Store {
 // Issue mints a code for a folder. The caller has already checked that the
 // folder exists; this only checks the lifetime and the count.
 func (s *Store) Issue(req Request) (Grant, error) {
-	if req.TTL < MinTTL || req.TTL > MaxTTL {
+	switch {
+	case req.Forever && req.TTL != 0:
+		return Grant{}, ErrForeverWithTTL
+	case !req.Forever && (req.TTL < MinTTL || req.TTL > MaxTTL):
 		return Grant{}, ErrBadTTL
 	}
 
@@ -212,9 +234,12 @@ func (s *Store) Issue(req Request) (Grant, error) {
 			Dir:       req.Dir,
 			Label:     strings.TrimSpace(req.Label),
 			CreatedAt: now,
-			ExpiresAt: now.Add(req.TTL),
+			Forever:   req.Forever,
 		},
 		tokens: map[tokenHash]struct{}{},
+	}
+	if !req.Forever {
+		g.ExpiresAt = now.Add(req.TTL)
 	}
 	s.grants[code] = g
 	return g.snapshot(), nil
@@ -368,7 +393,7 @@ func (s *Store) Clear() {
 // pruneLocked drops every grant whose time is up, with its devices.
 func (s *Store) pruneLocked(now time.Time) {
 	for _, g := range s.grants {
-		if !now.Before(g.ExpiresAt) {
+		if !g.Forever && !now.Before(g.ExpiresAt) {
 			s.dropLocked(g)
 		}
 	}
@@ -405,7 +430,7 @@ func hashToken(token string) tokenHash {
 }
 
 // durationWords prints a whole number of days as days, which is how the
-// thirty-day ceiling should read in an error.
+// year-long ceiling should read in an error.
 func durationWords(d time.Duration) string {
 	if d%(24*time.Hour) == 0 {
 		return fmt.Sprintf("%d days", d/(24*time.Hour))

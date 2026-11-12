@@ -2,6 +2,7 @@ package tvaccess
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -85,6 +86,61 @@ func TestIssueRefusesALifetimeOutOfBounds(t *testing.T) {
 		if _, err := s.Issue(Request{Dir: "/", TTL: ttl}); err != nil {
 			t.Errorf("TTL %s at the bound: %v", ttl, err)
 		}
+	}
+}
+
+func TestAForeverCodeHasNoEnd(t *testing.T) {
+	s, c := newStore(t)
+	g, err := s.Issue(Request{Dir: "/films", Forever: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !g.Forever || !g.ExpiresAt.IsZero() {
+		t.Errorf("grant = %+v, want Forever with no ExpiresAt", g)
+	}
+	dev, err := s.Redeem("c", g.Code)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c.advance(10 * MaxTTL)
+	if _, ok := s.Authenticate(dev.Token); !ok {
+		t.Error("device under a forever code dropped with time")
+	}
+	if !s.Live(g.Code) || len(s.Grants()) != 1 {
+		t.Error("forever code stopped being live with time")
+	}
+
+	if !s.Revoke(g.Code) {
+		t.Fatal("revoke reported the code was not live")
+	}
+	if _, ok := s.Authenticate(dev.Token); ok {
+		t.Error("device still authenticates after its forever code was revoked")
+	}
+}
+
+func TestAForeverCodeTakesNoLength(t *testing.T) {
+	s, _ := newStore(t)
+	if _, err := s.Issue(Request{Dir: "/", Forever: true, TTL: time.Hour}); !errors.Is(err, ErrForeverWithTTL) {
+		t.Errorf("err = %v, want ErrForeverWithTTL", err)
+	}
+	if len(s.Grants()) != 0 {
+		t.Error("refused request left a grant behind")
+	}
+}
+
+func TestAGrantWithNoEndLeavesExpiryOutOfItsJSON(t *testing.T) {
+	s, _ := newStore(t)
+	forever, _ := s.Issue(Request{Dir: "/", Forever: true})
+	timed, _ := s.Issue(Request{Dir: "/", TTL: time.Hour})
+
+	b, _ := json.Marshal(forever)
+	if strings.Contains(string(b), "expires_at") || !strings.Contains(string(b), `"forever":true`) {
+		t.Errorf("forever grant JSON = %s", b)
+	}
+	b, _ = json.Marshal(timed)
+	if !strings.Contains(string(b), "expires_at") || strings.Contains(string(b), "forever") {
+		t.Errorf("timed grant JSON = %s", b)
 	}
 }
 

@@ -35,8 +35,10 @@ folder, for a while**, by a four-character code.
    (`--bind 0.0.0.0` is the default). A `sand serve --bind 127.0.0.1` is
    reachable from nowhere but its own machine, and the dialog says so.
 3. **Make a code.** In the browser, open a folder's menu (⋯) and choose
-   **Watch on TV**. Pick how long it lasts — an hour to thirty days — and
-   **Make a code**.
+   **Watch on TV**. Pick how long it lasts — one of the presets from an
+   hour to thirty days, **Custom** for any length from five minutes to a year,
+   or **No end** for a code that lasts until you revoke it or SAND restarts —
+   and **Make a code**.
 4. **Pair the TV.** Open SAND TV. It lists the SAND servers that answered on the
    network; pick yours (or **Enter address** and type the one the dialog shows).
    Key the four characters in with the remote, and the folder opens.
@@ -174,7 +176,7 @@ Owner, behind the browser session:
 
 | Route | |
 |---|---|
-| `POST /api/tv/codes` `{path, vault?, minutes?, label?}` | mint a code (default 240 minutes; 5 minutes to 30 days) |
+| `POST /api/tv/codes` `{path, vault?, minutes?, forever?, label?}` | mint a code (default 240 minutes; 5 minutes to 365 days; `forever: true` with no `minutes` for a code with no end, which carries `forever: true` and no `expires_at`) |
 | `GET /api/tv/codes` | live codes, LAN addresses, discovery port |
 | `DELETE /api/tv/codes/{code}` | revoke |
 
@@ -182,7 +184,7 @@ TV, with `Authorization: Bearer <token>`:
 
 | Route | |
 |---|---|
-| `POST /api/tv/pair` `{code}` | → `{token, label, expires_at}`; no token needed; 429 with `Retry-After` when throttled |
+| `POST /api/tv/pair` `{code}` | → `{token, label, expires_at}` (or `forever: true` in place of `expires_at`); no token needed; 429 with `Retry-After` when throttled |
 | `GET /api/tv/session` | label, expiry, whether the vault is locked (does not count as use) |
 | `GET /api/tv/library?path=/sub&all=1` | folders with videos beneath them, and the videos, relative to the grant |
 | `GET /api/tv/items/{id}` | one video with its film details |
