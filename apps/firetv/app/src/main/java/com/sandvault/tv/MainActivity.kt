@@ -210,6 +210,10 @@ class MainActivity : Activity() {
         @JavascriptInterface
         fun savedServer(): String = origin ?: ""
 
+        /** This app's version, as the release stamped it — "v2026.11.227", or "dev". */
+        @JavascriptInterface
+        fun appVersion(): String = appVersionName(this@MainActivity)
+
         /** Answers through window.sandConnect.onDiscovered(json). */
         @JavascriptInterface
         fun discover() {

@@ -773,6 +773,9 @@
     var key = e.key && e.key !== 'Unidentified' ? e.key : KEYCODES[e.keyCode]
     if (!key) return
 
+    // Nobody waits out the developer badge: any key puts it away.
+    if (!$('devflash').hidden) { hideDevFlash(); e.preventDefault(); return }
+
     if (current === 'player' && playerKey(key)) { e.preventDefault(); return }
 
     if (key === 'Escape' || key === 'Backspace' || key === 'GoBack' || key === 'BrowserBack') {
@@ -823,6 +826,56 @@
     }
   }
 
+  /* --- Versions and the developer mark --------------------------------------
+     The app's version is the APK's own, asked of the bridge; the server's is
+     what /api/health says, which needs no pairing. In a TV browser there is
+     no app, and only the server's is shown. */
+
+  var appVersion = ''
+  try { appVersion = (native && native.appVersion && native.appVersion()) || '' } catch (e) { appVersion = '' }
+
+  function drawVersions(serverVersion) {
+    var server = serverVersion || '…'
+    var short = appVersion ? 'SAND TV ' + appVersion + '\nServer ' + server : 'Server ' + server
+    eachEl('[data-versions]', function (el) { el.textContent = short })
+    eachEl('[data-app-version]', function (el) { el.textContent = appVersion || server })
+    eachEl('[data-app-version-long]', function (el) { el.textContent = appVersion ? appVersion + ' (Fire TV app)' : 'in this browser' })
+    eachEl('[data-server-version]', function (el) { el.textContent = server })
+  }
+
+  function eachEl(selector, fn) {
+    var all = document.querySelectorAll(selector)
+    for (var i = 0; i < all.length; i++) fn(all[i])
+  }
+
+  drawVersions('')
+  fetch('/api/health', { cache: 'no-store' }).then(function (r) { return r.json() }).then(function (h) {
+    drawVersions(h && h.version)
+  }, function () {})
+
+  var flashTimer = null
+  var flashReturn = null
+
+  function showDevFlash() {
+    flashReturn = document.activeElement
+    var el = $('devflash')
+    // Restarted rather than left running, so a second press replays it.
+    el.hidden = true
+    void el.offsetWidth
+    el.hidden = false
+    clearTimeout(flashTimer)
+    flashTimer = setTimeout(hideDevFlash, 3000)
+  }
+
+  function hideDevFlash() {
+    clearTimeout(flashTimer)
+    $('devflash').hidden = true
+    if (flashReturn && flashReturn.focus) flashReturn.focus()
+  }
+
+  eachEl('[data-devmark]', function (el) { el.addEventListener('click', showDevFlash) })
+  $('devflash').addEventListener('click', hideDevFlash)
+
   /* --- Start ---------------------------------------------------------------- */
 
   buildKeypad()
@@ -852,7 +905,13 @@
     $('menu-server').addEventListener('click', change)
   }
 
-  window.sandTV = { back: goBack, onPlaybackStopped: onPlaybackStopped }
+  window.sandTV = {
+    back: function () {
+      if (!$('devflash').hidden) { hideDevFlash(); return true }
+      return goBack()
+    },
+    onPlaybackStopped: onPlaybackStopped,
+  }
 
   if (!token) {
     showPair()

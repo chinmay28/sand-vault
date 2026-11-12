@@ -389,6 +389,14 @@ func TestTheTVPageIsServed(t *testing.T) {
 	if w.Code != http.StatusMovedPermanently || w.Header().Get("Location") != "/tv/" {
 		t.Errorf("/tv = %d → %q", w.Code, w.Header().Get("Location"))
 	}
+	// The developer badge, small and full, is part of the page: served from
+	// the binary like the rest, so it shows on a TV that cannot reach the web.
+	for _, path := range []string{"/tv/dev-badge.png", "/tv/dev-badge-full.png"} {
+		w := c.do(http.MethodGet, path, nil, "")
+		if w.Code != http.StatusOK || w.Header().Get("Content-Type") != "image/png" {
+			t.Errorf("GET %s = %d %s", path, w.Code, w.Header().Get("Content-Type"))
+		}
+	}
 	for path, want := range map[string]string{"/tv/": "SAND TV", "/tv/tv.js": "SandTVNative", "/tv/tv.css": "--accent"} {
 		w := c.do(http.MethodGet, path, nil, "")
 		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), want) {

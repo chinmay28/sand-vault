@@ -10,6 +10,18 @@ Each section below is the body of the corresponding GitHub release. A heading
 must name the tag exactly — a tag whose commit builds a different version is a
 tag that shouldn't be published.
 
+## Unreleased
+
+### SAND TV: its version, and the developer mark
+
+The TV app now says which version it is, and whose: the app's version (as the
+release stamped it) and the server's sit under the SAND TV name in the library
+header, in the corner of the pairing and connect screens, on an **About** panel
+in the ⋯ menu, and in the player's **Info**. The developer badge from the web
+app hangs off the library header on a hairline and sits on the pairing screen;
+OK on it throws the full badge up for a moment, as the web app does, and any
+key puts it away. The bridge gains `appVersion()`.
+
 ## v2026.11.227
 
 **Downloads:** `sand-v2026.11.227-linux-arm64` (the server) and
