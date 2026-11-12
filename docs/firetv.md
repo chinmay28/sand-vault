@@ -102,7 +102,7 @@ soundbar that takes it, or decoded in software by FFmpeg — in that order.
 
 | | Plays | Does not |
 |---|---|---|
-| **Containers** | MKV, WebM, MP4, M4V, MOV, 3GP, AVI, TS, MPG/MPEG-PS, VOB, FLV | WMV/ASF, M2TS (Blu-ray rips), Ogg video (OGV), ISO disc images, RealMedia |
+| **Containers** | MKV, WebM, MP4, M4V, MOV, 3GP, AVI, TS, MPG (MPEG-2 program streams — DVD and TV recordings), VOB, FLV | WMV/ASF, M2TS (Blu-ray rips), Ogg video (OGV), MPEG-1 system streams (VCD-era `.mpg`), ISO disc images, RealMedia |
 | **Video** | H.264, HEVC/H.265 (incl. HDR10 where the TV supports it), VP9 — every Fire TV. AV1 on the newer 4K models. MPEG-2, MPEG-4 part 2 (Xvid/DivX) and VC-1 where the stick's chip has a decoder, which most do | anything the stick's chip has no decoder for — there is no software video decoder |
 | **Audio** | AAC, MP3, AC-3, E-AC-3 (incl. Atmos passthrough), DTS (core), TrueHD, FLAC, ALAC, Opus, Vorbis, PCM | DTS:X and DTS-HD MA are played as their DTS core unless passed through; WMA; MP2 on most sticks |
 | **Subtitles** | SRT, WebVTT, SSA/ASS, PGS, DVB, VobSub, CEA-608/708 — embedded or beside the film | — |
