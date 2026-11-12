@@ -379,22 +379,52 @@ func (c *Client) Poster(ctx context.Context, posterPath string) ([]byte, error) 
 // A search that finds nothing is not an error — most folders hold something
 // that is not a film — so it answers with a nil Info and no error, and the
 // caller reports it as unmatched.
+//
+// Query on the result is what was actually searched for, which is a relaxed
+// form of the guess when the guess as given found nothing that fits.
 func (c *Client) Lookup(ctx context.Context, guess Guess) (*Info, error) {
-	candidates, err := c.Search(ctx, guess)
-	if err != nil {
+	best, used, err := c.choose(ctx, guess)
+	if err != nil || best == nil {
 		return nil, err
-	}
-	best := Best(candidates, guess)
-	if best == nil {
-		return nil, nil
 	}
 
 	info, err := c.Details(ctx, best.TMDBID)
 	if err != nil {
 		return nil, err
 	}
-	info.Query = guess.String()
+	info.Query = used.String()
 	return info, nil
+}
+
+// choose finds the film a guess means and says which search found it.
+//
+// The guess as given goes first, and a result from it that fits the name wins.
+// Failing that, the relaxed variants are searched in turn, and the first one
+// that finds something fitting the whole name wins — see partial.go. Failing
+// those too, the first search's own best answer stands, as it always did: the
+// database forgives a spelling the name got wrong ("License to Kill" finds
+// "Licence to Kill"), and that is a match Fits cannot see.
+func (c *Client) choose(ctx context.Context, guess Guess) (*Candidate, Guess, error) {
+	first, err := c.Search(ctx, guess)
+	if err != nil {
+		return nil, guess, err
+	}
+	if best := Best(fitting(first, guess), guess); best != nil {
+		return best, guess, nil
+	}
+
+	for _, v := range guess.Variants() {
+		candidates, err := c.Search(ctx, v)
+		if err != nil {
+			return nil, guess, err
+		}
+		// Fitted against the whole name, with the year the variant settled on.
+		whole := Guess{Title: guess.Title, Year: v.Year}
+		if best := Best(fitting(candidates, whole), v); best != nil {
+			return best, v, nil
+		}
+	}
+	return Best(first, guess), guess, nil
 }
 
 // yearOf reads the year off a "2006-05-24" release date, which is how every
