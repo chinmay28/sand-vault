@@ -8,7 +8,7 @@ how to read the context meter. Sandy is browser-only. There is no CLI command.
 ## What Sandy is
 
 Sandy is a language model **you run yourself**, on a machine of your own (Ollama
-or vLLM on the PC with the graphics card, say), reached over your network. Sand
+or vLLM on the PC with the graphics card, say), reached over your network. SAND
 Vault puts the model in front of three tools that read the index:
 
 | Tool | Returns |
@@ -73,5 +73,5 @@ meter measures against it.
 ## Security
 
 The model server usually has no authentication, and it receives your file and
-film names. Keep it on a network you trust, the same advice as for the Sand Vault
+film names. Keep it on a network you trust, the same advice as for the SAND Vault
 port itself (see [security.md](../security.md)).

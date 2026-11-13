@@ -1,8 +1,8 @@
 # Contributing to Sand Harbor
 
 Thanks for wanting to contribute! Please read this before opening a pull
-request. Sand Harbor is this repository: Sand Vault (the `sand` binary: CLI,
-server, web UI, WebDAV) and Sand TV (the Fire TV app in `apps/firetv`).
+request. Sand Harbor is this repository: SAND Vault (the `sand` binary: CLI,
+server, web UI, WebDAV) and SAND TV (the Fire TV app in `apps/firetv`).
 
 ## License and the CLA
 
@@ -70,7 +70,7 @@ make test         # Go unit tests
 make test-e2e     # pytest: CLI, HTTP API, vault flow, browser
 ```
 
-CI checks the sign-off, and builds and tests Sand TV when `apps/firetv` or
+CI checks the sign-off, and builds and tests SAND TV when `apps/firetv` or
 `internal/tvdiscover` changes. It does **not** run the Go tests or the e2e
 suite, so run them yourself. `make test-deps` installs the e2e suite's Python
 dependencies and Playwright's Chromium.
@@ -119,7 +119,7 @@ format get read closely, and §5 of the [CLA](./CLA.md) applies to them.
 - Keep changes focused and described clearly. Commit subjects follow
   `type(scope): summary`, e.g. `feat(tv): …`, `fix(stream): …`.
 - Add or update tests for behavior changes (Go: `*_test.go` beside the code
-  under `internal/**` and `cmd/sand`; end-to-end: `tests/test_*.py`; Sand TV:
+  under `internal/**` and `cmd/sand`; end-to-end: `tests/test_*.py`; SAND TV:
   `apps/firetv/app/src/test`).
 - Make sure `make test` and `make test-e2e` pass.
 - Ensure every commit is signed off (see above).

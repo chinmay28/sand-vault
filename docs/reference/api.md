@@ -2,13 +2,13 @@
 
 Every route `sand serve` registers, taken from the route table in
 `internal/server/server.go` (`Server.Handler`) and the handlers behind it. The
-web UI in `web/src` and Sand TV are both clients of this API; nothing here is
+web UI in `web/src` and SAND TV are both clients of this API; nothing here is
 private to them, but it is not a versioned public API either, and it changes
 with the binary.
 
 Design and rationale (partial success, the error model, tickets, WebDAV,
-standalone mode): [server design](../design/server.md). Sand TV's side:
-[Sand TV design](../design/sand-tv.md). Exposure and TLS: [security](../security.md).
+standalone mode): [server design](../design/server.md). SAND TV's side:
+[SAND TV design](../design/sand-tv.md). Exposure and TLS: [security](../security.md).
 
 **Contents**
 
@@ -25,7 +25,7 @@ standalone mode): [server design](../design/server.md). Sand TV's side:
   [snapshots](#snapshots) · [replication](#replication) · [automation](#automation) ·
   [repositories](#repositories) · [film details](#film-details) · [assistant](#assistant) ·
   [machines (SFTP sources)](#machines-sftp-sources) · [statistics](#statistics) ·
-  [this machine](#this-machine) · [Sand TV](#sand-tv) · [WebDAV](#webdav) ·
+  [this machine](#this-machine) · [SAND TV](#sand-tv) · [WebDAV](#webdav) ·
   [standalone mode](#standalone-mode) · [frontend](#frontend)
 
 ## Conventions
@@ -55,7 +55,7 @@ Five credentials, each for its own kind of client.
 |---|---|---|---|
 | Session cookie `sand_session` | the browser | cookie | `POST /api/vault/unlock`, `POST /api/vault/init`, `POST /api/vault/kit/import` |
 | Stream / zip ticket | a media player, a download manager | in the URL path | `POST /api/files/{id}/stream`, `POST /api/folders/zip`, `POST /api/tv/items/{id}/play` |
-| TV device token | Sand TV | `Authorization: Bearer <token>` | `POST /api/tv/pair` with a code from `POST /api/tv/codes` |
+| TV device token | SAND TV | `Authorization: Bearer <token>` | `POST /api/tv/pair` with a code from `POST /api/tv/codes` |
 | Vault (or sub vault) password | WebDAV clients | HTTP Basic, any username | the password itself |
 | OAuth `state` | the provider's redirect | query string | `POST /api/providers/oauth/start` |
 
@@ -1202,7 +1202,7 @@ clear on the machine.
 
 ## This machine
 
-How Sand Vault is sized to the machine it runs on; kept in `machine.json` beside
+How SAND Vault is sized to the machine it runs on; kept in `machine.json` beside
 the vault. Design: [data pipeline](../design/data-pipeline.md); knobs:
 [configuration](configuration.md).
 
@@ -1216,10 +1216,10 @@ the vault. Design: [data pipeline](../design/data-pipeline.md); knobs:
 chunk_cache_bytes, compress_level, compress_threads, transfer_window,
 erase_window, conns_per_host, rebuild_limit, bundle_limit`.
 
-## Sand TV
+## SAND TV
 
-One folder of films opened with a four-character code. Guide: [Sand
-TV](../guide/sand-tv.md); design: [Sand TV](../design/sand-tv.md).
+One folder of films opened with a four-character code. Guide: [SAND
+TV](../guide/sand-tv.md); design: [SAND TV](../design/sand-tv.md).
 
 ### Owner side (session)
 

@@ -92,7 +92,7 @@ told its videos are films and matched against The Movie Database (TMDb). The
 code is `internal/movie` (name parsing and the TMDb client) and
 `internal/vault/movies.go`.
 
-**Off until a folder asks, by name.** Every other request Sand Vault makes goes to
+**Off until a folder asks, by name.** Every other request SAND Vault makes goes to
 an account the user connected. A lookup sends a title guessed from a file name,
 this machine's address and the user's own API key to a third party. So the
 switch is per folder, kept in `Manifest.MovieFolders` and inherited downwards (a
@@ -416,7 +416,7 @@ That is forced by the storage model. A repository kept as a directory would be
 thousands of loose objects, each becoming several cloud objects, and a repacking
 fetch would re-scatter most of it every week. A bundle goes through the ordinary
 upload path (`UploadStreamAt`), erasure code and accounts, and `gitrepo.go` needs
-to know none of that. It is also the shape that outlives Sand Vault:
+to know none of that. It is also the shape that outlives SAND Vault:
 `git clone repo.bundle` is a complete repository with nothing to reimplement.
 
 **The weekly check is nearly free, and that is the design.** `git ls-remote` is a
@@ -438,7 +438,7 @@ written on every change and replicated to every account. `GitSource` keeps
 the protocol, because the hard part is credentials: an agent-held SSH key, a
 credential helper, a host alias in `~/.ssh/config`, a corporate CA. A second
 implementation would reimplement that badly or reach no private repository. The
-rule: a repository Sand Vault can see is one you can see from the same machine.
+rule: a repository SAND Vault can see is one you can see from the same machine.
 The cost is a runtime dependency; `git.Available()` gates the task and a fetching
 policy is refused on a machine without git rather than failing at four in the
 morning. (SFTP makes the opposite choice, for reasons given in

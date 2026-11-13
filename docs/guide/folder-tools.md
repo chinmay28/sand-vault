@@ -226,7 +226,7 @@ A snapshot is:
   level, so what similar files share is stored once. Media that is already
   compressed will not shrink; documents and source trees will, a lot.
 - **Encrypted under its own password:** Argon2id (the recovery kit's costs) makes
-  the key, and the archive is sealed in AES-256-GCM frames. Sand Vault does not
+  the key, and the archive is sealed in AES-256-GCM frames. SAND Vault does not
   keep the password, so restoring asks for it again. A wrong password is reported
   before anything is unpacked.
 - **Kept in one place:** one connected cloud, or a machine you have an SSH login
@@ -248,7 +248,7 @@ finished snapshot from an interrupted one by the part marked `.last`. An
 incomplete one is shown as such and can be erased but not restored.
 
 > [!IMPORTANT]
-> **A snapshot is the one thing Sand Vault stores whole.** Every other file is cut
+> **A snapshot is the one thing SAND Vault stores whole.** Every other file is cut
 > into parts that mean nothing alone. A snapshot is the entire folder on a single
 > account, protected only by its password. That is the point: it can be restored
 > with its parts and its password and *no vault at all*. It is also the reason to

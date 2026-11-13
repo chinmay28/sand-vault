@@ -1,4 +1,4 @@
-# Installing Sand Vault
+# Installing SAND Vault
 
 This page covers getting the `sand` binary onto a machine and creating your
 first vault: the Linux quick-start script (built from source or from a
@@ -6,12 +6,12 @@ prebuilt release), building it yourself, and upgrading or removing it. For
 running it as a service on other platforms or behind TLS, see
 [Deployment](deployment.md).
 
-Sand Vault is one static Go binary with the web client embedded in it. Node
+SAND Vault is one static Go binary with the web client embedded in it. Node
 and Go are needed only to *build* it; the running server needs neither.
 
 ## Linux quick start (Ubuntu, Debian, Raspberry Pi OS)
 
-One command, run as root, installs Sand Vault as a hardened systemd service:
+One command, run as root, installs SAND Vault as a hardened systemd service:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/chinmay28/sand-vault/main/scripts/quickstart.sh | sudo bash
@@ -292,4 +292,4 @@ unit; pass them only if the unit is already gone. The script refuses to delete
 anything from a prefix that holds neither its marker file (`.sand-prefix`) nor
 the binary the unit runs. That way a mistyped `SAND_PREFIX=/usr/local` cannot
 take `/usr/local/bin` with it. Running it twice, or on a machine that never had
-Sand Vault, does nothing and succeeds.
+SAND Vault, does nothing and succeeds.

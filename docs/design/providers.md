@@ -342,7 +342,7 @@ remote health`.
 
 `Server.healthLoop` ticks once a minute and contacts nothing unless
 `HealthCheckDue` says so. It never counts as activity for the idle lock: an
-hourly ping that renewed the idle timer would mean no machine running Sand Vault
+hourly ping that renewed the idle timer would mean no machine running SAND Vault
 ever auto-locked again. It logs only changes, one line when an account stops
 answering and one when it comes back, because a line an hour saying all is well
 would bury the one that matters. `GET /api/providers/health` reads the result

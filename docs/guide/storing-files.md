@@ -1,6 +1,6 @@
 # Storing files
 
-How Sand Vault stores and retrieves a file, which date a file keeps, how to
+How SAND Vault stores and retrieves a file, which date a file keeps, how to
 choose the clouds and the m-of-n code a file is cut with, what to do about files
 that went out short, how to keep a second copy (replication), and how moving and
 renaming work. For the mechanism, see

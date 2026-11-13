@@ -1,14 +1,14 @@
-# Sand TV
+# SAND TV
 
-Sand TV puts one folder of your vault on a television, with its posters, synopses
-and cast, and plays the films straight off the machine running Sand Vault. It is
+SAND TV puts one folder of your vault on a television, with its posters, synopses
+and cast, and plays the films straight off the machine running SAND Vault. It is
 in the spirit of Plex or Jellyfin, except that the TV is never given the vault: it
 gets **one folder, for a while**, through a four-character code. This page covers
 installing the app, pairing, the player and its Stats panel, what plays, and
 ending a pairing.
 
 How it works inside (codes, throttling, discovery, the app's structure and the
-API it uses) is in [Sand TV design](../design/sand-tv.md).
+API it uses) is in [SAND TV design](../design/sand-tv.md).
 
 ```
  laptop (signed in)                        Fire TV on the same network

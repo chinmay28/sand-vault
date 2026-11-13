@@ -1,6 +1,6 @@
 # Streaming large films: where the time goes
 
-A 4 GB 1080p film plays in Sand TV on a Fire TV Stick without a pause; a 35 GB
+A 4 GB 1080p film plays in SAND TV on a Fire TV Stick without a pause; a 35 GB
 Ultra HD Blu-ray of the same length, from the same vault on the same machine,
 stops to buffer. This page covers what was measured to find out why, what it
 found, and what to do about it. Every measurement was made on the real code
@@ -45,7 +45,7 @@ to keep up with the peaks, not only the average.
 ## How a film reaches the TV
 
 ```
-Sand TV player ── GET /stream/<token>/film.mkv, Range: bytes=N- ──►  sand serve
+SAND TV player ── GET /stream/<token>/film.mkv, Range: bytes=N- ──►  sand serve
                                                                        │
             http.ServeContent ◄── ChunkedReader.ReadAt (internal/vault/reader.go)
                                        │
@@ -73,7 +73,7 @@ whole file (see [Reading at an offset](data-pipeline.md#reading-at-an-offset)).
 - The test film was 1.95 GB of incompressible data, stored 2-of-3 in 32 MiB
   chunks, which is what a machine with 32 GB or more cuts.
 - The disk cache was dropped before every cold measurement.
-- "The player" is a model of Sand TV's Media3 1.7.1 player with its default
+- "The player" is a model of SAND TV's Media3 1.7.1 player with its default
   settings, written from Media3's source: one open-ended range request; it
   keeps loading until 50 s or 144 MB is buffered, whichever comes first; it
   starts with 1 s buffered and resumes after a stall with 2 s; it gives up on
@@ -230,7 +230,7 @@ From Amazon's [device specifications](https://developer.amazon.com/docs/device-s
 | Fire TV Stick 4K Max, 2023 | MT8696T, 2 GB | Wi-Fi 6E | 8 (30) | through an adapter, 10/100 |
 | Fire TV Stick 4K Select (2025) and 4K (2026) | MT8698, 1 GB | — | Vega OS | — |
 
-The Vega OS sticks do not run Android apps and cannot install Sand TV
+The Vega OS sticks do not run Android apps and cannot install SAND TV
 ([AFTVnews](https://www.aftvnews.com/sideloading-is-truly-dead-on-the-fire-tv-stick-4k-select-with-vega-os/)).
 
 ### The link
@@ -274,7 +274,7 @@ The Vega OS sticks do not run Android apps and cannot install Sand TV
   is something only that stick can say.
 - **Dolby Vision profile 7**, which UHD Blu-ray remuxes often keep, is not in
   Amazon's list of profiles the sticks decode, and Media3 1.7.1 — the version
-  Sand TV ships — has no fallback to the HDR10 base layer for it. That was
+  SAND TV ships — has no fallback to the HDR10 base layer for it. That was
   read in Media3's source: `MediaCodecUtil.getAlternativeCodecMimeType` falls
   back for profiles 4, 8, 9 and 10 and not for 7. Reported results are a
   black picture with sound
@@ -288,7 +288,7 @@ The Vega OS sticks do not run Android apps and cannot install Sand TV
 
 ### The player's buffer
 
-Sand TV builds its player with Media3's defaults, which this was read from
+SAND TV builds its player with Media3's defaults, which this was read from
 (`DefaultLoadControl` and `DefaultHttpDataSource`, Media3 1.7.1):
 
 | | Default | For a UHD film |

@@ -1,6 +1,6 @@
 # Configuration reference
 
-This page lists everything that configures Sand Vault from outside the vault:
+This page lists everything that configures SAND Vault from outside the vault:
 global and `sand serve` flags, environment variables (the binary's and the
 installer scripts'), the sizing knobs in `machine.json`, and where every file
 lives. Settings kept *inside* the vault, such as default accounts, the health
@@ -27,7 +27,7 @@ Every `sand` command takes these.
 | `--webdav-path` | `/dav` | Where the vault's share is mounted |
 | `--webdav-sub-path` | `/sub` | Where sub vault shares sit, one per sub vault at `<path>/<name>/`, each behind its own password |
 | `--checksums-every` | `2m` | How often `checksums.gz` is brought up to date after the index changes. `0` writes it only on request |
-| `--tv-discovery-port` | `8124` | UDP port Sand TV broadcasts to when looking for the server. `0` turns discovery off |
+| `--tv-discovery-port` | `8124` | UDP port SAND TV broadcasts to when looking for the server. `0` turns discovery off |
 | `--profile` | `$SAND_PROFILE`, else `machine.json` | Pin the [sizing profile](#sizing-to-the-machine): `auto`, `pi5`, `workstation` or `custom` |
 
 The server accepts at most 2 GiB per upload request. The web client sends
@@ -125,7 +125,7 @@ The other scripts:
 Several numbers depend on what the machine has: the size new uploads are cut
 into, how many pieces an upload keeps in the air, how far a download reads
 ahead, how much decrypted film is cached for a seeking player, and how big a
-job a scheduled task takes on unattended. Sand Vault derives them at startup
+job a scheduled task takes on unattended. SAND Vault derives them at startup
 from the CPU count and memory it is *allowed*. Under systemd that is the
 cgroup's `MemoryMax` and `CPUQuota`; otherwise it is the machine's totals.
 

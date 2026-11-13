@@ -1,6 +1,6 @@
 # Adding cloud backends
 
-What storage Sand Vault could hold parts on, what each kind of backend costs to
+What storage SAND Vault could hold parts on, what each kind of backend costs to
 add, and the recipe for adding one. The question *"can it do X?"* has very
 different answers depending on X, and for most popular services the answer is
 already **yes, with a five-line change**. The interface and the existing
@@ -230,7 +230,7 @@ moves it to the current scheme.
 ## Tier 4 — driving the service's own client — **done for Proton**
 
 The tier that exists because tier 1 has a hole in it. A synced folder is only a
-backend where somebody has installed a desktop app, and the machine Sand Vault is
+backend where somebody has installed a desktop app, and the machine SAND Vault is
 usually installed on is a server with no desktop at all. Worse, the folder
 backend cannot tell the difference: its `Put` returns as soon as the file is on
 local disk, so an account whose client is signed out or never installed looks

@@ -219,7 +219,7 @@ refuses when:
   uploading right now. The sweep waits until every machine has been quiet for
   the settling window plus the longest push delay (75 minutes by default). See
   [vault-management.md](vault-management.md#opening-the-vault-on-several-machines).
-- **The object isn't named the way Sand Vault names parts**
+- **The object isn't named the way SAND Vault names parts**
   (`<archive-id>-pN.sand` or `<archive-id>-cNNNNNNN-pN.sand`). Other files in a
   shared folder are never counted.
 
@@ -273,7 +273,7 @@ and disks that belong to another machine.
 
 A versioned bucket never overwrites or deletes. It keeps old versions under the
 new one and puts a delete marker on top. **Backblaze B2 does this by default**,
-and S3 and MinIO do when asked. Sand Vault rewrites `manifest.sand` on every
+and S3 and MinIO do when asked. SAND Vault rewrites `manifest.sand` on every
 index change and deletes parts, so such a bucket fills with history that no
 plain listing shows. Your usage bar may say 1 GB while the provider bills 10.
 
@@ -284,10 +284,10 @@ sand vault prune --yes                    # erase them
 sand vault prune --yes --account r2-cold  # one account
 ```
 
-Prune only touches Sand Vault's own objects (the index backup and parts), and
+Prune only touches SAND Vault's own objects (the index backup and parts), and
 never their current versions. Anything else in the bucket keeps its history, and
 is counted. It also holds back a part the index still points at whose current
-version is a delete marker. That part was deleted outside Sand Vault, and the
+version is a delete marker. That part was deleted outside SAND Vault, and the
 versions under the marker are the only copies left.
 
 **Automatic:** use *Edit account › Erase old versions daily*, or
@@ -311,7 +311,7 @@ full size.
 > 31.6 GB of working files sit in this vault's own folder on this machine.
 > **Tidy up**
 
-Erasing these changes nothing in the vault. Only names Sand Vault writes itself
+Erasing these changes nothing in the vault. Only names SAND Vault writes itself
 are considered. A file is offered only after it has been untouched for an hour,
 because a spool still being written looks like a running upload. Files the
 current process is writing are never listed. `sand vault sweep` reports and

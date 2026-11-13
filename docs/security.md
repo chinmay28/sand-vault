@@ -1,6 +1,6 @@
 # Security
 
-What Sand Vault protects against, what it doesn't, and what you take on by
+What SAND Vault protects against, what it doesn't, and what you take on by
 exposing the server. The mechanisms are described in
 [design/cryptography.md](design/cryptography.md),
 [design/placement.md](design/placement.md) and

@@ -1,6 +1,6 @@
 # Cryptography and integrity
 
-The keys Sand Vault uses, how each stored object is sealed, what catches
+The keys SAND Vault uses, how each stored object is sealed, what catches
 damage, and the slower checks built on top: the deep check, the checksums
 ledger, and snapshots. The on-disk part layout is in
 [data-pipeline.md](data-pipeline.md#part-file-format). How the vault file

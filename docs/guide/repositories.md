@@ -19,7 +19,7 @@ sand git track git@github.com:me/private.git --into /code --accounts a,b,c --sch
 The bundle is named after the repository. In the browser, open the folder, click
 **🗂**, then **Repositories kept here**.
 
-Getting it back needs nothing from Sand Vault except the download:
+Getting it back needs nothing from SAND Vault except the download:
 
 ```bash
 sand get /code/sand-vault.bundle -o ./recovered.bundle
@@ -63,9 +63,9 @@ sand automation run /code
 
 ## It uses the git on the machine
 
-Sand Vault runs the machine's own `git`, so private repositories work with your
+SAND Vault runs the machine's own `git`, so private repositories work with your
 SSH keys, credential helper, `~/.ssh/config` aliases and corporate CA. **A
-repository Sand Vault can reach is one you can reach from the same machine.**
+repository SAND Vault can reach is one you can reach from the same machine.**
 This feature needs git installed. A `--action pull` policy is refused when it is
 set on a machine without git, rather than failing at 4 a.m.
 

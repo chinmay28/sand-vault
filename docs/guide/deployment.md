@@ -1,4 +1,4 @@
-# Deploying Sand Vault
+# Deploying SAND Vault
 
 This page covers running `sand serve` as a long-lived service: the systemd
 unit and its sandbox, giving Local folder accounts somewhere to write, disk
@@ -246,7 +246,7 @@ For OAuth sign-in behind a proxy, also set `SAND_OAUTH_REDIRECT`
 | Port | Protocol | What |
 |---|---|---|
 | 8123 | TCP | Web UI, API, WebDAV (`--port`) |
-| 8124 | UDP | Sand TV discovery: the TV broadcasts here to find the server (`--tv-discovery-port`, `0` turns it off). It answers only on a bind a TV could reach, and authorizes nothing; pairing still needs a code. See [Sand TV](sand-tv.md). |
+| 8124 | UDP | SAND TV discovery: the TV broadcasts here to find the server (`--tv-discovery-port`, `0` turns it off). It answers only on a bind a TV could reach, and authorizes nothing; pairing still needs a code. See [SAND TV](sand-tv.md). |
 
 ## Release builds
 

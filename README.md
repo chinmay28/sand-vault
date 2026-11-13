@@ -2,22 +2,41 @@
 
 **Your files, kept safe in a harbor of clouds you don't have to trust.**
 
-Sand Harbor is a self-hosted home for your files and media, named after the
-sheltered granite cove on Lake Tahoe's Nevada shore. It is a small family of
-apps around one encrypted store:
+## Why sand
+
+A grain of sand is small and means nothing on its own. Yet sand, refined into
+silicon, is what every chip, every phone and every computer is made of: billions
+of meaningless grains, arranged, become the machine.
+
+Sand Harbor treats your files the same way. Each file is ground into grains:
+small parts, compressed, encrypted and erasure-coded, each one noise on its own.
+The grains are scattered across the clouds and disks you already have, each
+piece of a file spread over different accounts. No provider holds anything it
+can read, and losing one account loses no file. When you open the file, enough grains
+are gathered back to make the whole again.
+
+The harbor is where the grains are kept and where the apps are moored. It is
+named after Sand Harbor on Lake Tahoe's Nevada shore, a cove of clear water
+sheltered by granite boulders, whose beaches are that same granite worn down
+into sand.
+
+## The apps in the harbor
+
+Sand Harbor is a self-hosted home for your files and media: a small family of
+apps around one encrypted store.
 
 | Component | What it is | Status |
 |---|---|---|
-| **Sand Vault** | The vault. It compresses every file, erasure-codes it into *n* parts, encrypts them, and puts each part on a **different** cloud account. Any *m* parts rebuild the file; fewer are noise. Ships as the `sand` binary: CLI, web UI, HTTP API and WebDAV share. | Available |
-| **Sand TV** | A Fire TV app that plays a vault folder of films, unlocked on the TV with a four-character code. | Available |
-| Sand Gallery, Sand Pod | Pictures and music, on the same vault. | Ideas |
+| **SAND Vault** | The vault. It compresses every file, erasure-codes it into *n* parts, encrypts them, and puts each part on a **different** cloud account. Any *m* parts rebuild the file; fewer are noise. Ships as the `sand` binary: CLI, web UI, HTTP API and WebDAV share. | Available |
+| **SAND TV** | A Fire TV app that plays a vault folder of films, unlocked on the TV with a four-character code. | Available |
+| SAND Gallery, SAND Pod | Pictures and music, on the same vault. | Ideas |
 
-No single provider ever holds your data, only a fragment that means nothing
-without fragments held by others, plus a key that never leaves your machine.
-You choose *m* and *n*: the default is **2-of-3**, and codes range up to 20-of-30.
+The key that turns the grains back into files never leaves your machine. You
+choose how many grains a file becomes (*n*) and how many bring it back (*m*):
+the default is **2-of-3**, and codes range up to 20-of-30.
 
 ```
-            web UI · CLI · Sand TV · WebDAV
+            web UI · CLI · SAND TV · WebDAV
                           │
                 ┌─────────▼─────────┐
                 │   sand (server)   │  index, keys and plaintext live only here
@@ -30,7 +49,7 @@ You choose *m* and *n*: the default is **2-of-3**, and codes range up to 20-of-3
 
 ## Quick start
 
-**Linux (Ubuntu, Debian, Raspberry Pi).** One command installs Sand Vault as a
+**Linux (Ubuntu, Debian, Raspberry Pi).** One command installs SAND Vault as a
 hardened systemd service on `http://<host>:8123`, and re-running it upgrades
 in place, with a vault snapshot and automatic rollback:
 
@@ -74,7 +93,7 @@ Then [connect your accounts](docs/guide/accounts.md).
 - **A browser file manager** with previews, film details, folder pictures,
   duplicates, corrupt-file checks, checksums and snapshots: see the
   [web UI](docs/guide/web-ui.md) and [folder tools](docs/guide/folder-tools.md).
-- **Streaming** to VLC, [Sand TV](docs/guide/sand-tv.md), or any player that
+- **Streaming** to VLC, [SAND TV](docs/guide/sand-tv.md), or any player that
   mounts the vault as a [WebDAV drive](docs/guide/streaming.md).
 - **Self-maintenance**: scheduled checks and repairs, replication, stray and
   lost-part recovery, and [git repository mirrors](docs/guide/repositories.md).
@@ -98,10 +117,10 @@ internal/
   provider/        the 19 storage backends, plus OAuth sign-in
   server/          HTTP API, sessions and the embedded web UI (server/dist)
   davfs/           WebDAV view of an unlocked vault
-  tvaccess/ tvdiscover/   Sand TV pairing codes and LAN discovery
+  tvaccess/ tvdiscover/   SAND TV pairing codes and LAN discovery
   snapshot/ checksums/ filecheck/ movie/ thumb/ git/ sftp/ assistant/ tuning/ version/
 web/               React web UI (built into internal/server/dist)
-apps/firetv/       Sand TV, the Fire TV app (Kotlin/Gradle)
+apps/firetv/       SAND TV, the Fire TV app (Kotlin/Gradle)
 scripts/           installer, release build, deploy helpers, nginx template
 tests/             end-to-end tests (pytest: CLI, API, browser)
 docs/              everything else, starting at docs/README.md

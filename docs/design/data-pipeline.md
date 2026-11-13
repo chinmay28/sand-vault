@@ -1,6 +1,6 @@
 # The data pipeline
 
-How Sand Vault turns a file into shards on several clouds and back: storing,
+How SAND Vault turns a file into shards on several clouds and back: storing,
 opening, reading at an offset, the erasure code, the part file format, and how
 the pipeline sizes itself to the machine. The keys and integrity checks are in
 [cryptography.md](cryptography.md). Which accounts the shards go to is in

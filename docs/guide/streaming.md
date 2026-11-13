@@ -1,6 +1,6 @@
 # Streaming and mounting
 
-Sand Vault can hand a single film to a player, put a folder of films on a TV, or
+SAND Vault can hand a single film to a player, put a folder of films on a TV, or
 serve the whole vault as a drive. This page covers each one and what it exposes.
 For the mechanism (stream tickets, the WebDAV share, standalone mode), see
 [Server design](../design/server.md). For why a 4K rip can stutter where a 1080p
@@ -55,9 +55,9 @@ Any player that takes a URL works: it is an ordinary HTTP address that answers
 
 ## Watch on a TV
 
-**Sand TV** puts one folder on a television, with the posters, synopses and cast
+**SAND TV** puts one folder on a television, with the posters, synopses and cast
 that [film lookup](films.md) stored, and plays the films straight off the machine
-running Sand Vault, with seeking and resume. It runs as a Fire TV app, or in any
+running SAND Vault, with seeking and resume. It runs as a Fire TV app, or in any
 TV browser at `http://<host>:8123/tv/`.
 
 The TV is never given the vault. A folder's menu → **Watch on TV** makes a
@@ -68,7 +68,7 @@ below, and nothing else. Revoking the code in the same dialog unpairs the TV and
 stops what it is playing. Codes live in memory only, so a restart ends them all.
 
 Installing the app, pairing, the player and what plays are in the
-[Sand TV guide](sand-tv.md).
+[SAND TV guide](sand-tv.md).
 
 ## Mount it as a drive
 

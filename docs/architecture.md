@@ -1,20 +1,20 @@
 # Architecture
 
-This page is the map: what Sand Harbor and Sand Vault are, how the pieces fit,
+This page is the map: what Sand Harbor and SAND Vault are, how the pieces fit,
 the main flows in brief, every package and what it owns, the locking rules,
 operational notes, and what is not built. Each section links to the design page
 that covers it in depth.
 
-## Sand Harbor, Sand Vault and Sand TV
+## Sand Harbor, SAND Vault and SAND TV
 
 **Sand Harbor** is the project as a whole. It has two components today:
 
-- **Sand Vault**: a file browser over storage you do not fully trust. It is the
+- **SAND Vault**: a file browser over storage you do not fully trust. It is the
   `sand` binary: CLI, HTTP server, embedded web UI and WebDAV share.
-- **Sand TV**: a Fire TV app (`apps/firetv`) that plays one vault folder of films.
+- **SAND TV**: a Fire TV app (`apps/firetv`) that plays one vault folder of films.
 
 You connect the cloud accounts you already have (Google Drive, an S3 bucket, a
-WebDAV server, a folder on an external disk, and so on), and from then on Sand
+WebDAV server, a folder on an external disk, and so on), and from then on SAND
 Vault behaves like a file manager: folders, uploads, previews, downloads.
 Underneath, every file is cut into chunks; each chunk is compressed,
 erasure-coded into shards, and each shard is encrypted and sent to a
@@ -32,7 +32,7 @@ every account so the vault can be recovered if the machine is lost.
 
 ```
  ┌──────────────┐   ┌───────────────────────┐   ┌───────────────────────────┐
- │  sand CLI    │   │  Web UI (React SPA,   │   │  Sand TV (Fire TV app:    │
+ │  sand CLI    │   │  Web UI (React SPA,   │   │  SAND TV (Fire TV app:    │
  │  cmd/sand    │   │  embedded, web/)      │   │  WebView on /tv/ + player)│
  └──────┬───────┘   └───────────┬───────────┘   └────────────┬──────────────┘
         │ in-process            │ HTTP /api, WebDAV /dav      │ HTTP /api/tv,
@@ -109,9 +109,9 @@ account itself. See [vault: recovery](design/vault.md#recovery) and
 the same `manifest.sand` copies, merged with vector clocks. See
 [vault: one vault on several machines](design/vault.md#one-vault-on-several-machines).
 
-**Watch on a TV.** The owner mints a short pairing code for one folder; Sand TV
+**Watch on a TV.** The owner mints a short pairing code for one folder; SAND TV
 finds the server by UDP broadcast, trades the code for a device token scoped to
-that folder, and plays through stream tickets. See [Sand TV](design/sand-tv.md).
+that folder, and plays through stream tickets. See [SAND TV](design/sand-tv.md).
 
 **Standalone mode.** `sand archive` / `sand restore` (and `POST /api/archive`,
 `POST /api/restore`) are the original batch tool: turn files into part files on
@@ -144,11 +144,11 @@ Verified against each package's doc comment.
 | `internal/filecheck` | Structural checks that a file is a well-formed JPEG, PDF, MP4 and so on, for the deep check. See [cryptography](design/cryptography.md) |
 | `internal/snapshot` | A folder packed into one sealed, split archive under its own password, readable without the vault. See [cryptography](design/cryptography.md) |
 | `internal/tuning` | Sizes chunk, window and cache knobs to the machine (Raspberry Pi to workstation), with operator overrides. See [data pipeline](design/data-pipeline.md) |
-| `internal/tvaccess` | Pairing codes and device tokens that give a TV one folder for a time. See [Sand TV](design/sand-tv.md) |
+| `internal/tvaccess` | Pairing codes and device tokens that give a TV one folder for a time. See [SAND TV](design/sand-tv.md) |
 | `internal/tvdiscover` | UDP discovery (port 8124) so a TV finds the server without typing an address |
 | `internal/version` | The calendar version `vYEAR.MONTH.PATCH`, derived from git. See [developer guide](developer-guide.md) |
 | `web/` | The React SPA (Vite), built into `internal/server/dist` and embedded in the binary. See [web UI guide](guide/web-ui.md) |
-| `apps/firetv` | Sand TV: a Kotlin Android TV app, a WebView frame around the server's `/tv/` page plus a native player, discovery and playback stats. See [Sand TV](design/sand-tv.md) |
+| `apps/firetv` | SAND TV: a Kotlin Android TV app, a WebView frame around the server's `/tv/` page plus a native player, discovery and playback stats. See [SAND TV](design/sand-tv.md) |
 
 `tests/` holds the pytest end-to-end suites (CLI, API, vault flow, browser) and
 `scripts/` the quickstart, deploy and release scripts; both are covered in the
@@ -224,9 +224,9 @@ locked.
   APIs.
 - **Multi-user access.** A vault is single-owner. The only delegated access is a
   TV's time-limited token for one folder.
-- **File sync.** Sand Vault is a store, not a sync engine. Several machines share
+- **File sync.** SAND Vault is a store, not a sync engine. Several machines share
   one index, but nothing keeps a folder on disk in step with a vault folder.
-- **Sand Gallery and Sand Pod** are possible future Sand Harbor components; neither
+- **SAND Gallery and SAND Pod** are possible future Sand Harbor components; neither
   exists yet.
 
 ## Design pages

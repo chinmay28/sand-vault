@@ -1,7 +1,7 @@
 # Sand Harbor documentation
 
-Sand Harbor is a self-hosted home for files and media built on **Sand Vault**,
-an encrypted, erasure-coded store spread across cloud accounts. **Sand TV**
+Sand Harbor is a self-hosted home for files and media built on **SAND Vault**,
+an encrypted, erasure-coded store spread across cloud accounts. **SAND TV**
 plays its films on a Fire TV. Start with the [project README](../README.md) for
 the overview and quick start. This page indexes everything else.
 
@@ -19,7 +19,7 @@ Task-oriented: how to do something, and what to expect.
 | [Folder tools](guide/folder-tools.md) | Organizing, folder stats, duplicates, corrupt files, checksums, snapshots |
 | [Films](guide/films.md) | Film details and folder pictures |
 | [Streaming](guide/streaming.md) | VLC, TVs, and mounting the vault as a drive over WebDAV |
-| [Sand TV](guide/sand-tv.md) | Installing, pairing and using the Fire TV app |
+| [SAND TV](guide/sand-tv.md) | Installing, pairing and using the Fire TV app |
 | [Maintenance](guide/maintenance.md) | Self-maintaining folders, stray and lost parts, old versions, leftovers |
 | [Vault management](guide/vault-management.md) | Changing the password, sub vaults, several machines |
 | [Recovery](guide/recovery.md) | Losing the vault file, recovery kits, rebuilding a file by hand |
@@ -50,7 +50,7 @@ How it works inside, and why.
 | [Placement](design/placement.md) | Schemes, choosing accounts, object keys, re-placing data |
 | [Providers](design/providers.md) | The backend interface, sign-in, quotas, health |
 | [Server](design/server.md) | Partial success, errors, WebDAV, stream tickets, standalone mode |
-| [Sand TV](design/sand-tv.md) | Pairing codes, discovery, the player |
+| [SAND TV](design/sand-tv.md) | Pairing codes, discovery, the player |
 | [Recovery kit](design/recovery-kit.md) | The offline kit that rebuilds a vault |
 | [Paced password change](design/paced-rekey.md) | Re-keying a large vault without stopping it |
 | [SFTP](design/sftp.md) | Machines you have a login on |

@@ -291,7 +291,7 @@ address the browser saves from directly.
 
 The original workflow, kept because it needs no vault, no accounts and no state.
 It is useful for a one-off, or for moving data to a machine that has never seen
-Sand Vault.
+SAND Vault.
 
 ```bash
 sand archive report.pdf photos.zip --output-dir ./out

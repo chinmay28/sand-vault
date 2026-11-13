@@ -1,6 +1,6 @@
 # Design choices
 
-The decisions that shape Sand Vault, each with the reasoning behind it and the
+The decisions that shape SAND Vault, each with the reasoning behind it and the
 alternatives that were turned down. Each entry is short and links to the design
 page that has the mechanism. For how the pieces fit together, see
 [architecture.md](architecture.md).
@@ -219,7 +219,7 @@ default.
 **Decision:** a repository is one `git bundle` file. A weekly `ls-remote`
 digest decides whether to fetch at all. `internal/git` shells out to the
 installed git. **Why:** loose objects would scatter thousands of objects and
-re-scatter on every repack, and a bundle is `git clone`-able without Sand
+re-scatter on every repack, and a bundle is `git clone`-able without SAND
 Vault. The machine's git already has the SSH agent, credential helpers and
 host aliases. **Rejected:** a built-in git implementation, which could reach no
 private repository. URLs are allow-listed and `ext::` is disabled, because a
@@ -290,7 +290,7 @@ which would outlive the unlocked vault that minted them.
 → [design/server.md](design/server.md)
 
 ### A TV gets one folder, through a four-character code
-**Decision:** Sand TV pairs with a short code traded once for a 256-bit device
+**Decision:** SAND TV pairs with a short code traded once for a 256-bit device
 token, scoped to one folder (`internal/tvaccess`). Pairing is rate-limited (5
 wrong codes per address or 30 overall in ten minutes). The app is a WebView
 around the server's `/tv/` page plus a native Media3 player. **Why:** a remote
@@ -317,6 +317,6 @@ past most of it:
 | A browser OAuth flow | **Built.** `OAuthSpec` and `/api/providers/oauth/*` |
 | Repair of a missing part | **Built, as a rebuild** (see above) |
 | HTTP uploads and reads are whole-file | **No longer true.** Uploads go through `UploadStreamAt`, and `/content` reads through `OpenReadSeeker` at an offset |
-| Sync / conflict resolution | The index merges across machines. Sand Vault is still a store, not a file-sync engine |
+| Sync / conflict resolution | The index merges across machines. SAND Vault is still a store, not a file-sync engine |
 | A FUSE mount | Not built. WebDAV covers file managers and players |
 | Multi-user access | Not built. A vault has one owner by design |

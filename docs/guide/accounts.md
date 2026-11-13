@@ -1,9 +1,9 @@
 # Connecting accounts
 
-Every file in Sand Vault is cut into encrypted parts, and each part goes to
+Every file in SAND Vault is cut into encrypted parts, and each part goes to
 one connected account. This page covers which backends exist, how to connect
 them from the browser or the command line, naming and colouring them, telling
-Sand Vault how much room they have, the hourly health ping, and repairing an
+SAND Vault how much room they have, the hourly health ping, and repairing an
 account whose credentials have stopped working.
 
 Exact flags are in the [CLI reference](../reference/cli.md). How
@@ -24,7 +24,7 @@ a new one is in [Adding cloud backends](../design/cloud-backends.md).
 | `drime` | Drime, through its API | An access token from the Drime web app |
 | `filen` | Filen, through its end-to-end encrypted API | Email and password |
 | `internxt` | Internxt Drive, through its end-to-end encrypted API | Email and password |
-| `sftp` | Any machine with an SSH login: a VPS, a NAS, rsync.net, a Hetzner Storage Box | Host, username, and a key Sand Vault generates or your own |
+| `sftp` | Any machine with an SSH login: a VPS, a NAS, rsync.net, a Hetzner Storage Box | Host, username, and a key SAND Vault generates or your own |
 | `protoncli` | Proton Drive, through Proton's own client | Sign in (a link you open anywhere) |
 | `proton` | Proton Drive, through the folder its desktop app syncs | A path |
 | `icloud` | iCloud Drive, through the folder macOS or iCloud for Windows syncs | A path |
@@ -54,7 +54,7 @@ the form. It is generated from the backend's own spec, the same one
 credentials the service refuses are never stored.
 
 For the backends that take a path, the field has a **BROWSE…** button. It walks
-the folders of *the machine Sand Vault runs on*, which is rarely the one you
+the folders of *the machine SAND Vault runs on*, which is rarely the one you
 are holding. It opens at the first folder it can read, with the usual mount
 roots one tap away. The folder does not have to exist yet: name a new one
 inside the folder you picked, and connecting creates it.
@@ -160,16 +160,16 @@ file on one machine is one machine that can rebuild the file.
 
 Proton Drive (the `proton` kind), MEGA, Jottacloud, Sync.com, Tresorit,
 Icedrive and iCloud Drive publish no API a third party can use. What they do
-have is a desktop app that keeps a folder in step with the account. Sand Vault
+have is a desktop app that keeps a folder in step with the account. SAND Vault
 writes its parts, already encrypted, into that folder, and the app carries
-them up. The app must be installed and signed in on the machine Sand Vault
+them up. The app must be installed and signed in on the machine SAND Vault
 runs on.
 
 - Connecting a folder whose *parent* does not exist is refused rather than
   created. A folder no app syncs would accept every part and upload none.
 - The upload "succeeds" once the file is on local disk. If the app is signed
   out, the account looks healthy while holding nothing.
-- **iCloud** may evict a part's contents to save disk. Sand Vault asks iCloud
+- **iCloud** may evict a part's contents to save disk. SAND Vault asks iCloud
   for it and waits, so a read can take a moment on a Mac short of space, and a
   health check reports an evicted part as present but unweighed. The folder
   must be inside iCloud Drive.
@@ -191,7 +191,7 @@ missing when you try to use it.
 
 Signing in is a link, not a redirect: the client prints one and waits. **Open
 it on any device**, a phone included, which is how a headless box connects.
-No password reaches Sand Vault.
+No password reaches SAND Vault.
 
 ```bash
 sand remote proton login --name proton --folder /my-files/sand   # a new account
@@ -199,19 +199,19 @@ sand remote proton login proton                                  # sign an exist
 ```
 
 Proton keeps its session in the OS secret store, which a system service has no
-access to. Sand Vault therefore keeps the session in the vault and writes it
+access to. SAND Vault therefore keeps the session in the vault and writes it
 to a private per-account file under `SAND_PROTON_STATE_DIR` only while a
 command runs. The quick-start unit sets that variable to `/var/lib/sand/proton`.
 A unit without it falls back to the user cache directory, which the systemd
 sandbox leaves read-only, so the client cannot run. Add the variable in a
 drop-in if you installed some other way.
 
-Proton's cryptographic model changes at the end of 2026. Because Sand Vault
+Proton's cryptographic model changes at the end of 2026. Because SAND Vault
 runs Proton's own binary, an updated client handles the migration.
 
 ### Filen and Internxt
 
-Both are end-to-end encrypted, and Sand Vault speaks their APIs directly. It
+Both are end-to-end encrypted, and SAND Vault speaks their APIs directly. It
 signs in with the account's email and password and derives the account's keys
 on this machine: PBKDF2 or Argon2 for Filen, a recovery phrase unlocked from
 the password for Internxt. Each part is then encrypted the way their own
@@ -282,7 +282,7 @@ vault it holds and how much room is left, with where that figure came from:
 |---|---|
 | **reported** | The account itself: a drive's quota, a filesystem's free blocks. Live |
 | **declared** | A capacity you typed, minus what `sand remote measure` counted there. For buckets, since S3 has no quota call |
-| **quota** | A line *you* drew, minus what the index says Sand Vault put there. Works on any backend |
+| **quota** | A line *you* drew, minus what the index says SAND Vault put there. Works on any backend |
 
 With two sources, the room left is whichever leaves less.
 
@@ -290,7 +290,7 @@ With two sources, the room left is whichever leaves less.
 sand remote edit b2-cold --capacity '10 GB'   # how big the bucket is
 sand remote edit b2-cold --capacity none
 sand remote measure b2-cold                   # list it and count; costs one request per thousand objects
-sand remote edit gdrive --quota '200 GB'      # how much Sand Vault may fill
+sand remote edit gdrive --quota '200 GB'      # how much SAND Vault may fill
 sand remote edit gdrive --quota none
 ```
 
@@ -397,7 +397,7 @@ sand remote proton login proton                       # a signed-out Proton acco
 ```
 
 > **Re-pointing is not repairing.** Changing the bucket, folder, prefix or path
-> does not carry existing parts across, and Sand Vault will look for them in
+> does not carry existing parts across, and SAND Vault will look for them in
 > the new place and not find them. Move the parts yourself first, or run
 > `sand check --all` afterwards and let the missing parts be rebuilt
 > ([Maintenance](maintenance.md)).

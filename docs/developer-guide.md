@@ -1,6 +1,6 @@
 # Developer guide
 
-How to build Sand Vault (the `sand` binary) and Sand TV (the Fire TV app),
+How to build SAND Vault (the `sand` binary) and SAND TV (the Fire TV app),
 run them while you work on them, test them, version and release them, and find
 your way around the repository. For what the system is and why it is shaped
 this way, read [architecture.md](architecture.md) and
@@ -14,7 +14,7 @@ this way, read [architecture.md](architecture.md) and
 | Node.js | 18 or newer (CI uses 22) | the web client, `scripts/version.mjs`, `make icons` |
 | git | any, with **full history** | the version number (see [Versioning](#versioning)) |
 | Python 3 + pip | for `tests/` | the end-to-end suite (pytest, Playwright, requests) |
-| JDK 17 + Android SDK | only for `apps/firetv` | Sand TV |
+| JDK 17 + Android SDK | only for `apps/firetv` | SAND TV |
 
 There is no CGO, so a plain Go toolchain is all the binary needs. The
 committed web build means `go build ./cmd/sand` works from a bare checkout
@@ -73,7 +73,7 @@ binary.
 ### The embedded web build, and why it is committed
 
 The Go binary embeds the built web client with `//go:embed all:dist` in
-`internal/server/server.go`. The Sand TV page is a second embed,
+`internal/server/server.go`. The SAND TV page is a second embed,
 `//go:embed all:tvui` in `internal/server/tvui.go`: plain JavaScript with no
 build step, edited in place.
 
@@ -130,7 +130,7 @@ Two consumers read it, so they cannot disagree:
 - The web bundle, through `web/build-version.js` and Vite's `define`
   (`__APP_VERSION__`, read by `web/src/version.js`).
 
-Sand TV is stamped by the release workflow with `-PsandVersionName` (the
+SAND TV is stamped by the release workflow with `-PsandVersionName` (the
 version) and `-PsandVersionCode` (the patch). A local build is `dev` / `1`.
 
 **Patch 0 means an unstamped build.** That is what a bare `go build` gives, or
@@ -180,7 +180,7 @@ If Playwright cannot launch its bundled Chromium, point it at one you have:
 PLAYWRIGHT_CHROMIUM_EXECUTABLE=/path/to/chrome make test-e2e
 ```
 
-**Sand TV's tests** are JVM unit tests in
+**SAND TV's tests** are JVM unit tests in
 `apps/firetv/app/src/test/java/com/sandvault/tv/`: container sniffing against
 the samples in `src/test/resources/containers/`, playback statistics, player
 and stats text, and server-address parsing.
@@ -197,7 +197,7 @@ cd apps/firetv
 | Workflow | When | What |
 |---|---|---|
 | [`dco.yml`](../.github/workflows/dco.yml) | Every pull request | Every non-merge commit must carry a `Signed-off-by` matching its author exactly |
-| [`firetv.yml`](../.github/workflows/firetv.yml) | PRs and pushes to `main` touching `apps/firetv/**`, `internal/tvdiscover/**` or the workflow; manual | Sand TV: `testDebugUnitTest`, `lintDebug`, `assembleRelease`, a check that `libffmpegJNI.so` is in the APK for `armeabi-v7a` and `arm64-v8a`, and the APK as an artifact |
+| [`firetv.yml`](../.github/workflows/firetv.yml) | PRs and pushes to `main` touching `apps/firetv/**`, `internal/tvdiscover/**` or the workflow; manual | SAND TV: `testDebugUnitTest`, `lintDebug`, `assembleRelease`, a check that `libffmpegJNI.so` is in the APK for `armeabi-v7a` and `arm64-v8a`, and the APK as an artifact |
 | [`release.yml`](../.github/workflows/release.yml) | Tags `v*`, pushes to `main`, manual | See [Releases](#releases) |
 
 **CI does not run the Go tests, `go vet`, the e2e suite or
@@ -258,7 +258,7 @@ sand-vault/
 │   ├── crypto/               Argon2id, AES-256-GCM, HKDF chunk and purpose keys
 │   ├── davfs/                an unlocked vault as a WebDAV filesystem (/dav, /sub/<name>/)
 │   ├── filecheck/            is a file's content a well-formed file of its claimed kind
-│   ├── git/                  the small part of git Sand Vault needs: ls-remote, mirror, bundle
+│   ├── git/                  the small part of git SAND Vault needs: ls-remote, mirror, bundle
 │   ├── movie/                file name → film guess, and the film database client
 │   ├── provider/             the object-store interface and every backend, OAuth sign-in,
 │   │   │                     usage, disk SMART, replica roots
@@ -267,14 +267,14 @@ sand-vault/
 │   ├── server/               the HTTP API, sessions, stream tickets, the TV routes,
 │   │   │                     and the embedded web client
 │   │   ├── dist/             the built web client (committed; written by `make build-web`)
-│   │   └── tvui/             the Sand TV page served at /tv/ (plain JS, no build step)
+│   │   └── tvui/             the SAND TV page served at /tv/ (plain JS, no build step)
 │   ├── sftp/                 the SSH/SFTP client for machines you have a login on
 │   │   └── sftptest/         an in-process sshd serving SFTP, for tests
 │   ├── snapshot/             a folder packed into one sealed, split archive
 │   ├── splitter/             the erasure coder (systematic Cauchy Reed–Solomon over GF(2^8))
 │   │                         and the legacy split/XOR used by formats 1–3
 │   ├── thumb/                normalizes browser-made previews into JPEGs the vault stores
-│   ├── tuning/               sizes Sand Vault to the machine it runs on
+│   ├── tuning/               sizes SAND Vault to the machine it runs on
 │   ├── tvaccess/             hands a television the key to one folder (pairing codes, tokens)
 │   ├── tvdiscover/           lets a TV on the same network find the server over UDP
 │   ├── vault/                the control plane: encrypted index, accounts, placement,
@@ -291,7 +291,7 @@ sand-vault/
 │   ├── build-version.js      feeds scripts/version.mjs into the bundle
 │   └── vite.config.js        build into internal/server/dist; dev proxy for /api
 ├── apps/
-│   └── firetv/               Sand TV, a Kotlin Android app (Gradle, AGP 8.7, minSdk 22)
+│   └── firetv/               SAND TV, a Kotlin Android app (Gradle, AGP 8.7, minSdk 22)
 │       └── app/src/
 │           ├── main/java/com/sandvault/tv/   MainActivity (WebView around /tv/), Discovery,
 │           │                                 PlayerActivity (Media3), PlaybackStats, StatsText …

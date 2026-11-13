@@ -10,7 +10,7 @@ and the risk the manifest backup carries. Internals:
 ## What you need, and what survives
 
 Your parts are encrypted under a random 256-bit **data key** that lives in the
-vault file. Your password alone does nothing without it. So Sand Vault keeps two
+vault file. Your password alone does nothing without it. So SAND Vault keeps two
 kinds of backup:
 
 | Backup | Where | Opens with | Carries |
@@ -121,7 +121,7 @@ Notes:
 data key and re-encrypts every file, see
 [vault-management.md](vault-management.md#changing-the-password)), let the
 migration finish, and **rotate every account's credentials at the provider**.
-Sand Vault can't do the last step for you.
+SAND Vault can't do the last step for you.
 
 ## Recovering from your accounts
 

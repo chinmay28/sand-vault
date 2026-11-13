@@ -36,11 +36,11 @@ The sidebar starts folded at every window size, because the file browser is
 what the app is for. `☰` brings it out; `☰` again, or `✕` on the panel, folds it.
 
 - **Account cards.** Every connected account with its live status, how many
-  parts it holds, and a usage bar split into Sand Vault's parts, everything
+  parts it holds, and a usage bar split into SAND Vault's parts, everything
   else on the account, and the room left. A local folder reports the drive it
   sits on. Room left comes from the account itself, from a capacity you
   declared, or from a quota you set; see [Accounts](accounts.md).
-- **Stats** on a card opens that account's breakdown: capacity against Sand
+- **Stats** on a card opens that account's breakdown: capacity against SAND
   Vault's share, what its parts belong to by kind and by folder, the month they
   arrived, the heaviest files, old versions, and how many files could not be
   rebuilt without this account.
@@ -77,7 +77,7 @@ Two tiles sit under the cards:
 | **Read race** | Opening a file is a race between the accounts holding its shards, and the losers are never mentioned anywhere else. This shows each account's share of the shards actually used, how long its answers take (average, with the quickest-to-slowest spread), and what became of every shard it was asked for: won, too late, cut off, or failed. A sparkline per account shows whether its share is drifting. |
 | **Transfers** | Bytes sent in to each cloud and fetched out of it, whatever moved them (uploads, reads, moves, conversions, the index backup), with a traffic chart and a row per cloud with objects moved and failed calls. |
 | **Throughput** | Speeds in Mbps: opening and storing files, the same again by kind of file, and each cloud's own upload and download speed. Every figure is total bytes over total time, so a thousand small files cannot outvote one large one. |
-| **Storage breakdown** | A pie of the capacity of every cloud that knows its size, split into Sand Vault's parts, other files, free space and space out of reach, with how many bytes are stored per byte in the vault. Drawn from figures the sidebar already has, so it asks nothing of any cloud. |
+| **Storage breakdown** | A pie of the capacity of every cloud that knows its size, split into SAND Vault's parts, other files, free space and space out of reach, with how many bytes are stored per byte in the vault. Drawn from figures the sidebar already has, so it asks nothing of any cloud. |
 
 Read race, Transfers and Throughput have the same four tabs: **Today**,
 **Month**, **Year** and **All time**. The figures are kept by the day in a file
@@ -162,7 +162,7 @@ how many folders are inside, and when the newest changed (see
 |---|---|
 | Open folder | |
 | Download as zip | The whole folder as one archive, built as it downloads |
-| Watch on TV | A four-character code for a TV; see [Sand TV](sand-tv.md) |
+| Watch on TV | A four-character code for a TV; see [SAND TV](sand-tv.md) |
 | Send to a machine | The folder, whole and in the clear, onto an SSH machine |
 | Replicate this folder / Stop replicating | See [Storing files](storing-files.md) |
 | Folder picture | See [Films](films.md#folder-pictures) |

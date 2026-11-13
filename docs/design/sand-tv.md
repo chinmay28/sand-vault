@@ -1,9 +1,9 @@
-# Sand TV design
+# SAND TV design
 
-How Sand TV works: the grant a four-character code stands for, why four
+How SAND TV works: the grant a four-character code stands for, why four
 characters are safe, how a TV finds the server, how the app is put together, and
 the API between them. Installing and using it is in the
-[Sand TV guide](../guide/sand-tv.md).
+[SAND TV guide](../guide/sand-tv.md).
 
 ## Shape
 
@@ -132,7 +132,7 @@ has. It is served with a strict CSP (`script-src 'self'`, `connect-src 'self'`,
 `frame-ancestors 'none'`) and `Cache-Control: no-cache`, so a TV picks up new
 screens on its first load after an upgrade.
 
-Because the screens come from the server, they update with Sand Vault rather than
+Because the screens come from the server, they update with SAND Vault rather than
 with the app. The page holds the device token and each film's resume position in
 `localStorage`. Position is the TV's own memory of what was watched; a film past
 92% counts as watched. Without the app, films play in the page's `<video>`.

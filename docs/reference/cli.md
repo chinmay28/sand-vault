@@ -1,6 +1,6 @@
 # CLI reference
 
-Every command of the `sand` binary, the CLI and server of Sand Vault, taken from
+Every command of the `sand` binary, the CLI and server of SAND Vault, taken from
 the cobra tree in `cmd/sand` and checked against `sand <command> --help`. The
 binary prints the same help: `sand <command> --help` is the authority when the
 two disagree.
@@ -523,7 +523,7 @@ sand vault sweep [--verbose] [--yes]
 
 Finds parts on the accounts that no file points at (usually from a delete made
 while an account was disconnected), and working files an interrupted upload left
-in the vault's own directory (only names Sand Vault writes, untouched for an
+in the vault's own directory (only names SAND Vault writes, untouched for an
 hour). Refuses to sweep an account carrying another vault's index, an account
 that does not answer, or a vault that looks like it is waiting to be recovered.
 
@@ -571,7 +571,7 @@ sand vault prune [--account ACCOUNT]... [--verbose] [--yes]
 ```
 
 For buckets with versioning on (Backblaze B2 by default): lists the old
-versions and delete markers of Sand Vault's own objects (index backups and
+versions and delete markers of SAND Vault's own objects (index backups and
 parts) and with `--yes` erases them. The current version of every object stays.
 A part the index still wants whose current version is a delete marker is held
 back. Other objects in the bucket are counted, not touched. To stop the build-up,
@@ -648,7 +648,7 @@ sand remote edit <name-or-id> [--name NAME] [--color HEX|auto] [--capacity SIZE|
 | `--name` | New label |
 | `--color` | Hex colour such as `'#38bdf8'`, or `auto` to let the browser pick |
 | `--capacity` | How big the account is, for backends that report no quota (`'10 GB'`, or `none`) |
-| `--quota` | How much of the account Sand Vault may fill before it warns (`'200 GB'`, or `none`). Nothing is refused for crossing it |
+| `--quota` | How much of the account SAND Vault may fill before it warns (`'200 GB'`, or `none`). Nothing is refused for crossing it |
 | `--auto-prune` | `on` to erase old versions once a day while `sand serve` runs, `off` to stop; see [`sand vault prune`](#sand-vault-prune) |
 | `--set key=value` | Change a connection setting (repeatable). The account is connected with the result before it is stored, so credentials the provider rejects are refused |
 
@@ -1134,7 +1134,7 @@ Takes the policy off a folder, history and all.
 ## Repositories
 
 A git repository is stored as a single git bundle (all history, branches and
-tags) that `git clone` reads directly. Sand Vault uses the `git` on the machine,
+tags) that `git clone` reads directly. SAND Vault uses the `git` on the machine,
 so it reaches exactly the repositories you can (your SSH keys, credential
 helper, `~/.ssh/config`). Guide: [repositories](../guide/repositories.md).
 
@@ -1218,7 +1218,7 @@ sync.
 | `--webdav` | off | Also serve the vault as a WebDAV share |
 | `--webdav-path` | `/dav` | URL path of the vault's share |
 | `--webdav-sub-path` | `/sub` | URL path under which each sub vault has its own share, `<path>/<name>/`, behind its own password |
-| `--tv-discovery-port` | `8124` | UDP port Sand TV broadcasts to when looking for the server; `0` turns discovery off. Never served on a loopback bind |
+| `--tv-discovery-port` | `8124` | UDP port SAND TV broadcasts to when looking for the server; `0` turns discovery off. Never served on a loopback bind |
 | `--checksums-every` | `2m` | How often `/checksums.gz` is brought up to date when the index has changed; `0` writes it only when asked |
 
 At start the server reads the memory limit it runs under (a systemd

@@ -14,7 +14,7 @@ so on) are in [index.md](index.md); the user-facing steps are in the
 The vault is one JSON file, `~/.sand/vault.sand` by default (`--vault`, or
 `/var/lib/sand` under the service; see
 [configuration](../reference/configuration.md)). It is the only persistent state
-Sand Vault keeps on the machine, apart from a sealed read-history sidecar
+SAND Vault keeps on the machine, apart from a sealed read-history sidecar
 (`vault.sand.reads`). Everything meaningful in it is encrypted.
 
 ### Layout
@@ -472,7 +472,7 @@ packs, replicas and shut sub vaults. CLI: `sand vault restore-parts [--yes]
 
 ### Working files in the vault directory
 
-`Vault.ScanForLeftovers` asks the same question of the one disk Sand Vault
+`Vault.ScanForLeftovers` asks the same question of the one disk SAND Vault
 writes itself: the vault's directory. The answer is often the bigger one. An
 upload spool is the whole file, in plaintext, because the whole-file SHA-256
 must be known before the first chunk is sealed, so `UploadStream` spools the
@@ -485,7 +485,7 @@ A file is offered only if both hold:
 
 | Test | Rules out |
 |---|---|
-| The name matches `leftoverPattern`: `.sand-(upload\|convert\|reads\|vault\|git)-` plus the digits `os.CreateTemp` appends | Anything Sand Vault did not write, including the vault file itself |
+| The name matches `leftoverPattern`: `.sand-(upload\|convert\|reads\|vault\|git)-` plus the digits `os.CreateTemp` appends | Anything SAND Vault did not write, including the vault file itself |
 | Nothing has written it for an hour (`leftoverSettling`) and this process is not holding it (`Vault.spools`) | An upload still running, possibly from the CLI sharing the directory with the service |
 
 A file inside the window is still shown, with the reason. `SweepLeftovers`
@@ -499,7 +499,7 @@ touches the index or needs a password. It rides along on the orphan scan
 A bucket with versioning on (Backblaze B2 by default, S3 and MinIO when asked)
 never overwrites or deletes: a `Put` adds a version and a `Delete` adds a marker,
 and every version is billed until erased by version ID. A plain listing shows
-none of it. Sand Vault makes two kinds: one `manifest.sand` version per index
+none of it. SAND Vault makes two kinds: one `manifest.sand` version per index
 change, and every deleted part still sitting under its marker.
 
 `provider.Versioner` (`ListVersions`, `DeleteVersion`) is implemented by the S3
@@ -510,7 +510,7 @@ backend; on an unversioned bucket it degrades to the plain calls.
 | The version is | Treatment |
 |---|---|
 | The latest live version of any key | The object; never touched here |
-| Under a key Sand Vault did not write | Someone else's; counted (`Other`), never touched |
+| Under a key SAND Vault did not write | Someone else's; counted (`Other`), never touched |
 | A superseded version or marker under `manifest.sand` | Stale |
 | A superseded version under a part, or the history of a deleted part nothing points at | Stale |
 | A marker on top of a part the index still points at | **Held**: the versions beneath are the only copies left |
@@ -526,7 +526,7 @@ refused on a backend that is not a `Versioner`); the server's `pruneLoop` runs
 `Vault.AutoPrune` every `AutoPruneInterval` (24 h) while the vault is open.
 Daily because listing every version is billed per thousand entries. The last
 outcome per account lives in memory. Stopping the history piling up is the
-bucket's lifecycle setting, not Sand Vault's, and the command says so.
+bucket's lifecycle setting, not SAND Vault's, and the command says so.
 
 ## One vault on several machines
 

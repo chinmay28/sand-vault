@@ -9,7 +9,7 @@ import, the fire drill (`verify`), and the security trade. The code is
 
 ## Why it exists
 
-Sand Vault already survives the loss of the vault file: every account carries
+SAND Vault already survives the loss of the vault file: every account carries
 `manifest.sand`, which a password alone opens, and `Vault.Recover` rebuilds the
 index from it ([vault.md](vault.md#recovery)). But that recovers the *index*.
 After a disk dies, the slow part is reconnecting every account by hand: finding
@@ -173,7 +173,7 @@ dialog: **this file is the vault**, minus the bytes.
 
 ## The secret that opens it
 
-**By default it is a code Sand Vault generates, not a password the user picks.**
+**By default it is a code SAND Vault generates, not a password the user picks.**
 A kit secret is typed once in years, which is the profile of a secret people
 forget, and the event that destroys the machine often destroys the password
 manager too. A kit sealed under "the vault password" is sealed under the password
@@ -224,7 +224,7 @@ It covers the common case of a person with a working machine and a mislaid slip
 of paper. `sand vault kit code --forget` (and `DELETE /api/vault/kit/code/{id}`)
 drops it, as tidying up, never as revocation ([security](#security)).
 
-The case Sand Vault cannot help is machine gone and paper gone. `verify` asks for
+The case SAND Vault cannot help is machine gone and paper gone. `verify` asks for
 the code partly so the drill also proves the code can still be found.
 
 ### The opt-out
@@ -472,7 +472,7 @@ stay out of shell history and `ps`.
 password (which rotates the data key), let the re-encryption finish
 (`sand vault migrate`), and rotate every account's credentials at the provider;
 the old kit then opens a key that opens nothing still stored. The credentials are
-the part Sand Vault cannot rotate for you. Forgetting the retained code is not a
+the part SAND Vault cannot rotate for you. Forgetting the retained code is not a
 substitute: whoever took the kit may have the code from a screenshot or the `.txt`
 beside it.
 

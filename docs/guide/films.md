@@ -2,7 +2,7 @@
 
 A folder of films is a folder whose file names say nothing:
 `Some.Film.1982.REMASTERED.1080p.BluRay.x265-GROUP.mkv` is a fine thing to store
-and a terrible thing to read. Like Plex or Jellyfin, Sand Vault can look each film
+and a terrible thing to read. Like Plex or Jellyfin, SAND Vault can look each film
 up and show its poster, summary, cast and score, but only in folders you turn it
 on for. This page covers turning it on, fixing wrong matches, what it costs, and
 giving folders pictures.
@@ -13,7 +13,7 @@ For how the matching and storage work inside, see
 
 ## Before you start: a key, and what it sends
 
-This is the one feature in Sand Vault that talks to anything except your own
+This is the one feature in SAND Vault that talks to anything except your own
 accounts. Looking a film up sends a title guessed from the file name, plus this
 machine's address and your API key, to
 [The Movie Database](https://www.themoviedb.org) (TMDB), the service Plex and
@@ -24,7 +24,7 @@ You need a free key of your own:
 
 1. On **themoviedb.org**, go to **Settings → API**. Either the v3 key or the v4
    read access token works.
-2. In Sand Vault, paste it into **Vault settings → Film key** (at the foot of the
+2. In SAND Vault, paste it into **Vault settings → Film key** (at the foot of the
    sidebar, behind `☰` on a phone). The key is tested against TMDB before it is
    saved.
 
@@ -116,4 +116,4 @@ Thumbnails are stored one pack per folder, so a parent whose sub-folders all hav
 pictures fetches one pack per sub-folder the first time it is listed. Only the
 tiles on screen fetch anything, and each pack is kept until the vault locks.
 
-Folder pictures and posters also show on a TV; see [Sand TV](sand-tv.md).
+Folder pictures and posters also show on a TV; see [SAND TV](sand-tv.md).
