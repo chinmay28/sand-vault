@@ -14,7 +14,7 @@ import { Banner, Button, Input, Modal, PasswordInput, Spinner } from './ui'
    it, because a copy of that file sits on every account and a credential inside
    it would let one compromised account unlock the rest.
 
-   A kit never touches a cloud, so it can carry them. See docs/recovery-kit.md. */
+   A kit never touches a cloud, so it can carry them. See docs/design/recovery-kit.md. */
 
 const CHILD_Z = 120
 

@@ -23,7 +23,7 @@ import (
 // carry in the vault, onto a folder the user picked. That asymmetry is the
 // point of the feature and the thing to keep in view while changing it: the
 // far end holds the clear text afterwards, and nothing here can make that
-// otherwise. The UI says so out loud, and so does docs/sftp.md.
+// otherwise. The UI says so out loud, and so does docs/design/sftp.md.
 //
 // What it shares with the import is the shape. A selection is planned from the
 // index before a byte moves, files go one at a time, each lands whole or not at

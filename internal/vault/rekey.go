@@ -264,7 +264,7 @@ func (v *Vault) rotate(oldPassword, newPassword string, plan *RekeySettings) err
 	// derived from the new password. The kit still opens — its own secret is
 	// not this password — and it still restores the credentials and the tree,
 	// so this is a note for the settings panel rather than an invalidation.
-	// See §6.5 of docs/recovery-kit.md.
+	// See §6.5 of docs/design/recovery-kit.md.
 	sf.LastKitExportAt = v.store.LastKitExportAt
 	sf.LastKitID = v.store.LastKitID
 	sf.LastKitSecret = v.store.LastKitSecret

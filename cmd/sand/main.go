@@ -27,9 +27,10 @@ func rootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "sand",
 		Short: "Split, encrypt and scatter files across your cloud accounts",
-		Long: `SAND Vault stores files as three encrypted parts spread over separate cloud
-accounts. Any two parts rebuild the original; any one part on its own is
-useless. The browser at "sand serve" reassembles files on demand.
+		Long: `Sand Vault, part of Sand Harbor, cuts each file into n encrypted parts and
+spreads them over separate cloud accounts. Any m of them rebuild the original
+(2 of 3 unless you choose otherwise); fewer are useless. The browser at
+"sand serve" reassembles files on demand.
 
 There is also a standalone mode — "sand archive" and "sand restore" — that
 produces three zip files you can move around by hand, with no accounts and no

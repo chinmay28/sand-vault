@@ -486,7 +486,7 @@ func (v *Vault) KitCode(kitID string) (string, error) {
 // Offered as tidying up after a rotation, never instead of one: a kit somebody
 // else has is not revoked by forgetting its code, because they may have taken
 // it from a screenshot, a note app, or the .txt beside the zip. See §8 of
-// docs/recovery-kit.md for what actually ends that.
+// docs/design/recovery-kit.md for what actually ends that.
 func (v *Vault) ForgetKitCode(kitID string) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
