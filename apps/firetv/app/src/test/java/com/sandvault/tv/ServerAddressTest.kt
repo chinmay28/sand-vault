@@ -65,4 +65,40 @@ class ServerAddressTest {
     fun theTVPageIsUnderTheOrigin() {
         assertEquals("http://nas:8123/tv/", ServerAddress.tvPage("http://nas:8123"))
     }
+
+    @Test
+    fun theServersLinkIsAskedAboutByTheFilmsTicket() {
+        val want = "http://192.168.1.20:8123/api/stream/Ab-9_xY/network"
+        for (stream in listOf(
+            "http://192.168.1.20:8123/stream/Ab-9_xY/The.Thing.1982.mkv",
+            "http://192.168.1.20:8123/stream/Ab-9_xY/The%20Thing.mkv?from=replica",
+            "http://192.168.1.20:8123/stream/Ab-9_xY",
+            "http://192.168.1.20:8123/stream/Ab-9_xY/#t=10",
+        )) {
+            assertEquals(stream, want, ServerAddress.networkUrl(stream))
+        }
+        assertEquals("https://nas.example/api/stream/T0k3n/network", ServerAddress.networkUrl("https://nas.example/stream/T0k3n/x.mp4"))
+        assertEquals("http://[fe80::1]:8123/api/stream/T/network", ServerAddress.networkUrl("http://[fe80::1]:8123/stream/T/x.mkv"))
+    }
+
+    @Test
+    fun onlyAStreamLinkHasAServerLinkToAskAbout() {
+        for (notAStream in listOf(
+            "",
+            "192.168.1.20:8123/stream/T/x.mkv",
+            "http://192.168.1.20:8123",
+            "http://192.168.1.20:8123/",
+            "http://192.168.1.20:8123/tv/",
+            "http://192.168.1.20:8123/stream/",
+            "http://192.168.1.20:8123/stream//x.mkv",
+            "http://192.168.1.20:8123/zip/T/folder.zip",
+            "http://192.168.1.20:8123/x/stream/T/x.mkv",
+            "http://192.168.1.20:8123/stream/../api/x",
+            "http://192.168.1.20:8123/stream/a%2Fb/x.mkv",
+            "http://host?q=/stream/T/x.mkv",
+            "http:///stream/T/x.mkv",
+        )) {
+            assertNull(notAStream, ServerAddress.networkUrl(notAStream))
+        }
+    }
 }

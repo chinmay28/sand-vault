@@ -22,6 +22,35 @@ object StatsText {
         enum class Kind { WIFI, ETHERNET, OTHER, NONE }
     }
 
+    /**
+     * How the server is connected, as SAND says when asked: the link of the
+     * interface the film goes out through, and how fast it is sending.
+     */
+    data class ServerLink(
+        val kind: Kind,
+        /** The interface's name on the server: enp5s0, "Ethernet 2". */
+        val name: String = "",
+        /** The rate its link runs at — on Wi-Fi, the rate it is sending at — or 0. */
+        val linkMbps: Int = 0,
+        /** A Wi-Fi link's channel frequency, or 0. */
+        val frequencyMhz: Int = 0,
+        /** A Wi-Fi link's signal strength, or 0. */
+        val signalDbm: Int = 0,
+        /** How fast the server is sending through it, the film and anything else, or null before it can say. */
+        val sendBitsPerSecond: Long? = null,
+    ) {
+        enum class Kind { ETHERNET, WIFI, VIRTUAL, LOOPBACK, UNKNOWN }
+    }
+
+    /** The server's word for what an interface is. One this app does not know yet is UNKNOWN. */
+    fun serverKind(word: String): ServerLink.Kind = when (word) {
+        "ethernet" -> ServerLink.Kind.ETHERNET
+        "wifi" -> ServerLink.Kind.WIFI
+        "virtual" -> ServerLink.Kind.VIRTUAL
+        "loopback" -> ServerLink.Kind.LOOPBACK
+        else -> ServerLink.Kind.UNKNOWN
+    }
+
     /** What is playing, and what is decoding it. */
     data class Playing(
         val videoMime: String? = null,
@@ -98,6 +127,7 @@ object StatsText {
         link: Link?,
         heapUsedBytes: Long,
         heapMaxBytes: Long,
+        server: ServerLink? = null,
     ): List<Pair<String, String>> {
         val full = report.loadingShare < 0.5
         val out = mutableListOf<Pair<String, String>>()
@@ -130,6 +160,8 @@ object StatsText {
         out += "Audio" to track(PlayerText.codec(playing.audioMime), PlayerText.channels(playing.channels),
             playing.audioDecoder, playing.audioMime)
         out += "Network" to link(link)
+        out += "Server" to serverLink(server)
+        out += "Sending" to (server?.sendBitsPerSecond?.let { "${mbps(it)}, the film and anything else" } ?: "—")
         if (heapMaxBytes > 0) out += "Memory" to "app ${megabytes(heapUsedBytes)} of ${megabytes(heapMaxBytes)}"
         return out
     }
@@ -147,6 +179,22 @@ object StatsText {
             link.rssiDbm.takeIf { it in -126..-1 }?.let { "−${-it} dBm" },
         ).joinToString(" · ")
     }
+
+    /**
+     * The server's link, worded as the TV's own is so that the two can be read
+     * against each other: "Ethernet · 1000 Mb/s link", "Wi-Fi 2.4 GHz · 72 Mb/s
+     * link · −67 dBm". An interface that is no wire is named for what it is.
+     */
+    fun serverLink(server: ServerLink?): String = when (server?.kind) {
+        null -> "—"
+        ServerLink.Kind.ETHERNET -> link(Link(Link.Kind.ETHERNET, linkMbps = server.linkMbps))
+        ServerLink.Kind.WIFI -> link(Link(Link.Kind.WIFI, server.frequencyMhz, server.linkMbps, server.signalDbm))
+        ServerLink.Kind.LOOPBACK -> "loopback"
+        ServerLink.Kind.VIRTUAL -> named("virtual", server.name)
+        ServerLink.Kind.UNKNOWN -> named("unknown", server.name)
+    }
+
+    private fun named(what: String, name: String): String = if (name.isBlank()) what else "$what ($name)"
 
     /** The Wi-Fi band a channel is in, or null when it is not known. */
     fun band(frequencyMhz: Int): String? = when {

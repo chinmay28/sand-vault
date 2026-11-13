@@ -41,6 +41,9 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.SubtitleView
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.abs
 
@@ -60,7 +63,8 @@ import kotlin.math.abs
  * film wants: audio track, subtitles (the film's own and the .srt beside it),
  * subtitle size, zoom, speed, what is actually playing — and Stats, which says
  * over the film as it plays what, if anything, is holding it up (see
- * PlaybackStats).
+ * PlaybackStats). The buffer is as big as the app's memory allows (see
+ * BufferPlan).
  *
  * The remote:
  *   Select        show the controls / press the focused button
@@ -80,6 +84,9 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
     private var player: ExoPlayer? = null
     private val handler = Handler(Looper.getMainLooper())
     private val prefs by lazy { getSharedPreferences("sand-player", MODE_PRIVATE) }
+
+    /** How big the buffer is, from the memory this app is allowed. */
+    private val plan by lazy { BufferPlan.forHeap(Runtime.getRuntime().maxMemory()) }
 
     private lateinit var video: PlayerView
     private lateinit var controls: FrameLayout
@@ -108,6 +115,18 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
     private var audioUnderruns = 0L
     private var link: StatsText.Link? = null
     private var linkReadAt = 0L
+
+    /**
+     * How the server is connected, asked of it every few seconds while the
+     * Stats panel is showing — never with the panel shut, never from the
+     * background, and never two questions at once (see fetchServerLink).
+     */
+    private val serverLinkUrl by lazy { ServerAddress.networkUrl(intent.getStringExtra(EXTRA_URL) ?: "") }
+    private var serverLink: StatsText.ServerLink? = null
+    private var serverLinkAskedAt = 0L
+    private var serverLinkAsking = false
+    private var asker: ExecutorService? = null
+    private var started = false
 
     /** The button whose menu is open, to give focus back to when it closes. */
     private var opener: View? = null
@@ -154,11 +173,20 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
         val renderers = DefaultRenderersFactory(this)
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
             .setEnableDecoderFallback(true)
-        // The load control and the media source are the builder's own
-        // defaults, made here only so the Stats panel can see into them: how
+        // The load control is Media3's with a buffer sized to the memory the
+        // app is allowed (BufferPlan), and the media source is the builder's
+        // default; both are made here so the Stats panel can see into them: how
         // much the buffer holds, and how many bytes of the film have come in.
         val filmUri = Uri.parse(url)
-        val load = DefaultLoadControl()
+        val load = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                plan.maxBufferMs,
+                plan.maxBufferMs,
+                DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_MS,
+                DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS,
+            )
+            .setTargetBufferBytes(plan.targetBytes)
+            .build()
         loadControl = load
         val dataSource = DefaultDataSource.Factory(this).setTransferListener(FilmBytes(filmUri, filmBytes))
         val exo = ExoPlayer.Builder(this, renderers)
@@ -462,6 +490,11 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
     private fun toggleStats() {
         val showing = !statsPanel.isShowing
         statsPanel.visibility = if (showing) View.VISIBLE else View.GONE
+        if (!showing) {
+            // Opened again later, it starts afresh rather than from an old answer.
+            serverLink = null
+            serverLinkAskedAt = 0L
+        }
         if (showing) showStats()
         showOsd(if (showing) "Stats on" else "Stats off")
     }
@@ -491,6 +524,7 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
 
     private fun showStats() {
         val p = player ?: return
+        askServerLink()
         val report = stats.report()
         val connection = currentLink()
         val runtime = Runtime.getRuntime()
@@ -506,7 +540,10 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
         statsPanel.show(
             StatsText.headline(report, connection),
             StatsText.isProblem(report),
-            StatsText.rows(report, playing, connection, runtime.totalMemory() - runtime.freeMemory(), runtime.maxMemory()),
+            StatsText.rows(
+                report, playing, connection, runtime.totalMemory() - runtime.freeMemory(), runtime.maxMemory(),
+                server = serverLink,
+            ),
         )
     }
 
@@ -518,6 +555,30 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
             linkReadAt = now
         }
         return link
+    }
+
+    /** Asks the server how it is connected, when the panel is showing and it is time to. */
+    private fun askServerLink() {
+        val url = serverLinkUrl ?: return
+        val now = SystemClock.elapsedRealtime()
+        if (!started || serverLinkAsking) return
+        if (serverLinkAskedAt != 0L && now - serverLinkAskedAt < SERVER_LINK_EVERY_MS) return
+        val pool = asker ?: Executors.newSingleThreadExecutor().also { asker = it }
+        serverLinkAsking = true
+        serverLinkAskedAt = now
+        try {
+            pool.execute {
+                val answer = fetchServerLink(url)
+                handler.post {
+                    if (isDestroyed) return@post
+                    serverLinkAsking = false
+                    // Unless the panel was shut, and the answer with it, meanwhile.
+                    if (serverLinkAskedAt != 0L) serverLink = answer
+                }
+            }
+        } catch (_: RejectedExecutionException) {
+            serverLinkAsking = false
+        }
     }
 
     // --- The menus ------------------------------------------------------------
@@ -840,8 +901,14 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        started = true
+    }
+
     override fun onStop() {
         super.onStop()
+        started = false
         // Home, or the screensaver: pause rather than keep streaming to a TV
         // nobody is watching. Back to the app resumes from here.
         player?.playWhenReady = false
@@ -865,6 +932,8 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        asker?.shutdownNow()
+        asker = null
         player?.release()
         player = null
         super.onDestroy()
@@ -906,6 +975,12 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
 
         /** How often the Stats panel asks how the TV is connected. */
         private const val LINK_EVERY_MS = 5_000L
+
+        /**
+         * How often it asks the server how it is connected: often enough to
+         * follow a film, rarely enough that the server does not notice.
+         */
+        private const val SERVER_LINK_EVERY_MS = 5_000L
     }
 }
 

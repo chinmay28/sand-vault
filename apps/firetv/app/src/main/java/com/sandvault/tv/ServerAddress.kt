@@ -66,6 +66,28 @@ object ServerAddress {
     fun tvPage(origin: String): String = "$origin/tv/"
 
     /**
+     * Where the server says how it is connected, for the film at a stream link:
+     * http://nas:8123/stream/TICKET/Film.mkv → http://nas:8123/api/stream/TICKET/network.
+     * The ticket is the credential there, as it is for the film. Null for
+     * anything that is not a stream link.
+     */
+    fun networkUrl(streamUrl: String): String? {
+        val sep = streamUrl.indexOf("://")
+        if (sep < 0) return null
+        val pathAt = streamUrl.indexOf('/', sep + 3)
+        if (pathAt < 0) return null
+        val authority = streamUrl.substring(sep + 3, pathAt)
+        if (authority.isEmpty() || authority.any { it == '?' || it == '#' }) return null
+        val parts = streamUrl.substring(pathAt).substringBefore('?').substringBefore('#').split('/')
+        if (parts.size < 3 || parts[0].isNotEmpty() || parts[1] != "stream") return null
+        val ticket = parts[2]
+        if (ticket.isEmpty() || !ticket.all { it in 'A'..'Z' || it in 'a'..'z' || it in '0'..'9' || it == '-' || it == '_' }) {
+            return null
+        }
+        return "${streamUrl.substring(0, pathAt)}/api/stream/$ticket/network"
+    }
+
+    /**
      * Whether a URL the WebView is about to open belongs to the server or to
      * the app's own pages. Anything else is refused, because the page the
      * WebView is showing is handed the native bridge.
