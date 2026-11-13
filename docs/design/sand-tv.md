@@ -179,7 +179,8 @@ get. An `https://` address works when there is a TLS proxy.
 
 The app calls back into the page through `window.sandTV`: `back()` returns true
 if the page handled Back, and `onPlaybackStopped(itemId, posMs, durMs)` lets the
-page offer to resume. (The comment block at the top of `tv.js` lists only `play`
+page offer to resume. The connect page gets its answers through
+`window.sandConnect`: `onDiscovered` and `onConnectFailed(message)`. (The comment block at the top of `tv.js` lists only `play`
 and `changeServer`; the table above is the full set.)
 
 ### Player internals
