@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/vault"
 )
 
 // Whether the clouds are still answering, over HTTP.

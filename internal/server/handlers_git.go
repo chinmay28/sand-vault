@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/git"
-	"github.com/chinmay28/sand-vault/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/git"
+	"github.com/chinmay28/SandHarbor/internal/vault"
 )
 
 // The repositories a vault is keeping a copy of, over HTTP.

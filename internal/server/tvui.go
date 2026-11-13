@@ -11,8 +11,8 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/chinmay28/sand-vault/internal/tvdiscover"
-	"github.com/chinmay28/sand-vault/internal/version"
+	"github.com/chinmay28/SandHarbor/internal/tvdiscover"
+	"github.com/chinmay28/SandHarbor/internal/version"
 )
 
 // The TV's screen: a small page drawn for a remote rather than a mouse, served

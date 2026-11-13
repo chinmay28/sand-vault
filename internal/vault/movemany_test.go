@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/chinmay28/sand-vault/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/provider"
 )
 
 // where every file in a vault is, as a set of full paths.

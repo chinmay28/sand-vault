@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/vault"
 )
 
 // The pacing of the index pushes is a setting of the vault: read with the

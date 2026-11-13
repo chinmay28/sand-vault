@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	sandsftp "github.com/chinmay28/sand-vault/internal/sftp"
+	sandsftp "github.com/chinmay28/SandHarbor/internal/sftp"
 )
 
 // SSH keys SAND makes for itself, and the one thing that makes them different

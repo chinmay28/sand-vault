@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/provider"
-	"github.com/chinmay28/sand-vault/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/vault"
 )
 
 // oauthCallbackPath is where providers send the browser back to. It is part of

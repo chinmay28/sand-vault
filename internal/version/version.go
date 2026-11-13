@@ -14,8 +14,8 @@
 // date does not change. The patch number is the commit count. A compiled
 // binary has no access to git, so both are stamped at link time:
 //
-//	go build -ldflags "-X github.com/chinmay28/sand-vault/internal/version.Patch=$(git rev-list --count HEAD) \
-//	                   -X github.com/chinmay28/sand-vault/internal/version.Date=$(git log -1 --format=%cI | cut -c1-7)"
+//	go build -ldflags "-X github.com/chinmay28/SandHarbor/internal/version.Patch=$(git rev-list --count HEAD) \
+//	                   -X github.com/chinmay28/SandHarbor/internal/version.Date=$(git log -1 --format=%cI | cut -c1-7)"
 //
 // `make build` (and `build-go`) does this for you via scripts/version.mjs,
 // which is also what the web client's build reads, so the binary and the page

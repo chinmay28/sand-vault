@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/provider"
 )
 
 // How much has moved to and from each cloud. These are about the meter at Put

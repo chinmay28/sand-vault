@@ -10,9 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/archive"
-	"github.com/chinmay28/sand-vault/internal/git"
-	"github.com/chinmay28/sand-vault/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/archive"
+	"github.com/chinmay28/SandHarbor/internal/git"
+	"github.com/chinmay28/SandHarbor/internal/provider"
 )
 
 // A folder that looks after itself.

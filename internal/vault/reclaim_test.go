@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chinmay28/sand-vault/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/provider"
 )
 
 // recoveredVault plays the disaster out and returns the vault that took the

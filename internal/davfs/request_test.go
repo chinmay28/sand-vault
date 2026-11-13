@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/vault"
 )
 
 // serve runs one request straight through the endpoint, without a network in

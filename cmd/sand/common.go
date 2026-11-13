@@ -9,8 +9,8 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
-	"github.com/chinmay28/sand-vault/internal/server"
-	"github.com/chinmay28/sand-vault/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/server"
+	"github.com/chinmay28/SandHarbor/internal/vault"
 )
 
 // vaultPath resolves the vault location from the --vault flag, the SAND_VAULT
@@ -102,7 +102,7 @@ func unlockSubVault(v *vault.Vault, name string) (vault.Scope, error) {
 		}
 	}
 	if id == "" {
-		return vault.MainScope, fmt.Errorf("no sub vault called %q — 'sand vault sub ls' lists them", name)
+		return vault.MainScope, fmt.Errorf("no sub vault called %q — 'sand sub ls' lists them", name)
 	}
 
 	password, err := readPasswordFrom("SAND_SUB_PASSWORD", fmt.Sprintf("Password for the %q sub vault: ", name))

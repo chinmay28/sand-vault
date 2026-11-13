@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chinmay28/sand-vault/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/provider"
 )
 
 // Three things might know how much room an account has left, and which one

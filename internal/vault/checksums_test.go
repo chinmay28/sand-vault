@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/checksums"
+	"github.com/chinmay28/SandHarbor/internal/checksums"
 )
 
 // forgetChecksum blanks a file's recorded hash, which is what a file

@@ -9,8 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/chinmay28/sand-vault/internal/archive"
-	"github.com/chinmay28/sand-vault/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/archive"
+	"github.com/chinmay28/SandHarbor/internal/provider"
 )
 
 // Moving a file to different clouds is a different operation from every other

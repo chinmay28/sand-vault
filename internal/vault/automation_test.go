@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/archive"
-	"github.com/chinmay28/sand-vault/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/archive"
+	"github.com/chinmay28/SandHarbor/internal/provider"
 )
 
 // dailyAt is the policy most of these tests are about: check this folder every

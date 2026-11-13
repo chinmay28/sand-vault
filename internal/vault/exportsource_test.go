@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	sandsftp "github.com/chinmay28/sand-vault/internal/sftp"
+	sandsftp "github.com/chinmay28/SandHarbor/internal/sftp"
 )
 
 // store puts one file in the vault at dir/name, for the export tests to send

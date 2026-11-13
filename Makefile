@@ -28,7 +28,7 @@ endif
 # commit's month, both of which only exist at build time — stamp them in (see
 # internal/version and scripts/version.mjs). A bare `go build` leaves the patch
 # at 0, which reads as "unstamped development build".
-VERSION_PKG := github.com/chinmay28/sand-vault/internal/version
+VERSION_PKG := github.com/chinmay28/SandHarbor/internal/version
 PATCH := $(shell node scripts/version.mjs --patch 2>/dev/null || echo 0)
 DATE := $(shell node scripts/version.mjs --date 2>/dev/null || echo "")
 

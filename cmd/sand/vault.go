@@ -9,10 +9,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/chinmay28/sand-vault/internal/archive"
-	"github.com/chinmay28/sand-vault/internal/server"
-	"github.com/chinmay28/sand-vault/internal/tvdiscover"
-	"github.com/chinmay28/sand-vault/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/archive"
+	"github.com/chinmay28/SandHarbor/internal/server"
+	"github.com/chinmay28/SandHarbor/internal/tvdiscover"
+	"github.com/chinmay28/SandHarbor/internal/vault"
 )
 
 func serveCmd() *cobra.Command {

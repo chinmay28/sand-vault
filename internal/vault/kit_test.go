@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chinmay28/sand-vault/internal/crypto"
-	"github.com/chinmay28/sand-vault/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/crypto"
+	"github.com/chinmay28/SandHarbor/internal/provider"
 )
 
 // Sealing a kit for real costs Argon2id at 512 MB, which is right for a secret

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/movie"
-	"github.com/chinmay28/sand-vault/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/movie"
+	"github.com/chinmay28/SandHarbor/internal/provider"
 	"github.com/google/uuid"
 )
 

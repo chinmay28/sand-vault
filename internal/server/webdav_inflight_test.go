@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/provider"
-	"github.com/chinmay28/sand-vault/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/vault"
 )
 
 // A request over the share counts as use for as long as it runs, not only for

@@ -7,9 +7,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/chinmay28/sand-vault/internal/assistant"
-	"github.com/chinmay28/sand-vault/internal/movie"
-	"github.com/chinmay28/sand-vault/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/assistant"
+	"github.com/chinmay28/SandHarbor/internal/movie"
+	"github.com/chinmay28/SandHarbor/internal/vault"
 )
 
 // Sandy, the chat assistant, is a model the user runs on a machine of their

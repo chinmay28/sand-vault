@@ -31,7 +31,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/crypto"
+	"github.com/chinmay28/SandHarbor/internal/crypto"
 )
 
 // Version is the format this package writes. A reader refuses any other

@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/archive"
-	"github.com/chinmay28/sand-vault/internal/crypto"
-	"github.com/chinmay28/sand-vault/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/archive"
+	"github.com/chinmay28/SandHarbor/internal/crypto"
+	"github.com/chinmay28/SandHarbor/internal/provider"
 )
 
 // BackupKey is the object key the manifest backup is stored under on every
@@ -636,7 +636,7 @@ func (b *Backup) opensWith(key []byte) bool {
 // A recovery kit carries that key (Kit.VaultKey), which is what lets an import
 // read the copies of the index sitting on the accounts — copies newer than the
 // kit, and the reason an old kit still comes back current — without asking for
-// the old vault password. See §4.3 of docs/recovery-kit.md.
+// the old vault password. See §4.3 of docs/design/recovery-kit.md.
 func openBackupWithKey(data, vaultKey []byte) (*Snapshot, error) {
 	var b Backup
 	if err := json.Unmarshal(data, &b); err != nil {

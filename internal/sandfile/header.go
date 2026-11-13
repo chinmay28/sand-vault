@@ -14,8 +14,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/chinmay28/sand-vault/internal/crypto"
-	"github.com/chinmay28/sand-vault/internal/splitter"
+	"github.com/chinmay28/SandHarbor/internal/crypto"
+	"github.com/chinmay28/SandHarbor/internal/splitter"
 )
 
 // Magic bytes identifying a SAND part file.

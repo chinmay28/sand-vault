@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/chinmay28/sand-vault/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/provider"
 )
 
 // memBackend is an account in memory whose handling of the index backup the

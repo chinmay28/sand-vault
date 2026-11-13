@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/provider"
-	sandsftp "github.com/chinmay28/sand-vault/internal/sftp"
+	"github.com/chinmay28/SandHarbor/internal/provider"
+	sandsftp "github.com/chinmay28/SandHarbor/internal/sftp"
 	"github.com/google/uuid"
 )
 

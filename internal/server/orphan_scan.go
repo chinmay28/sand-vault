@@ -3,7 +3,7 @@ package server
 import (
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/vault"
 )
 
 // The stray-parts scan as something that runs on its own, rather than inside

@@ -9,7 +9,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/crypto"
+	"github.com/chinmay28/SandHarbor/internal/crypto"
 )
 
 // Where the read history lives between runs.

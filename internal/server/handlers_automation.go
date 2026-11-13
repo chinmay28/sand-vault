@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/vault"
 )
 
 // The standing instructions a folder has been given, over HTTP.

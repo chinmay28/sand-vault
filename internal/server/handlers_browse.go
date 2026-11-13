@@ -11,7 +11,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/chinmay28/sand-vault/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/provider"
 )
 
 // Walking this machine's folders, so the backends that take a path — a local

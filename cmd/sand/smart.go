@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/provider"
 	"github.com/spf13/cobra"
 )
 

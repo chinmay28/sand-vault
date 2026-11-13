@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/provider"
 )
 
 // Which files a machine can read on its own, answered from the index.

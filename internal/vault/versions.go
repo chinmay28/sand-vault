@@ -6,8 +6,8 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/chinmay28/sand-vault/internal/crypto"
-	"github.com/chinmay28/sand-vault/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/crypto"
+	"github.com/chinmay28/SandHarbor/internal/provider"
 )
 
 // Old versions of SAND's objects on the buckets that keep them, and erasing

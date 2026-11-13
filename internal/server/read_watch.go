@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/vault"
 )
 
 // Where a file being opened has got to, for the browser waiting on it.

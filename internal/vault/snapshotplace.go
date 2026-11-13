@@ -11,9 +11,9 @@ import (
 	"path"
 	"strings"
 
-	"github.com/chinmay28/sand-vault/internal/provider"
-	sandsftp "github.com/chinmay28/sand-vault/internal/sftp"
-	"github.com/chinmay28/sand-vault/internal/snapshot"
+	"github.com/chinmay28/SandHarbor/internal/provider"
+	sandsftp "github.com/chinmay28/SandHarbor/internal/sftp"
+	"github.com/chinmay28/SandHarbor/internal/snapshot"
 )
 
 // The two places a snapshot is kept, each as the snapshot.Store that package

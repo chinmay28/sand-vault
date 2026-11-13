@@ -16,7 +16,7 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 
-	"github.com/chinmay28/sand-vault/internal/crypto"
+	"github.com/chinmay28/SandHarbor/internal/crypto"
 )
 
 // Info is what a snapshot says about itself, sealed at the front of it so

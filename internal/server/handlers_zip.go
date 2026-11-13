@@ -9,7 +9,7 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/vault"
 )
 
 // A folder handed back as one zip, streamed.

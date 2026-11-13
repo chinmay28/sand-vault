@@ -5,7 +5,7 @@ import (
 	"os"
 	"runtime/debug"
 
-	"github.com/chinmay28/sand-vault/internal/tuning"
+	"github.com/chinmay28/SandHarbor/internal/tuning"
 )
 
 // Telling Go's garbage collector how much room it actually has.

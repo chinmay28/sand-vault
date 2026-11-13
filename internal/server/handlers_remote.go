@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/vault"
 )
 
 // The machines a vault moves files to and from, over HTTP.
@@ -18,7 +18,7 @@ import (
 // one round trip and a transfer can be a media library.
 //
 // See internal/vault/source.go for what a source is and why it is deliberately
-// not a connected account, and docs/sftp.md for the whole design.
+// not a connected account, and docs/design/sftp.md for the whole design.
 
 // remoteConnectTimeout bounds adding or editing a source, which is a handshake,
 // a directory listing, and nothing else.

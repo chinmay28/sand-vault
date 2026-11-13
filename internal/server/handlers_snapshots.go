@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/snapshot"
-	"github.com/chinmay28/sand-vault/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/snapshot"
+	"github.com/chinmay28/SandHarbor/internal/vault"
 )
 
 // Snapshots of a folder over HTTP. The work is internal/vault/snapshot.go and

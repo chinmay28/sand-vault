@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chinmay28/sand-vault/internal/movie"
+	"github.com/chinmay28/SandHarbor/internal/movie"
 )
 
 // filmsFolder stores three films under dir, each with a poster, and returns

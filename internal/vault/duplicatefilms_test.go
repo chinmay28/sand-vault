@@ -3,7 +3,7 @@ package vault
 import (
 	"testing"
 
-	"github.com/chinmay28/sand-vault/internal/movie"
+	"github.com/chinmay28/SandHarbor/internal/movie"
 )
 
 // filmsOf builds the inputs byFilm takes from names alone, with sizes rising

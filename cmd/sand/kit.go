@@ -8,7 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/chinmay28/sand-vault/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/vault"
 )
 
 // The recovery kit at the command line.
@@ -336,7 +336,7 @@ With no kit id it answers for the last kit this vault exported.`,
 					return err
 				}
 				fmt.Println("Forgotten. Note that this does not revoke anything: somebody holding")
-				fmt.Println("that kit and that code still has it. See 'sand vault password'.")
+				fmt.Println("that kit and that code still has it. See 'sand vault passwd'.")
 				return nil
 			}
 

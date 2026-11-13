@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/archive"
-	sandsftp "github.com/chinmay28/sand-vault/internal/sftp"
+	"github.com/chinmay28/SandHarbor/internal/archive"
+	sandsftp "github.com/chinmay28/SandHarbor/internal/sftp"
 )
 
 // importFixture gives a vault with three accounts and one connected source.

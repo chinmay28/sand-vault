@@ -6,7 +6,7 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/chinmay28/sand-vault/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/vault"
 )
 
 // The reattach as something that runs on its own, rather than inside the

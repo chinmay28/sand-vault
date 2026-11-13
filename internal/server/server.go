@@ -3,7 +3,8 @@
 //
 // The server is the only component that ever holds plaintext: it decodes an
 // upload before scattering it, and rebuilds a file in memory to answer a
-// download. It binds to loopback by default for exactly that reason.
+// download. That is why it warns on every non-loopback bind (see DefaultBind),
+// and why it belongs behind TLS when it is reachable from a network.
 package server
 
 import (
@@ -28,10 +29,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/davfs"
-	"github.com/chinmay28/sand-vault/internal/tvaccess"
-	"github.com/chinmay28/sand-vault/internal/vault"
-	"github.com/chinmay28/sand-vault/internal/version"
+	"github.com/chinmay28/SandHarbor/internal/davfs"
+	"github.com/chinmay28/SandHarbor/internal/tvaccess"
+	"github.com/chinmay28/SandHarbor/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/version"
 )
 
 //go:embed all:dist

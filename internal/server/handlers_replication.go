@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/archive"
-	"github.com/chinmay28/sand-vault/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/archive"
+	"github.com/chinmay28/SandHarbor/internal/vault"
 )
 
 // Replication over HTTP: the policy, what replicates, and the worker that

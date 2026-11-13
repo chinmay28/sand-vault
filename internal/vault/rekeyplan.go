@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/archive"
+	"github.com/chinmay28/SandHarbor/internal/archive"
 )
 
 // A password change re-encrypts every stored file, and rekey.go explains why

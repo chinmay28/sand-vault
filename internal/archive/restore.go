@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/chinmay28/sand-vault/internal/sandfile"
+	"github.com/chinmay28/SandHarbor/internal/sandfile"
 )
 
 // Restore reads 2 or 3 part files, decrypts, reconstructs, decompresses,

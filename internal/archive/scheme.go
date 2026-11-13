@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/chinmay28/sand-vault/internal/splitter"
+	"github.com/chinmay28/SandHarbor/internal/splitter"
 )
 
 // A Scheme is how many shards a chunk becomes and how many of them rebuild it:

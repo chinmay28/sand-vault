@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/archive"
+	"github.com/chinmay28/SandHarbor/internal/archive"
 )
 
 // replicaVault is a chunked vault whose accounts each have a replica folder

@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/vault"
 )
 
 // Finding corrupt files and fixing them, over HTTP. The work is

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chinmay28/sand-vault/internal/provider"
-	"github.com/chinmay28/sand-vault/internal/provider/s3test"
+	"github.com/chinmay28/SandHarbor/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/provider/s3test"
 )
 
 // The scenario this file exists for: a bucket that keeps every version, the

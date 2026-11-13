@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/vault"
 )
 
 // Checksums over HTTP: the ledger, and the two paced jobs that use it. The

@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/vault"
 )
 
 // Parts on the accounts that the index has stopped pointing at, over HTTP.

@@ -10,8 +10,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/chinmay28/sand-vault/internal/crypto"
-	"github.com/chinmay28/sand-vault/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/crypto"
+	"github.com/chinmay28/SandHarbor/internal/provider"
 )
 
 // The other half of the manifest backup: reading one back. Writing lives in

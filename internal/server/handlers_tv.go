@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/movie"
-	"github.com/chinmay28/sand-vault/internal/tvaccess"
-	"github.com/chinmay28/sand-vault/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/movie"
+	"github.com/chinmay28/SandHarbor/internal/tvaccess"
+	"github.com/chinmay28/SandHarbor/internal/vault"
 )
 
 // The TV: one folder of films, opened with a four-character code.

@@ -6,7 +6,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/provider"
 )
 
 // How much has gone to each cloud, and how much has come back off it.

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/archive"
-	sandsftp "github.com/chinmay28/sand-vault/internal/sftp"
+	"github.com/chinmay28/SandHarbor/internal/archive"
+	sandsftp "github.com/chinmay28/SandHarbor/internal/sftp"
 )
 
 // maxImportDepth bounds how deep the walk under a selected folder goes.

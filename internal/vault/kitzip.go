@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/crypto"
-	"github.com/chinmay28/sand-vault/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/crypto"
+	"github.com/chinmay28/SandHarbor/internal/provider"
 )
 
 // The zip a recovery kit arrives in, and the two plain files beside the sealed
@@ -319,7 +319,7 @@ Settings -> Recovery kit -> Show code.
 HOW TO USE IT
 -------------
 
-  1. Install SAND (https://github.com/chinmay28/sand-vault).
+  1. Install SAND (https://github.com/chinmay28/SandHarbor).
   2. On the "Create your vault" screen, choose "I have a recovery kit".
   3. Give it this zip and the secret above.
 

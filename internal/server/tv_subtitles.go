@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/chinmay28/sand-vault/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/vault"
 )
 
 // Sidecar subtitles: the .srt beside the film.

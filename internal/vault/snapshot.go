@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/compress"
-	"github.com/chinmay28/sand-vault/internal/snapshot"
-	"github.com/chinmay28/sand-vault/internal/version"
+	"github.com/chinmay28/SandHarbor/internal/compress"
+	"github.com/chinmay28/SandHarbor/internal/snapshot"
+	"github.com/chinmay28/SandHarbor/internal/version"
 )
 
 // Snapshots of a folder: everything under it packed into one sealed archive,

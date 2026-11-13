@@ -85,7 +85,7 @@ SAND Vault is a security tool, so Contributions touching cryptography, key
 handling, shard placement or the vault format carry an extra representation:
 You confirm that You are not knowingly introducing a weakness, backdoor, or deliberate
 reduction in the security properties described in
-[`SAND_ARCHITECTURE.md`](./SAND_ARCHITECTURE.md), and that any such Contribution
+[`docs/architecture.md`](./docs/architecture.md), and that any such Contribution
 is Yours to submit under applicable export and encryption law in Your
 jurisdiction.
 

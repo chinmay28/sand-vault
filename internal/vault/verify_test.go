@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chinmay28/sand-vault/internal/archive"
+	"github.com/chinmay28/SandHarbor/internal/archive"
 )
 
 // shardFile is where one shard of one chunk sits on disk, found by looking

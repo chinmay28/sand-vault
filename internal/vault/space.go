@@ -3,7 +3,7 @@ package vault
 import (
 	"fmt"
 
-	"github.com/chinmay28/sand-vault/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/provider"
 )
 
 // How much more will fit on an account, and whose number that is.

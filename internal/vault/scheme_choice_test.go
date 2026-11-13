@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chinmay28/sand-vault/internal/archive"
+	"github.com/chinmay28/SandHarbor/internal/archive"
 )
 
 // A scheme named for one file, rather than inferred from how many clouds it

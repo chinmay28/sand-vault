@@ -6,7 +6,7 @@ them apart in your head:
 |  | **Backend** — a shard destination | **Source** — a machine you move your own files to and from |
 |---|---|---|
 | What the far end sees | opaque encrypted shards | your actual files, in the clear |
-| Who names the paths | SAND, from the archive ID | you, browsing |
+| Who names the paths | the vault, from the archive ID | you, browsing |
 | Access needed | read/write under one folder | read under one folder; write too, to send files out |
 | Implements | `provider.Provider` | `vault.Source` |
 | Status | **built** — `internal/provider/sftp.go` | **built** — `internal/vault/source.go`, both directions |
@@ -27,7 +27,7 @@ box you were given a login on and nothing else: a Hetzner Storage Box, rsync.net
 a NAS, a Pi in somebody else's house. One SFTP backend covers all of them and
 requires nothing to be installed anywhere.
 
-It cost less than `docs/cloud-backends.md` estimated. `golang.org/x/crypto` was
+It cost less than [cloud-backends.md](cloud-backends.md) estimated. `golang.org/x/crypto` was
 already a direct dependency for Argon2 and HKDF, so `x/crypto/ssh` is a new
 import path rather than a new module; the only genuinely new module is
 `github.com/pkg/sftp` and its very small `kr/fs`. Still no CGO, still one static
@@ -40,7 +40,7 @@ binary.
 Speaking the protocol instead of shelling out to `ssh` has one serious
 consequence: **this code owns host key verification, and there is no
 `~/.ssh/known_hosts` to fall back on.** Under the systemd unit both installers
-write, SAND runs as a user with no home of its own and `ProtectHome=yes` in
+write, the server runs as a user with no home of its own and `ProtectHome=yes` in
 force. There is no such file and there never will be. Whatever `internal/sftp`
 does is the whole of the check.
 
@@ -56,7 +56,7 @@ So: **trust on first use, and store what was learned.**
 - The first connection to a host records its key fingerprint.
 - Every connection after that requires the same one.
 - A host answering with a different key is refused, with both fingerprints in
-  the error, because SAND cannot tell a rebuilt VPS from an impostor and the
+  the error, because the vault cannot tell a rebuilt VPS from an impostor and the
   person who owns the server can.
 - Somebody who has the fingerprint out of band can paste it into the connect
   form and have the *first* connection checked too. It is validated when typed,
@@ -92,7 +92,7 @@ backend, it survives a reinstall, and it travels in the recovery kit. A
 passphrase-protected key is supported and the passphrase is held only while the
 vault is open.
 
-### SAND makes the key, by default
+### The server makes the key, by default
 
 Asking somebody to run `ssh-keygen`, find the right one of the two files it
 wrote and paste **that** one into a browser is three chances to paste the wrong
@@ -112,7 +112,7 @@ the connect request arrives carrying that handle, `resolveGeneratedKey` swaps
 the key back in on the way past and it goes straight into the vault. The paste
 is reversed, and the half that travels is the one it does not matter about.
 
-That is worth the small amount of state because SAND is normally reached over
+That is worth the small amount of state because the server is normally reached over
 plain HTTP at a LAN or tailnet address, and an SSH private key is the one
 credential here that opens a shell rather than a bucket.
 
@@ -138,7 +138,7 @@ Details that are decisions rather than mechanics:
   "this does not look like a private key", which is true and explains nothing.
 - **Pasting your own key is one word away and unchanged.** Plenty of people
   already have a key for the box, and a key held in an agent or issued by a CA
-  is not one SAND can invent a replacement for.
+  is not one the server can invent a replacement for.
 - **The public half is shown once**, while the form is open, and is not stored
   anywhere it can be read back. Known consequence: a server rebuilt a year
   later needs a fresh pair rather than the old line put back. Deriving it from
@@ -159,7 +159,7 @@ you check by looking at, and a wall of dots defeats the only reason the box is
 that big.
 
 `FieldSpec` grew an `SSHKey` flag alongside it, which is what tells the
-generated form that this field is one SAND can fill in itself. A flag on the
+generated form that this field is one the server can fill in itself. A flag on the
 field rather than a second field, because it is still one credential with one
 place to put it — `web/src/components/SshKeyField.jsx` is the whole of the
 difference, and both dialogs get it without knowing what SSH is.
@@ -173,7 +173,7 @@ clamps.
 
 Anchoring a path to the root first — the usual trick, and what `local.go` does —
 turns `../../etc/passwd` into a perfectly good path inside the root and hands it
-back without a word. That is fine for a backend whose keys SAND generates and
+back without a word. That is fine for a backend whose keys the vault generates and
 wrong for a path a person typed, and the import feature makes it a path a person
 typed.
 
@@ -196,7 +196,7 @@ enough and what `(*sftp.Client).resolve` does instead.
 
 ---
 
-## Resume, and why it needs no job framework
+## Resume: re-running is the mechanism
 
 The whole question of "pause and resume without losing progress" has already
 been answered one layer down, and the answer generalises.
@@ -271,57 +271,51 @@ without an archive ID that survives the interruption, and today's is minted
 fresh per upload. That is the v2 this section is about, and it needs its own
 design rather than being smuggled in behind a progress bar.
 
-This matters because **there is still no background job framework**, and what
-grew here instead is worth stating precisely, because it is one step across a
-line that used to be absolute.
+### Transfers in flight
 
-`internal/server/transfer_watch.go` holds the imports (and exports) in flight, in memory, keyed
-by source. The running handler writes progress to it and nothing reads that back
-— it exists to be shown. `GET /api/remote/{id}/import` answers out of it.
+An import or export is one request with a 12-hour ceiling
+(`remoteTransferTimeout`). `internal/server/transfer_watch.go` holds the
+transfers in flight, in memory, keyed by source. The running handler writes
+progress to it, and `GET /api/remote/{id}/import` (or `/export`) reads it back.
 
-An import may also be *detached* (`detach: true`), which changes exactly one
-thing: its context comes from `context.Background()` rather than from the
-request, so closing the page no longer cancels it. That buys three obligations,
-and they are the whole of the machinery:
+A transfer may be *detached* (`detach: true`). Its context then comes from
+`context.Background()` rather than from the request, so closing the page no
+longer cancels it. That brings three obligations, which are the whole of the
+machinery:
 
-- **It has to be stoppable.** A request that has gone away takes its transfer
-  with it; a detached one has to be cancelled on purpose. `DELETE …/import/{run}`
-  does it, and so does locking the vault — those chunks are being sealed with
-  keys that are about to leave memory.
+- **It has to be stoppable.** `DELETE …/import/{run}` stops one, and so does
+  locking the vault, because its chunks are being sealed with keys about to
+  leave memory.
 - **It has to keep the vault awake.** Progress touches the same
-  external-activity clock the share and the stream links use, and the auto-lock
-  also refuses to fire while any import is running. Otherwise the idle timer
-  would lock the keys out from under a transfer nobody was watching.
-- **Its result has to wait somewhere.** Nobody is holding a request for it, so
-  the summary stays on the run for `finishedImportTTL` or until dismissed.
+  external-activity clock the WebDAV share and stream links use, and the
+  auto-lock also refuses to fire while a transfer is running.
+- **Its result has to wait somewhere.** Nobody holds a request for it, so the
+  summary stays on the run for `finishedTransferTTL` (30 minutes) or until
+  dismissed.
 
-What it deliberately does *not* buy: durability. Nothing is written down, so a
-restart takes every in-flight import with it, and there is no queue, no retry,
-no schedule. The reason that is affordable is unchanged — re-running an import
-is how it resumes, at whole-file granularity — and it is what keeps this a
-detached request rather than a job system with one job type. Every handler in `internal/server` is synchronous under a
-`contextWithTimeout` — uploads get 30 minutes — and the closest thing to
-progress reporting anywhere is `rekey.go`'s `ProgressFunc`. A 200 GB media tree
-does not fit in a request, and the honest answer is to scope v1 so it does not
-have to:
+At most `maxDetachedTransfers` (four) run at once, imports and exports counted
+together, since they share the same connections and the same clouds.
 
-- Import takes an explicit list of selected files and folders. A folder
-  brings everything under it, however many files that is: there is no cap on
-  a selection, and the walk reads every entry of every folder even though the
-  browser's own listing of one is cut at `sftp.MaxEntries` — the cap is on
-  the page, not the directory (`ReadDirAll` beside `ReadDir`).
-- It runs synchronously and returns the counts plus `results[]` for the files
-  worth a line — every failure, and on an export every file left alone for a
-  reason Replace would have to clear — so a partial import is legible rather
-  than mysterious without being as long as the selection. The lines are
-  bounded (`maxTransferLines`, with `omitted` counting the rest) because a
-  source that dies halfway fails every file after it in the same words, and
-  a summary held for half an hour after a detached transfer should not cost
-  a Raspberry Pi tens of megabytes.
+What it deliberately does *not* buy is durability. Nothing is written down, so
+a restart loses every in-flight transfer, and there is no queue, retry or
+schedule. That is affordable because re-running a transfer is how it resumes,
+at whole-file granularity. (The server's other long work, such as the deep
+check and snapshots, runs on the in-memory `jobWatch`; see
+[server.md](server.md#long-work-runs-beside-the-request).)
+
+The scope that keeps this a request rather than a job system:
+
+- An import takes an explicit list of selected files and folders. A folder
+  brings everything under it, however many files that is. The walk reads every
+  entry of every folder (`ReadDirAll`), even though the browser's listing of one
+  is cut at `sftp.MaxEntries` (2,000): the cap is on the page, not the directory.
+- It returns the counts plus `results[]` for the files worth a line: every
+  failure, and on an export every file left alone for a reason `overwrite` would
+  have to clear. The lines are bounded (`maxTransferLines`, with `omitted`
+  counting the rest), because a source that dies halfway fails every later file
+  in the same words, and a summary held for half an hour shouldn't cost a
+  Raspberry Pi tens of megabytes.
 - What was already imported is skipped, and counted rather than listed.
-
-The background-job version is a real v2 and deserves to be designed on its own
-merits, not smuggled in under this feature.
 
 ---
 
@@ -364,7 +358,7 @@ scoped to, made if it is not there, and refused if it climbs out — the same
 `Under` check as browsing, made before a connection is dialled.
 
 In the browser the export has three doors, and all of them open the same
-dialog. The `⇅ Machine` button on the toolbar starts with the direction switch
+dialog. The `⇅` button on the toolbar starts with the direction switch
 and a picker over the vault's own listing, for sending several things at
 once. A folder's menu carries **Send to a machine** with that folder already
 picked. And a single file offers the same, twice: in its own menu, under
@@ -380,13 +374,13 @@ The mechanics mirror the import's, seam for seam:
 - **The seam is `OpenSequential`.** The vault hands back an `io.ReadSeeker`
   that gathers a chunk at a time and keeps only the chunk it is in, and
   `(*sftp.Client).WriteUnder` takes a reader. So an export is: open the stored
-  file, hand the reader to the machine, done. Bytes go clouds → SAND →
+  file, hand the reader to the machine, done. Bytes go clouds → server →
   machine and never touch the browser; a 40 GB film costs one chunk of
   memory, which is what lets this run on a Raspberry Pi.
 - **The reader is not read through the shared chunk cache.** A player seeking
   around a film wants the chunk it just left; a one-pass copy wants every
-  chunk once and then gone. Reading it through the cache would fill all
-  128 MiB of it with plaintext nothing will ask for again, evicting whatever
+  chunk once and then gone. Reading it through the cache would fill it with
+  plaintext nothing will ask for again, evicting whatever
   a player beside it was using. The sequential reader holds its own chunk and
   puts nothing in the cache — the same reader a folder zip streams through.
 - **Writes are atomic, as the backend's are.** A file goes to `.sand-tmp-…`
@@ -481,14 +475,14 @@ Notes on the backend that are not obvious from the interface:
   not an object, and listing it would have the recovery scan try to read it
   as one; a previous copy left aside by an interrupted overwrite belongs to a
   key that is listed under its own name.
-- **Temp names are random, not counted.** Two SAND instances may share a folder
+- **Temp names are random, not counted.** Two vault instances may share a folder
   — a laptop and a Pi pointed at the same box — and a collision would have one
   renaming the other's half-written file into place.
 - **`Usage` is real.** OpenSSH ships `statvfs@openssh.com`, which is one round
   trip against the server's own bookkeeping, so this is a `UsageReporter` taken
   on every ping rather than a `UsageMeasurer` counted by listing. Free space
-  comes from the non-root block count: a filesystem reserve SAND cannot spend is
-  not free space to SAND. Servers without the extension simply draw no bar.
+  comes from the non-root block count: a filesystem reserve the service cannot spend is
+  not free space to it. Servers without the extension simply draw no bar.
 - **Connections are pooled.** A scatter writes every shard of a chunk at once,
   and an SSH handshake is a round trip plus a key exchange. One session carries
   the lot, and is re-dialled when it dies.
@@ -559,7 +553,7 @@ func (v *Vault) UploadStream(ctx, scope, dir, name string, r io.Reader, opts Upl
 
 An SFTP file handle **is** an `io.Reader`. So an import is: open the remote
 file, hand the reader to `UploadStream`, done — compressed, split, encrypted and
-scattered by the code that already does it. Bytes go VPS → SAND → clouds.
+scattered by the code that already does it. Bytes go VPS → server → clouds.
 They never touch the browser, never hit `MaxUploadSize`, and never spool through
 a multipart parser.
 
@@ -578,7 +572,7 @@ Notes on what the implementation settled that the design left open:
   `../..` and cannot stop `ln -s / everything`, because the escape is not
   written in the path. So `(*sftp.Client).resolve` walks every component below
   the root, follows a link only if its target lands back inside, and caps the
-  hops. That walk is done in SAND rather than left to the server's own
+  hops. That walk is done here rather than left to the server's own
   `SSH_FXP_REALPATH`, because the spec is loose enough that servers differ on
   whether they resolve links at all — and a boundary that holds against some
   servers is not a boundary. The test that caught this is
@@ -618,7 +612,7 @@ Build order:
 Nothing needs installing, but three things are worth doing on the server:
 
 ```bash
-# A user of its own, with a home SAND can write into and no shell.
+# A user of its own, with a home the vault can write into and no shell.
 sudo useradd -m -s /usr/sbin/nologin sand
 
 # Then press "Generate a key pair" in the connect form and paste the line it

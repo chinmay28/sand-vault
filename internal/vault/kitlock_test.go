@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/provider"
 )
 
 // stallingBackend is a cloud that takes its time answering, so a test can put

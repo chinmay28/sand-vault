@@ -7,10 +7,10 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/chinmay28/sand-vault/internal/compress"
-	"github.com/chinmay28/sand-vault/internal/provider"
-	"github.com/chinmay28/sand-vault/internal/tuning"
-	"github.com/chinmay28/sand-vault/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/compress"
+	"github.com/chinmay28/SandHarbor/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/tuning"
+	"github.com/chinmay28/SandHarbor/internal/vault"
 )
 
 // Sizing SAND to the machine.

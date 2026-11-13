@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/chinmay28/sand-vault/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/vault"
 )
 
 // Parts the index records on an account that the account is not holding,

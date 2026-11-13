@@ -1,11 +1,11 @@
 # Streaming large films: where the time goes
 
-A 4 GB 1080p film plays on a Fire TV Stick without a pause; a 35 GB Ultra HD
-Blu-ray of the same length, from the same vault on the same machine, stops to
-buffer. This is what was measured to find out why, what it found, and what to do
-about it. Every measurement here was made on the real code — `sand serve` and
-the packages it is built from — and none on a real Fire TV, a phone or
-anybody's home network. The last section lists what that leaves unverified.
+A 4 GB 1080p film plays in SAND TV on a Fire TV Stick without a pause; a 35 GB
+Ultra HD Blu-ray of the same length, from the same vault on the same machine,
+stops to buffer. This page covers what was measured to find out why, what it
+found, and what to do about it. Every measurement was made on the real code
+(`sand serve` and the packages it is built from), none on a real Fire TV, phone
+or home network. The last section lists what that leaves unverified.
 
 ## The short answer
 
@@ -13,12 +13,12 @@ anybody's home network. The last section lists what that leaves unverified.
 |---|---|---|
 | Decrypting and rebuilding the film | Not the limit | 70–95 ms per 32 MiB chunk on one 2.1 GHz core, 350–460 MB/s. An 80 Mbit/s film is 10 MB/s, under 5% of that one core |
 | Chunking | Not the limit on a healthy disk | 0.04–0.17 s to the first byte after a seek; a model of the TV's player never stalled at 40 or 80 Mbit/s with the parts on local disks |
-| The network between SAND and the TV, and the TV itself | The likely limit | A UHD film runs at 8–9 times the bitrate of a 1080p one, which moves it from far inside every limit on the way to close to several of them (see [The TV and the network](#the-tv-and-the-network)) |
+| The network between the server and the TV, and the TV itself | The likely limit | A UHD film runs at 8–9 times the bitrate of a 1080p one, which moves it from far inside every limit on the way to close to several of them (see [The TV and the network](#the-tv-and-the-network)) |
 
-Two things in the server ended long films whatever their quality, and are
-fixed in the change that added this document (see [Two timers](#two-timers-that-ended-a-film-whatever-its-quality)).
+Two things in the server ended long films whatever their quality. Both are
+fixed (see [Two timers](#two-timers-that-ended-a-film-whatever-its-quality)).
 When the parts are on cloud accounts rather than local disks, a third thing
-does make SAND the limit: how it reads ahead (see
+does make the server the limit: how it reads ahead (see
 [Parts on cloud accounts](#parts-on-cloud-accounts)).
 
 To find which limit a particular TV and network are hitting, see
@@ -61,7 +61,7 @@ SAND TV player ── GET /stream/<token>/film.mkv, Range: bytes=N- ──►  s
 The player makes one request for the whole film and reads it front to back,
 pausing whenever its own buffer is full. A seek is a new request at a new
 offset. The server answers each with the chunks the range covers, never the
-whole file (§4.3 of [`SAND_ARCHITECTURE.md`](../SAND_ARCHITECTURE.md)).
+whole file (see [Reading at an offset](data-pipeline.md#reading-at-an-offset)).
 
 ## Measurements
 
@@ -125,7 +125,7 @@ disk:
 | 20 MB/s | 80 Mbit/s | 1 | 3.0 s | none |
 
 Chunking has two real costs, and neither is a limit on a healthy disk. The
-1.5× is the read race (§4.2 of the architecture document) reading all three
+1.5× is the [read race](data-pipeline.md#opening-a-file) reading all three
 parts of every chunk. The burst is read-ahead: at a start or a seek the
 server asks for six chunks at once — eighteen part files — and on a disk that
 is slow or busy with something else the chunk the player needs next waits
@@ -133,7 +133,7 @@ behind the other five.
 
 ### Parts on cloud accounts
 
-This is not where most people keep films they watch, but it is where SAND is
+This is not where most people keep films they watch, but it is where the server is
 most often the limit. A 40 Mbit/s film, 120 s of it, from the start:
 
 | Internet | As shipped (read-ahead 6) | Read-ahead 1 | Prototype read path |
@@ -179,15 +179,17 @@ A prototype of three changes to the read path removed every stall above:
 - **A reader that belongs to the link rather than to one request**, so a
   player that reconnects finds the chunks it was already being sent.
 
-The prototype has no tests of its own and is not part of this change. Until
-something like it is, setting **Settings → This machine → Read-ahead** to 1
+The prototype had no tests of its own and was not merged: the read-ahead and
+the single flight in `internal/vault/reader.go` still behave as described
+above. Until something like it lands, setting **Settings → This machine → Read-ahead** to 1
 stopped the stalls at 300, 150 and 100 Mbit/s for the 40 Mbit/s film; it was
 not tried on the 80 Mbit/s one.
 
 ## Two timers that ended a film whatever its quality
 
-Both were reproduced against the server as shipped, and both are fixed by the
-change this document arrives with (`internal/server/stream_serve.go`).
+Both were reproduced against the server as it then was, and both are fixed in
+`internal/server/stream_serve.go` (see
+[Stream tickets](server.md#stream-tickets)).
 
 | | What happened | Reproduced |
 |---|---|---|
@@ -206,7 +208,7 @@ Now:
   whose buffer is full — does not count against it.
 - A link minted under a TV code is checked against the code as the film goes
   out, so revoking the code stops the film already playing, as
-  [`firetv.md`](./firetv.md) says it does. Before, the check was made as a
+  [`sand-tv.md`](sand-tv.md) says it does. Before, the check was made as a
   request began, which for a film is before the film.
 
 ## The TV and the network
@@ -281,7 +283,7 @@ The Vega OS sticks do not run Android apps and cannot install SAND TV
 - **Lossless audio**: the 2023 sticks list TrueHD passthrough and DTS-HD
   ("basic profile"); DTS-HD MA often arrives at a receiver as its DTS core.
   Audio that is neither passed through nor decoded by the stick is decoded in
-  software by FFmpeg (see [`firetv.md`](./firetv.md)). Nobody was found who
+  software by FFmpeg (see [`sand-tv.md`](sand-tv.md)). Nobody was found who
   measured what that costs on a stick's CPU.
 
 ### The player's buffer

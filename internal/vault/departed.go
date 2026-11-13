@@ -4,7 +4,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/provider"
 )
 
 // Accounts that were disconnected, and enough about each to recognise it if it

@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/provider"
 )
 
 // breakCloud makes a connected local folder unreachable the way a NAS that has

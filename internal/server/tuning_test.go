@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/chinmay28/sand-vault/internal/compress"
-	"github.com/chinmay28/sand-vault/internal/provider"
-	"github.com/chinmay28/sand-vault/internal/tuning"
+	"github.com/chinmay28/SandHarbor/internal/compress"
+	"github.com/chinmay28/SandHarbor/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/tuning"
 )
 
 func resetSharedTuning(t *testing.T) {

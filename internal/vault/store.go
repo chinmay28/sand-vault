@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/crypto"
-	"github.com/chinmay28/sand-vault/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/crypto"
+	"github.com/chinmay28/SandHarbor/internal/provider"
 	"github.com/google/uuid"
 )
 
@@ -250,7 +250,7 @@ type storeFile struct {
 	// The counts are what "312 files added since" is a subtraction of, and
 	// LastPasswordChangeAt is what tells a kit that predates a password change
 	// from one that merely predates some uploads. Those are different problems
-	// (see §6.5 of docs/recovery-kit.md) and the panel has to name the right
+	// (see §6.5 of docs/design/recovery-kit.md) and the panel has to name the right
 	// one.
 	LastKitExportAt  time.Time `json:"last_kit_export_at,omitzero"`
 	LastKitID        string    `json:"last_kit_id,omitempty"`

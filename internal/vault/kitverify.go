@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/provider"
 )
 
 // The fire drill.
