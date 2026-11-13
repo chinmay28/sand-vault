@@ -155,11 +155,13 @@ class StatsTextTest {
             Link(Link.Kind.WIFI, 5_180, 433, -58),
             heapUsedBytes = 212_000_000,
             heapMaxBytes = 256_000_000,
+            bufferTargetBytes = 348_913_664,
         ).toMap()
 
-        assertEquals("96.1 Mb/s while fetching · fetching 55% of the time", rows["Download"])
+        assertEquals("96.1 Mb/s · fetching 55% of the time", rows["Download"])
         assertEquals("52.3 Mb/s here", rows["Film"])
-        assertEquals("21 s ahead · 144 MB", rows["Buffer"])
+        assertEquals("21 s ahead · 144 of 349 MB", rows["Buffer"])
+        assertEquals("the film keeps up", rows["Runway"])
         assertEquals("2 · 14 s in all", rows["Stalls"])
         assertEquals("3 dropped of 240 in 10 s · 12 in all", rows["Frames"])
         assertEquals("none", rows["Underruns"])
@@ -182,11 +184,36 @@ class StatsTextTest {
         assertEquals("— not fetching: the buffer is full", rows["Download"])
         assertEquals("—", rows["Film"])
         assertEquals("21 s ahead · 144 MB · full", rows["Buffer"])
+        assertEquals("the buffer is full", rows["Runway"])
         assertEquals("0 dropped in all", rows["Frames"])
         assertEquals("1 in 10 s · 3 in all", rows["Underruns"])
         assertEquals("—", rows["Video"])
         assertEquals("TrueHD 7.1 · software (FFmpeg)", rows["Audio"])
         assertEquals("—", rows["Network"])
         assertFalse("no memory line when the heap is not known", rows.containsKey("Memory"))
+    }
+
+    @Test
+    fun theRunwaySaysHowLongWhatIsBufferedPlaysFor() {
+        val short = report(limit = Limit.NETWORK, share = 1.0, arrival = 0.757, buffered = 21_000)
+        assertEquals("1 min 26 s of play at this rate", StatsText.runway(short))
+        assertEquals("the film keeps up", StatsText.runway(report(arrival = 1.2)))
+        assertEquals("—", StatsText.runway(report(limit = Limit.MEASURING)))
+        assertEquals("—", StatsText.runway(report(arrival = null, share = 0.9)))
+    }
+
+    @Test
+    fun aStallSaysHowFarItsRunwayHasGot() {
+        assertEquals("Building a runway — 18 of 44 s", StatsText.runwayProgress(18_400, 43_740))
+        assertEquals("Building a runway — 44 of 44 s", StatsText.runwayProgress(50_000, 43_740))
+    }
+
+    @Test
+    fun durationsReadAsAPersonWouldSayThem() {
+        assertEquals("45 s", StatsText.duration(45_000))
+        assertEquals("3 min", StatsText.duration(180_000))
+        assertEquals("1 min 26 s", StatsText.duration(86_420))
+        assertEquals("1 h 2 min", StatsText.duration(3_720_000))
+        assertEquals("0 s", StatsText.duration(-1))
     }
 }

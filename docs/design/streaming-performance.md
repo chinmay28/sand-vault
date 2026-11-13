@@ -301,6 +301,13 @@ SAND TV builds its player with Media3's defaults, which this was read from
 So a 1080p film rides out a 50-second hiccup and a UHD film one of 14–29
 seconds, and after a stall a UHD film starts again on two seconds of cushion.
 
+SAND TV no longer uses these as they are: its buffer is now sized to the app's
+memory, and after a stall it waits for a runway of film rather than two
+seconds of it. See [SAND TV design](sand-tv.md#player-internals). The Stats
+panel on a stick in the field read *the film arrives at 0.75× real time* —
+34.5 Mb/s on a 5 GHz Wi-Fi link reporting 344 Mb/s, for a 45.6 Mb/s stretch —
+which is the case this is for: at that rate two seconds of cushion last eight.
+
 ## Telling which limit you are hitting
 
 Three checks, each of which rules one part of the path in or out:
@@ -351,10 +358,9 @@ In the order it is worth trying, for films kept on the PC's own disks:
    with the HDR10 base layer only.
 4. **The player.** What the stick sees — how much is buffered, how fast it is
    arriving, how many frames it drops — is the measurement that tells checks
-   2 and 3 apart while the film plays. After that, the player's buffer could
-   be sized to the stick's memory rather than capped at 144 MB, resume after a
-   stall with more than 2 s, and wait longer than 8 s before giving up on a
-   read.
+   2 and 3 apart while the film plays; SAND TV's Stats panel shows it. Its
+   buffer is now sized to the stick's memory and a stall waits for a runway.
+   What is left is to wait longer than 8 s before giving up on a read.
 
 And, for films kept on cloud accounts, the server's read path:
 

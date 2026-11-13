@@ -2,6 +2,7 @@ package com.sandvault.tv
 
 import com.sandvault.tv.PlaybackStats.Limit
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -191,9 +192,12 @@ class PlaybackStatsTest {
         // The wait to start is not a stall.
         film.steps(3) { step(playing = false, waiting = true) }
         film.steps(4) { step() }
+        assertFalse("the wait to start is not a stall", film.stats.stalled)
         // Three seconds of waiting, then one.
         film.steps(6) { step(playing = false, waiting = true) }
+        assertTrue("waiting once started is a stall", film.stats.stalled)
         film.steps(2) { step() }
+        assertFalse(film.stats.stalled)
         film.steps(2) { step(playing = false, waiting = true) }
         film.step()
 

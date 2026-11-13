@@ -193,10 +193,18 @@ and `changeServer`; the table above is the full set.)
   is always the hardware's. Media3 is pinned to 1.7.1, matched to the decoder
   build.
 - **ABIs.** `armeabi-v7a` and `arm64-v8a` only; Fire TVs are ARM.
-- **Buffer.** The load control and media source are Media3's defaults, built
-  explicitly only so the Stats panel can see into them. The default buffer is
-  about 144 MB. A `TransferListener` counts the film's bytes, but not the
-  subtitles', as they arrive.
+- **Buffer.** `BufferPlan` sizes it and `RunwayLoadControl` holds it to that:
+  Media3's `DefaultLoadControl`, built with a byte target of the heap
+  (`Runtime.maxMemory`, with `android:largeHeap`) less a reserve of 35% or
+  128 MB, whichever is more — never below Media3's own 144 MB and never above
+  768 MB — and a time limit of three minutes. After a stall, and only then, it
+  waits for a runway: enough film to play three minutes at the measured
+  arrival, capped at nine tenths of what the buffer holds of a film at the
+  measured bitrate, and Media3's two seconds when the film keeps up. A full
+  buffer plays on whatever the runway says. Media3 clears its rebuffering flag
+  on a seek and when play is pressed, so neither waits for a runway. The media
+  source is Media3's default, built explicitly so a `TransferListener` counts
+  the film's bytes, but not the subtitles', as they arrive.
 - **Remembered settings.** Zoom, subtitle scale and the last audio and text
   languages are kept in the app's preferences and applied to the next film.
 

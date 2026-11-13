@@ -91,29 +91,44 @@ object StatsText {
     fun isProblem(report: PlaybackStats.Report): Boolean =
         report.limit == Limit.NETWORK || report.limit == Limit.VIDEO || report.limit == Limit.AUDIO
 
-    /** The panel's lines below the headline, as name and value. */
+    /**
+     * The panel's lines below the headline, as name and value. [bufferTargetBytes]
+     * is the most the buffer may take, or 0 to leave it unsaid.
+     */
     fun rows(
         report: PlaybackStats.Report,
         playing: Playing,
         link: Link?,
         heapUsedBytes: Long,
         heapMaxBytes: Long,
+        bufferTargetBytes: Long = 0,
+        speed: Float = 1f,
     ): List<Pair<String, String>> {
         val full = report.loadingShare < 0.5
         val out = mutableListOf<Pair<String, String>>()
 
         out += "Download" to when {
             report.downloadBitsPerSecond != null ->
-                "${mbps(report.downloadBitsPerSecond)} while fetching · fetching ${percent(report.loadingShare)} of the time"
+                "${mbps(report.downloadBitsPerSecond)} · fetching ${percent(report.loadingShare)} of the time"
             full -> "— not fetching: the buffer is full"
             else -> "—"
         }
         out += "Film" to (report.filmBitsPerSecond?.let { "${mbps(it)} here" } ?: "—")
         out += "Buffer" to buildString {
             append("${seconds(report.bufferedMs)} ahead")
-            if (report.bufferBytes > 0) append(" · ${megabytes(report.bufferBytes)}")
+            if (report.bufferBytes > 0) {
+                append(" · ")
+                append(
+                    if (bufferTargetBytes > 0) {
+                        "${wholeMegabytes(report.bufferBytes)} of ${megabytes(bufferTargetBytes)}"
+                    } else {
+                        megabytes(report.bufferBytes)
+                    },
+                )
+            }
             if (full) append(" · full")
         }
+        out += "Runway" to runway(report, speed)
         out += "Stalls" to if (report.stalls == 0) "none" else "${report.stalls} · ${seconds(report.stalledMs)} in all"
         out += "Frames" to if (report.framesInWindow > 0) {
             "${report.droppedInWindow} dropped of ${report.framesInWindow} in ${seconds(report.windowMs)} · ${report.droppedTotal} in all"
@@ -132,6 +147,35 @@ object StatsText {
         out += "Network" to link(link)
         if (heapMaxBytes > 0) out += "Memory" to "app ${megabytes(heapUsedBytes)} of ${megabytes(heapMaxBytes)}"
         return out
+    }
+
+    /**
+     * How long what is buffered plays for, when the film is arriving slower than
+     * it plays: the number to watch while paused to build up a runway.
+     */
+    fun runway(report: PlaybackStats.Report, speed: Float = 1f): String {
+        if (report.limit == Limit.MEASURING) return "—"
+        val lasts = BufferPlan.lastsMs(report.bufferedMs, report.arrival, speed)
+        return when {
+            lasts != null -> "${duration(lasts)} of play at this rate"
+            report.arrival != null -> "the film keeps up"
+            report.loadingShare < 0.5 -> "the buffer is full"
+            else -> "—"
+        }
+    }
+
+    /** What a stall waiting for its runway shows under the spinner. */
+    fun runwayProgress(bufferedMs: Long, runwayMs: Long): String =
+        "Building a runway — ${wholeSeconds(bufferedMs.coerceAtMost(runwayMs))} of ${wholeSeconds(runwayMs)} s"
+
+    /** "45 s", "3 min", "1 min 26 s", "1 h 2 min". */
+    fun duration(ms: Long): String {
+        val s = wholeSeconds(ms)
+        return when {
+            s < 60 -> "$s s"
+            s < 3_600 -> if (s % 60 == 0L) "${s / 60} min" else "${s / 60} min ${s % 60} s"
+            else -> "${s / 3_600} h ${s % 3_600 / 60} min"
+        }
     }
 
     /** "Wi-Fi 5 GHz · 433 Mb/s link · −58 dBm", "Ethernet · 100 Mb/s link". */
@@ -180,7 +224,11 @@ object StatsText {
     fun percent(share: Double): String = "%.0f%%".format(Locale.ROOT, share.coerceIn(0.0, 1.0) * 100)
 
     /** Decimal megabytes, as a buffer is counted: "144 MB". */
-    fun megabytes(bytes: Long): String = "%.0f MB".format(Locale.ROOT, bytes.coerceAtLeast(0) / 1_000_000.0)
+    fun megabytes(bytes: Long): String = "${wholeMegabytes(bytes)} MB"
+
+    private fun wholeMegabytes(bytes: Long): String = "%.0f".format(Locale.ROOT, bytes.coerceAtLeast(0) / 1_000_000.0)
+
+    private fun wholeSeconds(ms: Long): Long = (ms.coerceAtLeast(0) + 500) / 1000
 
     private fun dimensions(width: Int, height: Int): String = if (width > 0 && height > 0) "$width×$height" else ""
 

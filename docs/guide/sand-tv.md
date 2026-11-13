@@ -160,7 +160,8 @@ Below the headline:
 |---|---|
 | Download | How fast the film came in while the player was fetching, and what share of the time it was fetching. A full buffer stops fetching, so only fetching says anything about the link. |
 | Film | The measured bitrate of the stretch being fetched (an MKV does not declare one) |
-| Buffer | How far ahead is buffered and the memory it takes; *full* when the player has stopped fetching. The buffer is about 144 MB: 50s of a 1080p film, 14s of an 80 Mb/s one. |
+| Buffer | How far ahead is buffered, and the memory it takes of what it may take; *full* when the player has stopped fetching. See [Buffer and runway](#buffer-and-runway). |
+| Runway | When the film arrives slower than it plays, how long what is buffered will play for at that rate. The number to watch while paused to build up a cushion. |
 | Stalls | Waits once playback started (not the start or after a seek), and their total |
 | Frames | Frames dropped in the last ten seconds, and in all |
 | Underruns | Times the sound ran dry |
@@ -173,6 +174,33 @@ restarts them, and *Measuring…* shows for the first few seconds. The panel see
 only what the stick sees: when the network is the limit, it cannot tell the Wi-Fi
 from the PC's own connection or the PC itself. Three checks that tell them apart
 are in [Streaming performance](../design/streaming-performance.md).
+
+### Buffer and runway
+
+The player keeps the film it has fetched ahead in the app's memory, so the
+buffer is as big as that memory allows. The app asks Android for a large heap;
+the **Memory** line shows what the stick granted, and the **Buffer** line what
+the buffer may take of it. A stick that grants a 512 MiB heap gets a buffer of
+about 350 MB: about a minute of a UHD Blu-ray, and the full three minutes of a
+1080p film. A stick that grants no more than the usual 192 MiB keeps the 144 MB
+it always had.
+
+When the film arrives slower than it plays, the buffer drains and the film
+stalls. After a stall the player does not play on the moment two seconds are
+back, only to stall again a few seconds later: it waits for a **runway**, enough
+film to play about three minutes at the rate it is arriving, or as much as the
+buffer holds if that is less, and shows how far it has got under the spinner
+(*Building a runway — 18 of 44 s*). The start of a film and a seek still play
+as soon as a second is buffered.
+
+To build a cushion before a demanding stretch, pause: the player goes on
+fetching while paused, and **Runway** says how long what it has will play for.
+
+Neither of these makes a link that is short of the film any less short. Through
+a stretch the link cannot keep up with, the waiting adds up the same; it comes
+as a few waits instead of a stall every few seconds, and a bigger buffer banks
+more of what quieter scenes bring in ahead of the next busy one. The cure for a
+short link is a faster one, or a lower-bitrate copy of the film.
 
 ## What plays
 
