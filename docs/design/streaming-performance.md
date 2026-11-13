@@ -326,7 +326,9 @@ Three checks, each of which rules one part of the path in or out:
 2. **The network.** Run the same command on a laptop on the same Wi-Fi, where
    the TV is. A UHD remux wants a steady 15 MB/s or more (120 Mbit/s) to have
    room for its peaks. If the PC got it and the laptop does not, it is the
-   network.
+   network. SAND TV's Stats panel shows the PC's own link beside the TV's (its
+   Server and Sending lines), which says whether the PC's end of it is the
+   narrow part without a laptop.
 
 3. **The device.** Play a copy that does not need the network: a few minutes
    cut out of the film without re-encoding,

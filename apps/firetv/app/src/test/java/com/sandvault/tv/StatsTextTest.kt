@@ -155,6 +155,7 @@ class StatsTextTest {
             Link(Link.Kind.WIFI, 5_180, 433, -58),
             heapUsedBytes = 212_000_000,
             heapMaxBytes = 256_000_000,
+            server = StatsText.ServerLink(StatsText.ServerLink.Kind.ETHERNET, "enp5s0", linkMbps = 1000, sendBitsPerSecond = 36_240_000),
         ).toMap()
 
         assertEquals("96.1 Mb/s while fetching · fetching 55% of the time", rows["Download"])
@@ -166,7 +167,50 @@ class StatsTextTest {
         assertEquals("HEVC 3840×2160 · hardware (OMX.MTK.VIDEO.DECODER.HEVC)", rows["Video"])
         assertEquals("TrueHD 7.1 · passed through", rows["Audio"])
         assertEquals("Wi-Fi 5 GHz · 433 Mb/s link · −58 dBm", rows["Network"])
+        assertEquals("Ethernet · 1000 Mb/s link", rows["Server"])
+        assertEquals("36.2 Mb/s, the film and anything else", rows["Sending"])
         assertEquals("app 212 MB of 256 MB", rows["Memory"])
+    }
+
+    @Test
+    fun theServersLinesSitUnderTheTVsOwn() {
+        val names = StatsText.rows(report(), StatsText.Playing(), Link(Link.Kind.WIFI), 1, 2).map { it.first }
+        assertEquals(listOf("Network", "Server", "Sending", "Memory"), names.subList(names.indexOf("Network"), names.size))
+    }
+
+    @Test
+    fun theServersLinkReadsLikeTheTVs() {
+        val wifi = StatsText.ServerLink(StatsText.ServerLink.Kind.WIFI, "wlp4s0", linkMbps = 72, frequencyMhz = 2_437, signalDbm = -67)
+        assertEquals("Wi-Fi 2.4 GHz · 72 Mb/s link · −67 dBm", StatsText.serverLink(wifi))
+        // Windows says the rate but not the band or the signal.
+        assertEquals("Wi-Fi · 866 Mb/s link", StatsText.serverLink(StatsText.ServerLink(StatsText.ServerLink.Kind.WIFI, linkMbps = 866)))
+        assertEquals("Ethernet · 100 Mb/s link", StatsText.serverLink(StatsText.ServerLink(StatsText.ServerLink.Kind.ETHERNET, linkMbps = 100)))
+        assertEquals("Ethernet", StatsText.serverLink(StatsText.ServerLink(StatsText.ServerLink.Kind.ETHERNET)))
+        assertEquals("virtual (docker0)", StatsText.serverLink(StatsText.ServerLink(StatsText.ServerLink.Kind.VIRTUAL, "docker0")))
+        assertEquals("virtual", StatsText.serverLink(StatsText.ServerLink(StatsText.ServerLink.Kind.VIRTUAL)))
+        assertEquals("loopback", StatsText.serverLink(StatsText.ServerLink(StatsText.ServerLink.Kind.LOOPBACK, "lo")))
+        assertEquals("unknown (en0)", StatsText.serverLink(StatsText.ServerLink(StatsText.ServerLink.Kind.UNKNOWN, "en0")))
+        assertEquals("—", StatsText.serverLink(null))
+    }
+
+    @Test
+    fun theServersWordsForAnInterface() {
+        assertEquals(StatsText.ServerLink.Kind.ETHERNET, StatsText.serverKind("ethernet"))
+        assertEquals(StatsText.ServerLink.Kind.WIFI, StatsText.serverKind("wifi"))
+        assertEquals(StatsText.ServerLink.Kind.VIRTUAL, StatsText.serverKind("virtual"))
+        assertEquals(StatsText.ServerLink.Kind.LOOPBACK, StatsText.serverKind("loopback"))
+        // Anything a newer server says that this app does not know yet.
+        assertEquals(StatsText.ServerLink.Kind.UNKNOWN, StatsText.serverKind("unknown"))
+        assertEquals(StatsText.ServerLink.Kind.UNKNOWN, StatsText.serverKind("fibre"))
+        assertEquals(StatsText.ServerLink.Kind.UNKNOWN, StatsText.serverKind(""))
+    }
+
+    @Test
+    fun theSendRateWaitsForTheServerToKnowIt() {
+        val first = StatsText.ServerLink(StatsText.ServerLink.Kind.ETHERNET, linkMbps = 1000)
+        assertEquals("—", StatsText.rows(report(), StatsText.Playing(), null, 0, 0, server = first).toMap()["Sending"])
+        val idle = first.copy(sendBitsPerSecond = 0)
+        assertEquals("0 kb/s, the film and anything else", StatsText.rows(report(), StatsText.Playing(), null, 0, 0, server = idle).toMap()["Sending"])
     }
 
     @Test
@@ -187,6 +231,8 @@ class StatsTextTest {
         assertEquals("—", rows["Video"])
         assertEquals("TrueHD 7.1 · software (FFmpeg)", rows["Audio"])
         assertEquals("—", rows["Network"])
+        assertEquals("a server that has not answered", "—", rows["Server"])
+        assertEquals("—", rows["Sending"])
         assertFalse("no memory line when the heap is not known", rows.containsKey("Memory"))
     }
 }

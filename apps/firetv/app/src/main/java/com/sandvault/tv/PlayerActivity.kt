@@ -41,6 +41,9 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.SubtitleView
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.abs
 
@@ -112,6 +115,18 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
     private var audioUnderruns = 0L
     private var link: StatsText.Link? = null
     private var linkReadAt = 0L
+
+    /**
+     * How the server is connected, asked of it every few seconds while the
+     * Stats panel is showing — never with the panel shut, never from the
+     * background, and never two questions at once (see fetchServerLink).
+     */
+    private val serverLinkUrl by lazy { ServerAddress.networkUrl(intent.getStringExtra(EXTRA_URL) ?: "") }
+    private var serverLink: StatsText.ServerLink? = null
+    private var serverLinkAskedAt = 0L
+    private var serverLinkAsking = false
+    private var asker: ExecutorService? = null
+    private var started = false
 
     /** The button whose menu is open, to give focus back to when it closes. */
     private var opener: View? = null
@@ -475,6 +490,11 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
     private fun toggleStats() {
         val showing = !statsPanel.isShowing
         statsPanel.visibility = if (showing) View.VISIBLE else View.GONE
+        if (!showing) {
+            // Opened again later, it starts afresh rather than from an old answer.
+            serverLink = null
+            serverLinkAskedAt = 0L
+        }
         if (showing) showStats()
         showOsd(if (showing) "Stats on" else "Stats off")
     }
@@ -504,6 +524,7 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
 
     private fun showStats() {
         val p = player ?: return
+        askServerLink()
         val report = stats.report()
         val connection = currentLink()
         val runtime = Runtime.getRuntime()
@@ -519,7 +540,10 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
         statsPanel.show(
             StatsText.headline(report, connection),
             StatsText.isProblem(report),
-            StatsText.rows(report, playing, connection, runtime.totalMemory() - runtime.freeMemory(), runtime.maxMemory()),
+            StatsText.rows(
+                report, playing, connection, runtime.totalMemory() - runtime.freeMemory(), runtime.maxMemory(),
+                server = serverLink,
+            ),
         )
     }
 
@@ -531,6 +555,30 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
             linkReadAt = now
         }
         return link
+    }
+
+    /** Asks the server how it is connected, when the panel is showing and it is time to. */
+    private fun askServerLink() {
+        val url = serverLinkUrl ?: return
+        val now = SystemClock.elapsedRealtime()
+        if (!started || serverLinkAsking) return
+        if (serverLinkAskedAt != 0L && now - serverLinkAskedAt < SERVER_LINK_EVERY_MS) return
+        val pool = asker ?: Executors.newSingleThreadExecutor().also { asker = it }
+        serverLinkAsking = true
+        serverLinkAskedAt = now
+        try {
+            pool.execute {
+                val answer = fetchServerLink(url)
+                handler.post {
+                    if (isDestroyed) return@post
+                    serverLinkAsking = false
+                    // Unless the panel was shut, and the answer with it, meanwhile.
+                    if (serverLinkAskedAt != 0L) serverLink = answer
+                }
+            }
+        } catch (_: RejectedExecutionException) {
+            serverLinkAsking = false
+        }
     }
 
     // --- The menus ------------------------------------------------------------
@@ -853,8 +901,14 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        started = true
+    }
+
     override fun onStop() {
         super.onStop()
+        started = false
         // Home, or the screensaver: pause rather than keep streaming to a TV
         // nobody is watching. Back to the app resumes from here.
         player?.playWhenReady = false
@@ -878,6 +932,8 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        asker?.shutdownNow()
+        asker = null
         player?.release()
         player = null
         super.onDestroy()
@@ -919,6 +975,12 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
 
         /** How often the Stats panel asks how the TV is connected. */
         private const val LINK_EVERY_MS = 5_000L
+
+        /**
+         * How often it asks the server how it is connected: often enough to
+         * follow a film, rarely enough that the server does not notice.
+         */
+        private const val SERVER_LINK_EVERY_MS = 5_000L
     }
 }
 

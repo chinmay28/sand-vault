@@ -201,6 +201,12 @@ and `changeServer`; the table above is the full set.)
   can use the bytes. Both are built explicitly so the Stats panel can see into
   them. A `TransferListener` counts the film's bytes, but not the subtitles',
   as they arrive.
+- **The server's link.** While the Stats panel is showing, and only then, the
+  player asks `GET /api/stream/{ticket}/network` every 5 s: on a thread of its
+  own, one question at a time, and not from the background. The stream's
+  ticket is the credential, being all the player holds. The server reads the
+  link of the interface the request came in on (`internal/netif`), at most
+  every 2 s however many TVs ask.
 - **Remembered settings.** Zoom, subtitle scale and the last audio and text
   languages are kept in the app's preferences and applied to the next film.
 
@@ -222,9 +228,10 @@ fetching. The film's bitrate is not known in advance (an MKV does not declare
 one), so it is measured as bytes per second of film buffered. A full buffer stops
 fetching, so only time spent fetching says anything about the link. Decoder
 verdicts require a cushion because frames dropped while waiting for data are the
-network's fault. The panel cannot tell Wi-Fi from the PC's uplink or the PC
-itself; [Streaming performance](streaming-performance.md) has the checks that
-can.
+network's fault. The verdict does not use the server's link: the panel shows
+it beside the TV's own, for the reader to set the two against each other. The
+Wi-Fi between them, and the PC itself, are for the checks in
+[Streaming performance](streaming-performance.md).
 
 ### Tested containers
 
@@ -268,7 +275,8 @@ Owner routes, behind the browser session:
 | `GET /api/tv/codes` | `{codes, addresses, discovery_port, lan}`: the live codes, the LAN addresses a TV could be pointed at, and `lan: false` on a loopback bind |
 | `DELETE /api/tv/codes/{code}` | Revoke |
 
-TV routes, with `Authorization: Bearer <token>` (except pairing):
+TV routes, with `Authorization: Bearer <token>` (except pairing, and the
+server's link, which takes the stream's ticket like the stream does):
 
 | Route | |
 |---|---|
@@ -278,6 +286,7 @@ TV routes, with `Authorization: Bearer <token>` (except pairing):
 | `GET /api/tv/items/{id}` | One video with its film details |
 | `GET /api/tv/items/{id}/poster` | The poster JPEG |
 | `POST /api/tv/items/{id}/play` | A `/stream/…` link bound to the code, and `subtitles: [{url, label, language, mime}]` |
+| `GET /api/stream/{ticket}/network` | How the server is connected: `{interface, kind, link_mbps, frequency_mhz, signal_dbm, send_bps, sampled_at}`, for Stats |
 | `GET /api/tv/folders/art?path=/sub` | A folder's picture |
 | `POST /api/tv/logout` | Unpair this TV |
 | `GET /tv/` | The TV page |

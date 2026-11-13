@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/chinmay28/SandHarbor/internal/davfs"
+	"github.com/chinmay28/SandHarbor/internal/netif"
 	"github.com/chinmay28/SandHarbor/internal/tvaccess"
 	"github.com/chinmay28/SandHarbor/internal/vault"
 	"github.com/chinmay28/SandHarbor/internal/version"
@@ -96,6 +97,10 @@ type Server struct {
 	vault    *vault.Vault
 	sessions *sessionStore
 	streams  *streamStore
+
+	// links reads the network interface a stream goes out through, for a
+	// TV's Stats panel. See stream_network.go.
+	links *netif.Sampler
 
 	// tv holds the four-character codes that open one folder to a TV, and
 	// the TVs paired under them. See handlers_tv.go.
@@ -297,6 +302,9 @@ func (s *Server) Handler() (http.Handler, error) {
 	if s.streams == nil {
 		s.streams = newStreamStore(0)
 	}
+	if s.links == nil {
+		s.links = netif.NewSampler(netif.ForAddress, streamNetworkEvery)
+	}
 	if s.oauthFlows == nil {
 		s.oauthFlows = newOAuthFlowStore()
 	}
@@ -415,6 +423,10 @@ func (s *Server) Handler() (http.Handler, error) {
 	// player asks for the length and the range support before the first byte.
 	mux.HandleFunc("GET /stream/{token}", s.handleStream)
 	mux.HandleFunc("GET /stream/{token}/{name}", s.handleStream)
+	// And how this machine is connected to the network the stream goes out
+	// over, for a TV's Stats panel — by the same bargain: the ticket is the
+	// credential. See stream_network.go.
+	mux.HandleFunc("GET /api/stream/{token}/network", s.handleStreamNetwork)
 
 	// A folder as one zip, by the same bargain: the ticket is the credential,
 	// because the archive is too big to come back down a fetch the page

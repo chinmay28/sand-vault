@@ -303,6 +303,7 @@ unlocked vault; **quiet** is a session check that does not count as use;
 | GET | `/api/files/{id}/content` | session | The file's bytes, ranged |
 | POST | `/api/files/{id}/stream` | session | Mint a stream link |
 | GET | `/stream/{token}`, `/stream/{token}/{name}` | ticket | Play a stream link |
+| GET | `/api/stream/{token}/network` | ticket | How the server is connected, for SAND TV's Stats panel |
 | GET · PUT | `/api/files/{id}/thumb` | session | Thumbnail |
 | GET | `/api/files/{id}/health` | session | Per-part reachability |
 | POST | `/api/files/{id}/move` | session | Rename or move a file |
@@ -909,6 +910,28 @@ demuxer from the extension); `/stream/{token}` works too. Served like
 | Keep-alive | Counts as vault activity while bytes are flowing; a paused player does not |
 
 Errors: `404 NO_TICKET`, `401 LOCKED`.
+
+#### GET /api/stream/{token}/network
+
+No session: the stream's ticket is the credential, refused as `404 NO_TICKET`
+wherever the stream itself would be. Says how the server is connected to the
+network the stream goes out over — the link of the interface the request came
+in on — for SAND TV's Stats panel, which asks every 5 s while it is open.
+→ `{interface?, kind, link_mbps?, frequency_mhz?, signal_dbm?, send_bps?,
+sampled_at}`:
+
+| Field | |
+|---|---|
+| `kind` | `ethernet`, `wifi`, `virtual` (a container's, a VPN's, a bridge over several ports), `loopback`, or `unknown` |
+| `link_mbps` | The rate the link runs at: what Ethernet negotiated, or what Wi-Fi is sending at |
+| `frequency_mhz`, `signal_dbm` | Wi-Fi's channel and signal, on Linux |
+| `send_bps` | How fast the interface is sending, in bits a second, everything on it included; from the second request on |
+
+What the system does not report is left out. The interface is read at most
+once every 2 s however many ask, and a bridge, VLAN or bond over one physical
+interface is reported as that interface. Linux and Windows report the link;
+other systems report the interface by name, as `unknown`. Behind a reverse
+proxy, the interface is the one the proxy reaches the server on.
 
 #### GET /api/reads/watch/{token}
 

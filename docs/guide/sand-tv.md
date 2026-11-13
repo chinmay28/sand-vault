@@ -166,13 +166,29 @@ Below the headline:
 | Underruns | Times the sound ran dry |
 | Video, Audio | The codec, and what decodes it: the TV's hardware, software (FFmpeg, for sound the TV has no decoder for), or *passed through* to the TV or a receiver |
 | Network | Wi-Fi with band, link rate and signal; or Ethernet, with its rate where the system reports it |
+| Server | The same for the PC SAND runs on, as SAND reports it: Ethernet with its rate, or Wi-Fi with the rate it is sending at (and its band and signal, from a Linux PC). *virtual* is a container's or a VPN's interface, whose rate is not a wire's. Asked every five seconds while Stats is showing, and not otherwise. |
+| Sending | How fast the PC is sending over that link: the film and anything else. It shows from the second answer, five seconds in. |
 | Memory | The app's memory use, of what it is allowed |
 
 Rates are over the last ten seconds, so they follow what is playing now; a seek
-restarts them, and *Measuring…* shows for the first few seconds. The panel sees
-only what the stick sees: when the network is the limit, it cannot tell the Wi-Fi
-from the PC's own connection or the PC itself. Three checks that tell them apart
-are in [Streaming performance](../design/streaming-performance.md).
+restarts them, and *Measuring…* shows for the first few seconds.
+
+When the network is the limit, **Server** and **Sending** say whether the PC's
+own link is the narrow part, and Film says what the film needs:
+
+- **Ethernet at 1000 Mb/s, and Sending about what Download says.** The PC's link
+  has room to spare. The narrow part is further along: the Wi-Fi, the router or
+  the stick.
+- **Ethernet at 100 Mb/s.** A cable, port or switch that settled for 10/100.
+  About 94 Mb/s gets through, and a UHD Blu-ray's peaks need more.
+- **Wi-Fi.** About half the link rate gets through in practice. With Sending near
+  half of Server's rate, the PC's Wi-Fi is the limit: wire the PC to the router.
+- **Sending well above Download.** Something else on the PC is sending over the
+  same link, such as a backup or another stream, and the film gets what is left.
+
+Server and Sending need an up-to-date SAND server; an older one leaves them at
+—. The PC itself, as against its link, is ruled in or out by the checks in
+[Streaming performance](../design/streaming-performance.md).
 
 ## What plays
 
