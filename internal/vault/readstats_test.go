@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/provider"
 )
 
 // The race a read runs is a measurement of the accounts, taken hundreds of

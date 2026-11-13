@@ -244,7 +244,7 @@ and [guide/deployment.md](guide/deployment.md).
 ## Project structure
 
 ```
-sand-vault/
+SandHarbor/
 ├── cmd/
 │   └── sand/                 the `sand` CLI and server entry point (cobra): serve, vault,
 │                             sub, remote, ls/find/put/get/rm/mkdir/mv/relocate/check,

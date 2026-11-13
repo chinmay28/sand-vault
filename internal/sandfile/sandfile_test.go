@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chinmay28/sand-vault/internal/crypto"
+	"github.com/chinmay28/SandHarbor/internal/crypto"
 )
 
 func testKey() []byte { return bytes.Repeat([]byte{0x2B}, 32) }

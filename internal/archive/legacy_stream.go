@@ -7,10 +7,10 @@ import (
 	"hash"
 	"io"
 
-	"github.com/chinmay28/sand-vault/internal/compress"
-	"github.com/chinmay28/sand-vault/internal/crypto"
-	"github.com/chinmay28/sand-vault/internal/sandfile"
-	"github.com/chinmay28/sand-vault/internal/splitter"
+	"github.com/chinmay28/SandHarbor/internal/compress"
+	"github.com/chinmay28/SandHarbor/internal/crypto"
+	"github.com/chinmay28/SandHarbor/internal/sandfile"
+	"github.com/chinmay28/SandHarbor/internal/splitter"
 )
 
 // Reading a pre-chunking archive without holding it all.

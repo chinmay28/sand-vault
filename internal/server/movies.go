@@ -7,9 +7,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/chinmay28/sand-vault/internal/movie"
-	"github.com/chinmay28/sand-vault/internal/thumb"
-	"github.com/chinmay28/sand-vault/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/movie"
+	"github.com/chinmay28/SandHarbor/internal/thumb"
+	"github.com/chinmay28/SandHarbor/internal/vault"
 )
 
 // Matching a folder of videos against the film database is orchestration, and

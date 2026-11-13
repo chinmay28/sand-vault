@@ -98,7 +98,7 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           mkdir -p dist
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath \
-            -ldflags="-s -w -X github.com/chinmay28/sand-vault/internal/version.Patch=${{ steps.version.outputs.patch }} -X github.com/chinmay28/sand-vault/internal/version.Date=${{ steps.version.outputs.date }}" \
+            -ldflags="-s -w -X github.com/chinmay28/SandHarbor/internal/version.Patch=${{ steps.version.outputs.patch }} -X github.com/chinmay28/SandHarbor/internal/version.Date=${{ steps.version.outputs.date }}" \
             -o "dist/sand-${VERSION}-linux-arm64" ./cmd/sand
 
       # The SAND TV app, stamped with this release's version. Attached under a

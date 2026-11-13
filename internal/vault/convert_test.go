@@ -15,7 +15,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/chinmay28/sand-vault/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/provider"
 )
 
 // convertPeak reports the most heap live at any moment during work.

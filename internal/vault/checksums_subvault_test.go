@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/chinmay28/sand-vault/internal/archive"
-	"github.com/chinmay28/sand-vault/internal/checksums"
+	"github.com/chinmay28/SandHarbor/internal/archive"
+	"github.com/chinmay28/SandHarbor/internal/checksums"
 )
 
 func ledgerOf(t *testing.T, v *Vault, scope Scope) (*Entry, map[string]string) {

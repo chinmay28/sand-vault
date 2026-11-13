@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/crypto"
-	"github.com/chinmay28/sand-vault/internal/snapshot"
+	"github.com/chinmay28/SandHarbor/internal/crypto"
+	"github.com/chinmay28/SandHarbor/internal/snapshot"
 )
 
 // Each key in these tests is a few kilobytes of work rather than half a

@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/vault"
 )
 
 // The paced re-encryption, from the server's side.

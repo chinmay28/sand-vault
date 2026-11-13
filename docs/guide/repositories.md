@@ -9,9 +9,9 @@ and spread over your clouds like any other file. How the index records it is in
 ## Tracking a repository
 
 ```bash
-sand git track https://github.com/chinmay28/sand-vault.git --into /code
-# Mirroring https://github.com/chinmay28/sand-vault.git — the first copy is the whole history.
-# Stored /code/sand-vault.bundle (14.2 MB, 47 refs, 1841 commits) in 12s.
+sand git track https://github.com/chinmay28/SandHarbor.git --into /code
+# Mirroring https://github.com/chinmay28/SandHarbor.git — the first copy is the whole history.
+# Stored /code/SandHarbor.bundle (14.2 MB, 47 refs, 1841 commits) in 12s.
 
 sand git track git@github.com:me/private.git --into /code --accounts a,b,c --scheme 2-of-3
 ```
@@ -22,7 +22,7 @@ The bundle is named after the repository. In the browser, open the folder, click
 Getting it back needs nothing from SAND Vault except the download:
 
 ```bash
-sand get /code/sand-vault.bundle -o ./recovered.bundle
+sand get /code/SandHarbor.bundle -o ./recovered.bundle
 git clone ./recovered.bundle
 ```
 
@@ -33,9 +33,9 @@ has a deadline.
 
 ```bash
 sand git list /code                       # what is stored under a folder
-sand git refresh /code/sand-vault.bundle  # one repository
+sand git refresh /code/SandHarbor.bundle  # one repository
 sand git refresh /code --all              # everything under a folder
-sand git untrack /code/sand-vault.bundle  # stop following; the bundle stays
+sand git untrack /code/SandHarbor.bundle  # stop following; the bundle stays
 ```
 
 A refresh first asks the upstream whether anything has moved. That is one short
@@ -97,9 +97,9 @@ You'll find it in a repository file's **⋯** menu, under **Repositories kept
 here**, and on its row in the **Files missing a part** list.
 
 ```bash
-sand git rebuild /code/sand-vault.bundle --accounts box,s3,drive
-# Mirroring https://github.com/chinmay28/sand-vault.git afresh — the whole history comes down, and the stored copy is not read.
-# Stored /code/sand-vault.bundle afresh (14.2 MB, 47 refs, 1841 commits) in 14s.
+sand git rebuild /code/SandHarbor.bundle --accounts box,s3,drive
+# Mirroring https://github.com/chinmay28/SandHarbor.git afresh — the whole history comes down, and the stored copy is not read.
+# Stored /code/SandHarbor.bundle afresh (14.2 MB, 47 refs, 1841 commits) in 14s.
 ```
 
 `--accounts` is required. `--scheme` defaults to the code that number of

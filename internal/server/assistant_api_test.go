@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/chinmay28/sand-vault/internal/movie"
+	"github.com/chinmay28/SandHarbor/internal/movie"
 )
 
 // A stand-in for the model server, speaking the chat completions protocol

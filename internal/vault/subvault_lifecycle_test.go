@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chinmay28/sand-vault/internal/movie"
+	"github.com/chinmay28/SandHarbor/internal/movie"
 )
 
 // A file assigned into a sub vault stays on the main vault's key generation

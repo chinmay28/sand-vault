@@ -3,7 +3,7 @@ package vault
 import (
 	"fmt"
 
-	"github.com/chinmay28/sand-vault/internal/archive"
+	"github.com/chinmay28/SandHarbor/internal/archive"
 )
 
 // A sub vault's default clouds.

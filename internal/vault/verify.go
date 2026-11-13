@@ -12,10 +12,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/chinmay28/sand-vault/internal/archive"
-	"github.com/chinmay28/sand-vault/internal/crypto"
-	"github.com/chinmay28/sand-vault/internal/filecheck"
-	"github.com/chinmay28/sand-vault/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/archive"
+	"github.com/chinmay28/SandHarbor/internal/crypto"
+	"github.com/chinmay28/SandHarbor/internal/filecheck"
+	"github.com/chinmay28/SandHarbor/internal/provider"
 )
 
 // Finding the files that do not come back right, and putting right the ones

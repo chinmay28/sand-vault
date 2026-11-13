@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/vault"
 )
 
 // emptyAccountFolder removes everything in one account's folder and keeps the

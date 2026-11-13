@@ -54,7 +54,7 @@ hardened systemd service on `http://<host>:8123`, and re-running it upgrades
 in place, with a vault snapshot and automatic rollback:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/chinmay28/sand-vault/main/scripts/quickstart.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/chinmay28/SandHarbor/main/scripts/quickstart.sh | sudo bash
 ```
 
 That builds from source. On a 64-bit Raspberry Pi (linux/arm64), add

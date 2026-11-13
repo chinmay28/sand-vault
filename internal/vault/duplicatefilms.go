@@ -4,7 +4,7 @@ import (
 	"slices"
 	"strconv"
 
-	"github.com/chinmay28/sand-vault/internal/movie"
+	"github.com/chinmay28/SandHarbor/internal/movie"
 )
 
 // The same film, twice, under names that share nothing.

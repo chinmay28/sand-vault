@@ -22,7 +22,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/chinmay28/sand-vault/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/provider"
 )
 
 // handleProtonSignIn starts a Proton sign-in and returns straight away with a

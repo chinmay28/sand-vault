@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/provider"
 )
 
 // dawdlingBackend is a cloud that answers every ping, but only after a while

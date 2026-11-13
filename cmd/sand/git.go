@@ -7,8 +7,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/chinmay28/sand-vault/internal/git"
-	"github.com/chinmay28/sand-vault/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/git"
+	"github.com/chinmay28/SandHarbor/internal/vault"
 )
 
 // The repositories a vault is keeping a copy of, from the command line.
@@ -29,10 +29,10 @@ It is a git bundle: the whole history, every branch and every tag, in one file
 that "git clone" reads directly. That is what makes it worth keeping — the copy
 needs SAND to be made and stored, and nothing at all to be used again.
 
-  sand git track https://github.com/chinmay28/sand-vault.git --into /code
+  sand git track https://github.com/chinmay28/SandHarbor.git --into /code
   sand git list /code
-  sand git refresh /code/sand-vault.bundle
-  sand git rebuild /code/sand-vault.bundle --accounts a,b,c
+  sand git refresh /code/SandHarbor.bundle
+  sand git rebuild /code/SandHarbor.bundle --accounts a,b,c
 
 Refreshing is cheap when nothing has changed. The upstream is asked what refs it
 has, which is a few kilobytes and no objects at all; only a repository that has
@@ -63,10 +63,10 @@ func gitTrackCmd() *cobra.Command {
 The whole history comes down once, which for a large project is the expensive
 part; every refresh after it costs only the difference. The bundle is stored
 like any other file — same accounts, same erasure code, same encryption — and
-is named after the repository, so /code holds sand-vault.bundle rather than a
+is named after the repository, so /code holds SandHarbor.bundle rather than a
 row of identifiers.
 
-  sand git track https://github.com/chinmay28/sand-vault.git --into /code
+  sand git track https://github.com/chinmay28/SandHarbor.git --into /code
   sand git track git@github.com:me/private.git --into /code --accounts a,b,c`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -156,7 +156,7 @@ func gitRefreshCmd() *cobra.Command {
 Asking is cheap — a few kilobytes of ref advertisement, no objects — so a
 repository that has not changed costs almost nothing and says so.
 
-  sand git refresh /code/sand-vault.bundle
+  sand git refresh /code/SandHarbor.bundle
   sand git refresh /code --all`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -261,8 +261,8 @@ reads is no reason to refuse putting it on other clouds from the upstream —
 and it costs what the first copy cost, so it is not the way to keep one
 current. That is 'sand git refresh'.
 
-  sand git rebuild /code/sand-vault.bundle --accounts box,s3,drive
-  sand git rebuild /code/sand-vault.bundle --accounts a,b,c,d,e --scheme 3-of-5`,
+  sand git rebuild /code/SandHarbor.bundle --accounts box,s3,drive
+  sand git rebuild /code/SandHarbor.bundle --accounts a,b,c,d,e --scheme 3-of-5`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !git.Available() {

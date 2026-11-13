@@ -1149,7 +1149,7 @@ remembering its upstream. The first copy is the whole history; later refreshes
 cost only the difference.
 
 ```bash
-sand git track https://github.com/chinmay28/sand-vault.git --into /code
+sand git track https://github.com/chinmay28/SandHarbor.git --into /code
 sand git track git@github.com:me/private.git --into /code --accounts a,b,c
 ```
 

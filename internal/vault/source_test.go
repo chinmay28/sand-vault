@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chinmay28/sand-vault/internal/provider"
-	"github.com/chinmay28/sand-vault/internal/sftp/sftptest"
+	"github.com/chinmay28/SandHarbor/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/sftp/sftptest"
 )
 
 // testSource starts a server, seeds a tree under it, and returns a Source

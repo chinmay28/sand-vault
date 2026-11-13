@@ -6,7 +6,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/chinmay28/sand-vault/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/vault"
 	"golang.org/x/net/webdav"
 )
 

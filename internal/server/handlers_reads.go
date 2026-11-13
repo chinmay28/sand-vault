@@ -3,7 +3,7 @@ package server
 import (
 	"net/http"
 
-	"github.com/chinmay28/sand-vault/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/vault"
 )
 
 // Which cloud has been answering the reads.

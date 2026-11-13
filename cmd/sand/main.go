@@ -13,7 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/chinmay28/sand-vault/internal/version"
+	"github.com/chinmay28/SandHarbor/internal/version"
 )
 
 func main() {

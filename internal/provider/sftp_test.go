@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chinmay28/sand-vault/internal/sftp/sftptest"
+	"github.com/chinmay28/SandHarbor/internal/sftp/sftptest"
 )
 
 // connectSFTP builds an SFTP backend pointed at a server started for the test,

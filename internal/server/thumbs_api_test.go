@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/chinmay28/sand-vault/internal/thumb"
+	"github.com/chinmay28/SandHarbor/internal/thumb"
 )
 
 // samplePNG is what the browser hands the server: a small picture it drew on a

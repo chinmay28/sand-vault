@@ -8,7 +8,7 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/chinmay28/sand-vault/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/vault"
 )
 
 // giveThumb stores a picture for a file the way the browser does.

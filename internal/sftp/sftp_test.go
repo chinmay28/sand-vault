@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chinmay28/sand-vault/internal/sftp/sftptest"
+	"github.com/chinmay28/SandHarbor/internal/sftp/sftptest"
 )
 
 // dialTest builds a Config pointed at a test server, with a key it accepts.

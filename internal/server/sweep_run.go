@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"sort"
 
-	"github.com/chinmay28/sand-vault/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/vault"
 )
 
 // The orphan sweep as something that runs on its own, rather than inside the

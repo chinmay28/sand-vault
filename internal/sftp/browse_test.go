@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chinmay28/sand-vault/internal/sftp/sftptest"
+	"github.com/chinmay28/SandHarbor/internal/sftp/sftptest"
 )
 
 // browseFixture starts a server over a tree and returns a client, the root the

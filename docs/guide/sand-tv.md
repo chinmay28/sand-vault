@@ -22,11 +22,11 @@ API it uses) is in [SAND TV design](../design/sand-tv.md).
 ## Install the app
 
 The app is not in the Amazon Appstore, so it is sideloaded. Every
-[release](https://github.com/chinmay28/sand-vault/releases) attaches it as
+[release](https://github.com/chinmay28/SandHarbor/releases) attaches it as
 `sand-tv.apk`, and the latest is always at:
 
 ```
-https://github.com/chinmay28/sand-vault/releases/latest/download/sand-tv.apk
+https://github.com/chinmay28/SandHarbor/releases/latest/download/sand-tv.apk
 ```
 
 1. **Allow sideloading.** On the Fire TV, go to *Settings → My Fire TV →

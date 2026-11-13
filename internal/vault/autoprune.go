@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/provider"
 )
 
 // Pruning on a schedule, for the accounts that asked for it.

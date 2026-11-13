@@ -6,7 +6,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/chinmay28/sand-vault/internal/archive"
+	"github.com/chinmay28/SandHarbor/internal/archive"
 )
 
 // replicatedFile is one file uploaded onto the first three of a replica

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chinmay28/sand-vault/internal/sftp/sftptest"
+	"github.com/chinmay28/SandHarbor/internal/sftp/sftptest"
 	"golang.org/x/crypto/ssh"
 )
 

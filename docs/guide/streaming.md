@@ -84,7 +84,7 @@ On the systemd service from the quickstart, set `SAND_WEBDAV=1`, either at insta
 or by re-running the quickstart, which keeps every other setting:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/chinmay28/sand-vault/main/scripts/quickstart.sh \
+curl -fsSL https://raw.githubusercontent.com/chinmay28/SandHarbor/main/scripts/quickstart.sh \
   | sudo SAND_WEBDAV=1 bash
 ```
 

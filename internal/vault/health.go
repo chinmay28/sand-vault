@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/provider"
 )
 
 // Whether the clouds are still there, asked on a schedule rather than when

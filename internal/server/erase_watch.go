@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/chinmay28/sand-vault/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/vault"
 )
 
 // Where a recursive folder delete has got to, while it is still getting there.

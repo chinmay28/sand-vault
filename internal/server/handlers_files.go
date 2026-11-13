@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/archive"
-	"github.com/chinmay28/sand-vault/internal/thumb"
-	"github.com/chinmay28/sand-vault/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/archive"
+	"github.com/chinmay28/SandHarbor/internal/thumb"
+	"github.com/chinmay28/SandHarbor/internal/vault"
 )
 
 // contextWithTimeout derives a request-scoped context so a hung provider

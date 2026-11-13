@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/movie"
-	"github.com/chinmay28/sand-vault/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/movie"
+	"github.com/chinmay28/SandHarbor/internal/vault"
 )
 
 // scanTimeout is the ceiling on one folder sweep.

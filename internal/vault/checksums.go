@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/checksums"
+	"github.com/chinmay28/SandHarbor/internal/checksums"
 )
 
 // Checksums: one per file, a ledger of them, and two jobs that use them.

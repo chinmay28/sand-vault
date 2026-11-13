@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/chinmay28/sand-vault/internal/provider/s3test"
+	"github.com/chinmay28/SandHarbor/internal/provider/s3test"
 )
 
 // A versioned bucket keeps what a plain listing hides: every Put and every

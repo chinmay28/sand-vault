@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/assistant"
-	"github.com/chinmay28/sand-vault/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/assistant"
+	"github.com/chinmay28/SandHarbor/internal/vault"
 )
 
 // The assistant over HTTP: where its model is, and one question at a time.

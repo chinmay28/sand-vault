@@ -11,7 +11,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/chinmay28/sand-vault/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/provider"
 )
 
 // disconnectAndReconnect plays out the thing this whole file exists for: an

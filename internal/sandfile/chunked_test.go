@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/chinmay28/sand-vault/internal/crypto"
+	"github.com/chinmay28/SandHarbor/internal/crypto"
 )
 
 // chunkIndexOffset is where the chunk index sits in a version 3 header:

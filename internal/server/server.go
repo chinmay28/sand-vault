@@ -29,10 +29,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/davfs"
-	"github.com/chinmay28/sand-vault/internal/tvaccess"
-	"github.com/chinmay28/sand-vault/internal/vault"
-	"github.com/chinmay28/sand-vault/internal/version"
+	"github.com/chinmay28/SandHarbor/internal/davfs"
+	"github.com/chinmay28/SandHarbor/internal/tvaccess"
+	"github.com/chinmay28/SandHarbor/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/version"
 )
 
 //go:embed all:dist

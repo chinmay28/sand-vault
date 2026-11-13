@@ -3,7 +3,7 @@ package server
 import (
 	"testing"
 
-	"github.com/chinmay28/sand-vault/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/vault"
 )
 
 func TestEraseWatchWindowLifecycle(t *testing.T) {

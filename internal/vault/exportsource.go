@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	sandsftp "github.com/chinmay28/sand-vault/internal/sftp"
+	sandsftp "github.com/chinmay28/SandHarbor/internal/sftp"
 )
 
 // Sending files back out to a machine, which is the one direction this package

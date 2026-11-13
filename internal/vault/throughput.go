@@ -5,7 +5,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/provider"
 )
 
 // Throughput: how fast the vault moves data, in the units a connection is

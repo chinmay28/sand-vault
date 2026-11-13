@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/chinmay28/sand-vault/internal/provider/s3test"
+	"github.com/chinmay28/SandHarbor/internal/provider/s3test"
 )
 
 // The scenario over HTTP: a vault on buckets that keep every version, a file

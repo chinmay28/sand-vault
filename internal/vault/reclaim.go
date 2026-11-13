@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/chinmay28/sand-vault/internal/crypto"
+	"github.com/chinmay28/SandHarbor/internal/crypto"
 )
 
 // Taking ownership of files that were recovered rather than uploaded.

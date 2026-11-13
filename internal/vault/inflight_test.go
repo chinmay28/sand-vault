@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/provider"
 )
 
 func TestArchiveFlightsHoldOutlastsTheRelease(t *testing.T) {

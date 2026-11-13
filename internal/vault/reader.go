@@ -8,8 +8,8 @@ import (
 	"io"
 	"sync"
 
-	"github.com/chinmay28/sand-vault/internal/crypto"
-	"github.com/chinmay28/sand-vault/internal/provider"
+	"github.com/chinmay28/SandHarbor/internal/crypto"
+	"github.com/chinmay28/SandHarbor/internal/provider"
 )
 
 // DefaultChunkCacheBytes is how much decrypted chunk data one vault keeps in

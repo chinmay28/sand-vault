@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chinmay28/sand-vault/internal/vault"
+	"github.com/chinmay28/SandHarbor/internal/vault"
 	"github.com/google/uuid"
 )
 

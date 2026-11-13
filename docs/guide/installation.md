@@ -14,7 +14,7 @@ and Go are needed only to *build* it; the running server needs neither.
 One command, run as root, installs SAND Vault as a hardened systemd service:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/chinmay28/sand-vault/main/scripts/quickstart.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/chinmay28/SandHarbor/main/scripts/quickstart.sh | sudo bash
 ```
 
 It needs systemd, and installs anything else it is missing through `apt-get`.
@@ -61,7 +61,7 @@ SSH session does not stop the install, so look there for how it ended.
 Pass variables between `sudo` and `bash`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/chinmay28/sand-vault/main/scripts/quickstart.sh \
+curl -fsSL https://raw.githubusercontent.com/chinmay28/SandHarbor/main/scripts/quickstart.sh \
   | sudo HOST=127.0.0.1 PORT=9000 SAND_WEBDAV=1 bash
 ```
 
@@ -96,7 +96,7 @@ The prefix cannot be under `/home`, `/root` or `/run/user`. The unit sets
 ### Prebuilt release instead of a build
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/chinmay28/sand-vault/main/scripts/quickstart.sh \
+curl -fsSL https://raw.githubusercontent.com/chinmay28/SandHarbor/main/scripts/quickstart.sh \
   | sudo SAND_INSTALL=release bash
 ```
 
@@ -157,8 +157,8 @@ You need Go 1.25 or later (`go.mod` pins the toolchain, which Go fetches
 itself) and Node.js 18 or later.
 
 ```bash
-git clone https://github.com/chinmay28/sand-vault.git
-cd sand-vault
+git clone https://github.com/chinmay28/SandHarbor.git
+cd SandHarbor
 make build          # web client, then the binary that embeds it
 ./sand version
 ```
@@ -266,7 +266,7 @@ are called out there.
 ## Uninstalling
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/chinmay28/sand-vault/main/scripts/quickstart.sh \
+curl -fsSL https://raw.githubusercontent.com/chinmay28/SandHarbor/main/scripts/quickstart.sh \
   | sudo bash -s -- --uninstall
 ```
 

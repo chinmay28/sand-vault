@@ -86,7 +86,7 @@ so pipe two lines on stdin instead.
 | Variable | Default | Meaning |
 |---|---|---|
 | `SAND_INSTALL` | `source` | `source` builds here; `release` downloads the prebuilt binary (linux/arm64 only today) |
-| `SAND_REPO` | `https://github.com/chinmay28/sand-vault.git` | Repository to clone |
+| `SAND_REPO` | `https://github.com/chinmay28/SandHarbor.git` | Repository to clone |
 | `SAND_REF` | `main` | Branch, tag or commit (source mode) |
 | `SAND_RELEASE` | `latest` | Release tag (release mode) |
 | `PORT` † | `8123` | `--port` |

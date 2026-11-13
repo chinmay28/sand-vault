@@ -8,11 +8,11 @@
 # and SAND_* variables all stay on `sand` so an existing install keeps upgrading
 # in place rather than needing a migration.
 #
-#   curl -fsSL https://raw.githubusercontent.com/chinmay28/sand-vault/main/scripts/quickstart.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/chinmay28/SandHarbor/main/scripts/quickstart.sh | sudo bash
 #
 # and the same command with a flag takes it off again, keeping the vault:
 #
-#   curl -fsSL https://raw.githubusercontent.com/chinmay28/sand-vault/main/scripts/quickstart.sh | sudo bash -s -- --uninstall
+#   curl -fsSL https://raw.githubusercontent.com/chinmay28/SandHarbor/main/scripts/quickstart.sh | sudo bash -s -- --uninstall
 #
 # Two ways to get the binary — SAND_INSTALL picks one:
 #
@@ -68,7 +68,7 @@
 # Configure via environment variables (all optional):
 #
 #   SAND_INSTALL     source | release        where the binary comes from (default: source)
-#   SAND_REPO        git URL to clone        (default: https://github.com/chinmay28/sand-vault.git)
+#   SAND_REPO        git URL to clone        (default: https://github.com/chinmay28/SandHarbor.git)
 #   SAND_REF         branch/tag/commit       (default: main; source mode)
 #   SAND_RELEASE     latest | <tag>          release to install (default: latest; release mode)
 #   SAND_USER        service system user     (default: sand)
@@ -205,7 +205,7 @@ case "$INSTALL_MODE" in
   source | release) ;;
   *) die "SAND_INSTALL must be 'source' or 'release' (got '$INSTALL_MODE')." ;;
 esac
-SAND_REPO="${SAND_REPO:-https://github.com/chinmay28/sand-vault.git}"
+SAND_REPO="${SAND_REPO:-https://github.com/chinmay28/SandHarbor.git}"
 SAND_REF="${SAND_REF:-main}"
 RELEASE_TAG="${SAND_RELEASE:-latest}"
 SERVICE_NAME="sand"
@@ -563,7 +563,7 @@ if [ "$UNINSTALL" = 1 ]; then
   # only when it is the clone this script manages, and bin loses the files
   # this script put there and is removed only if that empties it.
   if [ -d "$PREFIX" ]; then
-    if [ -d "$SRC_DIR/.git" ] && grep -q 'module github.com/chinmay28/sand-vault' "$SRC_DIR/go.mod" 2>/dev/null; then
+    if [ -d "$SRC_DIR/.git" ] && grep -qE '^module github.com/chinmay28/(SandHarbor|sand-vault)$' "$SRC_DIR/go.mod" 2>/dev/null; then
       rm -rf "${SRC_DIR:?}"
     elif [ -e "$SRC_DIR" ]; then
       warn "kept $SRC_DIR — it is not the clone this script manages."
@@ -629,7 +629,7 @@ if [ "$INSTALL_MODE" = source ] && [ -f "$SELF_FILE" ]; then
   SELF_DIR="$(cd "$(dirname "$SELF_FILE")" >/dev/null 2>&1 && pwd)"
   if top="$(git -C "$SELF_DIR" rev-parse --show-toplevel 2>/dev/null)" \
      && [ -f "$top/go.mod" ] \
-     && grep -q 'module github.com/chinmay28/sand-vault' "$top/go.mod" 2>/dev/null; then
+     && grep -qE '^module github.com/chinmay28/(SandHarbor|sand-vault)$' "$top/go.mod" 2>/dev/null; then
     LOCAL_CHECKOUT="$top"
     SRC_DIR="$CHECKOUT_DIR"   # a copy of the checkout, built and served from here
   fi
@@ -924,7 +924,7 @@ deploy_to() {
 RELEASE_VERSION=""
 if [ "$INSTALL_MODE" = release ]; then
   arch="$(release_arch)"
-  api="https://api.github.com/repos/chinmay28/sand-vault/releases"
+  api="https://api.github.com/repos/chinmay28/SandHarbor/releases"
   if [ "$RELEASE_TAG" = latest ]; then
     api="$api/latest"
   else
@@ -936,7 +936,7 @@ if [ "$INSTALL_MODE" = release ]; then
   [ -n "$RELEASE_VERSION" ] || die "could not determine the release tag."
 
   asset="sand-${RELEASE_VERSION}-linux-${arch}"
-  base="https://github.com/chinmay28/sand-vault/releases/download/${RELEASE_VERSION}"
+  base="https://github.com/chinmay28/SandHarbor/releases/download/${RELEASE_VERSION}"
 
   tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
   log "downloading $asset ($RELEASE_VERSION)…"
@@ -970,6 +970,13 @@ else
   elif [ -d "$SRC_DIR/.git" ]; then
     PREV_SHA="$(as_svc git -C "$SRC_DIR" rev-parse HEAD)"
     log "updating $SRC_DIR to $SAND_REF…"
+    # The repository was renamed from sand-vault to SandHarbor. GitHub redirects
+    # the old URL, but a clone made before the rename is pointed at the new one
+    # so it does not depend on that redirect lasting.
+    case "$(as_svc git -C "$SRC_DIR" remote get-url origin 2>/dev/null)" in
+      https://github.com/chinmay28/sand-vault|https://github.com/chinmay28/sand-vault.git)
+        as_svc git -C "$SRC_DIR" remote set-url origin "$SAND_REPO" ;;
+    esac
     as_svc git -C "$SRC_DIR" fetch --prune origin
     deploy_to "origin/$SAND_REF" || deploy_to "$SAND_REF"
     ok "at $(as_svc git -C "$SRC_DIR" rev-parse --short HEAD)"
@@ -1010,7 +1017,7 @@ build_src() {
   patch="$(as_svc node "$SRC_DIR/scripts/version.mjs" --patch 2>/dev/null || echo 0)"
   date="$(as_svc node "$SRC_DIR/scripts/version.mjs" --date 2>/dev/null || echo "")"
   as_svc go -C "$SRC_DIR" build -trimpath \
-      -ldflags "-s -w -X github.com/chinmay28/sand-vault/internal/version.Patch=${patch} -X github.com/chinmay28/sand-vault/internal/version.Date=${date}" \
+      -ldflags "-s -w -X github.com/chinmay28/SandHarbor/internal/version.Patch=${patch} -X github.com/chinmay28/SandHarbor/internal/version.Date=${date}" \
       -o "$STAGED_BIN" ./cmd/sand
 }
 

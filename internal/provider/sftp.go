@@ -11,7 +11,7 @@ import (
 	"strings"
 	"sync"
 
-	sandsftp "github.com/chinmay28/sand-vault/internal/sftp"
+	sandsftp "github.com/chinmay28/SandHarbor/internal/sftp"
 )
 
 func init() {
@@ -21,7 +21,7 @@ func init() {
 		Description: "Any machine you have an SSH login on — a VPS, a NAS, a storage box at a " +
 			"hosting company. Nothing has to be installed on the far end: if you can sftp to it, " +
 			"SAND can hold parts on it.",
-		DocsURL: "https://github.com/chinmay28/sand-vault/blob/main/docs/design/sftp.md",
+		DocsURL: "https://github.com/chinmay28/SandHarbor/blob/main/docs/design/sftp.md",
 		// Between the services you paste credentials for and the local folder:
 		// it is a credential form like theirs, and like the local folder it
 		// names no service.

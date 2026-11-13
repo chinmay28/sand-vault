@@ -1,4 +1,4 @@
-module github.com/chinmay28/sand-vault
+module github.com/chinmay28/SandHarbor
 
 go 1.25.0
 
