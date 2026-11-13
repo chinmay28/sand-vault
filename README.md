@@ -4,6 +4,9 @@
 
 ## Why sand
 
+<img src="docs/images/sand-harbor-tahoe.jpg" align="right" width="360"
+     alt="Sunset over Lake Tahoe from the shore at Sand Harbor: granite boulders and stacked stones in clear water, a sandy beach in front, pines on the right">
+
 A grain of sand is small and means nothing on its own. Yet sand, refined into
 silicon, is what every chip, every phone and every computer is made of: billions
 of meaningless grains, arranged, become the machine.
@@ -19,6 +22,8 @@ The harbor is where the grains are kept and where the apps are moored. It is
 named after Sand Harbor on Lake Tahoe's Nevada shore, a cove of clear water
 sheltered by granite boulders, whose beaches are that same granite worn down
 into sand.
+
+<br clear="right">
 
 ## The apps in the harbor
 
