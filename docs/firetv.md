@@ -120,6 +120,11 @@ To watch a file in one of the "does not" containers, remux it, which copies
 the streams without re-encoding and takes seconds:
 `ffmpeg -i film.m2ts -map 0 -c copy film.mkv`.
 
+A film that plays but stops to buffer — a 4K Blu-ray rip at 40–100 Mbit/s,
+where a 1080p film is 4–6 — is usually the network between SAND and the TV, or
+the stick itself, rather than SAND: what was measured, and three checks that
+tell them apart, are in [`streaming-performance.md`](./streaming-performance.md).
+
 ## Ending it
 
 A code ends when its time is up, when you **Revoke** it in the Watch on TV

@@ -3389,7 +3389,11 @@ installed. How the handoff is made depends on where you are:
 
 Seeking works the way it does over the share: a player asking for the middle of
 a film fetches the chunks covering that stretch, not the file. The link counts
-as use of the vault, so the auto-lock won't fire halfway through.
+as use of the vault for as long as the film is being sent, so the auto-lock
+won't fire halfway through — and a player left paused stops counting, so a TV
+on pause doesn't hold the vault open all night. Nothing ends a film for being
+long: a stream is given up on only when the vault has given it nothing for half
+an hour.
 
 Any player that takes a URL works — the address is an ordinary HTTP one that
 answers `Range` requests. VLC is what the button reaches for because it is the
@@ -3420,6 +3424,9 @@ Revoking the code (same dialog) unpairs the TV and stops whatever it is
 playing; codes are held in memory only, so a restart ends them all. Wrong codes
 are throttled hard enough that four characters stay safe. Setup, sideloading
 the app and the security model are in [`docs/firetv.md`](./docs/firetv.md).
+Why a 4K Blu-ray rip can stutter where a 1080p film plays, and how to tell
+whether it is the network, the TV or SAND, is in
+[`docs/streaming-performance.md`](./docs/streaming-performance.md).
 
 ---
 

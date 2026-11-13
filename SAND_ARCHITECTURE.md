@@ -3304,7 +3304,19 @@ is what every property of it follows from.
 | Storage | Memory only — a link that outlived the process would outlive the unlocked vault it was minted from |
 | Locking | `clear()` on lock and on auto-lock: the links are voided, not left to fail one request at a time |
 | Reads | `OpenReadSeeker` (§4.3) behind `http.ServeContent`, so a seek costs the chunks that range covers |
-| Keep-alive | Counts as external activity, so the auto-lock cannot fire mid-film — the hole a mounted share has |
+| Keep-alive | Counts as external activity — the hole a mounted share has — for as long as bytes are going out to the player, noted about once a second; a player left paused takes nothing and is not use, so a television on pause does not hold the vault open |
+| Time limit | None on the request. A film is one request and lasts as long as the film, so the limit is on the vault going quiet: given nothing for `streamStallLimit` (30 minutes) at a stretch, the stream is given up on. Waiting on the player — a pause, a full buffer — does not count against it |
+| TV codes | A link minted under a code is checked against the code as the film goes out, not only as a request begins, so revoking the code stops the film already playing |
+
+The last three rows are kept in one place, `streamWriter`
+(`internal/server/stream_serve.go`), because every byte of the body goes
+through its `Write`: it is the one thing that knows when the handler is waiting
+on the player and when something has actually been delivered. The deadline it
+keeps has to move, and a context's own cannot, so it cancels with a cause that
+wraps `context.DeadlineExceeded`; a Local folder account reads the cause to
+tell a disk that has stopped answering from a caller that has stopped waiting.
+The browser's own `/content` reads keep the same time limit and nothing else —
+their session is held for as long as the request runs.
 
 The path ends in the file's own name (`/stream/{token}/film.mkv`) because a
 player picks its demuxer off the extension before a byte arrives; the token

@@ -130,7 +130,8 @@ var ErrDiskNotAnswering = errors.New("the disk is not answering")
 // stop asking once the health check has said the account is down.
 //
 // A cancellation is passed through as itself. "Not answering" is a finding
-// about the disk, and a user who pressed stop has not found anything.
+// about the disk, and a user who pressed stop has not found anything. Which
+// of the two a context ended by is ranOutOfTime's to say.
 func onDisk[T any](ctx context.Context, root string, call func() (T, error)) (T, error) {
 	type answer struct {
 		value T
@@ -146,13 +147,28 @@ func onDisk[T any](ctx context.Context, root string, call func() (T, error)) (T,
 		return a.value, a.err
 	case <-ctx.Done():
 		var zero T
-		if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		if !ranOutOfTime(ctx) {
 			return zero, ctx.Err()
 		}
 		return zero, fmt.Errorf("%s is not answering: the disk or mount under it has stopped "+
 			"completing reads and writes — bring it back, or detach it (umount -l) so SAND stops "+
 			"waiting on it: %w", root, ErrDiskNotAnswering)
 	}
+}
+
+// ranOutOfTime reports whether a context ended because time ran out, rather
+// than because whoever held it stopped waiting.
+//
+// A deadline of the context's own passing is the plain case. The other is a
+// deadline its owner was keeping for it: one that has to move cannot be a
+// context deadline, which is fixed when the context is made, so the owner
+// cancels instead and gives running out of time as the cause. A film being
+// streamed is the example — it may wait half an hour on the disk at any one
+// point, not half an hour in all — and a disk that used that half-hour up has
+// been found not answering exactly as if the deadline had been the context's.
+func ranOutOfTime(ctx context.Context) bool {
+	return errors.Is(ctx.Err(), context.DeadlineExceeded) ||
+		errors.Is(context.Cause(ctx), context.DeadlineExceeded)
 }
 
 // The Provider methods, each one filesystem call under the caller's deadline.

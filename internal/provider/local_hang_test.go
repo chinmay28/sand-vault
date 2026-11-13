@@ -5,6 +5,7 @@ package provider
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -67,6 +68,53 @@ func TestLocalCancellationIsNotADeadDisk(t *testing.T) {
 	go func() {
 		time.Sleep(100 * time.Millisecond)
 		cancel()
+	}()
+	err := p.Ping(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ping error = %v, want context.Canceled", err)
+	}
+	if errors.Is(err, ErrDiskNotAnswering) {
+		t.Error("a cancelled ping was reported as a disk that is not answering")
+	}
+}
+
+// A deadline its owner was keeping for the context is a deadline too. One
+// that has to move — a film being streamed is allowed half an hour of silence
+// from the disk, not half an hour in all — cannot be the context's own, so the
+// owner cancels and gives running out of time as the cause. The disk that used
+// the time up is not answering all the same, and has to be reported as that
+// rather than as somebody having stopped waiting.
+func TestLocalTreatsADeadlineItsCallerKeptAsOne(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sand")
+	p := localAt(t, root)
+	hangWriteProbe(t, root)
+
+	ranOut := fmt.Errorf("nothing came back in time: %w", context.DeadlineExceeded)
+	ctx, cancel := context.WithCancelCause(context.Background())
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel(ranOut)
+	}()
+	err := p.Ping(ctx)
+	if !errors.Is(err, ErrDiskNotAnswering) {
+		t.Fatalf("ping error = %v, want ErrDiskNotAnswering", err)
+	}
+	if got := err.Error(); !strings.Contains(got, root) {
+		t.Errorf("the error does not name the folder: %q", got)
+	}
+}
+
+// And a cause that is not about time changes nothing: a caller that stopped
+// waiting and said why has still not found a dead disk.
+func TestLocalCancellationWithAnotherCauseIsNotADeadDisk(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sand")
+	p := localAt(t, root)
+	hangWriteProbe(t, root)
+
+	ctx, cancel := context.WithCancelCause(context.Background())
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel(errors.New("the vault was locked"))
 	}()
 	err := p.Ping(ctx)
 	if !errors.Is(err, context.Canceled) {
