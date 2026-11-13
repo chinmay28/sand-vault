@@ -358,7 +358,7 @@ scoped to, made if it is not there, and refused if it climbs out — the same
 `Under` check as browsing, made before a connection is dialled.
 
 In the browser the export has three doors, and all of them open the same
-dialog. The `⇅ Machine` button on the toolbar starts with the direction switch
+dialog. The `⇅` button on the toolbar starts with the direction switch
 and a picker over the vault's own listing, for sending several things at
 once. A folder's menu carries **Send to a machine** with that folder already
 picked. And a single file offers the same, twice: in its own menu, under
