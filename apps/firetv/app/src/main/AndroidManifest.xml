@@ -6,6 +6,9 @@
          drivers drop unless the app holds a multicast lock. -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <!-- The player's Stats panel says how the TV is connected: Wi-Fi or
+         Ethernet, and at what rate. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <!-- A TV app: no touchscreen, and the Fire TV launcher lists it. -->
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />

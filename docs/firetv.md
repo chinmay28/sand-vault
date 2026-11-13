@@ -81,9 +81,44 @@ The buttons: **Play/Pause**, **−10s**, **+30s**, then the menus —
 **Audio** (every track by language, codec and channels; tracks the TV cannot
 decode are listed as such), **Subtitles** (off, the film's own tracks, the
 sidecar files, and *Text size*), **Zoom** (fit / fill screen / stretch),
-**Speed** (0.5× to 2×) and **Info** (resolution, codecs, frame rate, bitrates).
-Zoom, subtitle size and the last-picked audio and subtitle languages carry over
-to the next film.
+**Speed** (0.5× to 2×), **Info** (resolution, codecs, frame rate, bitrates) and
+**Stats** (below). Zoom, subtitle size and the last-picked audio and subtitle
+languages carry over to the next film.
+
+### Stats: what is holding a film up
+
+A film that stops to buffer is held up by one of three things, and each has a
+different cure: the network (or the PC behind it) is not bringing the film in
+as fast as it plays, or the TV is not decoding the picture, or the sound, as
+fast as it plays. **Stats** puts a panel in the top corner that stays up over
+the film as it plays, brought up to date twice a second, and says first which
+of them it is:
+
+| Headline | What it means | What helps |
+|---|---|---|
+| Keeping up | The film arrives at least as fast as it plays, or the buffer is full | — |
+| The network is the limit | The player is fetching all the time and the film still arrives slower than it plays: "0.72× real time" is 72% of what it needs. "Over a 100 Mb/s Ethernet link" is Amazon's 10/100 adapter, which a UHD Blu-ray's peaks are beyond | The link between SAND and the TV: the PC wired to the router, a gigabit USB adapter on the stick, the stick moved off the back of the TV with the HDMI extender |
+| The TV is the limit — dropping frames | Frames are being dropped with 5 s or more buffered: the network is keeping up and the decoder is not | A lower-bitrate copy of the film |
+| The TV is the limit — the sound runs dry | The sound ran out with plenty buffered: decoding that track is too much for the stick | Another audio track, or passing it through to a receiver |
+
+Beneath the headline:
+
+| Line | |
+|---|---|
+| Download | How fast the film came in while the player was fetching it, and how much of the time it was fetching. A player with a full buffer stops fetching, so only the fetching says anything about the link |
+| Film | The bitrate of the stretch being fetched, as measured — an MKV does not say what it is |
+| Buffer | How far ahead is buffered, and the memory it takes; *full* when the player has stopped fetching because it holds all it will. The player's buffer is about 144 MB, which is 50 s of a 1080p film but 14 s of an 80 Mb/s one |
+| Stalls | Waits for the film once it has started — not the wait to start, or the wait after a seek — and how long they came to |
+| Frames | Frames dropped in the last ten seconds, and in all |
+| Underruns | Times the sound ran dry |
+| Video, Audio | The codec, and what is decoding it: the TV's hardware, software (FFmpeg, for sound the TV has no decoder for), or nothing — *passed through* to the TV or a receiver as it is |
+| Network | Wi-Fi with its band, link rate and signal; or Ethernet, with its rate where the system will say |
+| Memory | How much memory the app is using, of what it is allowed |
+
+The rates are over the last ten seconds, so they follow the stretch playing now,
+and a seek starts them again: *Measuring…* is the first few seconds after one.
+The panel sees what the stick sees, so a network that is the limit may be the
+Wi-Fi, the PC's own connection, or the PC itself — it cannot tell those apart.
 
 The TV cannot:
 
@@ -169,7 +204,7 @@ it off; a firewall needs UDP 8124 open beside TCP 8123 for it to work.
 |---|---|
 | `MainActivity` | A full-screen WebView around `/tv/` on the chosen server — the screens are the server's, so they update with SAND, not with the app. Navigation is held to that server and the app's own pages. |
 | `Discovery` | Broadcasts the query on every interface and collects answers for two seconds. |
-| `PlayerActivity` | Media3 ExoPlayer on the stream link, using the Fire TV's hardware decoders: MKV, MP4, HEVC, AC-3/E-AC-3 and DTS passthrough, embedded and sidecar subtitles — with its own TV controls (`PlayerWidgets.kt`) rather than Media3's. Reports where it stopped so the page can offer to resume. |
+| `PlayerActivity` | Media3 ExoPlayer on the stream link, using the Fire TV's hardware decoders: MKV, MP4, HEVC, AC-3/E-AC-3 and DTS passthrough, embedded and sidecar subtitles — with its own TV controls (`PlayerWidgets.kt`) rather than Media3's. Reports where it stopped so the page can offer to resume. Its Stats panel is worked out by `PlaybackStats` and worded by `StatsText`, both plain Kotlin with tests of their own. |
 
 The page and the app talk through `window.SandTVNative` (`playWith`, `play`, `discover`,
 `connect`, `changeServer`, `savedServer`) and `window.sandTV` (`back`,

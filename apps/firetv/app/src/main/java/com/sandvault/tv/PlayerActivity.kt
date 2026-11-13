@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.text.TextUtils
 import android.view.Gravity
 import android.view.KeyEvent
@@ -27,12 +28,20 @@ import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DataSpec
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.TransferListener
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.analytics.AnalyticsListener
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.SubtitleView
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.abs
 
 /**
@@ -49,7 +58,9 @@ import kotlin.math.abs
  * settings ran off the screen. Everything here sits inside the TV safe area
  * (48dp at the sides, 32dp top and bottom), and the options are the ones a
  * film wants: audio track, subtitles (the film's own and the .srt beside it),
- * subtitle size, zoom, speed, and what is actually playing.
+ * subtitle size, zoom, speed, what is actually playing — and Stats, which says
+ * over the film as it plays what, if anything, is holding it up (see
+ * PlaybackStats).
  *
  * The remote:
  *   Select        show the controls / press the focused button
@@ -80,6 +91,23 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
     private lateinit var osd: TextView
     private lateinit var spinner: ProgressBar
     private lateinit var panel: OptionsPanel
+    private lateinit var statsPanel: StatsOverlay
+
+    /**
+     * What the Stats panel says, and what it is worked out from: the bytes of
+     * the film that have come in (counted on the loading thread, hence the
+     * atomic), the buffer's memory, the decoders as they come and go, and the
+     * times the sound ran dry. Sampled every half second whether or not the
+     * panel is showing, so that it has something to say the moment it opens.
+     */
+    private val stats = PlaybackStats()
+    private val filmBytes = AtomicLong()
+    private var loadControl: DefaultLoadControl? = null
+    private var videoDecoder: String? = null
+    private var audioDecoder: String? = null
+    private var audioUnderruns = 0L
+    private var link: StatsText.Link? = null
+    private var linkReadAt = 0L
 
     /** The button whose menu is open, to give focus back to when it closes. */
     private var opener: View? = null
@@ -94,6 +122,7 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
     private val ticker = object : Runnable {
         override fun run() {
             refreshTime()
+            sampleStats()
             handler.postDelayed(this, 500)
         }
     }
@@ -125,14 +154,25 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
         val renderers = DefaultRenderersFactory(this)
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
             .setEnableDecoderFallback(true)
-        val exo = ExoPlayer.Builder(this, renderers).build()
+        // The load control and the media source are the builder's own
+        // defaults, made here only so the Stats panel can see into them: how
+        // much the buffer holds, and how many bytes of the film have come in.
+        val filmUri = Uri.parse(url)
+        val load = DefaultLoadControl()
+        loadControl = load
+        val dataSource = DefaultDataSource.Factory(this).setTransferListener(FilmBytes(filmUri, filmBytes))
+        val exo = ExoPlayer.Builder(this, renderers)
+            .setLoadControl(load)
+            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSource))
+            .build()
         player = exo
         video.player = exo
         exo.trackSelectionParameters = rememberedLanguages(exo.trackSelectionParameters.buildUpon()).build()
         exo.addListener(PlayerEvents())
+        exo.addAnalyticsListener(DecoderEvents())
 
         val item = MediaItem.Builder()
-            .setUri(Uri.parse(url))
+            .setUri(filmUri)
             .setMediaMetadata(MediaMetadata.Builder().setTitle(title).build())
             .setSubtitleConfigurations(sidecarSubtitles())
             .build()
@@ -216,6 +256,7 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
             menuButton("Zoom") { openZoom() },
             menuButton("Speed") { openSpeed() },
             menuButton("Info") { openInfo() },
+            pill(this, "Stats") { toggleStats() },
         )
         for ((i, b) in all.withIndex()) {
             buttons.addView(b, LinearLayout.LayoutParams(WRAP, WRAP).apply {
@@ -229,6 +270,13 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
             setMargins(SAFE_X.dp, 0, SAFE_X.dp, SAFE_Y.dp)
         })
         root.addView(controls, FrameLayout.LayoutParams(MATCH, MATCH))
+
+        // Below the title and the line the on-screen messages use, and above
+        // the controls, so it can stay up over the film and the controls both.
+        statsPanel = StatsOverlay(this)
+        root.addView(statsPanel, FrameLayout.LayoutParams(dp(400), WRAP, Gravity.TOP or Gravity.START).apply {
+            setMargins(SAFE_X.dp, (SAFE_Y + 92).dp, 0, 0)
+        })
 
         osd = label(this, 16f, Palette.TEXT, bold = true).apply {
             background = rounded(Color.argb(0xD0, 0x11, 0x18, 0x27), dpf(18f))
@@ -407,6 +455,69 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
             seekBar.position = p.currentPosition
             positionText.text = PlayerText.time(p.currentPosition)
         }
+    }
+
+    // --- Stats ----------------------------------------------------------------
+
+    private fun toggleStats() {
+        val showing = !statsPanel.isShowing
+        statsPanel.visibility = if (showing) View.VISIBLE else View.GONE
+        if (showing) showStats()
+        showOsd(if (showing) "Stats on" else "Stats off")
+    }
+
+    /** One look at the player, for PlaybackStats; and the panel brought up to date if it is showing. */
+    private fun sampleStats() {
+        val p = player ?: return
+        val video = p.videoDecoderCounters?.also { it.ensureUpdated() }
+        stats.add(
+            PlaybackStats.Sample(
+                atMs = SystemClock.elapsedRealtime(),
+                filmBytes = filmBytes.get(),
+                loading = p.isLoading,
+                bufferedToMs = p.bufferedPosition,
+                positionMs = p.currentPosition,
+                waiting = p.playbackState == Player.STATE_BUFFERING && p.playWhenReady,
+                playing = p.isPlaying,
+                speed = p.playbackParameters.speed,
+                framesRendered = video?.renderedOutputBufferCount?.toLong() ?: 0,
+                framesDropped = video?.droppedBufferCount?.toLong() ?: 0,
+                audioUnderruns = audioUnderruns,
+                bufferBytes = loadControl?.allocator?.totalBytesAllocated?.toLong() ?: 0,
+            ),
+        )
+        if (statsPanel.isShowing) showStats()
+    }
+
+    private fun showStats() {
+        val p = player ?: return
+        val report = stats.report()
+        val connection = currentLink()
+        val runtime = Runtime.getRuntime()
+        val playing = StatsText.Playing(
+            videoMime = p.videoFormat?.sampleMimeType,
+            width = p.videoFormat?.width ?: 0,
+            height = p.videoFormat?.height ?: 0,
+            videoDecoder = videoDecoder,
+            audioMime = p.audioFormat?.sampleMimeType,
+            channels = p.audioFormat?.channelCount ?: 0,
+            audioDecoder = audioDecoder,
+        )
+        statsPanel.show(
+            StatsText.headline(report, connection),
+            StatsText.isProblem(report),
+            StatsText.rows(report, playing, connection, runtime.totalMemory() - runtime.freeMemory(), runtime.maxMemory()),
+        )
+    }
+
+    /** How the TV is connected, asked again every few seconds rather than twice a second. */
+    private fun currentLink(): StatsText.Link? {
+        val now = SystemClock.elapsedRealtime()
+        if (link == null || now - linkReadAt >= LINK_EVERY_MS) {
+            link = readNetworkLink(this)
+            linkReadAt = now
+        }
+        return link
     }
 
     // --- The menus ------------------------------------------------------------
@@ -639,6 +750,12 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
     // --- Lifecycle --------------------------------------------------------------
 
     private inner class PlayerEvents : Player.Listener {
+        override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
+            // What was measured before a seek is about another stretch of
+            // film, and the wait after one is the seek's, not a stall.
+            if (reason == Player.DISCONTINUITY_REASON_SEEK) stats.seeked()
+        }
+
         override fun onPlaybackStateChanged(state: Int) {
             spinner.visibility = if (state == Player.STATE_BUFFERING) View.VISIBLE else View.GONE
             if (state == Player.STATE_ENDED) {
@@ -677,6 +794,49 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
                 ?: return
             warnedAboutTracks = true
             Toast.makeText(this@PlayerActivity, problem, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    /**
+     * The decoders as they come and go, and the sound running dry. A track that
+     * is passed through to the TV or a receiver has no decoder at all, which is
+     * how the panel tells passthrough from decoding: the one that was running
+     * is released and nothing takes its place.
+     */
+    private inner class DecoderEvents : AnalyticsListener {
+        override fun onVideoDecoderInitialized(
+            eventTime: AnalyticsListener.EventTime,
+            decoderName: String,
+            initializedTimestampMs: Long,
+            initializationDurationMs: Long,
+        ) {
+            videoDecoder = decoderName
+        }
+
+        override fun onVideoDecoderReleased(eventTime: AnalyticsListener.EventTime, decoderName: String) {
+            if (videoDecoder == decoderName) videoDecoder = null
+        }
+
+        override fun onAudioDecoderInitialized(
+            eventTime: AnalyticsListener.EventTime,
+            decoderName: String,
+            initializedTimestampMs: Long,
+            initializationDurationMs: Long,
+        ) {
+            audioDecoder = decoderName
+        }
+
+        override fun onAudioDecoderReleased(eventTime: AnalyticsListener.EventTime, decoderName: String) {
+            if (audioDecoder == decoderName) audioDecoder = null
+        }
+
+        override fun onAudioUnderrun(
+            eventTime: AnalyticsListener.EventTime,
+            bufferSize: Int,
+            bufferSizeMs: Long,
+            elapsedSinceLastFeedMs: Long,
+        ) {
+            audioUnderruns++
         }
     }
 
@@ -743,5 +903,26 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
 
         private val SPEEDS = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f)
         private val SUBTITLE_SIZES = listOf(0.75f to "Small", 1f to "Normal", 1.35f to "Large", 1.7f to "Extra large")
+
+        /** How often the Stats panel asks how the TV is connected. */
+        private const val LINK_EVERY_MS = 5_000L
     }
+}
+
+/**
+ * Counts the bytes of one film as the player reads them, for the Stats panel.
+ * The sidecar subtitles come through the same data source; only the film
+ * counts. Called on the player's loading thread.
+ */
+@OptIn(UnstableApi::class)
+private class FilmBytes(private val film: Uri, private val count: AtomicLong) : TransferListener {
+    override fun onTransferInitializing(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean) {}
+
+    override fun onTransferStart(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean) {}
+
+    override fun onBytesTransferred(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean, bytesTransferred: Int) {
+        if (dataSpec.uri == film) count.addAndGet(bytesTransferred.toLong())
+    }
+
+    override fun onTransferEnd(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean) {}
 }

@@ -9,6 +9,7 @@ import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
+import android.text.TextUtils
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
@@ -161,6 +162,54 @@ internal class SeekBarView(context: Context) : View(context) {
             paint.color = Palette.TEXT
             canvas.drawCircle(knobAt, h / 2, context.dpf(4f), paint)
         }
+    }
+}
+
+/**
+ * The Stats panel: what, if anything, is holding the film up, and the figures
+ * that say so — in the top corner, inside the safe area, over the film as it
+ * plays. A headline in the warning colour when something is, and a line per
+ * figure beneath it.
+ */
+internal class StatsOverlay(context: Context) : LinearLayout(context) {
+
+    private val headline = label(context, 15f, Palette.TEXT, bold = true)
+    private val lines = LinearLayout(context).apply { orientation = VERTICAL }
+
+    val isShowing: Boolean get() = visibility == VISIBLE
+
+    init {
+        orientation = VERTICAL
+        visibility = GONE
+        background = rounded(Color.argb(0xC8, 0x11, 0x18, 0x27), context.dpf(12f))
+        setPadding(context.dp(14), context.dp(10), context.dp(14), context.dp(12))
+        headline.setPadding(0, 0, 0, context.dp(6))
+        addView(headline)
+        addView(lines)
+    }
+
+    fun show(title: String, problem: Boolean, rows: List<Pair<String, String>>) {
+        headline.text = title
+        headline.setTextColor(if (problem) Palette.ACCENT else Palette.TEXT)
+        while (lines.childCount > rows.size) lines.removeViewAt(lines.childCount - 1)
+        while (lines.childCount < rows.size) lines.addView(line())
+        rows.forEachIndexed { i, (name, value) ->
+            val line = lines.getChildAt(i) as LinearLayout
+            (line.getChildAt(0) as TextView).text = name
+            (line.getChildAt(1) as TextView).text = value
+        }
+    }
+
+    private fun line(): LinearLayout = LinearLayout(context).apply {
+        orientation = HORIZONTAL
+        addView(label(context, 13f, Palette.MUTED), LayoutParams(context.dp(86), LayoutParams.WRAP_CONTENT))
+        addView(
+            label(context, 13f, Palette.TEXT).apply {
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END
+            },
+            LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f),
+        )
     }
 }
 
