@@ -10,6 +10,35 @@ Each section below is the body of the corresponding GitHub release. A heading
 must name the tag exactly — a tag whose commit builds a different version is a
 tag that shouldn't be published.
 
+## v2026.11.238
+
+**Downloads:** `sand-v2026.11.238-linux-arm64` (the server) and
+**`sand-tv.apk`** (the SAND TV app for Fire TV — on the TV, put
+`https://github.com/chinmay28/SandHarbor/releases/latest/download/sand-tv.apk`
+into Amazon's Downloader app, and it installs over the previous version; see
+[`docs/guide/sand-tv.md`](./docs/guide/sand-tv.md)). Both are in `SHA256SUMS`.
+Update the server and the app together: the Stats panel's new Server and
+Sending lines need this server.
+
+### SAND TV: a bigger buffer
+
+The player's buffer is now as big as the stick lets the app be. The app asks
+for a large heap, and the buffer takes it less a reserve, up to three minutes of
+film rather than Media3's 50 seconds or 144 MB. Where the stick allows the app
+512 MiB, that is 349 MB, about a minute of a 45 Mb/s UHD film against 25
+seconds before. The Memory line in Stats says what the stick allowed: a stick
+that allows no more keeps 144 MB.
+
+### SAND TV: the server's side of the network in Stats
+
+Two lines under the TV's own Network line say how the PC is connected and how
+fast it is sending, so the panel can tell a slow or full link at the PC from a
+slow TV. **Server** shows Ethernet with its rate, or Wi-Fi with the rate it is
+sending at (and band and signal from a Linux PC). **Sending** shows everything
+the PC is sending over that link, the film included. The TV asks every five
+seconds while Stats is showing, and only then. The guide says how to read the
+lines against Download and Film.
+
 ## v2026.11.236
 
 **Downloads:** `sand-v2026.11.236-linux-arm64` (the server) and
