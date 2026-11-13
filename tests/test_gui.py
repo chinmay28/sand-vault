@@ -4579,8 +4579,11 @@ class TestDownloadingAFolder:
         one.write_text("handed over")
         upload_and_settle(app, one)
 
+        # The tap that started each rebuild is taken to have lapsed by the
+        # time it is done, which is the case the button exists for.
         app.evaluate("""() => {
           Object.defineProperty(navigator, 'standalone', { value: true })
+          Object.defineProperty(navigator, 'userActivation', { value: { isActive: false } })
           window.__shared = []
           navigator.canShare = (data) => !!(data && data.files)
           navigator.share = async (data) => {
@@ -4616,6 +4619,62 @@ class TestDownloadingAFolder:
 
         # The app is exactly where it was.
         assert app.url == before
+
+    PHONE = """(live) => {
+      const handheld = '(hover: none) and (pointer: coarse)'
+      const media = window.matchMedia.bind(window)
+      window.matchMedia = (q) => q === handheld
+        ? { matches: true, media: q, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} }
+        : media(q)
+      Object.defineProperty(navigator, 'userActivation', { value: { isActive: live } })
+      window.__shared = []
+      window.__dismiss = false
+      navigator.canShare = (data) => !!(data && data.files)
+      navigator.share = async (data) => {
+        window.__shared.push({ name: data.files[0].name, size: data.files[0].size })
+        if (window.__dismiss) throw new DOMException('dismissed', 'AbortError')
+      }
+    }"""
+
+    def test_a_phone_shares_a_file_straight_from_download(self, app, tmp_path):
+        """On a phone, Download is the Share button every other app has: the
+        sheet that reaches WhatsApp, Mail or Files opens as soon as the file
+        is rebuilt, in a browser tab as much as on the home screen, with no
+        second tap while the first still counts."""
+        source = tmp_path / "pocket.txt"
+        source.write_text("off to another app")
+        upload_and_settle(app, source)
+        app.evaluate(self.PHONE, True)
+        before = app.url
+
+        app.get_by_label("Download pocket.txt").click()
+        app.wait_for_function("window.__shared.length === 1", timeout=60000)
+        assert app.evaluate("window.__shared") == [{"name": "pocket.txt", "size": len("off to another app")}]
+        # Shared, so there is nothing left to offer it under.
+        expect(app.get_by_role("dialog", name="Save pocket.txt")).to_have_count(0)
+        assert app.url == before
+
+    def test_a_dismissed_share_sheet_still_offers_the_file(self, app, tmp_path):
+        """Closing the sheet is not deciding against the file. It stays held,
+        offered to the sheet again and — in a browser tab, which can save a
+        blob — straight to the device's Downloads, without a second rebuild."""
+        source = tmp_path / "second-thoughts.txt"
+        source.write_text("kept after all")
+        upload_and_settle(app, source)
+        app.evaluate(self.PHONE, True)
+        app.evaluate("window.__dismiss = true")
+
+        app.get_by_label("Download second-thoughts.txt").click()
+        sheet = app.get_by_role("dialog", name="Save second-thoughts.txt")
+        sheet.wait_for(timeout=60000)
+        assert len(app.evaluate("window.__shared")) == 1
+        expect(sheet.get_by_role("button", name="↗ Share…")).to_be_visible()
+
+        with app.expect_download(timeout=20000) as download:
+            sheet.get_by_role("button", name="↓ Save to device").click()
+        assert download.value.suggested_filename == "second-thoughts.txt"
+        assert download.value.path().read_text() == "kept after all"
+        expect(sheet).to_have_count(0)
 
     def test_an_empty_folder_is_refused_rather_than_zipped(self, app):
         make_folder(app, "zip-empty")

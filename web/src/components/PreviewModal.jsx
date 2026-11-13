@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { COLORS, FONT, accountColor, formatBytes, isPlayable, previewKind } from '../theme'
 import { useIsMobile } from '../hooks'
 import { api } from '../api'
-import { fetchToBlob, useDownload } from '../download'
+import { fetchToBlob, prefersShareSheet, useDownload } from '../download'
 import { readToken } from '../readwatch'
 import { SaveSheet } from './SaveSheet'
 import { thumbnailFromElement } from '../thumbs'
@@ -169,6 +169,9 @@ export default function PreviewModal({
   const downloadPct = downloading && downloadProgress?.received > 0 && file.size > 0
     ? Math.min(100, Math.round((downloadProgress.received / file.size) * 100))
     : null
+  /* On a phone the download is a Share button like any other app's — see
+     prefersShareSheet — and says so. */
+  const sharing = useMemo(() => prefersShareSheet(), [])
 
   /* The preview above is the browser's best attempt at the file. For a film
      that means one long inline fetch and whichever codecs the browser happens
@@ -530,12 +533,14 @@ export default function PreviewModal({
             variant="primary"
             onClick={() => download(file, source)}
             disabled={downloading}
-            title="Download the rebuilt, decrypted file"
+            title={sharing
+              ? 'Share the rebuilt, decrypted file, or save it to this device'
+              : 'Download the rebuilt, decrypted file'}
             style={mobile ? { flex: 2, justifyContent: 'center' } : null}
           >
             {downloading
               ? <><Spinner size={12} color={COLORS.bg} /> {downloadPct === null ? 'Rebuilding…' : `Rebuilding… ${downloadPct}%`}</>
-              : '↓ Download decrypted'}
+              : sharing ? '↗ Share or save' : '↓ Download decrypted'}
           </Button>
         </div>
   

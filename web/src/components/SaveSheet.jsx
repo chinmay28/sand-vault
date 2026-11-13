@@ -1,24 +1,30 @@
 import React, { useState } from 'react'
 import { COLORS, FONT, formatBytes } from '../theme'
-import { shareBlob } from '../download'
+import { needsShareSheet, saveBlob, shareBlob } from '../download'
 import { Banner, Button, Modal } from './ui'
 
-/* The one door out of a home-screen app.
+/* A rebuilt file, held for the share sheet.
 
-   Added to the home screen, SAND has no Downloads of its own: iOS ignores the
-   download attribute, a blob opened in place is a dead end, and a new window
-   is an in-app Safari view that cannot save anything either. What it does
-   have is the share sheet, and "Save to Files" lives there. So on a
-   home-screen app a rebuilt file is not saved but held, and this sheet offers
-   it under a button — because the share sheet opens only on a tap, and the tap
-   that started the rebuild is long spent by the time the file is ready. */
+   On a phone a download is the same thing every other app's Share button is:
+   the sheet that reaches WhatsApp, Mail, Drive, Files and the rest. The sheet
+   opens only on a tap, though, and a file that took longer to rebuild than a
+   tap lasts is held here under a button that has one. It is also where a
+   dismissed sheet lands, so changing your mind does not mean rebuilding.
+
+   In a browser tab the file can also be saved straight to the device, and
+   that is offered beside the sheet — some phones' sheets have no "save" in
+   them at all. Added to the home screen there is no such door: iOS ignores
+   the download attribute and a blob opened in place is a dead end, so the
+   sheet, with "Save to Files" in it, is the only way out. */
 export function SaveSheet({ pending, onDone, zIndex }) {
   const [error, setError] = useState(null)
   const [busy, setBusy] = useState(false)
 
   if (!pending) return null
 
-  const save = async () => {
+  const sheetOnly = needsShareSheet()
+
+  const share = async () => {
     setBusy(true)
     setError(null)
     try {
@@ -28,6 +34,11 @@ export function SaveSheet({ pending, onDone, zIndex }) {
     } finally {
       setBusy(false)
     }
+  }
+
+  const save = () => {
+    saveBlob(pending.blob, pending.name)
+    onDone()
   }
 
   return (
@@ -44,15 +55,24 @@ export function SaveSheet({ pending, onDone, zIndex }) {
         margin: '0 0 14px', fontFamily: FONT.sans, fontSize: '12.5px', lineHeight: 1.6,
         color: COLORS.textDim,
       }}>
-        Added to your home screen, SAND has no Downloads of its own — the share
-        sheet is how a file reaches Files, Photos or another app. Pick
-        <strong style={{ color: COLORS.text }}> Save to Files</strong> there.
+        {sheetOnly
+          ? (
+            <>
+              Added to your home screen, SAND has no Downloads of its own — the share
+              sheet is how a file reaches Files, Photos or another app. Pick
+              <strong style={{ color: COLORS.text }}> Save to Files</strong> there.
+            </>
+          )
+          : 'Send it to WhatsApp, Mail or any other app from the share sheet, or keep it in this device’s Downloads.'}
       </p>
 
-      <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-        <Button variant="primary" onClick={save} disabled={busy}>
-          {busy ? 'Opening…' : 'Save to Files…'}
+      <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+        <Button variant="primary" onClick={share} disabled={busy}>
+          {busy ? 'Opening…' : sheetOnly ? 'Save to Files…' : '↗ Share…'}
         </Button>
+        {!sheetOnly && (
+          <Button onClick={save} disabled={busy}>↓ Save to device</Button>
+        )}
         <Button variant="ghost" onClick={onDone} disabled={busy}>Done</Button>
       </div>
     </Modal>

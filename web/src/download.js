@@ -66,6 +66,45 @@ export function needsShareSheet() {
   return isStandalone() && canShareFiles()
 }
 
+/* Whether this is a phone or a tablet: a finger for a pointer, and nothing
+   that hovers. A laptop with a touch screen still has a mouse or a trackpad
+   and answers no. */
+export function isHandheld() {
+  try {
+    return typeof window !== 'undefined'
+      && typeof window.matchMedia === 'function'
+      && window.matchMedia('(hover: none) and (pointer: coarse)').matches
+  } catch {
+    return false
+  }
+}
+
+/* Whether a rebuilt file should be offered to the share sheet rather than
+   saved straight away.
+
+   On a phone a file is rarely wanted in Downloads for its own sake — it is on
+   its way to WhatsApp, Mail, Drive or Files — and every other app's Share
+   button opens the sheet that reaches all of those. So a phone that can share
+   gets that sheet, whether SAND is a browser tab or on the home screen. A
+   desktop saves directly: its share sheet, where there is one, has no
+   "save to disk" in it. */
+export function prefersShareSheet() {
+  return canShareFiles() && (isStandalone() || isHandheld())
+}
+
+/* Whether the tap that started something still counts as a tap. The share
+   sheet opens only while it does — a few seconds in Chrome, about one in
+   Safari — so a file that rebuilt quickly can go straight to the sheet, and
+   one that did not is held under a button instead. A browser that cannot say
+   is treated as having let it lapse: the button always works. */
+export function tapStillLive() {
+  try {
+    return typeof navigator !== 'undefined' && navigator.userActivation?.isActive === true
+  } catch {
+    return false
+  }
+}
+
 /* Put a rebuilt file on the share sheet. Only from inside a tap: Safari opens
    the sheet on a user's gesture and refuses it a moment later, so this is
    never called at the end of a fetch — the fetch finishes first, and the
@@ -154,11 +193,11 @@ export async function fetchToBlob(url, onProgress, { signal } = {}) {
 /* Rebuilding a file takes as long as the slowest account holding a part, so
    whatever control started it has to be able to say it is still working.
 
-   On a home-screen app the rebuilt file is not saved but held — `pending` —
-   for a button the caller draws, because the share sheet opens only on a tap
-   and the tap that started the fetch is long spent by the time it is done.
-   `dismiss` lets go of it. Everywhere else `pending` stays null and the file
-   saves itself. */
+   On a phone (see prefersShareSheet) the rebuilt file goes to the share
+   sheet rather than to Downloads: straight away if the tap that started it
+   still counts, and otherwise held — `pending` — for a button the caller
+   draws, because the sheet opens only on a tap. `dismiss` lets go of it.
+   Everywhere else `pending` stays null and the file saves itself. */
 export function useDownload(onError) {
   const [downloading, setDownloading] = useState(false)
   const [pending, setPending] = useState(null)
@@ -174,10 +213,10 @@ export function useDownload(onError) {
     setDownloading(true)
     setProgress({ watch, received: 0, size: file.size || 0 })
     const onProgress = (received) => setProgress((p) => (p && p.watch === watch ? { ...p, received } : p))
+    let held = null
     try {
-      if (needsShareSheet()) {
-        const blob = await fetchFileBlob(file, { onProgress, watch, from })
-        setPending({ blob, name: file.name })
+      if (prefersShareSheet()) {
+        held = { blob: await fetchFileBlob(file, { onProgress, watch, from }), name: file.name }
       } else {
         await downloadFile(file, { onProgress, watch, from })
       }
@@ -187,6 +226,21 @@ export function useDownload(onError) {
       setDownloading(false)
       setProgress(null)
     }
+    if (!held) return
+
+    /* Straight to the sheet while the tap still counts, the way any other
+       app's Share button behaves. A sheet that was dismissed, refused, or
+       could not be opened leaves the file held under a button instead —
+       dismissing the sheet is not deciding against the file, and the button
+       beside it saves it to the device where that is possible. */
+    if (tapStillLive()) {
+      try {
+        if (await shareBlob(held.blob, held.name) === 'shared') return
+      } catch {
+        // Refused for want of a tap, most likely; the button below has one.
+      }
+    }
+    setPending(held)
   }, [onError])
 
   const dismiss = useCallback(() => setPending(null), [])
