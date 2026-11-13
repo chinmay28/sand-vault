@@ -1429,9 +1429,14 @@ func (s *Server) handleFileHealth(w http.ResponseWriter, r *http.Request) {
 // With ?watch=<token> the read reports where it has got to, for the browser
 // to ask about beside this request — see read_watch.go. A token that is not
 // one is ignored rather than refused: the file is what was asked for.
+//
+// The request is as long as whoever is reading makes it — a film played in
+// the page, a large file downloaded over a slow link — so its time limit is
+// on the vault going quiet rather than on the request as a whole. See
+// stream_serve.go.
 func (s *Server) handleFileContent(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := contextWithTimeout(r, 30*time.Minute)
-	defer cancel()
+	ctx, clock := withStallLimit(r.Context(), streamStallLimit)
+	defer clock.stop()
 
 	var ticket *readTicket
 	var opts []vault.ReadOption
@@ -1540,8 +1545,11 @@ func (s *Server) handleFileContent(w http.ResponseWriter, r *http.Request) {
 
 	// ServeContent turns a Range header into seeks and reads on the body, which
 	// is why the body has to be the vault's own random-access reader rather
-	// than a buffer holding the file.
-	http.ServeContent(w, r, entry.Name, entry.ModifiedAt, body)
+	// than a buffer holding the file. It writes through the stall clock's
+	// writer and nothing more: the session this request came in on is held
+	// for as long as it runs, so there is no use to note and no link to ask
+	// after.
+	http.ServeContent(&streamWriter{ResponseWriter: w, clock: clock}, r, entry.Name, entry.ModifiedAt, body)
 }
 
 // isRiskyInline reports content types that must not be rendered inline in the

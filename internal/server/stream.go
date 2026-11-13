@@ -1,9 +1,12 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
+	"errors"
+	"log"
 	"mime"
 	"net/http"
 	"net/url"
@@ -216,6 +219,12 @@ func (s *Server) handleFileStreamLink(w http.ResponseWriter, r *http.Request) {
 // bargain: read at an offset so seeking into a film costs the chunks that range
 // covers, never a shared cache, and nothing that could execute in this origin
 // is served inline.
+//
+// The request lasts as long as the film does, so nothing about it is settled
+// once at the start. It ends when the player goes away, when the vault locks,
+// when the code its link was minted under is revoked, or when the vault has
+// given it nothing for streamStallLimit — and not because of how long it has
+// been playing or how long the viewer paused. See stream_serve.go.
 func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	ticket, ok := s.streams.lookup(r.PathValue("token"))
 	if !ok {
@@ -238,8 +247,8 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := contextWithTimeout(r, 30*time.Minute)
-	defer cancel()
+	ctx, clock := withStallLimit(r.Context(), streamStallLimit)
+	defer clock.stop()
 
 	var opts []vault.ReadOption
 	if ticket.source != "" && ticket.source != vault.ReadParts {
@@ -253,8 +262,21 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 
 	// A player has no browser session keeping the vault awake, which is the
 	// same hole a mounted share has: without this the vault would lock itself
-	// halfway through a film.
+	// halfway through a film. Noted here because a request beginning is use,
+	// and again by the writer below for as long as bytes are going out —
+	// one note at the start is long out of date by the second reel.
 	s.noteExternalActivity()
+	out := &streamWriter{
+		ResponseWriter: w,
+		clock:          clock,
+		use:            s.noteExternalActivity,
+		every:          streamUpkeepEvery,
+	}
+	if grant := ticket.grant; grant != "" {
+		// A link under a TV code dies with the code, and that has to hold
+		// for the film already playing as well as for the next one.
+		out.live = func() bool { return s.tv.Live(grant) }
+	}
 
 	contentType := entry.MIME
 	if contentType == "" {
@@ -273,5 +295,12 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "private, no-store")
 	w.Header().Set("ETag", `"`+entry.Hash+`"`)
 
-	http.ServeContent(w, r, entry.Name, entry.ModifiedAt, reader)
+	http.ServeContent(out, r, entry.Name, entry.ModifiedAt, reader)
+
+	// The status is long since on the wire, so the log is the only place left
+	// to say why a film stopped. A player that hung up is the usual reason a
+	// stream ends early and is not worth a line; the vault going quiet is.
+	if errors.Is(context.Cause(ctx), errStreamStalled) {
+		log.Printf("stream of %s stopped: the vault gave it nothing for %s", entry.Path(), streamStallLimit)
+	}
 }
