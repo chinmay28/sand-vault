@@ -10,6 +10,65 @@ Each section below is the body of the corresponding GitHub release. A heading
 must name the tag exactly — a tag whose commit builds a different version is a
 tag that shouldn't be published.
 
+## v2026.11.236
+
+**Downloads:** `sand-v2026.11.236-linux-arm64` (the server) and
+**`sand-tv.apk`** (the SAND TV app for Fire TV — on the TV, put
+`https://github.com/chinmay28/SandHarbor/releases/latest/download/sand-tv.apk`
+into Amazon's Downloader app, and it installs over the previous version; see
+[`docs/guide/sand-tv.md`](./docs/guide/sand-tv.md)). Both are in `SHA256SUMS`.
+Update the server and the app together: the app's Stats panel and codes with
+no end need this server.
+
+### Sand Harbor
+
+The project is now **Sand Harbor**, and the repository is
+[`chinmay28/SandHarbor`](https://github.com/chinmay28/SandHarbor). SAND Vault
+and SAND TV keep their names as the apps in the harbor, and the binary is still
+`sand`. Old `sand-vault` URLs redirect. The quick-start installer recognises an
+install made before the rename, upgrades it, and points its clone at the new
+address. The Go module is now `github.com/chinmay28/SandHarbor`.
+
+The documentation is rebuilt. The README is two pages, covering the story, the
+quick start and the layout. Everything else is under [`docs/`](./docs/README.md):
+a user guide, CLI, HTTP API and configuration references, the architecture,
+designs of each component, the design choices and the security model, each
+checked against the code.
+
+### SAND TV: a Stats panel that says what is holding a film up
+
+A **Stats** button beside Info puts a panel over the playing film that says
+which limit it is hitting: the network ("the film arrives at 0.72× real time"),
+or the TV's decoding of the picture or the sound. It shows the figures behind
+the verdict too: the download rate, the bitrate playing, the buffer, stalls,
+dropped frames, what decodes each track, and the Wi-Fi or Ethernet link.
+
+### SAND TV: codes of any length, or none
+
+**Watch on TV** offers **Custom** (five minutes to a year) and **No end**
+beside the presets. A code with no end still ends on revoke or restart.
+
+### Films keep playing past the half-hour
+
+A stream noted use of the vault only as it began, so with no browser open the
+idle lock ended a film mid-way, and every stream had thirty minutes in all. Use
+is now noted while bytes go out, but not while the player is paused. The
+thirty minutes now apply only to time the vault spends silent. Revoking a TV
+code now stops the film that is playing.
+
+### Film details
+
+- The folder sweep runs on the server in the background, with progress and
+  **Stop**, so the dialog can close and a sleeping phone no longer cancels it.
+- Names with a leading year or a franchise prefix, such as
+  `[1985]-james-bond-a-view-to-a-kill.mp4`, now find the right film.
+
+### Smaller fixes
+
+`sand --help` describes m-of-n rather than 2-of-3 only, and three CLI hints
+now name commands that exist (`sand check --all`, `sand vault passwd`,
+`sand sub ls`).
+
 ## v2026.11.229
 
 **Downloads:** `sand-v2026.11.229-linux-arm64` (the server) and
