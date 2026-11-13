@@ -102,7 +102,7 @@ func unlockSubVault(v *vault.Vault, name string) (vault.Scope, error) {
 		}
 	}
 	if id == "" {
-		return vault.MainScope, fmt.Errorf("no sub vault called %q — 'sand vault sub ls' lists them", name)
+		return vault.MainScope, fmt.Errorf("no sub vault called %q — 'sand sub ls' lists them", name)
 	}
 
 	password, err := readPasswordFrom("SAND_SUB_PASSWORD", fmt.Sprintf("Password for the %q sub vault: ", name))

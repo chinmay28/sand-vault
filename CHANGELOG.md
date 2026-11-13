@@ -16,7 +16,7 @@ tag that shouldn't be published.
 **`sand-tv.apk`** (the Fire TV app — on the TV, put
 `https://github.com/chinmay28/sand-vault/releases/latest/download/sand-tv.apk`
 into Amazon's Downloader app, and it installs over the previous version; see
-[`docs/firetv.md`](./docs/firetv.md)). Both are in `SHA256SUMS`.
+[`docs/guide/sand-tv.md`](./docs/guide/sand-tv.md)). Both are in `SHA256SUMS`.
 
 ### SAND TV: its version, and the developer mark
 
@@ -34,7 +34,7 @@ key puts it away. The bridge gains `appVersion()`.
 **`sand-tv.apk`** (the SAND TV app for Fire TV — on the TV, put
 `https://github.com/chinmay28/sand-vault/releases/latest/download/sand-tv.apk`
 into Amazon's Downloader app, and it installs over the previous version; see
-[`docs/firetv.md`](./docs/firetv.md)). Both are in `SHA256SUMS`. Update the
+[`docs/guide/sand-tv.md`](./docs/guide/sand-tv.md)). Both are in `SHA256SUMS`. Update the
 server and the app together: the app's sidecar subtitles need this server.
 
 ### SAND TV: a player drawn for a TV, details that fit, and folder pictures
@@ -80,7 +80,7 @@ them; an older app keeps working with `play`, without the subtitles.
 **Downloads:** `sand-v2026.11.226-linux-arm64` (the server) and
 **`sand-tv.apk`** (the SAND TV app for Fire TV — on the TV, put
 `https://github.com/chinmay28/sand-vault/releases/latest/download/sand-tv.apk`
-into Amazon's Downloader app; see [`docs/firetv.md`](./docs/firetv.md)). Both
+into Amazon's Downloader app; see [`docs/guide/sand-tv.md`](./docs/guide/sand-tv.md)). Both
 are in `SHA256SUMS`.
 
 ### SAND TV: a folder of films on a Fire TV, opened with a four-character code
@@ -112,7 +112,7 @@ browser can open the same screens at `/tv/`.
 `POST`/`GET /api/tv/codes`, `DELETE /api/tv/codes/{code}`; for the TV, `POST
 /api/tv/pair`, `GET /api/tv/session`, `GET /api/tv/library`, `GET
 /api/tv/items/{id}`, `…/poster`, `POST …/play`, `POST /api/tv/logout`. See
-[`docs/firetv.md`](./docs/firetv.md).
+[`docs/guide/sand-tv.md`](./docs/guide/sand-tv.md).
 
 ### Snapshots: a folder as one compressed, password-sealed archive
 
@@ -1143,7 +1143,7 @@ refused — in the browser, at the lock screen, over HTTP (`409 REKEY_PENDING`)
 and from the CLI — until the first has fully taken effect. The old password
 opens nothing from the moment a change commits; what the refusal protects is
 the one state the app can show honestly: the current key and the previous one,
-never three. See `docs/paced-rekey.md`.
+never three. See `docs/design/paced-rekey.md`.
 
 ### The quick start uninstalls with the same one-liner
 

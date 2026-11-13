@@ -192,7 +192,7 @@ ID, and lists that one alone — the thing to reach for when the parts are on a
 cloud you can point at and listing all of them is slow or will not finish.
 
 It does not check the contents, any more than a recovery does. Run
-'sand check' afterwards to have the accounts asked whether the parts are
+'sand check --all' afterwards to have the accounts asked whether the parts are
 really there.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			v, err := openVault(cmd)
@@ -242,7 +242,7 @@ really there.`,
 				for _, path := range report.Restored {
 					fmt.Printf("  restored to full spread: %s\n", path)
 				}
-				fmt.Println("Run 'sand check' to have the accounts confirm the parts are really there.")
+				fmt.Println("Run 'sand check --all' to have the accounts confirm the parts are really there.")
 			}
 			return err
 		},

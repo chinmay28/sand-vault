@@ -744,7 +744,7 @@ Guide: [vault management](../guide/vault-management.md).
 | `GET /api/subvaults` | | `{sub_vaults: [SubVaultInfo]}` |
 | `POST /api/subvaults` | `{label, password}` | `201` SubVaultInfo |
 | `POST /api/subvaults/{id}/unlock` | `{password}` | `{id, unlocked: true}`; `401 WRONG_PASSWORD` |
-| `POST /api/subvaults/{id}/lock` | | `{id, unlocked: false}`; drops its stream links |
+| `POST /api/subvaults/{id}/lock` | | `{id, unlocked: false}`; drops every stream link (all vaults') |
 | `PATCH /api/subvaults/{id}` | `{label}` | `{id, label}` (no sub vault password needed) |
 | `POST /api/subvaults/{id}/password` | `{password, new_password, migrate?}` | migration report |
 | `POST /api/subvaults/{id}/migrate` | | migration report |
