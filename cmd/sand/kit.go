@@ -336,7 +336,7 @@ With no kit id it answers for the last kit this vault exported.`,
 					return err
 				}
 				fmt.Println("Forgotten. Note that this does not revoke anything: somebody holding")
-				fmt.Println("that kit and that code still has it. See 'sand vault password'.")
+				fmt.Println("that kit and that code still has it. See 'sand vault passwd'.")
 				return nil
 			}
 
