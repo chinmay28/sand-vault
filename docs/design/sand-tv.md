@@ -1,236 +1,282 @@
-# SAND TV: watching a folder of films on a Fire TV
+# Sand TV design
 
-SAND TV puts one folder of the vault on a television, with its posters, synopses
-and cast, and plays the films straight off the machine running SAND on your
-network. It is in the spirit of Plex or Jellyfin, with one difference that runs
-all the way through it: the TV is never given the vault. It is given **one
-folder, for a while**, by a four-character code.
+How Sand TV works: the grant a four-character code stands for, why four
+characters are safe, how a TV finds the server, how the app is put together, and
+the API between them. Installing and using it is in the
+[Sand TV guide](../guide/sand-tv.md).
+
+## Shape
 
 ```
- laptop (signed in)                        Fire TV on the same network
- ──────────────────                        ───────────────────────────
- folder ⋯ → Watch on TV                    SAND TV app
-   → "Good for 4 hours"  ──── K7PX ────▶     finds SAND by itself (UDP 8124)
-                                             you key in K7PX with the remote
-                                             ▸ posters, details, ▶ Play
+ browser (session)              sand serve                         Fire TV
+ ─────────────────              ──────────                         ───────
+ POST /api/tv/codes ──────────▶ tvaccess.Store (memory only)
+   {path, minutes}               grant: code → folder, scope, expiry
+                       ◀──────── "K7PX"
+                                tvdiscover on UDP 8124 ◀──────── broadcast SAND-TV-DISCOVER/1
+                                                       ────────▶ {service, name, port, version}
+                                POST /api/tv/pair {code} ◀────── MainActivity (WebView on /tv/)
+                                  → 256-bit device token ──────▶ kept in the page's localStorage
+                                /api/tv/library, items, poster ◀── Bearer token
+                                POST /api/tv/items/{id}/play ◀──
+                                  → /stream/<ticket bound to K7PX> ─▶ PlayerActivity (Media3)
 ```
 
-## Setting it up
+The rule that runs through all of it: **the TV is never given the vault.** A TV
+has a remote with arrows on it. Typing the vault password with it would be
+miserable, and handing it the password would give it every folder, every sub
+vault's door, and the settings that delete files. What it wants is narrower, the
+films in one folder for the evening, so that is all it gets.
 
-1. **Get the app onto the Fire TV.** It is not in the Amazon Appstore, so it is
-   sideloaded:
-   - Every [release](https://github.com/chinmay28/sand-vault/releases) carries
-     it as `sand-tv.apk`, and the latest is always at
-     `https://github.com/chinmay28/sand-vault/releases/latest/download/sand-tv.apk`.
-     Or build it yourself with `cd apps/firetv && ./gradlew assembleRelease`
-     (needs the Android SDK).
-   - On the Fire TV: *Settings → My Fire TV → Developer options* → turn on
-     **Apps from Unknown Sources** (on newer Fire OS, *Install unknown apps*,
-     for the app you will install with). If Developer options is missing, open
-     *Settings → My Fire TV → About* and press Select on the device name seven
-     times.
-   - Install the APK with Amazon's **Downloader** app (give it the URL above),
-     or over the network with `adb connect <tv-ip> && adb install sand-tv.apk`.
-2. **Have SAND listening on the network.** The quickstart service already does
-   (`--bind 0.0.0.0` is the default). A `sand serve --bind 127.0.0.1` is
-   reachable from nowhere but its own machine, and the dialog says so.
-3. **Make a code.** In the browser, open a folder's menu (⋯) and choose
-   **Watch on TV**. Pick how long it lasts — one of the presets from an
-   hour to thirty days, **Custom** for any length from five minutes to a year,
-   or **No end** for a code that lasts until you revoke it or SAND restarts —
-   and **Make a code**.
-4. **Pair the TV.** Open SAND TV. It lists the SAND servers that answered on the
-   network; pick yours (or **Enter address** and type the one the dialog shows).
-   Key the four characters in with the remote, and the folder opens.
+## Codes and grants (`internal/tvaccess`)
 
-No Fire TV? Any TV or console with a browser can open `http://<sand-host>:8123/tv/`
-and pair the same way. Films play in the browser's own player there, which
-handles MP4/H.264 and WebM but usually not MKV, HEVC or surround sound — the
-app's native player does.
+The owner, signed in on a computer, asks for a code for a folder (in the main
+vault or an open sub vault) and a length of time. The server keeps a **grant**:
+the code, the folder, the vault scope, a label, and an expiry.
 
-## What the TV can and cannot do
-
-The TV can:
-
-- browse the folder and the folders under it that hold videos, or every video
-  at once under **All films**;
-- see what film lookup stored for each video — poster, year, runtime, rating,
-  genres, tagline, synopsis, director and cast (turn **film lookup** on for the
-  folder in the browser first, and run it, for there to be anything to see);
-- see the folder pictures picked in the browser (a folder holding a single
-  film wears that film's poster);
-- play a video, seek anywhere in it, and resume where it stopped, with the
-  subtitle files beside it (`Film.mkv` claims `Film.srt`, `Film.en.srt`,
-  `Film.English.forced.vtt`, `.ass`/`.ssa` too) — never any other file.
-
-## The player
-
-Drawn for a TV: everything sits inside the safe area (48dp at the sides, 32dp
-top and bottom), because TVs crop the edge of the picture. If yours also crops
-the film itself, the TV's own picture setting — *Screen Fit*, *Just Scan* or
-*1:1 pixel* depending on the make — turns that off.
-
-| Remote | |
-|---|---|
-| Select | show the controls; press the focused button |
-| Left / Right | seek — 10s a press, gathering pace while held (30s, 1m, 3m, 5m); the seek is sent when you stop |
-| Play/Pause, ⏪, ⏩ | what they say, any time |
-| Back | close a menu, then the controls, then the film |
-
-The buttons: **Play/Pause**, **−10s**, **+30s**, then the menus —
-**Audio** (every track by language, codec and channels; tracks the TV cannot
-decode are listed as such), **Subtitles** (off, the film's own tracks, the
-sidecar files, and *Text size*), **Zoom** (fit / fill screen / stretch),
-**Speed** (0.5× to 2×), **Info** (resolution, codecs, frame rate, bitrates) and
-**Stats** (below). Zoom, subtitle size and the last-picked audio and subtitle
-languages carry over to the next film.
-
-### Stats: what is holding a film up
-
-A film that stops to buffer is held up by one of three things, and each has a
-different cure: the network (or the PC behind it) is not bringing the film in
-as fast as it plays, or the TV is not decoding the picture, or the sound, as
-fast as it plays. **Stats** puts a panel in the top corner that stays up over
-the film as it plays, brought up to date twice a second, and says first which
-of them it is:
-
-| Headline | What it means | What helps |
+| Limit | Value | Source |
 |---|---|---|
-| Keeping up | The film arrives at least as fast as it plays, or the buffer is full | — |
-| The network is the limit | The player is fetching all the time and the film still arrives slower than it plays: "0.72× real time" is 72% of what it needs. "Over a 100 Mb/s Ethernet link" is Amazon's 10/100 adapter, which a UHD Blu-ray's peaks are beyond | The link between SAND and the TV: the PC wired to the router, a gigabit USB adapter on the stick, the stick moved off the back of the TV with the HDMI extender |
-| The TV is the limit — dropping frames | Frames are being dropped with 5 s or more buffered: the network is keeping up and the decoder is not | A lower-bitrate copy of the film |
-| The TV is the limit — the sound runs dry | The sound ran out with plenty buffered: decoding that track is too much for the stick | Another audio track, or passing it through to a receiver |
+| Alphabet | `ABCDEFGHJKLMNPQRSTUVWXYZ23456789` (32 letters, no `0`/`O`, `1`/`I`) | `tvaccess.Alphabet` |
+| Length | 4 characters, about a million codes | `CodeLength` |
+| Lifetime | 5 minutes to 365 days, default 4 hours, or `forever` | `MinTTL`, `MaxTTL`, `DefaultTTL` |
+| Live codes | At most 32 | `MaxGrants` |
+| TVs per code | At most 8 | `MaxDevicesPerGrant` |
 
-Beneath the headline:
+**Pairing** trades the code once for a 32-byte random **device token**, which the
+TV sends as `Authorization: Bearer …` from then on. The server stores only the
+token's SHA-256. The token is good for exactly what the code was good for: that
+folder, until the code expires or is revoked.
 
-| Line | |
+**Everything is in memory.** A code that outlived the process would outlive the
+decision to hand it out. Restarting the server is how an owner who has lost track
+of what they shared starts over. A forever code therefore means "until revoked or
+restarted".
+
+### Why four characters are safe
+
+A million codes is safe only if guessing is slow, so `Redeem` counts failures per
+client address and across all clients (`DefaultThrottle`: **5 per client, 30
+overall, in a sliding 10-minute window**). Past either limit, every pairing
+attempt is refused, including the right code, with `429` and `Retry-After`, until
+the window slides past.
+
+At the global ceiling, an attacker on your network guessing all day gets about
+4,320 tries, against 32⁴ ≈ 1.05 million codes: well under a one-in-two-hundred
+chance of hitting a code that is live that day. The cost is that a guesser can
+stop a real TV from pairing for ten minutes, which is the right way round.
+
+### What a token can reach
+
+- **Only videos under the folder.** Every path a TV sends is resolved beneath the
+  grant's folder (`confine`), and paths sent back start at the folder, so the TV
+  never learns where it sits in the vault. A file ID outside the folder, in
+  another vault, or not a video is answered **not found** rather than forbidden,
+  so a TV cannot probe for IDs that exist elsewhere.
+- **Sidecar subtitles, and nothing else.** When a video is played, the server
+  looks among its siblings for a subtitle file whose name is the video's name,
+  then optionally a dot and a tag, then `.srt`, `.vtt`, `.ass` or `.ssa`
+  (`tv_subtitles.go`). Each gets its own stream link. No other file in the folder
+  is reachable.
+- **Nothing that writes.** There are no TV routes for uploads, deletes, settings
+  or film lookups.
+- **No unlocking.** `requireTV` checks the token but not the lock, so
+  `GET /api/tv/session` can still answer `locked: true` and the TV can say so.
+  Everything that reads the vault is refused by the vault itself as
+  `401 LOCKED`.
+
+### Activity and the auto-lock
+
+A TV has no browser session, so TV requests that read the library count as use of
+the vault (`tvActive`), and the vault does not lock while someone browses for a
+film. `GET /api/tv/session` is the exception: it is what the TV polls while the
+vault is locked, so it must not keep anything open. Streams follow the ordinary
+stream rules (see [Server design](server.md)): a playing film counts as use and a
+paused one does not.
+
+### Revocation reaches a playing film
+
+A stream link minted for a TV carries the code it was minted under
+(`streamTicket.grant`). Each request on that link, and the running stream itself,
+checks `tv.Live(code)`. Revoking a code therefore stops a film already playing,
+not only the next one. Locking the vault voids every stream link as usual, but
+leaves pairings alone, so the TV resumes once the vault is unlocked.
+
+## Discovery (`internal/tvdiscover`)
+
+Typing `192.168.1.20:8123` with a D-pad is the step that would make pairing a
+chore, so the app broadcasts instead.
+
+- **Query:** the exact bytes `SAND-TV-DISCOVER/1`, sent to UDP port **8124** (the
+  web port plus one, so the pair are easy to open together).
+- **Answer:** JSON `{service: "sand-vault", name, port, secure?, version}`. The
+  name is the machine's hostname. The address is wherever the answer came from.
+- **Limits:** it answers only the exact query, so stray packets are not echoed,
+  and only from private, loopback, link-local or CGNAT (`100.64.0.0/10`, used by
+  Tailscale) addresses, so a server on a public address cannot be used to reflect
+  traffic. It is not started at all on a loopback bind.
+- **Authorizes nothing.** It says only what a port scan would: that a server is
+  here. Pairing still needs a code.
+
+`sand serve --tv-discovery-port 0` turns it off. A port that will not open is
+logged and nothing more; the TV can still be pointed at the address by hand.
+
+On the app side, `Discovery.find()` broadcasts on every interface's broadcast
+address plus the limited broadcast, collects answers for two seconds, and holds a
+Wi-Fi multicast lock, because some drivers drop broadcast replies without one.
+
+## The TV page (`internal/server/tvui`)
+
+The screens are the server's, served at `/tv/` (`tvui.go`): plain ES2017 with no
+build step, embedded as it stands, because it runs on whatever browser engine a TV
+has. It is served with a strict CSP (`script-src 'self'`, `connect-src 'self'`,
+`frame-ancestors 'none'`) and `Cache-Control: no-cache`, so a TV picks up new
+screens on its first load after an upgrade.
+
+Because the screens come from the server, they update with Sand Vault rather than
+with the app. The page holds the device token and each film's resume position in
+`localStorage`. Position is the TV's own memory of what was watched; a film past
+92% counts as watched. Without the app, films play in the page's `<video>`.
+
+## The app (`apps/firetv`)
+
+A small Kotlin app (`com.sandvault.tv`, minSdk 22 for Fire OS 5, targetSdk 34),
+listed by the Fire TV launcher through `LEANBACK_LAUNCHER`.
+
+| File | Role |
 |---|---|
-| Download | How fast the film came in while the player was fetching it, and how much of the time it was fetching. A player with a full buffer stops fetching, so only the fetching says anything about the link |
-| Film | The bitrate of the stretch being fetched, as measured — an MKV does not say what it is |
-| Buffer | How far ahead is buffered, and the memory it takes; *full* when the player has stopped fetching because it holds all it will. The player's buffer is about 144 MB, which is 50 s of a 1080p film but 14 s of an 80 Mb/s one |
-| Stalls | Waits for the film once it has started — not the wait to start, or the wait after a seek — and how long they came to |
-| Frames | Frames dropped in the last ten seconds, and in all |
-| Underruns | Times the sound ran dry |
-| Video, Audio | The codec, and what is decoding it: the TV's hardware, software (FFmpeg, for sound the TV has no decoder for), or nothing — *passed through* to the TV or a receiver as it is |
-| Network | Wi-Fi with its band, link rate and signal; or Ethernet, with its rate where the system will say |
-| Memory | How much memory the app is using, of what it is allowed |
+| `MainActivity.kt` | A full-screen WebView. Before there is a server it shows the bundled `assets/connect.html`, which lists discovered servers and takes a typed address; afterwards it shows `/tv/` on the chosen server. Navigation is held to that server and the app's own assets, because whatever page is showing holds the bridge. Back is offered to the page first. |
+| `ServerAddress.kt` | Normalizes what was typed (`192.168.1.20`, `host:8123`, `http://host:8123/tv/`) to one origin; http and port 8123 unless given. |
+| `Discovery.kt` | The broadcast described above. |
+| `PlayerActivity.kt` | Media3 ExoPlayer on the stream link, with its own TV controls. Reports where it stopped when it closes. |
+| `PlayerWidgets.kt` | The controls: pills, menus, the seek bar, the Stats overlay. Drawn instead of Media3's, which are laid out edge to edge for a phone and ran off a TV's cropped edge. |
+| `PlayerText.kt` | Track labels, codec names, times, and the seek acceleration (10s, 30s, 1m, 3m, 5m as a key is held). |
+| `PlaybackStats.kt` | Works out what is limiting playback (below). |
+| `StatsText.kt` | Words the Stats panel. |
+| `NetworkLink.kt` | Wi-Fi band, link rate and signal, or Ethernet rate, asked the old way that Fire OS 5 also answers. |
+| `AppInfo.kt` | The app's version name, as the release stamped it. |
 
-The rates are over the last ten seconds, so they follow the stretch playing now,
-and a seek starts them again: *Measuring…* is the first few seconds after one.
-The panel sees what the stick sees, so a network that is the limit may be the
-Wi-Fi, the PC's own connection, or the PC itself — it cannot tell those apart.
+`PlaybackStats`, `StatsText`, `PlayerText` and `ServerAddress` are plain Kotlin
+with unit tests of their own.
 
-The TV cannot:
+**Network security.** `network_security_config.xml` permits cleartext, because a
+home server is usually plain HTTP on a private address, for which no certificate
+can be had. What crosses the LAN is the same stream a browser on the LAN would
+get. An `https://` address works when there is a TLS proxy.
 
-- see any file that is not a video, or anything outside the folder — every
-  path it sends is resolved beneath the folder, and a file ID from elsewhere in
-  the vault is answered as not found;
-- learn where in the vault the folder is: paths it is sent start at the folder;
-- change anything: no uploads, no deletes, no settings, no film lookups;
-- unlock the vault. If SAND locks itself while nobody is using it, the TV says
-  so and waits; unlock in the browser and it carries on, still paired.
+### The bridge
 
-## What plays
+`MainActivity.Bridge` is exposed to both pages as `window.SandTVNative`:
 
-The player is Media3 (ExoPlayer) with Jellyfin's FFmpeg audio decoder.
-Containers are opened by Media3 itself; video is decoded by the Fire TV's
-hardware; audio by the TV's decoders, passed through HDMI to a receiver or
-soundbar that takes it, or decoded in software by FFmpeg — in that order.
-
-| | Plays | Does not |
+| Method | Used by | Does |
 |---|---|---|
-| **Containers** | MKV, WebM, MP4, M4V, MOV, 3GP, AVI, TS, MPG (MPEG-2 program streams — DVD and TV recordings), VOB, FLV | WMV/ASF, M2TS (Blu-ray rips), Ogg video (OGV), MPEG-1 system streams (VCD-era `.mpg`), ISO disc images, RealMedia |
-| **Video** | H.264, HEVC/H.265 (incl. HDR10 where the TV supports it), VP9 — every Fire TV. AV1 on the newer 4K models. MPEG-2, MPEG-4 part 2 (Xvid/DivX) and VC-1 where the stick's chip has a decoder, which most do | anything the stick's chip has no decoder for — there is no software video decoder |
-| **Audio** | AAC, MP3, AC-3, E-AC-3 (incl. Atmos passthrough), DTS (core), TrueHD, FLAC, ALAC, Opus, Vorbis, PCM | DTS:X and DTS-HD MA are played as their DTS core unless passed through; WMA; MP2 on most sticks |
-| **Subtitles** | SRT, WebVTT, SSA/ASS, PGS, DVB, VobSub, CEA-608/708 — embedded or beside the film | — |
+| `playWith(json)` | TV page | Open the native player with `{url, title, startMs, itemId, subtitles}` |
+| `play(url, title, startMs, itemId)` | TV page | The same, without subtitles; kept for older pages |
+| `changeServer()` | TV page | Forget the server and go back to the connect page |
+| `appVersion()` | both | The app's version, shown in the header, the About panel and Info |
+| `discover()` | connect page | Run discovery and report the servers found |
+| `connect(typed)` | connect page | Check and save an address, then open its `/tv/` |
+| `savedServer()` | connect page | The server last used |
 
-The container rows are not taken on trust: `ContainerSupportTest` runs every
-Media3 extractor over a one-second clip in each container on every build of
-the app and fails if the list above stops being true. The details page warns
-before Play on a file in a container that does not open, and the player says
-in words — not an error code — when a film's picture or sound is beyond the
-TV, and plays what it can.
+The app calls back into the page through `window.sandTV`: `back()` returns true
+if the page handled Back, and `onPlaybackStopped(itemId, posMs, durMs)` lets the
+page offer to resume. (The comment block at the top of `tv.js` lists only `play`
+and `changeServer`; the table above is the full set.)
 
-To watch a file in one of the "does not" containers, remux it, which copies
-the streams without re-encoding and takes seconds:
-`ffmpeg -i film.m2ts -map 0 -c copy film.mkv`.
+### Player internals
 
-A film that plays but stops to buffer — a 4K Blu-ray rip at 40–100 Mbit/s,
-where a 1080p film is 4–6 — is usually the network between SAND and the TV, or
-the stick itself, rather than SAND: what was measured, and three checks that
-tell them apart, are in [`streaming-performance.md`](./streaming-performance.md).
+- **Renderers.** `DefaultRenderersFactory` with `EXTENSION_RENDERER_MODE_ON` and
+  decoder fallback: the TV's own decoders and HDMI passthrough first, then
+  Jellyfin's FFmpeg decoder (`org.jellyfin.media3:media3-ffmpeg-decoder`) for
+  audio they cannot do: DTS, TrueHD, and AC-3/E-AC-3 on sticks without them.
+  FFmpeg is audio only, since its video renderer is an unfinished stub, so video
+  is always the hardware's. Media3 is pinned to 1.7.1, matched to the decoder
+  build.
+- **ABIs.** `armeabi-v7a` and `arm64-v8a` only; Fire TVs are ARM.
+- **Buffer.** The load control and media source are Media3's defaults, built
+  explicitly only so the Stats panel can see into them. The default buffer is
+  about 144 MB. A `TransferListener` counts the film's bytes, but not the
+  subtitles', as they arrive.
+- **Remembered settings.** Zoom, subtitle scale and the last audio and text
+  languages are kept in the app's preferences and applied to the next film.
 
-## Ending it
+### How Stats decides
 
-A code ends when its time is up, when you **Revoke** it in the Watch on TV
-dialog (which lists every live code and how many TVs used it), or when SAND
-restarts — codes are only ever held in memory. Revoking a code unpairs every TV
-that used it **and stops a film that is playing on one**: the stream link the
-player is following is bound to the code. **Sign out of this TV** in the app's
-⋯ menu unpairs just that TV.
+`PlaybackStats` samples the player every 500 ms and judges over the last 10
+seconds:
 
-## How the four characters stay safe
-
-Four characters from a 32-letter alphabet (no `0`/`O`, no `1`/`I`) is about a
-million codes, which is only safe if guessing is slow. So pairing is throttled:
-after **5 wrong codes from one address, or 30 from anywhere, in ten minutes**,
-every pairing attempt is refused — the right code too — until the window slides
-past. At that ceiling somebody already on your network who spends a whole day
-guessing has well under a one-in-two-hundred chance of hitting a code that is
-live for that day. The cost is that a guesser can keep a real TV from pairing for
-ten minutes; that is the right way round.
-
-The code is traded once for a 256-bit device token, which is what the TV keeps
-and sends (`Authorization: Bearer …`) from then on. The server stores only its
-SHA-256. At most 32 codes can be live, and one code pairs at most 8 TVs.
-
-On a home network the films cross the LAN as plain HTTP, exactly as they would
-to a browser on the LAN; a reverse proxy with TLS in front of SAND covers the TV
-too (point the app at `https://…`).
-
-## Discovery
-
-`sand serve` answers a fixed UDP query (`SAND-TV-DISCOVER/1`) on port **8124**
-with its name, web port and version. It only answers the exact query, only from
-private, loopback, link-local or CGNAT (Tailscale) addresses, and is not started
-at all on a loopback bind. It authorizes nothing. `--tv-discovery-port 0` turns
-it off; a firewall needs UDP 8124 open beside TCP 8123 for it to work.
-
-## The app
-
-`apps/firetv` is a small Kotlin app with three parts:
-
-| Part | What it does |
+| Verdict | Condition |
 |---|---|
-| `MainActivity` | A full-screen WebView around `/tv/` on the chosen server — the screens are the server's, so they update with SAND, not with the app. Navigation is held to that server and the app's own pages. |
-| `Discovery` | Broadcasts the query on every interface and collects answers for two seconds. |
-| `PlayerActivity` | Media3 ExoPlayer on the stream link, using the Fire TV's hardware decoders: MKV, MP4, HEVC, AC-3/E-AC-3 and DTS passthrough, embedded and sidecar subtitles — with its own TV controls (`PlayerWidgets.kt`) rather than Media3's. Reports where it stopped so the page can offer to resume. Its Stats panel is worked out by `PlaybackStats` and worded by `StatsText`, both plain Kotlin with tests of their own. |
+| Measuring | Less than 3 s seen since opening or seeking |
+| TV, video | At least 5 s buffered, not waiting, and at least 5 frames dropped and ≥ 2% of frames rendered |
+| TV, audio | At least 5 s buffered, not waiting, and any audio underrun |
+| Network | Fetching ≥ 80% of the time and film arriving below 97% of the playing speed; or waiting for data while fetching flat out |
+| Keeping up | Anything else |
 
-The page and the app talk through `window.SandTVNative` (`playWith`, `play`, `discover`,
-`connect`, `changeServer`, `savedServer`) and `window.sandTV` (`back`,
-`onPlaybackStopped`) — see the header of `internal/server/tvui/tv.js`.
+The key figure is **arrival**: seconds of film buffered per second spent
+fetching. The film's bitrate is not known in advance (an MKV does not declare
+one), so it is measured as bytes per second of film buffered. A full buffer stops
+fetching, so only time spent fetching says anything about the link. Decoder
+verdicts require a cushion because frames dropped while waiting for data are the
+network's fault. The panel cannot tell Wi-Fi from the PC's uplink or the PC
+itself; [Streaming performance](streaming-performance.md) has the checks that
+can.
+
+### Tested containers
+
+`ContainerSupportTest` runs the `sniff()` of each of Media3's container extractors
+over a one-second ffmpeg clip per container (`app/src/test/resources/containers`)
+and asserts which extractor claims it:
+
+| Fixture | Claimed by |
+|---|---|
+| mp4, m4v, mov, 3gp | `Mp4Extractor` |
+| mkv, webm | `MatroskaExtractor` |
+| avi | `AviExtractor` |
+| ts | `TsExtractor` |
+| mpg (MPEG-2 PS), vob | `PsExtractor` |
+| flv | `FlvExtractor` |
+| ogv, wmv, m2ts, MPEG-1 `.mpg` | nothing, so the player cannot open them |
+
+An MPEG-1 `.mpg` has the same extension as a playable MPEG-2 one, so the TV page
+cannot warn about it before Play; the player reports it instead. The page's own
+pre-Play warning (`UNPLAYABLE` in `tv.js`) also covers ISO and RealMedia, which
+have no fixture.
+
+### Builds
+
+| Workflow | When | What |
+|---|---|---|
+| `.github/workflows/firetv.yml` | PRs and pushes to `main` touching `apps/firetv/**` or `internal/tvdiscover/**` | Unit tests (`testDebugUnitTest`, printing the container matrix), `lintDebug`, `assembleRelease`, a check that `libffmpegJNI.so` is in the APK for both ABIs (an APK without it builds fine and plays DTS in silence), and the APK uploaded as the `sand-tv-apk` artifact |
+| `.github/workflows/release.yml` | Each release | Builds with `-PsandVersionName=<version>` and `-PsandVersionCode=<commit count>`, so each release installs over the last, and attaches it as `sand-tv.apk`: a fixed name, so `…/releases/latest/download/sand-tv.apk` is short enough to type into Downloader |
+
+The release build is signed with the debug key so it sideloads as it stands.
+Publishing to a store would need your own key. A local build is version `dev`,
+code 1.
 
 ## API
 
-Owner, behind the browser session:
+Owner routes, behind the browser session:
 
 | Route | |
 |---|---|
-| `POST /api/tv/codes` `{path, vault?, minutes?, forever?, label?}` | mint a code (default 240 minutes; 5 minutes to 365 days; `forever: true` with no `minutes` for a code with no end, which carries `forever: true` and no `expires_at`) |
-| `GET /api/tv/codes` | live codes, LAN addresses, discovery port |
-| `DELETE /api/tv/codes/{code}` | revoke |
+| `POST /api/tv/codes` `{path, vault?, minutes?, forever?, label?}` | Mint a code. Default 240 minutes; 5 minutes to 365 days. `forever: true` with no `minutes` gives a code with no end, which carries `forever: true` and no `expires_at`. |
+| `GET /api/tv/codes` | `{codes, addresses, discovery_port, lan}`: the live codes, the LAN addresses a TV could be pointed at, and `lan: false` on a loopback bind |
+| `DELETE /api/tv/codes/{code}` | Revoke |
 
-TV, with `Authorization: Bearer <token>`:
+TV routes, with `Authorization: Bearer <token>` (except pairing):
 
 | Route | |
 |---|---|
-| `POST /api/tv/pair` `{code}` | → `{token, label, expires_at}` (or `forever: true` in place of `expires_at`); no token needed; 429 with `Retry-After` when throttled |
-| `GET /api/tv/session` | label, expiry, whether the vault is locked (does not count as use) |
-| `GET /api/tv/library?path=/sub&all=1` | folders with videos beneath them, and the videos, relative to the grant |
-| `GET /api/tv/items/{id}` | one video with its film details |
-| `GET /api/tv/items/{id}/poster` | the poster JPEG |
-| `POST /api/tv/items/{id}/play` | → a `/stream/…` link bound to the code, and `subtitles: [{url, label, language, mime}]` for the sidecar files |
-| `GET /api/tv/folders/art?path=/sub` | a folder's picture |
-| `POST /api/tv/logout` | unpair this TV |
+| `POST /api/tv/pair` `{code}` | `{token, label, expires_at}`, or `forever: true` in place of `expires_at`. `429` with `Retry-After` when throttled. |
+| `GET /api/tv/session` | Label, expiry, and `locked`. Does not count as use. |
+| `GET /api/tv/library?path=/sub&all=1` | Folders with videos beneath them, and the videos, relative to the grant. `all=1` lists every video below. |
+| `GET /api/tv/items/{id}` | One video with its film details |
+| `GET /api/tv/items/{id}/poster` | The poster JPEG |
+| `POST /api/tv/items/{id}/play` | A `/stream/…` link bound to the code, and `subtitles: [{url, label, language, mime}]` |
+| `GET /api/tv/folders/art?path=/sub` | A folder's picture |
+| `POST /api/tv/logout` | Unpair this TV |
+| `GET /tv/` | The TV page |
 
-`401 TV_UNPAIRED` means pair again; `401 LOCKED` means the vault is locked.
+`401 TV_UNPAIRED` means pair again (no token, or its code ended).
+`401 LOCKED` means the vault is locked. The full route list is in the
+[API reference](../reference/api.md).

@@ -1010,8 +1010,9 @@ zstd, sealed under a password of its own, and kept on one connected cloud
 (`--cloud`) or on a machine you have an SSH login on (`--machine`, with an
 optional `--dir` under its root). Over `--max-size` it is cut into part files.
 The password is asked for (twice when taking) or read from
-`SAND_SNAPSHOT_PASSWORD`. Machines are added in the web UI (Settings); there is
-no CLI command for them. Guide: [folder tools](../guide/folder-tools.md).
+`SAND_SNAPSHOT_PASSWORD`. Machines are connected in the web UI ("Connect a
+machine"; API: [`/api/remote`](api.md#machines-sftp-sources)); there is no CLI
+command for them. Guide: [folder tools](../guide/folder-tools.md).
 
 Every snapshot subcommand takes the same place flags:
 
