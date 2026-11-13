@@ -3,7 +3,8 @@
 //
 // The server is the only component that ever holds plaintext: it decodes an
 // upload before scattering it, and rebuilds a file in memory to answer a
-// download. It binds to loopback by default for exactly that reason.
+// download. That is why it warns on every non-loopback bind (see DefaultBind),
+// and why it belongs behind TLS when it is reachable from a network.
 package server
 
 import (

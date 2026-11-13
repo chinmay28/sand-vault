@@ -1,12 +1,12 @@
 # Adding cloud backends
 
-A running list of the storage SAND could hold parts on, what each one would
-actually cost to add, and the recipe for adding it. Written down because the
-question *"can it do X?"* has three very different answers depending on X, and
-because the answer for most of the popular ones is already **yes, with a
-five-line change**.
+What storage Sand Vault could hold parts on, what each kind of backend costs to
+add, and the recipe for adding one. The question *"can it do X?"* has very
+different answers depending on X, and for most popular services the answer is
+already **yes, with a five-line change**. The interface and the existing
+backends are described in [providers.md](providers.md).
 
-The order below is by cost, not by how well known the service is.
+The tiers below are ordered by cost, not by how well known the service is.
 
 ---
 
@@ -62,7 +62,7 @@ A preset is for the services worth a button. Everything else the protocol
 reaches belongs in the backend's `Covers` list, which is what the browser's
 catalogue window is drawn from — one line per service with the shape of the
 endpoint it wants. Adding a name there costs nothing in the connect dialog,
-which is the point: the dialog stays fourteen entries long while the catalogue
+which is the point: the dialog stays one entry per backend while the catalogue
 answers *does it do Wasabi?*
 
 Verify before adding either: endpoints move, and a preset that fills the form
@@ -86,19 +86,20 @@ also has a tier-4 backend of its own, below, and that is the better of the two
 wherever it can run), **MEGA**, **Jottacloud**, **Sync.com**, **Tresorit**,
 **Icedrive** — where a service is a dozen lines: a kind, a label, a description, and a function
 guessing where this machine's client put its folder. **iCloud Drive** stayed in
-`icloud.go`, for the reason below. Adding another service means adding a row:
+`icloud.go`, for the reason below. Adding another service means a new `Kind`
+constant and a row (the service here is hypothetical):
 
 ```go
 {
-    kind:        KindFilen,
-    label:       "Filen",
-    description: "Your Filen folder, kept in step by the Filen desktop app. …",
-    docsURL:     "https://docs.filen.io/",
+    kind:        KindExample,
+    label:       "Example Drive",
+    description: "Your Example Drive folder, kept in step by its desktop app. …",
+    docsURL:     "https://example.com/help/desktop",
     order:       37,
-    fieldLabel:  "Filen folder",
-    fieldHelp:   "A folder inside the one Filen syncs. …",
+    fieldLabel:  "Example Drive folder",
+    fieldHelp:   "A folder inside the one Example Drive syncs. …",
     folders: func(home string) []string {
-        return []string{filepath.Join(home, "Filen")}
+        return []string{filepath.Join(home, "Example Drive")}
     },
 },
 ```
@@ -111,7 +112,7 @@ is invisible until the day the parts are needed.
 
 **MediaFire is deliberately not in the table.** It was on the original list,
 but its desktop sync client was retired years ago, so there is no folder on any
-machine for SAND to write into: a backend for it would be a menu entry that
+machine to write into: a backend for it would be a menu entry that
 cannot be made to work. If a tool appears that presents MediaFire as WebDAV,
 that is the route, and it needs no code here at all.
 
@@ -145,8 +146,8 @@ standard library, which is what keeps the artifact one static CGO-free binary.
 every VPS and every NAS, and nothing has to be installed on the far end. It
 came in cheaper than this page estimated — `golang.org/x/crypto` was already a
 direct dependency, so `ssh` was a new import path rather than a new module.
-See [`sftp.md`](sftp.md), which also covers the half that is designed and not
-yet built: browsing a machine and importing files off it into a vault folder.
+See [`sftp.md`](sftp.md), which also covers the other half built on the same
+client: browsing a machine and moving files between it and a vault folder.
 
 | Candidate | Why | Notes |
 |---|---|---|
@@ -175,8 +176,8 @@ against the provider's REST API.
 
 When adding one, the parts that are easy to get wrong are already solved
 elsewhere: copy `box.go` for a provider that rotates refresh tokens, and
-`gdrive.go` for one where the scope must stay narrow enough that SAND can only
-ever see what it created.
+`gdrive.go` for one where the scope must stay narrow enough that the vault can
+only ever see what it created.
 
 **Done: Zoho WorkDrive** — `zoho.go`, and the first backend where the sign-in
 itself depends on a choice. Zoho runs a separate deployment per region —
@@ -205,7 +206,7 @@ capacity is the one its holder declares.
 **Done: Filen and Internxt Drive** — the two end-to-end encrypted services
 with real free tiers, and the first backends here that have to speak a
 client-side crypto protocol rather than an HTTP API with a token on it.
-Neither publishes an SDK SAND could use (Filen's is Go but pulls in rclone;
+Neither publishes an SDK this project could use (Filen's is Go but pulls in rclone;
 Internxt's adapter needs a BIP-39 library), so `filen.go` and `internxt.go`
 reimplement the client protocol on the standard library, and their tests hold
 every primitive to known answers generated with the official SDKs — key
@@ -229,7 +230,7 @@ moves it to the current scheme.
 ## Tier 4 — driving the service's own client — **done for Proton**
 
 The tier that exists because tier 1 has a hole in it. A synced folder is only a
-backend where somebody has installed a desktop app, and the machine SAND is
+backend where somebody has installed a desktop app, and the machine Sand Vault is
 usually installed on is a server with no desktop at all. Worse, the folder
 backend cannot tell the difference: its `Put` returns as soon as the file is on
 local disk, so an account whose client is signed out or never installed looks
@@ -239,8 +240,8 @@ Where a service ships a *command-line* client, that hole closes. `protoncli.go`
 drives `proton-drive`, the CLI Proton builds on
 [its own Drive SDK](https://github.com/ProtonDriveApps/sdk): `filesystem
 upload` for `Put`, `download` for `Get`, `info` for `Stat`, `list` for `List`,
-`delete` for `Delete`, all with `--json`. It is roughly 500 lines and no
-cryptography.
+`delete` for `Delete`, all with `--json`. It is about a thousand lines,
+mostly session handling, and no cryptography.
 
 **Why not speak the API.** Proton publishes no Go SDK — the native ones are
 TypeScript and C#, and the Kotlin and Swift bindings wrap the C# one. The SDK
@@ -258,7 +259,7 @@ protects, and a plaintext file, which Proton labels for testing only — fairly,
 since the session holds the password that unlocks the account's key material
 and not merely an access token.
 
-So SAND keeps it where it keeps every other cloud credential: in the vault,
+So the vault keeps it where it keeps every other cloud credential: in the vault,
 encrypted under the vault password. The plaintext file is the *handover*
 between the two and not a home — written 0600 immediately before a command,
 removed immediately after, in a directory only the service user can read:
@@ -358,10 +359,14 @@ adding a backend. In order:
    itself. Implement `UsageReporter` where the service reports a quota —
    cheaply, since it is on the ping path — `UsageMeasurer` where it can only be
    counted, as an S3 bucket can, `Identifier` so a freshly connected account can
-   name itself, and `CredentialRotator` if credentials change as they are
-   spent.
-4. **Order** — 10s for sign-in backends, 20s for credentials, 30s for the ones
-   that take a path. Ties break by label.
+   name itself, `CredentialRotator` if credentials change as they are
+   spent, `Versioner` if the store keeps old versions beneath what it shows,
+   `PingBudgeter` if a ping honestly needs more than twenty seconds, and
+   `io.Closer` if it holds a connection open. Set `Spec.Local` if the account is
+   reached through this machine (a path, a synced folder, a local program) so
+   other machines opening the vault don't try to reach it.
+4. **Order** — 10s for sign-in backends, 20s for credential forms, 30s for SFTP,
+   iCloud and the synced folders, 40 for the local folder. Ties break by label.
 5. **Tests** in `internal/provider/`. The HTTP backends are tested against an
    `httptest` server (`cloudapi_test.go`); the folder ones against `t.TempDir()`.
 6. **An icon** in `web/src/theme.js` (`KIND_ICONS`) — one character. Missing
@@ -370,7 +375,9 @@ adding a backend. In order:
 7. **`Covers`** on the spec if the backend reaches services its label does not
    name — that is the browser's catalogue window, and the only place the full
    list lives.
-8. **The table** in `README.md` under *Supported Backends*.
+8. **The table** of supported backends in
+   [`docs/guide/accounts.md`](../guide/accounts.md), and the backends table in
+   [providers.md](providers.md#backends).
 
 ---
 
@@ -399,7 +406,7 @@ a name on disk:
   two files and a deleted part cannot come back as a key `Get` can never
   satisfy.
 - **`Ping`** refuses a folder outside iCloud Drive. Writability is not the test:
-  `~/Documents` would accept every part SAND gave it and keep them all on the
+  `~/Documents` would accept every part the vault gave it and keep them all on the
   one machine that can die.
 
 The equivalents elsewhere, if these get built: OneDrive on Windows and Dropbox

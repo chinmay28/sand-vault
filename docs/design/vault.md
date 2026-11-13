@@ -485,7 +485,7 @@ A file is offered only if both hold:
 
 | Test | Rules out |
 |---|---|
-| The name matches `leftoverPattern`: `.sand-(upload|convert|reads|vault|git)-` plus the digits `os.CreateTemp` appends | Anything Sand Vault did not write, including the vault file itself |
+| The name matches `leftoverPattern`: `.sand-(upload\|convert\|reads\|vault\|git)-` plus the digits `os.CreateTemp` appends | Anything Sand Vault did not write, including the vault file itself |
 | Nothing has written it for an hour (`leftoverSettling`) and this process is not holding it (`Vault.spools`) | An upload still running, possibly from the CLI sharing the directory with the service |
 
 A file inside the window is still shown, with the reason. `SweepLeftovers`

@@ -1,117 +1,90 @@
-# Pacing a Password Change
+# Pacing a password change
 
-*A design for re-encrypting a vault slowly enough not to overwhelm the clouds,
-showing the mixed state honestly while it lasts, and refusing a second change
-until the first is done.*
+A password change re-encrypts every file, which on a large vault can saturate
+every account for a day. This page covers how re-encryption is paced over days,
+how the mixed state is shown while it lasts, how a move streams and survives a
+cloud being down, and why a second password change is refused until the first
+is done. The code is `internal/vault/pacer.go`, `rekeyplan.go`, `rekey.go` and
+`rekeyfiles.go`, with the server loop in `internal/server/handlers_rekey.go`.
 
----
+## The starting point
 
-## 1. What already exists, and what was asked for
-
-§3.3 of the architecture document already settles the hard part. Changing the
+[vault.md](vault.md#changing-the-password) covers the mechanism. Changing the
 password mints a **new data key**, rewrites the vault file under the new
-password in one atomic write, and keeps the previous data key beside the new
-one, **wrapped under the new password**, for as long as any file is still
-sealed under it. Each file then moves across on its own: gathered, re-encrypted,
-scattered again, the old parts erased. `sand vault migrate` finishes an
-interrupted run.
+password in one atomic write, and keeps the previous data key beside it,
+**wrapped under the new password**, while any file is still on it. Each file then
+moves on its own: gathered, re-encrypted, scattered, old parts erased.
 
-Three consequences of that design matter here:
+So:
 
-- **The old password opens nothing from the moment the change commits.** It
-  does not open the vault file, and it does not unwrap the previous data key,
-  because that key is now wrapped under the new password.
-- **Every file stays readable with the new password throughout**, whichever
-  key it is on.
-- **What lingers is a set of files on the previous key.** Anyone who holds
-  the previous password *and* an old copy of the vault file or of a
-  `manifest.sand` backup can still read those files' parts until each one
-  moves.
+- **The old password opens nothing from the moment the change commits**, not the
+  vault file and not the previous data key.
+- **Every file stays readable with the new password throughout.**
+- **What lingers is a set of files on the previous key.** Someone holding the
+  previous password *and* an old copy of the vault file or a `manifest.sand` can
+  read those files' parts until each one moves.
 
-What was asked for is three things on top of that:
+Pacing adds three things: re-encryption can run slowly (a daily byte budget,
+chosen folders first); the mixed state is legible in the UI; and a second change
+is refused while one is pending.
 
-1. Re-encryption should be able to run **slowly** — a budget in gigabytes a
-   day, or a choice of which folders to do — so a terabyte vault does not
-   saturate every account for a day.
-2. The vault is then in a **mixed state for a while**, and the UI has to make
-   that legible. Could sub vaults carry it?
-3. **A second password change should be refused** until the first has fully
-   taken effect.
+## Two keys, one password
 
-The first and third are built as described below. The second has an answer
-that is shorter than the question, and it comes first because it shapes the
-other two.
+The mixed state is not "two passwords". There is one password and two **key
+generations**: the current one, used by new uploads and moved files, and the
+previous one, which the files not yet moved are on. Both open with the current
+password. The UI never asks for or mentions a second password; it models one
+state, *on the previous key*, with a count, a size, a pace and an end date.
 
----
+### Why the previous key is not a sub vault
 
-## 2. Two keys, one password
-
-The brief frames the mixed state as "two passwords". It is not. There is one
-password, and there are two **key generations**: the current one, which every
-new upload and every moved file uses, and the previous one, which the files
-that have not moved yet are still on. Both are opened by the one current
-password. The UI therefore never asks for, mentions, or models a second
-password. It models one state — *on the previous key* — and gives it a count,
-a size, a pace and an end date.
-
-### 2.1 Why the previous key is not a sub vault
-
-A sub vault (§3.8) is an index sealed under its **own** Argon2id key, which
-the main password cannot derive. The files still on the previous key could,
-mechanically, be moved into a sub vault sealed under the old password. It
-would be worse on every axis:
+The un-moved files could mechanically be put in a sub vault sealed under the old
+password. It would be worse on every axis:
 
 | | Sub vault under the old password | Files on the previous key (built) |
 |---|---|---|
-| Does the old password die? | No. It stays valid for as long as the migration takes, which is the opposite of changing it. | Yes, when the change commits. |
-| Reading an un-moved file | Type the old password to open the sub vault first. | Click it. One password opens everything. |
-| Where the files live | They move out of their folders into a vault and back. Paths change twice. WebDAV mounts and automations lose them meanwhile. | They stay where they are. Only `key_id` on the entry differs. |
-| Backups and recovery | The backup carries sub vaults sealed; recovery needs both passwords. | The backup already carries every key generation the manifest names (§3.6). Nothing changes. |
-| Thumbnails, film details, folder art | Keyed by path and scope; broken on the way out and again on the way back. | Untouched. |
+| Does the old password die? | No, it stays valid for the whole migration | Yes, when the change commits |
+| Reading an un-moved file | Open the sub vault with the old password first | Click it |
+| Where the files live | Out of their folders and back; paths change twice; WebDAV and automations lose them | Where they were; only `key_id` differs |
+| Backups and recovery | Recovery needs both passwords | The backup already carries every generation the index names |
+| Thumbnails, film details, folder art | Broken on the way out and back | Untouched |
 
-What *is* borrowed from sub vaults is presentation. A **Previous key** entry
-is drawn at the top of the vault in the sub vaults' chrome — dashed, listed
-above the folders and not among them, not a thing a bulk delete can sweep up —
-because to the eye it is the same kind of thing: a part of the vault that is
-not a folder. It asks for no password and opens the progress panel. The
-sub-vault panel's per-vault "still on an old key" counts, which already
-existed, are the same figure.
+What *is* borrowed from sub vaults is presentation: a **Previous key** entry at
+the top of the vault, drawn in the sub-vault strip's style (dashed, above the
+folders, not something a bulk delete can sweep up). It asks for no password and
+opens the progress panel.
 
-A sub vault's **own** password change gets the same treatment as the main
-vault's: the same refusal of a second change while one is pending. Its
-re-encryption stays a foreground pass (`sand sub migrate`, the row's finish
-button) rather than a paced plan, because a sub vault can only be worked while
-it is open, which is when its owner is present.
+A sub vault's own password change gets the same one-change rule. Its
+re-encryption stays a foreground pass (`sand sub passwd`, or the sub vault row's
+finish button, `POST /api/subvaults/{id}/migrate`) rather than a paced plan,
+because a sub vault can only be worked while it is open, which is when its owner
+is present.
 
----
+## The pace
 
-## 3. The pace
+### The meter
 
-### 3.1 The contract
+A plan says **so many bytes a day**. The meter is a token bucket counted in bytes
+(`pacer.go`):
 
-A plan says **so many bytes a day**. The meter behind it is a token bucket
-counted in bytes (`internal/vault/pacer.go`):
-
-- The level rises continuously at the budget rate and never above the
-  **burst**, which is an hour's worth of budget.
+- The level rises continuously at the budget rate, never above the **burst**, an
+  hour's worth of budget.
 - A file may **start** whenever the level is not negative.
-- The **whole file is charged** when it starts. A file bigger than the burst
-  drives the level into debt, and nothing else starts until the debt has
-  refilled. A 40 GB film on 10 GB a day is four quiet days.
+- The **whole file is charged** when it starts. A file bigger than the burst drives
+  the level into debt, and nothing else starts until the debt has refilled. A
+  40 GB film on 10 GB a day is four quiet days.
 
-So the average over any period longer than the biggest file is exactly the
-budget, and the burst is as big as one file and no bigger. An hour's burst
-rather than a day's is deliberate: a day's would let a vault that had been
-shut for a week move a week of budget the moment it opened, which is the
-saturated day the plan exists to prevent.
+The average over any period longer than the biggest file is exactly the budget.
+An hour's burst rather than a day's is deliberate: a day's would let a vault shut
+for a week move a week of budget the moment it opened, the saturated day the plan
+exists to prevent.
 
-The meter is pure — no clock of its own, no I/O, no lock — so it is tested
-without waiting, and its state (`Level`, `LevelAt`) is persisted beside the
-plan. The charge for a file is made under the same lock that chooses it, before
-the file moves, so it rides in the index write the move itself makes; a restart
-cannot forget it. A file that would not move is refunded.
+The meter is pure (no clock, I/O or lock), and its state (`level`, `level_at`) is
+persisted in the plan. A file's charge is made under the lock that chooses it and
+rides in the index write the move makes, so a restart cannot forget it. A file
+that would not move is refunded.
 
-### 3.2 The plan
+### The plan
 
 ```json
 "rekey": {
@@ -123,294 +96,208 @@ cannot forget it. A file that would not move is refunded.
   "keep_unlocked": false,
   "started_at": "2026-10-03T21:14:00Z",
   "files": 3310, "bytes": 1319413953331,
-  "level": -2147483648, "level_at": "2026-10-19T08:00:00Z"
+  "level": -2147483648, "level_at": "2026-10-19T08:00:00Z",
+  "deferred": ["…"]
 }
 ```
 
 It lives in the main vault's manifest, because the folders it names are index,
-and it is dropped in the write that moves the last file off the previous key —
-the same write that drops the key (`pruneRetiredKeysLocked`). `files` and
-`bytes` are what was outstanding when the plan began, so progress is a fraction
-of something.
+and is dropped in the write that moves the last file off the previous key, the
+same write that drops the key (`pruneRetiredKeysLocked`). `files` and `bytes` are
+what was outstanding when the plan began.
 
-**Folders first.** The named folders are worked in order, smallest file first
-within each, then — unless `only_folders` — everything else, smallest first.
-Smallest first because the count of files on the previous key is what the
-person is watching, and the budget is in bytes either way. With `only_folders`
-set and the folders done, the plan is **idle**: files are pending, nothing is
-allowed to move, and the status says so.
+- **Folders first.** Named folders are worked in order, smallest file first within
+  each, then (unless `only_folders`) everything else, smallest first, because the
+  count of files left is what the person watches. With `only_folders` set and the
+  folders done, the plan is **idle** and says so.
+- **Paused** holds the plan without forgetting it. A budget of zero is the same
+  hold.
+- **Full speed** is "finish now" as a plan: the meter is bypassed and files move
+  back to back by the same loop, with the same order, deferred list and pause. The
+  budget is kept as the pace to fall back to; choosing a pace clears `full_speed`
+  and the banked level is still there. This is how the browser finishes now. The
+  alternative, `POST /api/vault/migrate`, holds the request open until the last
+  file moves, which on a phone means a screen that locks, a dropped connection and
+  a "failed to fetch". So the browser sets the plan to full speed and polls, and
+  the request answers at once. The password dialog's *all at once* is the same
+  plan, started by the change.
+- **Keep unlocked.** The server moves files only while the vault is open. By
+  default the plan holds the idle timer off *during* a move and otherwise leaves
+  it alone, so a plan never quietly disables auto-lock for a month.
+  `keep_unlocked` is the explicit, warned opt-in that does.
 
-**Paused** holds the plan without forgetting it. A plan with a budget of zero
-is the same hold under another name: nothing moves until a pace is set, and
-`sand vault migrate` finishes the lot at any time.
+### One step at a time
 
-**Full speed** is "finish now" as a plan. With `full_speed` set the meter is
-out of the way — `Ready` always answers yes, nothing is charged — and the
-files move one after another as fast as the clouds take them, by the same
-loop, with the same folder order, the same deferred list, the same pause. The
-budget is kept beside it as the pace to fall back to: choosing a pace again
-clears `full_speed`, and the level the meter had banked is still there.
+`Vault.RekeyStep(ctx, now)` moves at most one file: pick the next the plan allows,
+ask the meter, charge, move, or refund and remember why. The server calls it from
+`rekeyLoop`; `sand vault rekey --run` loops it in the foreground for a machine
+with no server.
 
-It exists because the browser's "finish now" used to be `POST
-/api/vault/migrate`, a request held open until the last file had moved. On a
-phone that is a screen that locks a minute in, a browser that drops the
-connection, and a dialog that comes back "failed to fetch" with the files half
-done — correct, since every file is committed as it moves, but not what anyone
-asked for. The work belongs on the server, which is where the plan already
-was; so the browser now sets the plan to full speed and polls, and the request
-answers at once. The password dialog's *all at once* is the same plan, started
-by the change itself.
+- A file that cannot be read (too few parts) is left alone for an hour with its
+  reason, and the files behind it are not held up.
+- A file with a part on an account the health check found down, whose other parts
+  are too few to rebuild it, waits for that account, counted and named in the
+  status. When the others are enough, it moves without it
+  ([below](#a-cloud-that-is-not-answering)).
 
-**Keep unlocked.** The server moves files only while the vault is open, and
-the idle timer closes it. By default the plan holds the timer off *during* a
-move, so a file is never cut off, and otherwise leaves it alone — a plan must
-not quietly turn auto-lock off for a month. `keep_unlocked` is the explicit,
-warned opt-in that does.
+The loop checks every 20 s whether anything is due, and after a move takes the
+next file straight away (`rekeyRound`): the meter spaces files out, and full speed
+has no meter. A plan set or changed over HTTP wakes the loop at once. A wait is
+trusted for at most five minutes, so a raised budget is felt within that. Each
+move counts as use of the vault for the idle timer.
 
-### 3.3 One step at a time
+The paced step and the finish-now pass share one slot (`migrateMu`, `TryLock`), so
+they never move the same file at once. The pass returns `ErrMigrationBusy`
+(HTTP `409 MIGRATION_BUSY`); the step asks to be retried shortly.
 
-`Vault.RekeyStep(ctx, now)` moves at most one file: pick the next the plan
-allows, ask the meter, charge, move, or refund and remember why. The server
-calls it from `rekeyLoop`; `sand vault rekey --run` calls it in a foreground
-loop for a machine with no server. A file that cannot be read — too few parts
-left — is left alone for an hour, its reason kept for the status, and the
-files behind it are not held up. A file with a part on an account the health
-check found down is not tried when its other parts are too few to rebuild it:
-it waits for the account, counted and named in the status. When they are
-enough, it moves without that account — see §4.3.
+## A move never holds the file
 
-The server's loop asks on a twenty-second tick whether anything is due, and
-once a file has moved takes the next straight away (`rekeyRound`) rather than
-at the next tick: the meter is what spaces files out, and a plan at full
-speed has no meter. A plan set or changed over HTTP wakes the loop at once,
-so a change takes effect now rather than within twenty seconds. Each move
-attempted counts as use of the vault for the idle timer, so a plan taking
-files one after another is not locked out from under; between rounds the
-timer is left alone, as before.
+A move streams (`rescatter`). A chunked file is read through a sequential
+`ChunkedReader` holding only the chunk it is in and fed to `scatterStream` as a
+spooled upload is, so what is resident is that chunk plus the upload window
+whatever the file weighs. A file still in the pre-chunking format is rebuilt to
+disk first (`rebuildLegacyToDisk`) and streamed from there. (The first version
+fetched the whole file into memory, which on a film the size of the machine's
+memory is the service killed under its `MemoryMax`.)
 
-The paced step and the finish-now pass share one slot (`migrateMu`), so they
-never gather and scatter the same file at once. The loser does not wait: the
-pass returns `ErrMigrationBusy`, the step asks to be tried again shortly.
+Integrity holds: every chunk was authenticated by its own seal, the outgoing
+bytes are hashed and checked against the recorded hash before the index moves,
+and a mismatch erases the new parts and leaves the file as it was. The index
+switches to the new parts in one write after all have landed, and old parts are
+erased only after that write. A move cut off at any point (crash, upgrade, kill)
+leaves the file readable on its old key; new parts it had written are orphans the
+stray-parts scan finds.
 
----
+## Leaving a file for last
 
-## 4. One change at a time
+Any pending file, including the one moving now, can be deferred.
+`DeferRekeyFile` adds it to the plan's `deferred` list (so the choice survives a
+restart) and, if it is the file in flight, cancels that move: the move stops, its
+new parts are erased, the file stays readable on the previous key, nothing is
+charged. Deferred files move after everything else, by the paced step and
+finish-now alike; `UndeferRekeyFile` puts one back. Every move goes through
+`moveTracked`, which is what the status reads for the file in flight, its
+progress, and the cancel a skip pulls.
 
-`ChangePassword` and `ChangeSubVaultPassword` refuse with `ErrRekeyPending`
-while any file of that vault is on a key **that vault itself retired**. The
-check is made from the index **as the vault file holds it**, after the old
-password has unsealed it, so it holds on the lock screen as well as in an open
-session; the open-vault check beforehand only spares the thumbnails from being
-erased for a change that is about to be refused.
+## A cloud that is not answering
 
-A file sealed under *another* vault's key — what an assignment between the
-main vault and a sub vault leaves behind when its re-encryption is deferred —
-is pending too, is marked and counted and moved by the plan like any other,
-but is not a password change half done, and does not block the next one. The
-key it needs is the other vault's, which the change neither holds nor touches.
+Re-encryption once refused to commit a file that came out a part short, so a file
+with a part on a cloud that was down waited for that cloud. Right for a cloud that
+dropped one write; wrong for a NAS switched off for a month, which kept the
+previous key and password alive for that month.
 
-Two reasons, and the second is the real one:
+Now the health check's verdict is used. A file with a part on an account the last
+check found unreachable is re-encrypted from the answering accounts' parts, if
+those can rebuild it, and written back to them (topped up from any other connected
+account the spread allows, or a part short where there is none). The part on the
+silent account is neither read nor written nor erased. It is **recorded**
+(`manifest.stale_parts`) as a part under the previous key on that account, with
+its file and when, in the same write that moves the file. A part an erase could
+not remove on an answering account is recorded the same way.
 
-- A vault that can hold three generations at once is a vault whose owner has
-  to reason about three. Two — the current key and the previous one — is what
-  the file list can mark, what the status can report, and what a person can
-  hold in their head.
-- "The password is changed" is a promise with a tail, and the refusal is what
-  makes the tail visible. A second change that went through would start a new
-  tail before the first was done, and nothing on screen could say which files
-  were readable by which old password.
+The record makes the part a stray rather than a leak. The rekey status and vault
+stats count recorded parts and name their accounts; the stray-parts scan flags each
+as *under the previous key* with its file's path; and the browser re-runs that scan
+when a cloud holding recorded parts comes back. Sweeping them is what finishes the
+password change. See [vault.md](vault.md#parts-left-under-the-previous-key).
 
-The way out is the way through: finish now, or wait. There is no `--force`.
-A file that can never move — its account gone for good — blocks a second
-change until it is deleted or recovered from a backup, and the status names
-it. That is the right pressure in the right place.
+A file that cannot be rebuilt without the silent account is still held. A write
+that fails on an account the health check found *up* is still a refusal: a dropped
+write, not an absent cloud.
 
-HTTP answers `409 REKEY_PENDING` with the counts in the message. The CLI
-prints the counts and the two commands that clear them.
+`MigrateFiles` (finish-now) runs its own health check first when the last one is
+older than five minutes (`MinHealthInterval`), so `sand vault migrate` on a machine
+with no server knows which accounts are down. `sand vault rekey --run` checks on
+the vault's schedule, as the server does.
 
----
+## One change at a time
 
-## 4.1 A move never holds the file
+`ChangePassword` and `ChangeSubVaultPassword` refuse with `ErrRekeyPending` while
+any file of that vault is on a key **that vault itself retired**. The check reads
+the index as the vault file holds it, after the old password has unsealed it, so it
+holds on the lock screen as well as in an open session.
 
-The first version of the step moved a file the way `MigrateFiles` always had:
-`Fetch` the whole thing into one slice, scatter it from there. On a film the
-size of the machine's memory that is the kernel killing the service mid-move,
-under the unit's `MemoryMax`, and a plan that never gets past that file.
+A file sealed under *another* vault's key (left by an assignment between the main
+vault and a sub vault) is pending too, and is moved by the plan like any other,
+but it is not a password change half done and does not block the next one.
 
-`rescatter` streams instead. A chunked file is read back through a sequential
-`ChunkedReader`, which holds the chunk it is in and nothing else, feeding
-`scatterStream` the way a spooled upload does; what is resident at any moment
-is that chunk plus the upload window, the same hundred-odd megabytes an upload
-costs, whatever the file weighs. A file still in the pre-chunking format has
-no seams to read through, so it is rebuilt onto disk first, as a conversion is
-(`rebuildLegacyToDisk`), and streamed from there.
+Why refuse:
 
-Integrity holds the same way it did. Every chunk the reader hands over was
-authenticated by its own seal; the bytes that go out are hashed as they pass
-and checked against the hash on record before the index moves, and a mismatch
-erases the new parts and leaves the file exactly as it was. The index switches
-to the new parts in one write, after every one has landed, and the old parts
-are erased only after that write — so a move cut off at any point, by a crash,
-an upgrade or a kill, leaves the file readable on the key it was on, and the
-plan takes up the next file when the vault is unlocked again. New parts a
-cut-off move had already written are orphans the stray-parts scan finds.
+- A vault holding three generations is one whose owner has to reason about three.
+  Two (current and previous) is what the file list can mark and a person can hold.
+- "The password is changed" is a promise with a tail, and the refusal keeps the
+  tail visible. A second change mid-tail would leave nothing on screen able to say
+  which files were readable by which old password.
 
-## 4.2 Leaving a file for last
+The way out is through: finish now, or wait. There is no `--force`. A file that
+can never move (its account gone for good) blocks the next change until it is
+deleted or recovered, and the status names it. HTTP answers
+`409 REKEY_PENDING` with the counts; the CLI prints them and the commands that
+clear them.
 
-A file can be deferred: the one being moved right now, or any pending one.
-`DeferRekeyFile` writes it into the plan's `deferred` list — in the plan, so
-the choice survives a restart — and, if it is the file being moved, pulls that
-move's cancel. The move stops where it is; the new parts it had written are
-erased; the file stays on the previous key, readable; nothing is charged to
-the meter. Deferred files are moved after everything else, by the paced step
-and by a finish-now pass alike, and `UndeferRekeyFile` puts one back in its
-turn. Every move goes through `moveTracked`, which is what the status reads
-for the file in flight, how far through it is, and the cancel the skip pulls.
-
-## 4.3 A cloud that is not answering
-
-A re-encryption used to write a file back to every account it was on and
-refuse to commit one that came out a part short, so a file with a part on a
-cloud that was down waited for that cloud — every file on it, for as long as
-it was down. That is the right instinct for a cloud that merely dropped a
-write, and the wrong outcome for a NAS that is switched off for a month: the
-previous key, and the previous password, stay alive for that month.
-
-Now the health check's verdict is used. A file with a part on an account the
-last check found unreachable is re-encrypted from the parts on the accounts
-that answered, as long as those are enough to rebuild it, and written back
-to those accounts — topped up from any other connected account the spread
-allows, or a part short where there is none to top up from. The part on the
-silent account is neither read nor written nor erased. It is **written
-down**: the index records it (`manifest.stale_parts`) as a part under the
-previous key on that account, with the file it belonged to and when it was
-left, in the same write that moves the file. A part that an erase on an
-answering account could not remove is recorded the same way.
-
-The record is what makes the part a *stray* rather than a leak. The
-re-encryption status and the vault's stats count what is on record and name
-the accounts; the stray-parts scan (§3.7.1 of the architecture) flags each
-such object as *under the previous key*, with its file's path — the one kind
-of abandoned archive the index can say anything about — and the browser runs
-that scan when a cloud holding recorded parts comes back, not only when the
-set of accounts changes. Erasing them through the sweep is what finishes the
-password change; the record is dropped by the sweep that erases a part, by a
-scan whose listing shows it already gone, and by disconnecting the account,
-after which the part is an ordinary orphan there.
-
-A file that cannot be rebuilt without the silent account is still held, as
-before: nothing can read it, so trying would only cost an hour's skip. A write
-that fails on an account the health check found *up* is still a refusal: that
-is a dropped write, not an absent cloud, and the file stays whole on the
-previous key for the retry.
-
-`MigrateFiles` — the finish-now pass — runs a health check of its own before
-the first file when the last one is older than five minutes, so that a `sand
-vault migrate` on a machine with no server knows which accounts are down. The
-foreground `sand vault rekey --run` runs the check on the vault's schedule, as
-the server does.
-
-## 5. Surfaces
+## Surfaces
 
 ### HTTP
 
 | Call | Does |
 |---|---|
-| `POST /api/vault/password` with `plan` | Changes the password now and leaves the files to the plan. `plan` is a `RekeySettings`; giving one means not migrating now, whatever `migrate` says. |
-| `GET /api/vault/rekey` | `RekeyStatus`: pending files and bytes, totals the plan began over, the plan, when the password changed, next-file and ETA seconds, idle, the per-folder breakdown (queued folders first in their order, then every top-level folder with files left), what is moving now, the files held for a cloud that is not answering (`held`, `held_on`), the parts left under the previous key on clouds the moves could not reach (`stale_parts`: count, bytes, per-account rows with whether each answers now — §4.3), the recent failures, and how many files failed lately and are waiting to be tried again (`retrying`, `retry_in_seconds`). |
-| `PUT /api/vault/rekey` | Sets the plan from a whole `RekeySettings`. Starts one if none exists; refused when nothing is on the previous key. With `full_speed`, this is how the browser finishes now: the server works through the files on its own and the call answers at once. |
-| `POST /api/vault/migrate` | Finish now in the foreground, holding the request open until the last file has moved. `409 MIGRATION_BUSY` while a step holds the slot. The CLI's `sand vault migrate`; the browser no longer calls it. |
-| `POST /api/vault/rekey/skip` | `{id, undo}`: leave a file for last (the one being moved when `id` is empty, stopping that move), or put it back in its turn. Answers with the status. |
-| `GET /api/vault/rekey/files` | `RekeyPendingPage`: the files still on the previous key, in the order the plan takes them, each with where it stands (`state`: `queued`, `moving`, `deferred`, `held` with `held_on`, `retrying` with `reason` and `retry_at`, or `outside` the plan's folders). `?folder` confines it to one folder, `?offset` and `?limit` page it (50 by default, 500 at most); the answer carries the folder's whole `total` and `bytes`. A folder that is not there is a 404. |
-| `DELETE /api/vault/rekey/files/{id}` | Erases a file still on the previous key instead of re-encrypting it — the other answer to a file that will not move. The one being moved has that move stopped first, and the delete waits for it to let go, so nothing is erasing the same parts twice; the stopped move ends as a skip does, with nothing charged. Answers as `DELETE /api/files/{id}` does: `deleted`, the `path`, and a `warnings` entry per part that could not be erased. A file already on the current key is a 400: it is not a pending file, and the ordinary delete is the way. |
-| `GET /api/vault` | `stats.key_id` names the current generation; `sub_vaults[].key_id` likewise while open. `stats.stale_parts` and `stats.stale_bytes` count the parts left under the previous key (§4.3), which is what has the browser re-run the stray-parts scan when a cloud comes back. |
-| `GET /api/files` | `previous_key` maps each subfolder to how many files under it are still on the previous key. Each file already carries `key_id`. |
+| `POST /api/vault/password` with `plan` | Changes the password now and leaves the files to the plan (a `RekeySettings`); a plan means not migrating now |
+| `GET /api/vault/rekey` | `RekeyStatus`: pending files and bytes, the plan and its starting totals, when the password changed, next-file and ETA seconds, idle, per-folder breakdown, the file moving now, files held for a silent cloud (`held`, `held_on`), recorded `stale_parts` per account with whether each answers now, recent failures, and `retrying` / `retry_in_seconds` |
+| `PUT /api/vault/rekey` | Sets the plan from a whole `RekeySettings`; refused when nothing is on the previous key. With `full_speed`, finishes now in the background and answers at once |
+| `POST /api/vault/migrate` | Finish now in the foreground, holding the request open; `409 MIGRATION_BUSY` while a step holds the slot. Used by the CLI, not the browser |
+| `POST /api/vault/rekey/skip` | `{id, undo}`: defer a file (empty `id` is the one moving now) or undo; answers with the status |
+| `GET /api/vault/rekey/files` | `RekeyPendingPage`: pending files in plan order, each with `state` (`queued`, `moving`, `deferred`, `held` + `held_on`, `retrying` + `reason` and `retry_at`, or `outside` the plan's folders). `?folder`, `?offset`, `?limit` (50 default, 500 max); carries the folder's `total` and `bytes`; 404 for a missing folder |
+| `DELETE /api/vault/rekey/files/{id}` | Erases a pending file instead of moving it. If it is moving, the move is stopped first (as a skip, nothing charged). Answers like `DELETE /api/files/{id}`; 400 for a file already on the current key |
+| `GET /api/vault` | `stats.key_id` (current generation; `sub_vaults[].key_id` while open), `stats.stale_parts`, `stats.stale_bytes` |
+| `GET /api/files` | `previous_key` maps each subfolder to its count of files on the previous key; each file carries `key_id` |
 
 ### CLI
 
-```
+```bash
 sand vault passwd --per-day 10G --folder /Taxes --folder /Photos/2024 [--only-folders] [--keep-unlocked]
+sand vault passwd --full-speed        # change now, finish in the background
+sand vault passwd --no-migrate        # change now, move nothing yet
 sand vault rekey                      # where it stands
-sand vault rekey --per-day 25G --all  # faster, forget the folder order
+sand vault rekey --per-day 25G --all  # faster, and forget the folder order
 sand vault rekey --full-speed         # finish now, in the background under 'sand serve'
 sand vault rekey --pause | --resume
-sand vault rekey --skip /Films/Heat.1995.mkv   # leave it for last; '.' is the file moving now
+sand vault rekey --skip /Films/Heat.1995.mkv    # leave it for last; '.' is the file moving now
 sand vault rekey --unskip /Films/Heat.1995.mkv
-sand vault rekey --list [--under /Archives]   # the files, in the plan's order, and what holds each
-sand vault rekey --run                # the plan, in the foreground, until done
-sand vault status                     # names the pace and the time left
-sand vault migrate                    # finish now, as before
+sand vault rekey --list [--under /Archives]     # pending files in plan order, and what holds each
+sand vault rekey --run                # run the plan in the foreground until done
+sand vault status                     # includes the pace and time left
+sand vault migrate                    # finish now, in the foreground
 ```
 
 ### Browser
 
-See the renderings. In short: the password dialog asks *all at once* or *so
-much a day* with a folder queue; a dialog opened while a change is pending
-shows that change's progress and the two ways out instead of a form; a
-progress panel carries pace, folders, pause, finish-now and the recent
-failures; the accounts drawer carries a card; the top of the vault carries the
-*Previous key* entry; a file row on the previous key wears a quiet dashed
-`prev key` pill beside its parts, and a folder row the count under it.
-Finish-now, and *all at once*, set the plan to full speed and leave the moving
-to the server; the panel polls more often while it runs.
+- The password dialog offers *all at once* or *so much a day* with a folder queue.
+  Opened while a change is pending, it shows that change's progress and the two
+  ways out instead of a form.
+- The progress panel (`Rekey.jsx`) carries pace, folders, pause, finish-now and
+  recent failures, and polls faster while finishing. The accounts drawer has a
+  card; the top of the vault has the *Previous key* entry; a file row on the
+  previous key wears a dashed `prev key` pill, and a folder row its count.
+- **The counts open.** *Files left* and each folder's count list the files behind
+  them a page at a time (`RekeyFiles.jsx`), in plan order, each with where it
+  stands and skip, un-skip and delete controls. "7 files would not move · tried
+  again in 40 min" says which seven, and a file that will never move (too few
+  parts, say) can be deleted from its row after confirmation.
+- The pace field commits when typing pauses, on Enter or on blur, and is never
+  disabled while focused: saving on every keystroke used to disable the field and,
+  on a phone, dismiss the keyboard after every digit.
 
-The counts open. *Files left* and each folder's count in the panel are
-buttons: tapping one lists the files behind it (`RekeyFiles`), a page at a
-time, in the order the plan takes them, each with where it stands — moving,
-in turn, left for last, waiting for a cloud that did not answer, or tried and
-failed with the reason and when it is tried again — and with the skip,
-un-skip and delete controls on the row. Seven files left and nothing moving
-used to be a count and a shrug; the status line now says *7 files would not
-move · tried again in 40 min*, and the count says which seven. A file that is
-simply in the way can be skipped from the row; one on a cloud that is down
-names the cloud; one that is never going to move — a photo whose parts are
-too few to rebuild, say, that nobody wants kept on the previous key forever —
-can be deleted from the row, after a confirmation, the one being moved
-included. On the command line the ordinary delete does the same.
-
-The pace chips' custom field commits when typing pauses, on Enter or on blur,
-not on every keystroke, and is never disabled while it has focus. Each
-keystroke used to be a save to the server, and the save disabled the field
-while it ran; a disabled field loses focus, and on a phone that is a keyboard
-that goes away after every digit.
-
----
-
-## 6. Failure modes
+## Failure modes
 
 | What happens | What the design does |
 |---|---|
-| Server restarts mid-plan | The meter's level and clock are in the plan; the plan resumes at the pace it left, not with a fresh burst. |
-| Vault is locked | Nothing moves. The step returns `ErrLocked` and the loop waits for the next unlock. |
-| A cloud is offline | A file that can be rebuilt from its parts on the other clouds moves without it, and the part it leaves on the offline cloud is written down as a stray under the previous key (§4.3). A file that cannot is held for the cloud, named in the status, and moved when the health check finds it back. Others move. |
-| A file is deleted while chosen | `migrateFile` finds no entry and writes nothing; the charge is refunded. |
-| Finish-now runs while the loop ticks | One slot. The loop's step comes back asking to be tried again shortly. |
-| The browser that asked for full speed goes away | Nothing: the plan is the server's. The panel shows where it has got to when it is next opened. |
-| The budget is raised | The loop trusts a wait for at most five minutes, so the new pace is felt within that. |
-| `only_folders` and the folders are done | The plan is idle, says so, and the rest waits for `--all` or a wider plan. |
-| Nothing pending, plan requested | Refused: a plan needs something to be a plan about. |
-| Clock goes backwards | The meter earns nothing for the lost interval and does not pay it twice. |
-
----
-
-## 7. Tests
-
-`internal/vault/pacer_test.go` covers the meter alone: the starting burst, a
-file bigger than the burst paying itself off, the thirty-day average landing
-within one file of the budget, a week idle banking no more than the burst, a
-backwards clock, refunds, ETA, unmetered.
-
-`internal/vault/rekeyplan_test.go` covers the vault: a second change refused
-open and locked and allowed once finished; the same for a sub vault; a planned
-change moving files in folder order then smallest first and dropping the plan
-and the key with the last file; a step waiting on the meter and the debt
-surviving a reopen; full speed moving a file the meter would hold, a budget
-taking the plan off full speed with the debt still owed; a plan going idle at its folders and widening; pause and a
-zero budget; folder validation and the nothing-pending refusal; an unreadable
-file left alone for an hour and then moved; one pass at a time; `Stats.KeyID`.
-
-`internal/server/rekey_api_test.go` covers the HTTP surface end to end,
-including the `409`, the plan adjusted in flight, one server-side step moving
-the queued folder's file first, finish-now clearing the plan, and a plan at
-full speed: the change and the plan waking the loop, pause holding it, and one
-round of the loop taking every file and the plan with it.
+| Server restarts mid-plan | Level and clock are in the plan; it resumes at its pace, not with a fresh burst |
+| Vault is locked | Nothing moves; the step returns `ErrLocked` until the next unlock |
+| A cloud is offline | Files rebuildable without it move, leaving a recorded stray; others are held, named, and moved when the cloud is back |
+| A file is deleted while chosen | The move finds no entry and writes nothing; the charge is refunded |
+| Finish-now runs while the loop ticks | One slot; the step retries shortly |
+| The browser that asked for full speed goes away | Nothing; the plan is the server's |
+| The budget is raised | Felt within five minutes |
+| `only_folders` and the folders are done | Idle, says so; the rest waits for `--all` or a wider plan |
+| Plan requested with nothing pending | Refused |
+| Clock goes backwards | The meter earns nothing for the lost interval and does not pay it twice |
