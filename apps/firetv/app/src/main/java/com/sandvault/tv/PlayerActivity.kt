@@ -32,6 +32,7 @@ import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.TransferListener
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.analytics.AnalyticsListener
@@ -59,9 +60,8 @@ import kotlin.math.abs
  * film wants: audio track, subtitles (the film's own and the .srt beside it),
  * subtitle size, zoom, speed, what is actually playing — and Stats, which says
  * over the film as it plays what, if anything, is holding it up (see
- * PlaybackStats). The buffer is as big as the app's memory allows, and after a
- * stall the player waits for a runway of film rather than two seconds of it
- * (see BufferPlan).
+ * PlaybackStats). The buffer is as big as the app's memory allows (see
+ * BufferPlan).
  *
  * The remote:
  *   Select        show the controls / press the focused button
@@ -82,6 +82,9 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
     private val handler = Handler(Looper.getMainLooper())
     private val prefs by lazy { getSharedPreferences("sand-player", MODE_PRIVATE) }
 
+    /** How big the buffer is, from the memory this app is allowed. */
+    private val plan by lazy { BufferPlan.forHeap(Runtime.getRuntime().maxMemory()) }
+
     private lateinit var video: PlayerView
     private lateinit var controls: FrameLayout
     private lateinit var titleView: TextView
@@ -93,7 +96,6 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
     private lateinit var spinner: ProgressBar
     private lateinit var panel: OptionsPanel
     private lateinit var statsPanel: StatsOverlay
-    private lateinit var runwayLabel: TextView
 
     /**
      * What the Stats panel says, and what it is worked out from: the bytes of
@@ -104,10 +106,7 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
      */
     private val stats = PlaybackStats()
     private val filmBytes = AtomicLong()
-    private var loadControl: RunwayLoadControl? = null
-
-    /** How big the buffer is: as big as the memory this app is allowed makes room for. */
-    private val plan by lazy { BufferPlan.forHeap(Runtime.getRuntime().maxMemory()) }
+    private var loadControl: DefaultLoadControl? = null
     private var videoDecoder: String? = null
     private var audioDecoder: String? = null
     private var audioUnderruns = 0L
@@ -159,11 +158,20 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
         val renderers = DefaultRenderersFactory(this)
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
             .setEnableDecoderFallback(true)
-        // The load control is Media3's with a buffer sized to the memory and a
-        // runway after a stall (BufferPlan); the media source is the builder's
-        // default, made here so that it counts the film's bytes as they come in.
+        // The load control is Media3's with a buffer sized to the memory the
+        // app is allowed (BufferPlan), and the media source is the builder's
+        // default; both are made here so the Stats panel can see into them: how
+        // much the buffer holds, and how many bytes of the film have come in.
         val filmUri = Uri.parse(url)
-        val load = RunwayLoadControl(plan)
+        val load = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                plan.maxBufferMs,
+                plan.maxBufferMs,
+                DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_MS,
+                DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS,
+            )
+            .setTargetBufferBytes(plan.targetBytes)
+            .build()
         loadControl = load
         val dataSource = DefaultDataSource.Factory(this).setTransferListener(FilmBytes(filmUri, filmBytes))
         val exo = ExoPlayer.Builder(this, renderers)
@@ -217,11 +225,6 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
 
         spinner = ProgressBar(this).apply { isIndeterminate = true; visibility = View.GONE }
         root.addView(spinner, FrameLayout.LayoutParams(dp(56), dp(56), Gravity.CENTER))
-
-        // Under the spinner while a stall waits for its runway, so the wait has
-        // an end in sight.
-        runwayLabel = label(this, 16f, Palette.TEXT, bold = true).apply { visibility = View.GONE }
-        root.addView(runwayLabel, FrameLayout.LayoutParams(WRAP, WRAP, Gravity.CENTER).apply { topMargin = dp(120) })
 
         controls = FrameLayout(this)
         controls.addView(
@@ -472,14 +475,11 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
     private fun toggleStats() {
         val showing = !statsPanel.isShowing
         statsPanel.visibility = if (showing) View.VISIBLE else View.GONE
-        if (showing) showStats(stats.report())
+        if (showing) showStats()
         showOsd(if (showing) "Stats on" else "Stats off")
     }
 
-    /**
-     * One look at the player, for PlaybackStats; the runway after a stall set
-     * from what it measures; and what is on screen brought up to date.
-     */
+    /** One look at the player, for PlaybackStats; and the panel brought up to date if it is showing. */
     private fun sampleStats() {
         val p = player ?: return
         val video = p.videoDecoderCounters?.also { it.ensureUpdated() }
@@ -499,24 +499,12 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
                 bufferBytes = loadControl?.allocator?.totalBytesAllocated?.toLong() ?: 0,
             ),
         )
-        val report = stats.report()
-        val speed = p.playbackParameters.speed
-        loadControl?.runwayUs =
-            BufferPlan.runwayMs(report.arrival, BufferPlan.capacityMs(plan, report.filmBitsPerSecond), speed) * 1000
-        showRunway(report)
-        if (statsPanel.isShowing) showStats(report)
+        if (statsPanel.isShowing) showStats()
     }
 
-    /** While a stall waits for a runway worth waiting for, how far it has got. */
-    private fun showRunway(report: PlaybackStats.Report) {
-        val runwayMs = (loadControl?.runwayUs ?: 0) / 1000
-        val waiting = stats.stalled && runwayMs >= RUNWAY_SHOWN_FROM_MS
-        runwayLabel.visibility = if (waiting) View.VISIBLE else View.GONE
-        if (waiting) runwayLabel.text = StatsText.runwayProgress(report.bufferedMs, runwayMs)
-    }
-
-    private fun showStats(report: PlaybackStats.Report) {
+    private fun showStats() {
         val p = player ?: return
+        val report = stats.report()
         val connection = currentLink()
         val runtime = Runtime.getRuntime()
         val playing = StatsText.Playing(
@@ -531,15 +519,7 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
         statsPanel.show(
             StatsText.headline(report, connection),
             StatsText.isProblem(report),
-            StatsText.rows(
-                report,
-                playing,
-                connection,
-                heapUsedBytes = runtime.totalMemory() - runtime.freeMemory(),
-                heapMaxBytes = runtime.maxMemory(),
-                bufferTargetBytes = plan.targetBytes.toLong(),
-                speed = p.playbackParameters.speed,
-            ),
+            StatsText.rows(report, playing, connection, runtime.totalMemory() - runtime.freeMemory(), runtime.maxMemory()),
         )
     }
 
@@ -939,9 +919,6 @@ class PlayerActivity : Activity(), SeekBarView.Listener {
 
         /** How often the Stats panel asks how the TV is connected. */
         private const val LINK_EVERY_MS = 5_000L
-
-        /** A runway this short is not worth a line on screen: Media3 waits two seconds anyway. */
-        private const val RUNWAY_SHOWN_FROM_MS = 5_000L
     }
 }
 

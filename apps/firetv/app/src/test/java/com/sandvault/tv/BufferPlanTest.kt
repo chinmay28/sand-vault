@@ -1,7 +1,6 @@
 package com.sandvault.tv
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -39,54 +38,13 @@ class BufferPlanTest {
     }
 
     @Test
-    fun whatTheBufferHoldsDependsOnTheBitrate() {
+    fun theTimeLimitLeavesAHighBitrateFilmTheBytes() {
+        // Media3's fifty seconds would stop a 45 Mb/s film at 281 MB of a
+        // 349 MB buffer. Three minutes leaves the bytes to decide for anything
+        // above about 16 Mb/s.
         val plan = BufferPlan.forHeap(512 * mib)
-        // About a minute of the UHD Blu-ray on the screenshot.
-        assertEquals(61_212L, BufferPlan.capacityMs(plan, 45_600_000))
-        // A 1080p film is held to the time limit, not the memory.
-        assertEquals(180_000L, BufferPlan.capacityMs(plan, 4_400_000))
-        assertEquals(180_000L, BufferPlan.capacityMs(plan, null))
-        assertEquals(25_294L, BufferPlan.capacityMs(BufferPlan.forHeap(192 * mib), 45_600_000))
-    }
-
-    @Test
-    fun aFilmThatKeepsUpWaitsNoLongerThanMedia3Would() {
-        assertEquals(2_000L, BufferPlan.runwayMs(null, 61_212))
-        assertEquals(2_000L, BufferPlan.runwayMs(1.4, 61_212))
-        assertEquals(2_000L, BufferPlan.runwayMs(0.98, 61_212))
-    }
-
-    @Test
-    fun aShortLinkWaitsForThreeMinutesOfPlay() {
-        // Arriving at 0.757× real time, three minutes of play cost 0.243 × 180 s.
-        assertEquals(43_740L, BufferPlan.runwayMs(0.757, 61_212))
-        // A wait of 43.7 s of film buys three minutes before the next stall,
-        // where two seconds bought eight.
-        assertEquals(180_000L, BufferPlan.lastsMs(43_740, 0.757))
-        assertEquals(8_230L, BufferPlan.lastsMs(2_000, 0.757))
-    }
-
-    @Test
-    fun theRunwayIsNeverMoreThanTheBufferHolds() {
-        // Media3's buffer holds 25 s of a 45.6 Mb/s film: the runway stops short
-        // of filling it, or the wait would end only when the buffer did.
-        assertEquals(22_764L, BufferPlan.runwayMs(0.757, 25_294))
-        assertEquals(55_090L, BufferPlan.runwayMs(0.0, 61_212))
-        assertEquals(2_000L, BufferPlan.runwayMs(0.5, 1_000))
-    }
-
-    @Test
-    fun aFasterSpeedNeedsMoreRunway() {
-        assertEquals(2_000L, BufferPlan.runwayMs(1.5, 120_000, speed = 1f))
-        assertEquals(90_000L, BufferPlan.runwayMs(1.5, 120_000, speed = 2f))
-        assertEquals(60_000L, BufferPlan.lastsMs(30_000, 1.5, speed = 2f))
-    }
-
-    @Test
-    fun howLongTheBufferLasts() {
-        assertEquals(86_420L, BufferPlan.lastsMs(21_000, 0.757))
-        assertEquals(21_000L, BufferPlan.lastsMs(21_000, 0.0))
-        assertNull(BufferPlan.lastsMs(21_000, 1.1))
-        assertNull(BufferPlan.lastsMs(21_000, null))
+        val bytesInTimeLimitAt16Mbps = plan.maxBufferMs.toLong() * 16_000_000 / 8 / 1000
+        assertTrue(bytesInTimeLimitAt16Mbps >= plan.targetBytes)
+        assertEquals(180_000, plan.maxBufferMs)
     }
 }

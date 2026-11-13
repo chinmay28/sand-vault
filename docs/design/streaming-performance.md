@@ -288,7 +288,7 @@ The Vega OS sticks do not run Android apps and cannot install SAND TV
 
 ### The player's buffer
 
-SAND TV builds its player with Media3's defaults, which this was read from
+SAND TV built its player with Media3's defaults, which this was read from
 (`DefaultLoadControl` and `DefaultHttpDataSource`, Media3 1.7.1):
 
 | | Default | For a UHD film |
@@ -301,12 +301,11 @@ SAND TV builds its player with Media3's defaults, which this was read from
 So a 1080p film rides out a 50-second hiccup and a UHD film one of 14–29
 seconds, and after a stall a UHD film starts again on two seconds of cushion.
 
-SAND TV no longer uses these as they are: its buffer is now sized to the app's
-memory, and after a stall it waits for a runway of film rather than two
-seconds of it. See [SAND TV design](sand-tv.md#player-internals). The Stats
-panel on a stick in the field read *the film arrives at 0.75× real time* —
-34.5 Mb/s on a 5 GHz Wi-Fi link reporting 344 Mb/s, for a 45.6 Mb/s stretch —
-which is the case this is for: at that rate two seconds of cushion last eight.
+SAND TV has since sized the first row to the stick's memory (`BufferPlan`):
+the app asks for a large heap, and the buffer takes it less a reserve, up to
+three minutes of film. Where the stick allows the app 512 MiB, that is 349 MB,
+about a minute of a 45 Mbit/s film; where it allows no more than the 192 MiB it
+gives an ordinary app, it stays at 144 MB. The rest of the table is Media3's.
 
 ## Telling which limit you are hitting
 
@@ -358,9 +357,10 @@ In the order it is worth trying, for films kept on the PC's own disks:
    with the HDR10 base layer only.
 4. **The player.** What the stick sees — how much is buffered, how fast it is
    arriving, how many frames it drops — is the measurement that tells checks
-   2 and 3 apart while the film plays; SAND TV's Stats panel shows it. Its
-   buffer is now sized to the stick's memory and a stall waits for a runway.
-   What is left is to wait longer than 8 s before giving up on a read.
+   2 and 3 apart while the film plays. After that, the player's buffer is
+   sized to the stick's memory rather than capped at 144 MB (see above); it
+   could also resume after a stall with more than 2 s, and wait longer than
+   8 s before giving up on a read.
 
 And, for films kept on cloud accounts, the server's read path:
 

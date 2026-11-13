@@ -109,9 +109,6 @@ class PlaybackStats(private val windowMs: Long = WINDOW_MS) {
     private var droppedTotal = 0L
     private var underrunsTotal = 0L
 
-    /** Whether the film is stalled now: waiting for the film once it has started, and not just after a seek. */
-    val stalled: Boolean get() = inStall
-
     /** Takes one look at the player. Samples are expected in time order; one that is not is ignored. */
     fun add(sample: Sample) {
         val previous = last
